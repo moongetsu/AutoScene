@@ -1,0 +1,25 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+dist/
+*.egg-info/
+.ui-dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.DS_Store
+.env
+*.log
+.autoscene/
+.cursor/
+ui/.tmp-*.json
+.tmp_*.jpg
+.tn_*.txt
+.gpu_cut_test.json
+
+# UI / Tauri
+ui/node_modules/
+ui/dist/
+ui/src-tauri/target/
+ui/src-tauri/gen/

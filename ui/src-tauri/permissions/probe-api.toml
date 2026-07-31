@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-probe-api-port"
+description = "Allow the UI boot splash to TCP-probe the local AutoScene API port without fetch() spam."
+commands.allow = ["probe_api_port"]

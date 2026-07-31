@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/autoscene-mark.svg" />
+    <link rel="alternate icon" type="image/png" href="/autoscene-mark.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AutoScene</title>
+    <style>
+      /* Instant splash — paints before React / Vite modules load */
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #141210;
+        color: #f2ede6;
+        font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+        overflow: hidden;
+      }
+      #boot-splash {
+        position: fixed;
+        inset: 0;
+        z-index: 99999;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 1.25rem;
+        background:
+          radial-gradient(ellipse 80% 50% at 50% 0%, rgba(196, 163, 90, 0.08), transparent 55%),
+          #141210;
+        transition: opacity 0.45s ease, visibility 0.45s ease;
+      }
+      #boot-splash[data-hide="true"] {
+        opacity: 0;
+        visibility: hidden;
+        pointer-events: none;
+      }
+      #boot-splash .mark {
+        width: 48px;
+        height: 48px;
+        display: block;
+      }
+      #boot-splash .brand {
+        margin: 0;
+        font-size: 1.35rem;
+        font-weight: 600;
+        letter-spacing: -0.03em;
+      }
+      #boot-splash .status {
+        margin: 0;
+        font-size: 0.8125rem;
+        color: #9a948a;
+        letter-spacing: 0.02em;
+        min-height: 1.25em;
+      }
+      #boot-splash .rail {
+        width: min(220px, 48vw);
+        height: 2px;
+        border-radius: 999px;
+        background: rgba(242, 237, 230, 0.1);
+        overflow: hidden;
+      }
+      #boot-splash .rail > i {
+        display: block;
+        height: 100%;
+        width: 40%;
+        border-radius: inherit;
+        background: #c4a35a;
+        animation: boot-slide 1.35s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+      }
+      #boot-splash .retry {
+        display: none;
+        margin-top: 0.5rem;
+        padding: 0.55rem 1.1rem;
+        border: 1px solid rgba(196, 163, 90, 0.45);
+        border-radius: 0.5rem;
+        background: #c4a35a;
+        color: #141210;
+        font: inherit;
+        font-size: 0.8125rem;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      #boot-splash[data-failed="true"] .retry {
+        display: inline-flex;
+      }
+      #boot-splash[data-failed="true"] .rail {
+        display: none;
+      }
+      @keyframes boot-slide {
+        0% {
+          transform: translateX(-120%);
+        }
+        100% {
+          transform: translateX(320%);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #boot-splash .rail > i {
+          animation: none;
+          width: 100%;
+          opacity: 0.7;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="boot-splash" role="status" aria-live="polite" aria-busy="true">
+      <img
+        class="mark"
+        width="48"
+        height="48"
+        src="/autoscene-mark.svg"
+        alt=""
+        draggable="false"
+      />
+      <p class="brand">AutoScene</p>
+      <p class="status" id="boot-status">Starting…</p>
+      <div class="rail" aria-hidden="true"><i></i></div>
+      <button type="button" class="retry" id="boot-retry">Retry</button>
+    </div>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

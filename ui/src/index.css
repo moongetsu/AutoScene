@@ -1,0 +1,312 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/ibm-plex-sans";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+    --font-heading: "IBM Plex Sans Variable", "IBM Plex Sans", sans-serif;
+    --font-sans: "IBM Plex Sans Variable", "IBM Plex Sans", sans-serif;
+    --color-sidebar-ring: var(--sidebar-ring);
+    --color-sidebar-border: var(--sidebar-border);
+    --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+    --color-sidebar-accent: var(--sidebar-accent);
+    --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+    --color-sidebar-primary: var(--sidebar-primary);
+    --color-sidebar-foreground: var(--sidebar-foreground);
+    --color-sidebar: var(--sidebar);
+    --color-chart-5: var(--chart-5);
+    --color-chart-4: var(--chart-4);
+    --color-chart-3: var(--chart-3);
+    --color-chart-2: var(--chart-2);
+    --color-chart-1: var(--chart-1);
+    --color-ring: var(--ring);
+    --color-input: var(--input);
+    --color-border: var(--border);
+    --color-destructive: var(--destructive);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-accent: var(--accent);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-muted: var(--muted);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-secondary: var(--secondary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-primary: var(--primary);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-popover: var(--popover);
+    --color-card-foreground: var(--card-foreground);
+    --color-card: var(--card);
+    --color-foreground: var(--foreground);
+    --color-background: var(--background);
+    --radius-sm: calc(var(--radius) * 0.6);
+    --radius-md: calc(var(--radius) * 0.8);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) * 1.4);
+    --radius-2xl: calc(var(--radius) * 1.8);
+    --radius-3xl: calc(var(--radius) * 2.2);
+    --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+/* Light kept for completeness; app forces .dark */
+:root {
+    --background: oklch(0.985 0.005 95);
+    --foreground: oklch(0.18 0.02 95);
+    --card: oklch(1 0 0);
+    --card-foreground: oklch(0.18 0.02 95);
+    --popover: oklch(1 0 0);
+    --popover-foreground: oklch(0.18 0.02 95);
+    --primary: oklch(0.45 0.12 165);
+    --primary-foreground: oklch(0.98 0.01 165);
+    --secondary: oklch(0.94 0.01 95);
+    --secondary-foreground: oklch(0.25 0.02 95);
+    --muted: oklch(0.94 0.01 95);
+    --muted-foreground: oklch(0.5 0.02 95);
+    --accent: oklch(0.93 0.03 85);
+    --accent-foreground: oklch(0.25 0.04 85);
+    --destructive: oklch(0.55 0.2 25);
+    --border: oklch(0.88 0.01 95);
+    --input: oklch(0.88 0.01 95);
+    --ring: oklch(0.45 0.12 165);
+    --chart-1: oklch(0.55 0.12 165);
+    --chart-2: oklch(0.7 0.1 85);
+    --chart-3: oklch(0.6 0.05 250);
+    --chart-4: oklch(0.65 0.08 40);
+    --chart-5: oklch(0.45 0.02 95);
+    --radius: 0.7rem;
+    --sidebar: oklch(0.97 0.005 95);
+    --sidebar-foreground: oklch(0.2 0.02 95);
+    --sidebar-primary: oklch(0.45 0.12 165);
+    --sidebar-primary-foreground: oklch(0.98 0.01 165);
+    --sidebar-accent: oklch(0.93 0.02 95);
+    --sidebar-accent-foreground: oklch(0.2 0.02 95);
+    --sidebar-border: oklch(0.88 0.01 95);
+    --sidebar-ring: oklch(0.45 0.12 165);
+}
+
+/* Cinema post-production — deep blacks, amber signal, editorial panels */
+.dark {
+    --background: oklch(0.07 0.008 280);
+    --foreground: oklch(0.94 0.012 85);
+    --card: oklch(0.11 0.01 280);
+    --card-foreground: oklch(0.94 0.012 85);
+    --popover: oklch(0.1 0.01 280);
+    --popover-foreground: oklch(0.94 0.012 85);
+    --primary: oklch(0.78 0.14 65);
+    --primary-foreground: oklch(0.12 0.04 65);
+    --secondary: oklch(0.16 0.012 280);
+    --secondary-foreground: oklch(0.9 0.01 85);
+    --muted: oklch(0.14 0.01 280);
+    --muted-foreground: oklch(0.58 0.02 280);
+    --accent: oklch(0.2 0.035 65);
+    --accent-foreground: oklch(0.92 0.05 65);
+    --destructive: oklch(0.62 0.2 25);
+    --border: oklch(0.94 0.01 85 / 9%);
+    --input: oklch(0.94 0.01 85 / 11%);
+    --ring: oklch(0.78 0.14 65);
+    --chart-1: oklch(0.78 0.14 65);
+    --chart-2: oklch(0.72 0.1 45);
+    --chart-3: oklch(0.65 0.06 280);
+    --chart-4: oklch(0.7 0.08 25);
+    --chart-5: oklch(0.5 0.02 280);
+    --sidebar: oklch(0.055 0.008 280);
+    --sidebar-foreground: oklch(0.88 0.015 85);
+    --sidebar-primary: oklch(0.78 0.14 65);
+    --sidebar-primary-foreground: oklch(0.12 0.04 65);
+    --sidebar-accent: oklch(0.13 0.015 280);
+    --sidebar-accent-foreground: oklch(0.94 0.012 85);
+    --sidebar-border: oklch(0.94 0.01 85 / 7%);
+    --sidebar-ring: oklch(0.78 0.14 65);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    @apply font-sans antialiased;
+  }
+  body {
+    @apply bg-background text-foreground min-h-svh;
+  }
+  h1, h2, h3, .font-heading {
+    font-family: var(--font-heading);
+    letter-spacing: -0.03em;
+  }
+}
+
+/* Atmosphere */
+.app-shell {
+  background:
+    radial-gradient(1400px 700px at 8% -8%, oklch(0.35 0.1 65 / 0.14), transparent 55%),
+    radial-gradient(1000px 500px at 95% 5%, oklch(0.25 0.06 280 / 0.18), transparent 50%),
+    oklch(0.07 0.008 280);
+}
+
+.panel-surface {
+  @apply rounded-xl border border-border/60 bg-card/80 backdrop-blur-sm;
+}
+
+.panel-inset {
+  @apply rounded-lg border border-border/40 bg-background/50;
+}
+
+.timecode {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+}
+
+.segment-bar {
+  @apply relative h-2 overflow-hidden rounded-sm bg-muted/80;
+}
+
+.segment-bar-fill {
+  @apply absolute top-0 h-full rounded-sm bg-primary/90 transition-all duration-200;
+}
+
+.segment-bar-fill:hover {
+  @apply bg-primary brightness-110;
+}
+
+.segment-bar-fill-active {
+  @apply ring-1 ring-primary ring-offset-1 ring-offset-background;
+}
+
+.nle-rail-link {
+  @apply flex flex-col items-center gap-1 rounded-lg px-2 py-2.5 text-[10px] uppercase tracking-wider transition-colors;
+}
+
+.nle-rail-link-active {
+  @apply bg-sidebar-accent text-primary;
+}
+
+.nle-rail-link-idle {
+  @apply text-muted-foreground hover:bg-sidebar-accent/50 hover:text-foreground;
+}
+
+.app-grain::before {
+  content: "";
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  /* Behind UI/media. High z-index was painting over transformed tiles (Export grid). */
+  z-index: 0;
+  opacity: 0.035;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* Keep media in its own layer above local chrome; grain is z-0 globally. */
+.media-above-grain {
+  position: relative;
+  z-index: 1;
+  isolation: isolate;
+  transform: translateZ(0);
+}
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fade-up {
+  animation: fade-up 0.45s ease-out both;
+}
+
+.stagger > * {
+  animation: fade-up 0.45s ease-out both;
+}
+.stagger > *:nth-child(1) { animation-delay: 0.03s; }
+.stagger > *:nth-child(2) { animation-delay: 0.06s; }
+.stagger > *:nth-child(3) { animation-delay: 0.09s; }
+.stagger > *:nth-child(4) { animation-delay: 0.12s; }
+.stagger > *:nth-child(5) { animation-delay: 0.15s; }
+.stagger > *:nth-child(6) { animation-delay: 0.18s; }
+.stagger > *:nth-child(7) { animation-delay: 0.21s; }
+.stagger > *:nth-child(8) { animation-delay: 0.24s; }
+
+/* Casting suite — dense roster stagger (cap delay so 80+ tiles don't crawl) */
+.stagger-cast > * {
+  animation: fade-up 0.32s ease-out both;
+}
+.stagger-cast > *:nth-child(n) { animation-delay: 0.02s; }
+.stagger-cast > *:nth-child(-n+12) { animation-delay: calc(0.018s * var(--i, 1)); }
+
+/* Studio scrollbars — kill Windows chrome, amber rail */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: oklch(0.78 0.14 65 / 0.4) transparent;
+}
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: oklch(0.78 0.14 65 / 0.35);
+  border-radius: 999px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: oklch(0.78 0.14 65 / 0.55);
+}
+*::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Radix ScrollArea: hide native; custom thumb only */
+[data-slot="scroll-area-viewport"] {
+  scrollbar-width: none !important;
+  -ms-overflow-style: none;
+}
+[data-slot="scroll-area-viewport"]::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
+.no-scrollbar {
+  scrollbar-width: none !important;
+  -ms-overflow-style: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
+/* Filmstrips — same language, horizontal */
+.filmstrip-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: oklch(0.78 0.14 65 / 0.4) transparent;
+}
+.filmstrip-scroll::-webkit-scrollbar {
+  height: 4px;
+}
+.filmstrip-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.filmstrip-scroll::-webkit-scrollbar-thumb {
+  background: oklch(0.78 0.14 65 / 0.35);
+  border-radius: 999px;
+}
+.filmstrip-scroll::-webkit-scrollbar-thumb:hover {
+  background: oklch(0.78 0.14 65 / 0.55);
+}
+
+.filmstrip-fade {
+  mask-image: linear-gradient(90deg, transparent, #000 12px, #000 calc(100% - 12px), transparent);
+}
+
+.cast-bay {
+  background:
+    linear-gradient(180deg, oklch(0.11 0.01 280 / 0.55), transparent 120px),
+    transparent;
+}
