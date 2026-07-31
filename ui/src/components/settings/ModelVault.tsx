@@ -113,49 +113,24 @@ export function ModelVault() {
 
   return (
     <>
-      <section className="panel-surface relative overflow-hidden">
-        <div
-          aria-hidden
-          className="pointer-events-none absolute inset-0"
-          style={{
-            background:
-              "radial-gradient(ellipse 70% 80% at 0% 0%, oklch(0.78 0.14 65 / 0.14), transparent 50%), radial-gradient(ellipse 50% 60% at 100% 100%, oklch(0.25 0.03 280 / 0.55), transparent 55%)",
-          }}
-        />
-        <div
-          aria-hidden
-          className="pointer-events-none absolute inset-0 opacity-[0.07]"
-          style={{
-            backgroundImage:
-              "linear-gradient(oklch(0.9 0.02 80 / 0.15) 1px, transparent 1px), linear-gradient(90deg, oklch(0.9 0.02 80 / 0.12) 1px, transparent 1px)",
-            backgroundSize: "28px 28px",
-          }}
-        />
+      <section className="panel-surface overflow-hidden">
+        <header className="border-b border-border/40 px-5 py-4">
+          <h2 className="font-heading text-base tracking-tight">Models</h2>
+          <p className="mt-1 max-w-[64ch] text-xs leading-relaxed text-muted-foreground">
+            Face packs and scene tools AutoScene downloads to your machine. Install everything
+            once and you can forget this page.
+          </p>
+        </header>
 
-        <div className="relative grid gap-0 lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.35fr)]">
-          {/* Charge bay */}
-          <div className="flex flex-col justify-between border-b border-border/40 p-5 lg:border-b-0 lg:border-r lg:p-6">
-            <div>
-              <p className="text-[11px] uppercase tracking-[0.22em] text-muted-foreground">
-                Models
-              </p>
-              <h2 className="font-heading mt-2 text-2xl tracking-tight lg:text-[1.75rem]">
-                Model vault
-              </h2>
-              <p className="mt-2 max-w-[32ch] text-sm leading-relaxed text-muted-foreground">
-                Download face packs and scene tools used for scan and export.
-              </p>
-            </div>
-
-            <div className="mt-8 space-y-4">
+        <div className="grid gap-0 lg:grid-cols-[minmax(0,0.85fr)_minmax(0,1.4fr)]">
+          <div className="flex flex-col justify-between border-b border-border/40 p-5 lg:border-b-0 lg:border-r">
+            <div className="space-y-4">
               {!vault ? (
                 <LoadingBlock
                   label={
-                    vaultError
+                    vaultError || vaultReady
                       ? "Could not load models"
-                      : vaultReady
-                        ? "Could not load models"
-                        : "Loading install status…"
+                      : "Loading install status…"
                   }
                   rows={2}
                 />
@@ -181,7 +156,7 @@ export function ModelVault() {
                       {vault.all_ready ? "Ready" : running ? "Installing" : "Incomplete"}
                     </Badge>
                   </div>
-                  <FilmChargeStrip charge={charge} cells={cells.length || total} />
+                  <Progress value={Math.round(charge * 100)} className="h-1.5" />
                   {running ? (
                     <button
                       type="button"
@@ -244,9 +219,13 @@ export function ModelVault() {
                   }
                 >
                   <Sparkles className="size-4 text-primary" />
-                  Anime models
+                  Anime only
                 </Button>
               </div>
+              <p className="text-[11px] leading-relaxed text-muted-foreground">
+                Install all covers live-action and anime. Downloads run in the background and
+                can take a while.
+              </p>
             </div>
           </div>
 
@@ -265,7 +244,7 @@ export function ModelVault() {
             ) : (
               <div className="space-y-5">
                 <RackBlock
-                  title="Engine"
+                  title="Core tools"
                   icon={<Radio className="size-3.5" />}
                   items={cells.filter((c) => c.family === "runtime")}
                   running={running}
@@ -280,7 +259,7 @@ export function ModelVault() {
                   accent
                 />
                 <RackBlock
-                  title="Live-face models"
+                  title="Live-action models"
                   icon={<Film className="size-3.5" />}
                   items={cells.filter((c) => c.family === "photo")}
                   running={running}
@@ -302,29 +281,6 @@ export function ModelVault() {
         primeMode={primeMode}
       />
     </>
-  )
-}
-
-function FilmChargeStrip({ charge, cells }: { charge: number; cells: number }) {
-  const n = Math.max(6, Math.min(12, cells || 9))
-  const lit = Math.round(charge * n)
-  return (
-    <div className="flex gap-1" aria-hidden>
-      {Array.from({ length: n }).map((_, i) => (
-        <motion.div
-          key={i}
-          initial={{ opacity: 0.3, scaleY: 0.5 }}
-          animate={{
-            opacity: i < lit ? 1 : 0.25,
-            scaleY: 1,
-            backgroundColor:
-              i < lit ? "oklch(0.78 0.14 65 / 0.85)" : "oklch(0.9 0.02 80 / 0.08)",
-          }}
-          transition={{ delay: i * 0.03, type: "spring", stiffness: 280, damping: 24 }}
-          className="h-10 flex-1 rounded-sm origin-bottom"
-        />
-      ))}
-    </div>
   )
 }
 

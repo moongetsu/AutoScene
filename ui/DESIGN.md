@@ -74,7 +74,7 @@ Cast tiles + dossier. Empty: characters appear as faces are found. No backend st
 Reel stage + cast targets rail. Primary CTA = Export merged. End-frame review first-class.
 
 ### Settings
-Device readiness (Graphics), Packs download bay, Content presets (Live-action / Stylized / Anime), advanced knobs in plain language. License note without naming research packs.
+Sectioned like a preferences pane, not one long wall. Left rail (General / Faces / Scan quality / Models / System) shows one section at a time; collapses to horizontal chips under `lg`. Every knob is a row: plain label + one-line "what this does" hint on the left, control on the right, amber dot + per-row Reset when edited. Fine-tuning stays behind the header **Advanced** switch — General and Faces must be usable with it off. Content preset (Live-action / Stylized / Anime) is the one choice that drives the rest. Sticky unsaved-changes bar with Discard + Save. License note without naming research packs.
 
 ## 9. Anti-Patterns (Banned)
 - No emojis, no Inter, no pure black, no neon/outer glows
