@@ -37,8 +37,11 @@ import {
 import { AnimatedSidebarNav } from "@/components/app/AnimatedSidebarNav"
 import { AnimatedSidebarMenuItem } from "@/components/app/ExpandedSidebarNav"
 import { TitleBar } from "@/components/app/TitleBar"
+import { MacMenuBridge } from "@/components/app/MacMenuBridge"
 import { AutoSceneMark } from "@/components/brand/AutoSceneMark"
 import { useProjects } from "@/state/project"
+import { isMacDesktop } from "@/lib/desktop"
+import { cn } from "@/lib/utils"
 import { formatDuration } from "@/lib/api"
 import { friendlyProjectStatus } from "@/lib/plainCopy"
 import { motion } from "motion/react"
@@ -68,12 +71,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     active ??
     (activeId ? projects.find((p) => p.id === activeId) ?? null : null)
   const showActiveBay = Boolean(shellProject) || (hydrating && Boolean(activeId))
+  // macOS uses native window chrome: traffic lights instead of the custom
+  // titlebar, and a native menu bar instead of in-app controls.
+  const mac = isMacDesktop()
 
   return (
     <div className="flex h-[100dvh] max-h-[100dvh] w-full flex-col overflow-hidden bg-background">
-      <TitleBar />
+      {mac ? null : <TitleBar />}
       <SidebarProvider defaultOpen className="min-h-0 flex-1 !h-auto !min-h-0">
         <Sidebar collapsible="icon" variant="inset" className="border-r-0">
+          {/*
+            The sidebar is viewport-fixed at top:0, so with no titlebar the
+            traffic lights land over it. This spacer clears them and doubles as
+            the primary drag handle.
+          */}
+          {mac ? (
+            <div aria-hidden data-tauri-drag-region className="h-7 shrink-0 select-none" />
+          ) : null}
           <SidebarHeader className="border-b border-sidebar-border/60 py-2">
             <SidebarMenu>
               <SidebarMenuItem>
@@ -190,8 +204,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <SidebarRail />
         </Sidebar>
 
+        {mac ? <MacMenuBridge /> : null}
+
         <SidebarInset className="app-shell app-grain relative z-10 dark min-h-0 overflow-hidden">
-          <header className="flex h-11 shrink-0 items-center gap-2.5 border-b border-border/60 bg-background/50 px-3 backdrop-blur-md">
+          {/*
+            data-tauri-drag-region matches per-element on the event target, so
+            the trigger and breadcrumb links below stay clickable.
+          */}
+          <header
+            data-tauri-drag-region={mac ? true : undefined}
+            className={cn(
+              "flex h-11 shrink-0 items-center gap-2.5 border-b border-border/60 bg-background/50 px-3 backdrop-blur-md",
+              mac && "select-none",
+            )}
+          >
             <SidebarTrigger className="-ml-0.5" />
             <SidebarSeparator orientation="vertical" className="mr-0.5 h-4" />
             <Breadcrumb>

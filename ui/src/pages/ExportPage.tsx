@@ -42,6 +42,7 @@ import {
 import { pickMergedVideoPath } from "@/lib/desktop"
 import { buildSharedScenesClient } from "@/lib/scenes"
 import { useProjects } from "@/state/project"
+import { useMenuAction } from "@/state/menu-actions"
 import { friendlyError, sanitizeStage } from "@/lib/plainCopy"
 import { cn } from "@/lib/utils"
 
@@ -305,6 +306,20 @@ export function ExportPage() {
     hasCast &&
     (exportProject?.status === "ready" || exportProject?.status === "exporting")
 
+  // File ▸ Export / Cancel Export. These must be registered above the early
+  // returns below, but the handlers are defined further down — the refs bridge
+  // that gap and are assigned during the same render.
+  const exportMergedRef = useRef<(() => void | Promise<void>) | null>(null)
+  const cancelQueueRef = useRef<(() => void | Promise<void>) | null>(null)
+  useMenuAction(
+    "file:export",
+    exportable ? () => exportMergedRef.current?.() : null,
+  )
+  useMenuAction(
+    "file:cancel-export",
+    exportable && queueActive ? () => cancelQueueRef.current?.() : null,
+  )
+
   if (!projectsReady || (Boolean(activeId) && !exportProject)) {
     return (
       <div className="flex min-h-0 flex-1 flex-col items-center justify-center p-8">
@@ -488,6 +503,10 @@ export function ExportPage() {
       setEnqueueBusy(false)
     }
   }
+
+  // Hand the freshly-closed-over handlers to the menu registrations above.
+  exportMergedRef.current = exportMerged
+  cancelQueueRef.current = cancelQueue
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">

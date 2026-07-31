@@ -24,6 +24,7 @@ import { pickLocalVideoPath } from "@/lib/desktop"
 import { mediaLabel } from "@/lib/format"
 import { resolveDeepfaceModel } from "@/lib/modelFamilies"
 import { useProjects } from "@/state/project"
+import { useMenuAction } from "@/state/menu-actions"
 import { LoadingBlock } from "@/components/shared/LoadingBlock"
 import { friendlyError, friendlyGpuLine, friendlyProjectStatus } from "@/lib/plainCopy"
 import { cn } from "@/lib/utils"
@@ -172,6 +173,9 @@ export function ImportPage() {
     if (!path) return
     await startFromPath(path)
   }, [startFromPath])
+
+  // File ▸ Open Video…
+  useMenuAction("file:open-video", onPickLocalPath)
 
   const onFile = useCallback(
     async (file: File | null) => {

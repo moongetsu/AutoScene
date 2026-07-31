@@ -12,8 +12,9 @@ import { SegmentTimeline } from "@/components/timeline/SegmentTimeline"
 import { VideoPreview } from "@/components/timeline/VideoPreview"
 import { CopyButton } from "@/components/shared/CopyButton"
 import { api, formatDuration } from "@/lib/api"
-import { formatSegmentsForCopy } from "@/lib/clipboard"
+import { copyText, formatSegmentsForCopy } from "@/lib/clipboard"
 import { useProjects } from "@/state/project"
+import { useMenuAction } from "@/state/menu-actions"
 import { cn } from "@/lib/utils"
 
 export function TimelinePage() {
@@ -44,6 +45,19 @@ export function TimelinePage() {
     activeSegment !== null && segments[activeSegment]
       ? segments[activeSegment].start_sec
       : undefined
+
+  // Edit ▸ Copy Timecodes. Must stay above the early return below.
+  useMenuAction(
+    "edit:copy-timecodes",
+    person && segments.length
+      ? () => {
+          void copyText(
+            formatSegmentsForCopy(segments, person.label),
+            "Timecodes copied",
+          )
+        }
+      : null,
+  )
 
   if (!active || active.status !== "ready") {
     if (!projectsReady || (Boolean(activeId) && !active)) {
