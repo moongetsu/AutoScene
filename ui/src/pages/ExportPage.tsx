@@ -52,7 +52,12 @@ type MergedExportResult = {
 }
 
 type ExportMode = "quality" | "lossless" | "copy"
-type VideoCodec = "h264_nvenc" | "hevc_nvenc" | "av1_nvenc"
+type VideoCodec =
+  | "h264_nvenc"
+  | "hevc_nvenc"
+  | "av1_nvenc"
+  | "h264_videotoolbox"
+  | "hevc_videotoolbox"
 
 function safeFilename(label: string) {
   return label.replace(/[<>:"/\\|?*]+/g, "-").trim() || "character"
@@ -93,6 +98,17 @@ export function ExportPage() {
   const [enqueueBusy, setEnqueueBusy] = useState(false)
   const [forceReencode, setForceReencode] = useState(false)
   const [codecCaps, setCodecCaps] = useState<Record<string, boolean>>({})
+  // The UI offers friendly H.264/HEVC labels; the concrete encoder depends on
+  // which hardware family this machine reported.
+  const h264Codec: VideoCodec = codecCaps.h264_videotoolbox
+    ? "h264_videotoolbox"
+    : "h264_nvenc"
+  const hevcCodec: VideoCodec = codecCaps.hevc_videotoolbox
+    ? "hevc_videotoolbox"
+    : "hevc_nvenc"
+  const hwEncoderName = codecCaps.h264_videotoolbox
+    ? "GPU VideoToolbox"
+    : "GPU NVENC"
   const [toggleBusy, setToggleBusy] = useState(false)
   const [queue, setQueue] = useState<ExportQueueSnapshot | null>(null)
   const [exportProgress, setExportProgress] = useState(0)
@@ -165,6 +181,9 @@ export function ExportPage() {
         const caps = await api.exportCapabilities()
         if (cancelled) return
         setCodecCaps(caps.codecs ?? {})
+        // Backend knows which hardware family this machine has (NVENC vs
+        // VideoToolbox); without this the default stays NVENC-only on macOS.
+        if (caps.default_codec) setVideoCodec(caps.default_codec as VideoCodec)
       } catch {
         /* optional */
       }
@@ -416,8 +435,10 @@ export function ExportPage() {
 
     const mode: ExportMode =
       forceReencode && exportMode === "copy" ? "quality" : exportMode
+    // Mirror the backend's prefer_output_path: only NVENC HEVC/AV1 need mkv.
+    // VideoToolbox HEVC stays mp4 (tagged hvc1 so QuickTime plays it).
     const defaultExt =
-      mode === "lossless" || videoCodec !== "h264_nvenc" ? "mkv" : "mp4"
+      videoCodec === "hevc_nvenc" || videoCodec === "av1_nvenc" ? "mkv" : "mp4"
     const defaultName = `${safeFilename(person.label)}_scenes.${defaultExt}`
     const outputPath = await pickMergedVideoPath(defaultName)
     if (!outputPath) return
@@ -652,14 +673,14 @@ export function ExportPage() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem
-                      value="h264_nvenc"
-                      disabled={codecCaps.h264_nvenc === false}
+                      value={h264Codec}
+                      disabled={codecCaps[h264Codec] === false}
                     >
                       H.264
                     </SelectItem>
                     <SelectItem
-                      value="hevc_nvenc"
-                      disabled={codecCaps.hevc_nvenc === false}
+                      value={hevcCodec}
+                      disabled={codecCaps[hevcCodec] === false}
                     >
                       HEVC
                     </SelectItem>
@@ -673,10 +694,10 @@ export function ExportPage() {
                 </Select>
                 <p className="text-[11px] text-muted-foreground">
                   {exportMode === "lossless"
-                    ? "Archive uses GPU NVENC near source bitrate (keeps 10-bit HEVC when useful)."
+                    ? `Archive uses ${hwEncoderName} near source bitrate (keeps 10-bit HEVC when useful).`
                     : exportMode === "copy"
                       ? "Codec unused for stream copy."
-                      : "GPU NVENC only. No CPU encode fallback."}
+                      : `${hwEncoderName} only. No CPU encode fallback.`}
                 </p>
               </div>
             </div>

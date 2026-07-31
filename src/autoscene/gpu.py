@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,11 @@ log = logging.getLogger(__name__)
 
 # Prefer stable cuDNN classic path over frontend heuristics that break SCRFD depthwise convs.
 os.environ.setdefault("CUDA_MODULE_LOADING", "LAZY")
+
+
+def is_darwin() -> bool:
+    """macOS has no onnxruntime-gpu build; acceleration comes from CoreML."""
+    return sys.platform == "darwin"
 
 
 @dataclass
@@ -79,6 +85,8 @@ def _torch_ships_cudnn() -> Path | None:
 
 def ensure_cuda_dll_path() -> list[str]:
     """Add NVIDIA pip wheel DLL dirs to process PATH / add_dll_directory."""
+    if is_darwin():
+        return []
     added: list[str] = []
     torch_cudnn = _torch_ships_cudnn()
     if torch_cudnn is not None:
@@ -150,7 +158,97 @@ def cuda_providers(device_id: int = 0) -> list[tuple[str, dict[str, Any]]]:
     return [("CUDAExecutionProvider", cuda_provider_options(device_id))]
 
 
+def coreml_provider_options() -> dict[str, Any]:
+    """
+    CoreML EP options (Apple Silicon).
+
+    MLProgram + ALL compute units lets the ANE/GPU take what it can. SCRFD runs
+    with dynamic input shapes, so static shapes must stay off or the whole graph
+    is rejected back to CPU.
+    """
+    return {
+        "ModelFormat": "MLProgram",
+        "MLComputeUnits": "ALL",
+        "RequireStaticInputShapes": "0",
+        "EnableOnSubgraphs": "0",
+    }
+
+
+def coreml_providers() -> list[tuple[str, dict[str, Any]]]:
+    """
+    CoreML first, CPU behind it.
+
+    Unlike CUDA this is not GPU-only by design: CoreML EP has partial operator
+    coverage and unsupported nodes need somewhere to land. Dropping CPU here
+    makes model load fail outright instead of running the graph split.
+    """
+    return [
+        ("CoreMLExecutionProvider", coreml_provider_options()),
+        ("CPUExecutionProvider", {}),
+    ]
+
+
+def cpu_providers() -> list[tuple[str, dict[str, Any]]]:
+    return [("CPUExecutionProvider", {})]
+
+
+def accel_providers(device_id: int = 0) -> list[tuple[str, dict[str, Any]]]:
+    """Platform-appropriate provider list: CoreML on macOS, CUDA elsewhere."""
+    if is_darwin():
+        return coreml_providers()
+    return cuda_providers(device_id)
+
+
 def detect_gpu() -> GpuInfo:
+    """Detect a working execution provider for this platform."""
+    if is_darwin():
+        return _detect_darwin()
+    return _detect_cuda()
+
+
+def _detect_darwin() -> GpuInfo:
+    """
+    macOS: prefer CoreML, accept CPU.
+
+    CPU is a legitimate outcome here — unlike the CUDA path, where falling back
+    silently means the user thinks they are on GPU. The provider string reports
+    what actually happened.
+    """
+    name = _apple_chip_name()
+    try:
+        import onnxruntime as ort
+    except Exception as exc:  # noqa: BLE001
+        return GpuInfo(
+            available=False,
+            name=name,
+            provider="",
+            detail=f"onnxruntime unavailable: {exc}",
+        )
+
+    providers = ort.get_available_providers()
+    if "CoreMLExecutionProvider" in providers:
+        ok, detail = _probe_session(coreml_providers(), "CoreMLExecutionProvider")
+        if ok:
+            return GpuInfo(
+                available=True,
+                name=name,
+                provider="CoreMLExecutionProvider",
+                detail=detail,
+            )
+        log.warning("CoreML EP unusable, falling back to CPU: %s", detail)
+
+    ok, detail = _probe_session(cpu_providers(), "CPUExecutionProvider")
+    if ok:
+        return GpuInfo(
+            available=True,
+            name=name,
+            provider="CPUExecutionProvider",
+            detail=f"CoreML unavailable — running on CPU (slower). {detail}",
+        )
+    return GpuInfo(available=False, name=name, provider="", detail=detail)
+
+
+def _detect_cuda() -> GpuInfo:
     """Require working CUDAExecutionProvider. No CPU fallback."""
     ensure_cuda_dll_path()
     name = _nvidia_name()
@@ -189,24 +287,44 @@ def detect_gpu() -> GpuInfo:
     )
 
 
-def require_cuda_providers() -> list[tuple[str, dict[str, Any]]]:
-    """Return GPU-only provider list with options or raise."""
+def require_providers() -> list[tuple[str, dict[str, Any]]]:
+    """Return the platform's provider list with options, or raise."""
     info = detect_gpu()
     if not info.available:
+        if is_darwin():
+            raise RuntimeError(
+                "AutoScene could not create any onnxruntime session on macOS. "
+                f"{info.detail} Chip={info.name or 'unknown'}. "
+                "Install: pip install onnxruntime (not onnxruntime-gpu — it has no macOS build)."
+            )
         raise RuntimeError(
             "AutoScene requires working NVIDIA CUDA via onnxruntime-gpu (CPU disabled). "
             f"{info.detail} GPU={info.name or 'unknown'}. "
             "Install: pip install nvidia-cublas nvidia-cudnn-cu13 nvidia-cuda-runtime "
             "nvidia-cuda-nvrtc nvidia-nvjitlink — plus current NVIDIA drivers."
         )
+    if is_darwin():
+        # Honour what actually probed clean rather than re-offering CoreML.
+        if info.provider == "CPUExecutionProvider":
+            return cpu_providers()
+        return coreml_providers()
     return cuda_providers()
 
 
+# Back-compat alias — Windows/Linux callers still read as "require CUDA".
+def require_cuda_providers() -> list[tuple[str, dict[str, Any]]]:
+    return require_providers()
+
+
 def ort_providers() -> list[tuple[str, dict[str, Any]]]:
-    return require_cuda_providers()
+    return require_providers()
 
 
-def _probe_cuda_session() -> tuple[bool, str]:
+def _probe_session(
+    providers: list[tuple[str, dict[str, Any]]],
+    expected: str,
+) -> tuple[bool, str]:
+    """Build and run a trivial graph to prove the provider really loads."""
     try:
         import numpy as np
         from onnx import TensorProto, helper
@@ -219,15 +337,37 @@ def _probe_cuda_session() -> tuple[bool, str]:
         model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
         sess = ort.InferenceSession(
             model.SerializeToString(),
-            providers=cuda_providers(),
+            providers=providers,
         )
         active = sess.get_providers()
-        if not active or active[0] != "CUDAExecutionProvider":
-            return False, f"Requested CUDA but session providers={active}"
+        if not active or active[0] != expected:
+            return False, f"Requested {expected} but session providers={active}"
         _ = sess.run(None, {"x": np.array([1.0], dtype=np.float32)})
-        return True, "CUDAExecutionProvider session ok (cudnn_conv_algo_search=DEFAULT)"
+        return True, f"{expected} session ok"
     except Exception as exc:  # noqa: BLE001
-        return False, f"CUDA session failed: {exc}"
+        return False, f"{expected} session failed: {exc}"
+
+
+def _probe_cuda_session() -> tuple[bool, str]:
+    ok, detail = _probe_session(cuda_providers(), "CUDAExecutionProvider")
+    if ok:
+        return True, "CUDAExecutionProvider session ok (cudnn_conv_algo_search=DEFAULT)"
+    return ok, detail
+
+
+def _apple_chip_name() -> str | None:
+    try:
+        import subprocess
+
+        out = subprocess.check_output(
+            ["sysctl", "-n", "machdep.cpu.brand_string"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+        return out.strip() or None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _nvidia_name() -> str | None:

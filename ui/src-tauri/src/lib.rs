@@ -80,35 +80,41 @@ fn spawn_backend() -> Option<Child> {
             Some(child)
         }
         Err(err) => {
-            log::warn!("autoscene not on PATH ({err}); trying python -m uvicorn");
-            let (out, err_io) = spawn_stdio();
-            match Command::new("python")
-                .args([
-                    "-m",
-                    "uvicorn",
-                    "autoscene.api:app",
-                    "--host",
-                    API_HOST,
-                    "--port",
-                    &API_PORT.to_string(),
-                ])
-                .stdout(out)
-                .stderr(err_io)
-                .spawn()
-            {
-                Ok(child) => {
-                    log::info!(
-                        "Started python uvicorn (pid {}) — logs {}",
-                        child.id(),
-                        api_log_path().display()
-                    );
-                    Some(child)
-                }
-                Err(e) => {
-                    log::error!("Failed to spawn AutoScene API: {e}");
-                    None
+            log::warn!("autoscene not on PATH ({err}); trying uvicorn directly");
+            // macOS and most Linux distros ship `python3` with no bare `python`
+            // shim, so trying only `python` strands the fallback path.
+            for exe in ["python3", "python"] {
+                let (out, err_io) = spawn_stdio();
+                match Command::new(exe)
+                    .args([
+                        "-m",
+                        "uvicorn",
+                        "autoscene.api:app",
+                        "--host",
+                        API_HOST,
+                        "--port",
+                        &API_PORT.to_string(),
+                    ])
+                    .stdout(out)
+                    .stderr(err_io)
+                    .spawn()
+                {
+                    Ok(child) => {
+                        log::info!(
+                            "Started {} uvicorn (pid {}) — logs {}",
+                            exe,
+                            child.id(),
+                            api_log_path().display()
+                        );
+                        return Some(child);
+                    }
+                    Err(e) => {
+                        log::warn!("Could not spawn {exe}: {e}");
+                    }
                 }
             }
+            log::error!("Failed to spawn AutoScene API (autoscene, python3, python all failed)");
+            None
         }
     }
 }
