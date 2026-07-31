@@ -18,6 +18,8 @@ from autoscene.ffmpeg_encode import (
     audio_encode_args,
     bit_depth,
     container_of,
+    cuda_hwaccel_available,
+    default_video_codec,
     hwaccel_input_args,
     lossless_video_encode_candidates,
     part_suffix_for_container,
@@ -129,8 +131,9 @@ def export_person_segments(
     reencode: bool = False,
     *,
     export_mode: str | None = None,
-    video_codec: VideoCodecPref = "h264_nvenc",
+    video_codec: VideoCodecPref | None = None,
 ) -> list[Path]:
+    video_codec = video_codec or default_video_codec()
     ffmpeg = ensure_ffmpeg()
     out_dir.mkdir(parents=True, exist_ok=True)
     mode = resolve_export_mode(video_path, export_mode=export_mode, reencode=reencode)
@@ -184,9 +187,10 @@ def _extract_segment_clip(
     mode: ExportMode,
     profile: SourceEncodeProfile | None = None,
     container: str = "mp4",
-    video_codec: VideoCodecPref = "h264_nvenc",
+    video_codec: VideoCodecPref | None = None,
     should_cancel: CancelCb | None = None,
 ) -> None:
+    video_codec = video_codec or default_video_codec()
     # Exact segment bounds — do NOT pad. ±0.15s (~3–4 frames @24fps) made
     # every clip look both early and late even when cut detection was correct.
     start = max(0.0, float(seg.start_sec))
@@ -223,8 +227,14 @@ def _extract_segment_clip(
     use_input_seek = mode in {"quality", "lossless"}
     # Zero-copy CUDA→NVENC cannot convert 10-bit→8-bit. Stripping -pix_fmt on
     # Main10 HEVC makes h264_nvenc hang (0% GPU) instead of failing cleanly.
+    # VideoToolbox has no zero-copy decode→encode handoff, so this stays CUDA-only.
     depth = bit_depth(profile)
-    zero_copy = mode in {"quality", "lossless"} and not vf and depth <= 8
+    zero_copy = (
+        mode in {"quality", "lossless"}
+        and not vf
+        and depth <= 8
+        and cuda_hwaccel_available()
+    )
     hw = hwaccel_input_args(zero_copy=zero_copy)
     if use_input_seek:
         base = [
@@ -260,13 +270,18 @@ def _extract_segment_clip(
     candidates = _encode_candidates(
         profile, mode=mode, container=container, video_codec=video_codec
     )
-    # Never silently slip to CPU when NVENC candidates exist.
-    gpu_only = any("nvenc" in enc for _, enc in candidates)
+    # Never silently slip to CPU when a hardware encoder is on offer. The label
+    # carries the encoder name, so match on either hardware family.
+    def _is_hw(label: str) -> bool:
+        return "nvenc" in label or "videotoolbox" in label
+
+    gpu_only = any(_is_hw(enc) for _, enc in candidates)
     if gpu_only:
-        candidates = [(a, e) for a, e in candidates if "nvenc" in e]
+        candidates = [(a, e) for a, e in candidates if _is_hw(e)]
     if not candidates:
         raise RuntimeError(
-            "No GPU (NVENC) encoder available for export. Check ffmpeg NVIDIA build."
+            "No GPU encoder available for export (NVENC or VideoToolbox). "
+            "Check the ffmpeg build."
         )
 
     def _try_candidates(base_cmd: list[str], *, tag: str) -> bool:
@@ -345,9 +360,10 @@ def export_merged_video(
     on_progress: ProgressCb | None = None,
     *,
     export_mode: str | None = None,
-    video_codec: VideoCodecPref = "h264_nvenc",
+    video_codec: VideoCodecPref | None = None,
     should_cancel: CancelCb | None = None,
 ) -> Path:
+    video_codec = video_codec or default_video_codec()
     if not segments:
         raise ValueError("No segments to export")
 

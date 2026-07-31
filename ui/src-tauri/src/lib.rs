@@ -7,6 +7,9 @@ use std::time::Duration;
 
 use tauri::Manager;
 
+#[cfg(target_os = "macos")]
+mod mac_menu;
+
 struct BackendProcess(Mutex<Option<Child>>);
 
 const API_HOST: &str = "127.0.0.1";
@@ -26,7 +29,7 @@ fn probe_api_port() -> bool {
     api_ready()
 }
 
-fn api_log_path() -> std::path::PathBuf {
+pub(crate) fn api_log_path() -> std::path::PathBuf {
     let home = std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
         .map(std::path::PathBuf::from)
@@ -80,35 +83,41 @@ fn spawn_backend() -> Option<Child> {
             Some(child)
         }
         Err(err) => {
-            log::warn!("autoscene not on PATH ({err}); trying python -m uvicorn");
-            let (out, err_io) = spawn_stdio();
-            match Command::new("python")
-                .args([
-                    "-m",
-                    "uvicorn",
-                    "autoscene.api:app",
-                    "--host",
-                    API_HOST,
-                    "--port",
-                    &API_PORT.to_string(),
-                ])
-                .stdout(out)
-                .stderr(err_io)
-                .spawn()
-            {
-                Ok(child) => {
-                    log::info!(
-                        "Started python uvicorn (pid {}) — logs {}",
-                        child.id(),
-                        api_log_path().display()
-                    );
-                    Some(child)
-                }
-                Err(e) => {
-                    log::error!("Failed to spawn AutoScene API: {e}");
-                    None
+            log::warn!("autoscene not on PATH ({err}); trying uvicorn directly");
+            // macOS and most Linux distros ship `python3` with no bare `python`
+            // shim, so trying only `python` strands the fallback path.
+            for exe in ["python3", "python"] {
+                let (out, err_io) = spawn_stdio();
+                match Command::new(exe)
+                    .args([
+                        "-m",
+                        "uvicorn",
+                        "autoscene.api:app",
+                        "--host",
+                        API_HOST,
+                        "--port",
+                        &API_PORT.to_string(),
+                    ])
+                    .stdout(out)
+                    .stderr(err_io)
+                    .spawn()
+                {
+                    Ok(child) => {
+                        log::info!(
+                            "Started {} uvicorn (pid {}) — logs {}",
+                            exe,
+                            child.id(),
+                            api_log_path().display()
+                        );
+                        return Some(child);
+                    }
+                    Err(e) => {
+                        log::warn!("Could not spawn {exe}: {e}");
+                    }
                 }
             }
+            log::error!("Failed to spawn AutoScene API (autoscene, python3, python all failed)");
+            None
         }
     }
 }
@@ -142,10 +151,22 @@ fn stop_backend(app: &tauri::AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    #[allow(unused_mut)]
+    let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![probe_api_port])
+        .invoke_handler(tauri::generate_handler![probe_api_port]);
+
+    // macOS gets a full native menu bar. Windows/Linux keep the custom
+    // frameless chrome and no menu — Tauri only auto-installs one on macOS.
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder
+            .menu(mac_menu::build)
+            .on_menu_event(mac_menu::on_event);
+    }
+
+    builder
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -163,12 +184,17 @@ pub fn run() {
             app.manage(BackendProcess(Mutex::new(child)));
 
             // Hard lock: fixed 1280x800, never maximize / fullscreen.
-            if let Some(win) = app.get_webview_window("main") {
-                let _ = win.set_maximizable(false);
-                let _ = win.set_resizable(false);
-                let _ = win.set_fullscreen(false);
-                if win.is_maximized().unwrap_or(false) {
-                    let _ = win.unmaximize();
+            // macOS is fully resizable and takes its bounds from
+            // tauri.macos.conf.json, so this lock must not run there.
+            #[cfg(not(target_os = "macos"))]
+            {
+                if let Some(win) = app.get_webview_window("main") {
+                    let _ = win.set_maximizable(false);
+                    let _ = win.set_resizable(false);
+                    let _ = win.set_fullscreen(false);
+                    if win.is_maximized().unwrap_or(false) {
+                        let _ = win.unmaximize();
+                    }
                 }
             }
 

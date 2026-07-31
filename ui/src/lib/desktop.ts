@@ -4,6 +4,33 @@ export function isTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window
 }
 
+/**
+ * macOS host. True in a Mac browser too — gate window chrome on isMacDesktop().
+ *
+ * navigator.userAgentData is Chromium-only and absent in macOS WKWebView, so
+ * platform + userAgent is the reliable sync check. Sync matters: the chrome
+ * decision happens during the first render, before any await could resolve.
+ */
+export const isMac: () => boolean = (() => {
+  let cached: boolean | null = null
+  return () => {
+    if (cached !== null) return cached
+    if (typeof navigator === "undefined") return (cached = false)
+    const uaPlatform = (
+      navigator as Navigator & { userAgentData?: { platform?: string } }
+    ).userAgentData?.platform
+    const platform = uaPlatform || navigator.platform || ""
+    cached =
+      /mac/i.test(platform) || /Mac OS X|Macintosh/i.test(navigator.userAgent)
+    return cached
+  }
+})()
+
+/** Tauri desktop app on macOS — the single gate for all native-chrome behaviour. */
+export function isMacDesktop(): boolean {
+  return isTauri() && isMac()
+}
+
 export function apiBase(): string {
   if (isTauri()) return "http://127.0.0.1:8741"
   return ""

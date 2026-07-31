@@ -1,13 +1,17 @@
 """Shot / transition boundary detection for character scene packs.
 
-GPU-only: TransNetV2 on CUDA, then hard-cut photometric snap (±12 frames)
-so instant cuts land on the true frame peak (TransNet alone is often early/late).
+Preferred: TransNetV2 on GPU (CUDA, or MPS on Apple Silicon), then hard-cut
+photometric snap (±12 frames) so instant cuts land on the true frame peak
+(TransNet alone is often early/late).
+Fallback: PySceneDetect ContentDetector on CPU when TransNetV2 is unavailable —
+the `transnet` extra pulls torch, which is not installed by default.
 App path: api._scan_job → run_scene_cuts_phase → detect_shot_spans → detect_cuts_transnet.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import time
 from collections.abc import Callable
@@ -46,7 +50,13 @@ def _shots_from_cuts(cuts: list[float], duration_sec: float) -> list[ShotSpan]:
     return out or [ShotSpan(0.0, duration or 0.01)]
 
 
-def require_torch_cuda() -> str:
+def require_torch_device() -> str:
+    """
+    Resolve the torch device for TransNetV2: cuda, else MPS on Apple Silicon.
+
+    MPS does not implement every op TransNetV2 uses; PYTORCH_ENABLE_MPS_FALLBACK
+    lets the unsupported ones run on CPU instead of aborting the whole pass.
+    """
     from autoscene.gpu import ensure_cuda_dll_path
     from autoscene.models_vault import ensure_torch_dll_path
 
@@ -59,13 +69,30 @@ def require_torch_cuda() -> str:
             "Scene tools are not installed. Open Settings → Packs, install required packs, "
             "then restart AutoScene."
         ) from exc
-    if not torch.cuda.is_available():
-        raise RuntimeError(
-            "Graphics hardware is not ready for scene detection. "
-            "Open Settings → Packs, install the required packs, then restart AutoScene."
+
+    if torch.cuda.is_available():
+        log.info(
+            "scene cuts GPU torch=%s device=%s",
+            torch.__version__,
+            torch.cuda.get_device_name(0),
         )
-    log.info("scene cuts GPU torch=%s device=%s", torch.__version__, torch.cuda.get_device_name(0))
-    return "cuda"
+        return "cuda"
+
+    mps = getattr(torch.backends, "mps", None)
+    if mps is not None and mps.is_available():
+        os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+        log.info("scene cuts torch=%s device=mps", torch.__version__)
+        return "mps"
+
+    raise RuntimeError(
+        "Graphics hardware is not ready for scene detection. "
+        "Open Settings → Packs, install the required packs, then restart AutoScene."
+    )
+
+
+# Back-compat alias
+def require_torch_cuda() -> str:
+    return require_torch_device()
 
 
 def transnet_available() -> bool:
@@ -78,7 +105,8 @@ def transnet_available() -> bool:
 
 
 def adaptive_available() -> bool:
-    return transnet_available()
+    # scenedetect is a core dependency, so the adaptive path always has a detector.
+    return True
 
 
 def _transnet_threshold_for_mode(mode: SceneCutMode, base: float) -> float:
@@ -204,24 +232,26 @@ def transition_boundary_indices(probs: list[float], threshold: float) -> list[in
     return cuts
 
 
-def _assert_model_on_cuda(model: Any) -> None:
-    import torch
-
-    if not torch.cuda.is_available():
-        raise RuntimeError("Graphics not ready for scene detection.")
+def _assert_model_on_device(model: Any, device: str) -> None:
     p = next(model.parameters())
-    if p.device.type != "cuda":
+    if p.device.type != device:
         raise RuntimeError("Scene pack is not on graphics hardware.")
-    if str(getattr(model, "device", "")).startswith("cpu"):
+    if str(getattr(model, "device", "")).startswith("cpu") and device != "cpu":
         raise RuntimeError("Scene pack is not on graphics hardware.")
+
+
+# Back-compat alias
+def _assert_model_on_cuda(model: Any) -> None:
+    _assert_model_on_device(model, "cuda")
 
 
 def _extract_frames_rgb_48x27(
     video_path: Path,
     *,
     on_progress: CutProgressCb | None = None,
+    device: str = "cuda",
 ) -> tuple[Any, float]:
-    """Decode to TransNet 48x27 RGB. Prefer ffmpeg CUDA hwaccel."""
+    """Decode to TransNet 48x27 RGB. Prefer ffmpeg hardware decode."""
     import numpy as np
 
     from autoscene.export import ensure_ffmpeg
@@ -265,7 +295,7 @@ def _extract_frames_rgb_48x27(
                 "frames_done": 0,
                 "frames_total": 0,
                 "cuts_found": 0,
-                "device": "cuda",
+                "device": device,
             }
         )
 
@@ -280,7 +310,7 @@ def _extract_frames_rgb_48x27(
                 "frames_done": 0,
                 "frames_total": 0,
                 "cuts_found": 0,
-                "device": "cuda",
+                "device": device,
             }
         )
 
@@ -305,7 +335,7 @@ def _extract_frames_rgb_48x27(
 
     proc = _run(bool(hw))
     if proc.returncode != 0 and hw:
-        log.warning("CUDA hwaccel extract failed; retry software decode")
+        log.warning("Hardware decode extract failed; retry software decode")
         proc = _run(False)
     if proc.returncode != 0:
         err = (proc.stderr or b"").decode("utf-8", errors="replace")[-500:]
@@ -326,7 +356,7 @@ def _extract_frames_rgb_48x27(
                 "frames_done": 0,
                 "frames_total": n,
                 "cuts_found": 0,
-                "device": "cuda",
+                "device": device,
             }
         )
     return frames, float(fps)
@@ -338,8 +368,8 @@ def detect_cuts_transnet(
     threshold: float = 0.5,
     on_progress: CutProgressCb | None = None,
 ) -> list[float]:
-    """TransNetV2 CUDA-only inference used by the app cut phase."""
-    device = require_torch_cuda()
+    """TransNetV2 GPU inference (CUDA or MPS) used by the app cut phase."""
+    device = require_torch_device()
     if not transnet_available():
         raise RuntimeError(
             "Scene pack is missing. Open Settings → Packs, install required packs, then retry."
@@ -359,43 +389,54 @@ def detect_cuts_transnet(
                 "frames_done": 0,
                 "frames_total": 0,
                 "cuts_found": 0,
-                "device": "cuda",
+                "device": device,
             }
         )
 
-    model = TransNetV2(device=device)
-    model.to(torch.device("cuda"))
-    model.device = torch.device("cuda")
-    model.eval()
-    _assert_model_on_cuda(model)
+    is_cuda = device == "cuda"
+    dev = torch.device(device)
 
-    mem0 = torch.cuda.memory_allocated(0)
+    def _mem() -> int:
+        """Allocated bytes — only CUDA reports this reliably."""
+        return int(torch.cuda.memory_allocated(0)) if is_cuda else 0
+
+    model = TransNetV2(device=device)
+    model.to(dev)
+    model.device = dev
+    model.eval()
+    _assert_model_on_device(model, device)
+
+    mem0 = _mem()
     log.info(
-        "APP TransNetV2 device=%s cuda=%s threshold=%.3f mem0=%s video=%s",
+        "APP TransNetV2 device=%s gpu=%s threshold=%.3f mem0=%s video=%s",
         model.device,
-        torch.cuda.get_device_name(0),
+        torch.cuda.get_device_name(0) if is_cuda else device,
         threshold,
         mem0,
         video_path.name,
     )
 
-    frames_np, fps = _extract_frames_rgb_48x27(video_path, on_progress=on_progress)
+    frames_np, fps = _extract_frames_rgb_48x27(
+        video_path, on_progress=on_progress, device=device
+    )
     n_frames = int(frames_np.shape[0])
     if n_frames < 2:
         return []
 
     # Keep CPU copy for hard-cut photometric snap after inference.
     frames_cpu = np.array(frames_np, copy=True)
-    frames = torch.from_numpy(frames_cpu).to(
-        device=torch.device("cuda"), non_blocking=True
-    )
+    frames = torch.from_numpy(frames_cpu).to(device=dev, non_blocking=True)
     del frames_np
-    if frames.device.type != "cuda":
-        raise RuntimeError(f"Frame tensor on {frames.device}, not cuda")
-    torch.cuda.synchronize()
-    mem1 = torch.cuda.memory_allocated(0)
-    log.info("frames on cuda count=%s mem_alloc=%s (+%s)", n_frames, mem1, mem1 - mem0)
-    if mem1 <= mem0 and n_frames > 100:
+    if frames.device.type != device:
+        raise RuntimeError(f"Frame tensor on {frames.device}, not {device}")
+    if is_cuda:
+        torch.cuda.synchronize()
+    mem1 = _mem()
+    log.info(
+        "frames on %s count=%s mem_alloc=%s (+%s)", device, n_frames, mem1, mem1 - mem0
+    )
+    # Memory accounting is CUDA-only; on MPS this check would false-positive.
+    if is_cuda and mem1 <= mem0 and n_frames > 100:
         raise RuntimeError(
             "CUDA memory did not rise after frame upload — refusing silent CPU path"
         )
@@ -414,8 +455,8 @@ def detect_cuts_transnet(
         + [torch.unsqueeze(frames[-1], 0)] * no_padded_frames_end,
         0,
     )
-    if padded.device.type != "cuda":
-        raise RuntimeError(f"Padded tensor on {padded.device}, not cuda")
+    if padded.device.type != device:
+        raise RuntimeError(f"Padded tensor on {padded.device}, not {device}")
 
     predictions: list[torch.Tensor] = []
     ptr = 0
@@ -428,16 +469,16 @@ def detect_cuts_transnet(
         batch = padded[ptr : ptr + window_size]
         ptr += step_size
         win_i += 1
-        if batch.device.type != "cuda":
-            raise RuntimeError(f"Infer batch on {batch.device}, not cuda")
+        if batch.device.type != device:
+            raise RuntimeError(f"Infer batch on {batch.device}, not {device}")
         with torch.no_grad():
             inp = batch.unsqueeze(0)
-            if inp.device.type != "cuda":
-                raise RuntimeError(f"Infer input on {inp.device}, not cuda")
+            if inp.device.type != device:
+                raise RuntimeError(f"Infer input on {inp.device}, not {device}")
             single_frame_pred, _all_pred = model.predict_raw(inp)
-            if single_frame_pred.device.type != "cuda":
+            if single_frame_pred.device.type != device:
                 raise RuntimeError(
-                    f"Model output on {single_frame_pred.device}, not cuda"
+                    f"Model output on {single_frame_pred.device}, not {device}"
                 )
             chunk = single_frame_pred[0, 25:75, 0].detach().float().cpu()
             predictions.append(chunk.clone())
@@ -463,8 +504,8 @@ def detect_cuts_transnet(
                     "frames_done": done_frames,
                     "frames_total": n_frames,
                     "cuts_found": cuts_found,
-                    "device": "cuda",
-                    "cuda_memory_alloc": int(torch.cuda.memory_allocated(0)),
+                    "device": device,
+                    "cuda_memory_alloc": _mem(),
                 }
             )
 
@@ -493,7 +534,7 @@ def detect_cuts_transnet(
                 "frames_done": n_frames,
                 "frames_total": n_frames,
                 "cuts_found": len(cuts),
-                "device": "cuda",
+                "device": device,
             }
         )
 
@@ -503,7 +544,65 @@ def detect_cuts_transnet(
         moved,
         n_frames,
         model.device,
-        torch.cuda.memory_allocated(0),
+        _mem(),
+        video_path.name,
+    )
+    return cuts
+
+
+def detect_cuts_scenedetect(
+    video_path: Path,
+    *,
+    threshold: float = 27.0,
+    on_progress: CutProgressCb | None = None,
+) -> list[float]:
+    """
+    PySceneDetect ContentDetector — CPU shot boundaries, no torch required.
+
+    Lower recall on dissolves than TransNetV2, but `scenedetect` is already a
+    core dependency, so this works on a stock install where the `transnet`
+    extra (and its torch download) is absent.
+    """
+    from scenedetect import ContentDetector, SceneManager, open_video
+
+    if on_progress:
+        on_progress(
+            {
+                "phase": "extract",
+                "progress": 0.05,
+                "stage": "Scanning scenes (CPU)…",
+                "frames_done": 0,
+                "frames_total": 0,
+                "cuts_found": 0,
+                "device": "cpu",
+            }
+        )
+
+    video = open_video(str(video_path))
+    manager = SceneManager()
+    manager.add_detector(ContentDetector(threshold=float(threshold)))
+    manager.detect_scenes(video, show_progress=False)
+    scenes = manager.get_scene_list()
+
+    # Scene starts after the first are the cut points.
+    cuts = [float(start.get_seconds()) for start, _end in scenes[1:]]
+
+    if on_progress:
+        on_progress(
+            {
+                "phase": "finalize",
+                "progress": 0.96,
+                "stage": f"Finishing · {len(cuts)} scenes",
+                "frames_done": 0,
+                "frames_total": 0,
+                "cuts_found": len(cuts),
+                "device": "cpu",
+            }
+        )
+    log.info(
+        "scenedetect cuts=%s threshold=%.1f video=%s",
+        len(cuts),
+        threshold,
         video_path.name,
     )
     return cuts
@@ -518,8 +617,14 @@ def detect_shot_spans(
     transnet_threshold: float = 0.5,
     on_progress: CutProgressCb | None = None,
 ) -> tuple[list[ShotSpan], str]:
-    """CUDA TransNet propose + hard-cut snap. `adaptive` = softer threshold."""
-    del adaptive_threshold
+    """
+    TransNetV2 propose + hard-cut snap, falling back to PySceneDetect on CPU.
+
+    `adaptive` = softer threshold. The fallback fires when TransNetV2 or a GPU
+    torch device is unavailable, so the scan phase still completes rather than
+    dead-ending the whole import.
+    """
+    del adaptive_threshold  # legacy scale, unused by both detectors
     path = Path(video_path)
     if not path.is_file():
         return [ShotSpan(0.0, max(0.01, float(duration_sec)))], "none"
@@ -530,12 +635,26 @@ def detect_shot_spans(
     thr = _transnet_threshold_for_mode(mode, transnet_threshold)
     try:
         cuts = detect_cuts_transnet(path, threshold=thr, on_progress=on_progress)
+        # Always snap-refined; label so project.json / UI show the real pipeline.
+        used = "transnet-snap-soft" if mode == "adaptive" else "transnet-snap"
+        return _shots_from_cuts(cuts, duration_sec), used
     except Exception as exc:  # noqa: BLE001
-        log.error("GPU scene cut failed: %s", exc)
-        raise
+        if mode == "transnet":
+            # Explicit TransNet request — do not silently swap detectors.
+            log.error("GPU scene cut failed: %s", exc)
+            raise
+        log.warning("TransNetV2 unavailable (%s) — falling back to PySceneDetect", exc)
 
-    # Always snap-refined; label so project.json / UI show the real pipeline.
-    used = "transnet-snap-soft" if mode == "adaptive" else "transnet-snap"
+    # ContentDetector's scale is unrelated to TransNet's 0-1 probability;
+    # 27.0 is its documented default, softened in adaptive mode.
+    sd_thr = 21.0 if mode == "adaptive" else 27.0
+    try:
+        cuts = detect_cuts_scenedetect(path, threshold=sd_thr, on_progress=on_progress)
+    except Exception as exc:  # noqa: BLE001
+        log.error("PySceneDetect scene cut failed: %s", exc)
+        raise RuntimeError(f"Scene cut detection failed: {exc}") from exc
+
+    used = "scenedetect-soft" if mode == "adaptive" else "scenedetect"
     return _shots_from_cuts(cuts, duration_sec), used
 
 

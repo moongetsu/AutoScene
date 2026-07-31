@@ -11,7 +11,9 @@ from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from autoscene.ffmpeg_encode import VIDEO_CODEC_CHOICES, default_video_codec
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from autoscene.config import settings
@@ -240,7 +242,8 @@ class ExportBody(BaseModel):
     person_id: int
     reencode: bool = False
     export_mode: str | None = None  # copy | quality | lossless
-    video_codec: str = "h264_nvenc"  # h264_nvenc | hevc_nvenc | av1_nvenc | auto
+    # nvenc on Windows/Linux, videotoolbox on macOS | auto
+    video_codec: str = Field(default_factory=default_video_codec)
 
 
 class MergedExportBody(BaseModel):
@@ -248,7 +251,7 @@ class MergedExportBody(BaseModel):
     output_path: str
     reencode: bool = False
     export_mode: str | None = None
-    video_codec: str = "h264_nvenc"
+    video_codec: str = Field(default_factory=default_video_codec)
 
 
 class ToggleSegmentBody(BaseModel):
@@ -316,7 +319,7 @@ def export_capabilities() -> dict[str, Any]:
         "codecs": caps,
         "modes": ["quality", "lossless", "copy"],
         "default_mode": "quality",
-        "default_codec": "h264_nvenc",
+        "default_codec": default_video_codec(),
     }
 
 
@@ -894,9 +897,11 @@ def export_merged(project_id: str, body: MergedExportBody) -> dict[str, Any]:
         export_mode=body.export_mode,
         reencode=body.reencode,
     )
-    codec = body.video_codec if body.video_codec in {
-        "h264_nvenc", "hevc_nvenc", "av1_nvenc", "auto",
-    } else "h264_nvenc"
+    codec = (
+        body.video_codec
+        if body.video_codec in VIDEO_CODEC_CHOICES
+        else default_video_codec()
+    )
     if output.suffix.lower() not in {".mp4", ".mov", ".mkv"}:
         output = prefer_output_path(output, mode=mode, codec=codec)  # type: ignore[arg-type]
     if not output.name or output.name in {".", ".."}:

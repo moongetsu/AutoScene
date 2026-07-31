@@ -13,6 +13,7 @@ import json
 import logging
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -21,7 +22,27 @@ from typing import Literal
 log = logging.getLogger(__name__)
 
 ExportMode = Literal["copy", "quality", "lossless"]
-VideoCodecPref = Literal["h264_nvenc", "hevc_nvenc", "av1_nvenc", "auto"]
+VideoCodecPref = Literal[
+    "h264_nvenc",
+    "hevc_nvenc",
+    "av1_nvenc",
+    "h264_videotoolbox",
+    "hevc_videotoolbox",
+    "auto",
+]
+
+_NVENC_CODECS = frozenset({"h264_nvenc", "hevc_nvenc", "av1_nvenc"})
+_VIDEOTOOLBOX_CODECS = frozenset({"h264_videotoolbox", "hevc_videotoolbox"})
+
+# Everything the API will accept for video_codec. Kept here so the whitelist
+# cannot drift from VideoCodecPref.
+VIDEO_CODEC_CHOICES = frozenset(_NVENC_CODECS | _VIDEOTOOLBOX_CODECS | {"auto"})
+
+
+def is_gpu_encoder(enc: str) -> bool:
+    """NVENC and VideoToolbox both count as hardware encode."""
+    return enc in _NVENC_CODECS or enc in _VIDEOTOOLBOX_CODECS
+
 
 _SAFE_AUDIO_COPY = frozenset(
     {"aac", "mp3", "opus", "vorbis", "flac", "pcm_s16le", "pcm_s24le"}
@@ -153,7 +174,7 @@ def _encoder_list() -> str:
 
 
 @lru_cache(maxsize=1)
-def cuda_hwaccel_available() -> bool:
+def _hwaccel_list() -> str:
     ffmpeg = _ffmpeg()
     try:
         proc = subprocess.run(
@@ -163,9 +184,16 @@ def cuda_hwaccel_available() -> bool:
             text=True,
         )
     except OSError:
-        return False
-    text = (proc.stdout or "") + (proc.stderr or "")
-    return "cuda" in text.lower()
+        return ""
+    return (proc.stdout or "") + (proc.stderr or "")
+
+
+def cuda_hwaccel_available() -> bool:
+    return "cuda" in _hwaccel_list().lower()
+
+
+def videotoolbox_hwaccel_available() -> bool:
+    return "videotoolbox" in _hwaccel_list().lower()
 
 
 def nvenc_h264_available() -> bool:
@@ -180,8 +208,26 @@ def nvenc_av1_available() -> bool:
     return "av1_nvenc" in _encoder_list()
 
 
+def videotoolbox_h264_available() -> bool:
+    return "h264_videotoolbox" in _encoder_list()
+
+
+def videotoolbox_hevc_available() -> bool:
+    return "hevc_videotoolbox" in _encoder_list()
+
+
 def ffv1_available() -> bool:
     return "ffv1" in _encoder_list()
+
+
+def encoder_available(enc: str) -> bool:
+    return {
+        "h264_nvenc": nvenc_h264_available,
+        "hevc_nvenc": nvenc_hevc_available,
+        "av1_nvenc": nvenc_av1_available,
+        "h264_videotoolbox": videotoolbox_h264_available,
+        "hevc_videotoolbox": videotoolbox_hevc_available,
+    }.get(enc, lambda: False)()
 
 
 def available_export_codecs() -> dict[str, bool]:
@@ -189,7 +235,10 @@ def available_export_codecs() -> dict[str, bool]:
         "h264_nvenc": nvenc_h264_available(),
         "hevc_nvenc": nvenc_hevc_available(),
         "av1_nvenc": nvenc_av1_available(),
+        "h264_videotoolbox": videotoolbox_h264_available(),
+        "hevc_videotoolbox": videotoolbox_hevc_available(),
         "cuda_hwaccel": cuda_hwaccel_available(),
+        "videotoolbox_hwaccel": videotoolbox_hwaccel_available(),
     }
 
 
@@ -331,25 +380,33 @@ def color_tag_args(profile: SourceEncodeProfile) -> list[str]:
 
 def hwaccel_input_args(*, zero_copy: bool = False) -> list[str]:
     """
-    CUDA decode when available.
+    Hardware decode when available: CUDA, else VideoToolbox on macOS.
+
     zero_copy=True keeps frames on GPU for NVENC (no software filters allowed).
+    VideoToolbox has no equivalent zero-copy handoff to its encoder, so the flag
+    is ignored there and frames round-trip through system memory.
     """
-    if not cuda_hwaccel_available():
-        return []
-    if zero_copy:
-        return ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
-    return ["-hwaccel", "cuda"]
+    if cuda_hwaccel_available():
+        if zero_copy:
+            return ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
+        return ["-hwaccel", "cuda"]
+    if videotoolbox_hwaccel_available():
+        return ["-hwaccel", "videotoolbox"]
+    return []
 
 
 def prefer_output_path(
     output_path: Path,
     *,
     mode: ExportMode,
-    codec: VideoCodecPref = "h264_nvenc",
+    codec: VideoCodecPref | None = None,
 ) -> Path:
     """Fill missing/invalid suffix. Respect explicit .mp4/.mov/.mkv."""
+    codec = codec or default_video_codec()
     if output_path.suffix.lower() in {".mp4", ".mov", ".mkv"}:
         return output_path
+    # VideoToolbox HEVC stays in mp4 — hvc1 tagging keeps it QuickTime-playable,
+    # and mkv is a worse default on macOS.
     if mode in {"quality", "lossless"} and codec in {"hevc_nvenc", "av1_nvenc"}:
         return output_path.with_suffix(".mkv")
     return output_path.with_suffix(".mp4")
@@ -360,12 +417,62 @@ def prefer_lossless_output_path(output_path: Path, *, reencode: bool) -> Path:
     return prefer_output_path(
         output_path,
         mode="lossless" if reencode else "copy",
-        codec="h264_nvenc",
+        codec=default_video_codec(),
     )
 
 
 def _any_nvenc_available() -> bool:
     return nvenc_h264_available() or nvenc_hevc_available() or nvenc_av1_available()
+
+
+def _any_videotoolbox_available() -> bool:
+    return videotoolbox_h264_available() or videotoolbox_hevc_available()
+
+
+def any_gpu_encoder_available() -> bool:
+    return _any_nvenc_available() or _any_videotoolbox_available()
+
+
+def _videotoolbox_args(
+    encoder: str,
+    *,
+    pix: str,
+    color: list[str],
+    container: str = "mp4",
+    quality: int | None = None,
+    bitrate: int | None = None,
+    maxrate: int | None = None,
+) -> list[str]:
+    """
+    VideoToolbox rate control.
+
+    Shares nothing with NVENC: no -cq/-preset/-tune/-rc/-rc-lookahead exist on
+    these encoders. Constant quality is -q:v on a 0-100 scale (Apple Silicon
+    only); otherwise target a bitrate. allow_sw lets the encode complete on
+    machines where the media engine is busy or absent rather than hard-failing.
+    """
+    args = [
+        "-c:v",
+        encoder,
+        "-allow_sw",
+        "1",
+        "-pix_fmt",
+        pix,
+        *color,
+    ]
+    # HEVC in mp4/mov defaults to the hev1 tag, which QuickTime and Finder
+    # preview refuse to play. hvc1 is the same bitstream with a playable tag.
+    if encoder == "hevc_videotoolbox" and container.lower().lstrip(".") in {
+        "mp4",
+        "mov",
+    }:
+        args.extend(["-tag:v", "hvc1"])
+    if bitrate and bitrate > 0:
+        mr = int(maxrate or bitrate)
+        args.extend(["-b:v", str(bitrate), "-maxrate", str(mr), "-bufsize", str(mr * 2)])
+    elif quality is not None:
+        args.extend(["-q:v", str(quality)])
+    return args
 
 
 def _estimate_source_video_bitrate(profile: SourceEncodeProfile) -> int | None:
@@ -441,12 +548,32 @@ def _nvenc_quality_args(
     )
 
 
+def default_video_codec() -> VideoCodecPref:
+    """Platform's preferred hardware encoder (no ffmpeg probe — safe at import)."""
+    return "h264_videotoolbox" if sys.platform == "darwin" else "h264_nvenc"
+
+
+# A settings.json written on Windows can carry an NVENC pref onto a Mac.
+_NVENC_TO_VIDEOTOOLBOX = {
+    "h264_nvenc": "h264_videotoolbox",
+    "hevc_nvenc": "hevc_videotoolbox",
+    "av1_nvenc": "hevc_videotoolbox",  # no AV1 encode on VideoToolbox
+}
+
+
 def _codec_order(pref: VideoCodecPref, profile: SourceEncodeProfile) -> list[str]:
-    auto = (
-        "hevc_nvenc"
-        if (profile.vcodec or "").startswith("hevc")
-        else "h264_nvenc"
-    )
+    is_hevc_src = (profile.vcodec or "").startswith("hevc")
+
+    if sys.platform == "darwin":
+        auto = "hevc_videotoolbox" if is_hevc_src else "h264_videotoolbox"
+        key = auto if pref == "auto" else pref
+        key = _NVENC_TO_VIDEOTOOLBOX.get(key, key)
+        return {
+            "h264_videotoolbox": ["h264_videotoolbox", "hevc_videotoolbox"],
+            "hevc_videotoolbox": ["hevc_videotoolbox", "h264_videotoolbox"],
+        }.get(key, ["h264_videotoolbox", "hevc_videotoolbox"])
+
+    auto = "hevc_nvenc" if is_hevc_src else "h264_nvenc"
     key = auto if pref == "auto" else pref
     return {
         "h264_nvenc": ["h264_nvenc", "hevc_nvenc", "av1_nvenc"],
@@ -504,9 +631,68 @@ def quality_video_encode_candidates(
                     "av1_nvenc-quality",
                 )
             )
+        elif enc == "h264_videotoolbox" and videotoolbox_h264_available():
+            # h264_videotoolbox takes nv12/yuv420p only — no 10-bit path.
+            candidates.append(
+                (
+                    _videotoolbox_args(
+                        "h264_videotoolbox", pix="yuv420p", color=color,
+                        container=c, quality=65
+                    ),
+                    "h264_videotoolbox-quality",
+                )
+            )
+            # -q:v constant quality is Apple Silicon only; bitrate always works.
+            candidates.append(
+                (
+                    _videotoolbox_args(
+                        "h264_videotoolbox",
+                        pix="yuv420p",
+                        color=color,
+                        container=c,
+                        bitrate=_estimate_source_video_bitrate(profile),
+                    ),
+                    "h264_videotoolbox-quality-vbr",
+                )
+            )
+        elif enc == "hevc_videotoolbox" and videotoolbox_hevc_available():
+            if depth >= 10:
+                candidates.append(
+                    (
+                        _videotoolbox_args(
+                            "hevc_videotoolbox",
+                            pix="p010le",
+                            color=color,
+                            container=c,
+                            quality=60,
+                        ),
+                        "hevc_videotoolbox-quality-10",
+                    )
+                )
+            candidates.append(
+                (
+                    _videotoolbox_args(
+                        "hevc_videotoolbox", pix="yuv420p", color=color,
+                        container=c, quality=60
+                    ),
+                    "hevc_videotoolbox-quality",
+                )
+            )
+            candidates.append(
+                (
+                    _videotoolbox_args(
+                        "hevc_videotoolbox",
+                        pix="yuv420p",
+                        color=color,
+                        container=c,
+                        bitrate=_estimate_source_video_bitrate(profile),
+                    ),
+                    "hevc_videotoolbox-quality-vbr",
+                )
+            )
 
-    if not candidates and not _any_nvenc_available():
-        # Last resort only when this machine has zero NVENC.
+    if not candidates and not any_gpu_encoder_available():
+        # Last resort only when this machine has zero hardware encode.
         candidates.append(
             (
                 [
@@ -549,15 +735,19 @@ def lossless_video_encode_candidates(
     color = color_tag_args(profile)
     candidates: list[tuple[list[str], str]] = []
 
-    # Archive on 10-bit HEVC masters: prefer HEVC NVENC so we do not crush to 8-bit H.264.
+    # Archive on 10-bit HEVC masters: prefer HEVC so we do not crush to 8-bit H.264.
     effective: VideoCodecPref = codec
-    if (
-        depth >= 10
-        and (profile.vcodec or "").startswith("hevc")
-        and nvenc_hevc_available()
-        and codec in {"h264_nvenc", "auto"}
-    ):
-        effective = "hevc_nvenc"
+    is_hevc_10bit = depth >= 10 and (profile.vcodec or "").startswith("hevc")
+    if is_hevc_10bit:
+        if nvenc_hevc_available() and codec in {"h264_nvenc", "auto"}:
+            effective = "hevc_nvenc"
+        elif videotoolbox_hevc_available() and codec in {
+            "h264_videotoolbox",
+            "h264_nvenc",
+            "auto",
+        }:
+            # h264_videotoolbox has no 10-bit pixel format at all.
+            effective = "hevc_videotoolbox"
 
     src_br = _estimate_source_video_bitrate(profile)
     # Slight headroom vs source so re-encode does not add banding; hard cap vs balloon.
@@ -629,10 +819,53 @@ def lossless_video_encode_candidates(
                     "av1_nvenc-archive",
                 )
             )
+        elif enc == "hevc_videotoolbox" and videotoolbox_hevc_available():
+            if depth >= 10:
+                candidates.append(
+                    (
+                        _videotoolbox_args(
+                            "hevc_videotoolbox",
+                            pix="p010le",
+                            color=color,
+                        container=c,
+                            bitrate=target,
+                            maxrate=maxrate,
+                        ),
+                        "hevc_videotoolbox-archive-10",
+                    )
+                )
+            candidates.append(
+                (
+                    _videotoolbox_args(
+                        "hevc_videotoolbox",
+                        pix="yuv420p",
+                        color=color,
+                        container=c,
+                        bitrate=target,
+                        maxrate=maxrate,
+                    ),
+                    "hevc_videotoolbox-archive",
+                )
+            )
+        elif enc == "h264_videotoolbox" and videotoolbox_h264_available():
+            candidates.append(
+                (
+                    _videotoolbox_args(
+                        "h264_videotoolbox",
+                        pix="yuv420p",
+                        color=color,
+                        container=c,
+                        bitrate=target,
+                        maxrate=maxrate,
+                    ),
+                    "h264_videotoolbox-archive",
+                )
+            )
 
     if not candidates:
         raise RuntimeError(
-            "Archive export needs NVIDIA NVENC. No GPU encoder found in ffmpeg."
+            "Archive export needs a hardware encoder (NVENC or VideoToolbox). "
+            "None found in ffmpeg."
         )
 
     log.info(

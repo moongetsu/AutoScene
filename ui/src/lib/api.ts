@@ -629,7 +629,13 @@ export const api = {
       output_path: string
       reencode?: boolean
       export_mode?: "copy" | "quality" | "lossless"
-      video_codec?: "h264_nvenc" | "hevc_nvenc" | "av1_nvenc" | "auto"
+      video_codec?:
+        | "h264_nvenc"
+        | "hevc_nvenc"
+        | "av1_nvenc"
+        | "h264_videotoolbox"
+        | "hevc_videotoolbox"
+        | "auto"
     },
   ) =>
     req<{
