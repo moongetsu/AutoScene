@@ -66,20 +66,21 @@ export function CastTeachPanel({ className }: CastTeachPanelProps) {
 
   return (
     <div
-      className={cn(
-        "overflow-hidden rounded-2xl border border-border/50 bg-card/40",
-        className,
-      )}
+      className={cn("panel-surface overflow-hidden", className)}
     >
+      <header className="border-b border-border/40 px-5 py-4">
+        <h2 className="font-heading text-base tracking-tight">Teach names</h2>
+        <p className="mt-1 max-w-[64ch] text-xs leading-relaxed text-muted-foreground">
+          Give AutoScene a photo of a character and it will label them across your scanned
+          footage. Optional — you can also rename characters by hand in Gallery.
+        </p>
+      </header>
       <div className="grid gap-0 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
-        <div className="border-b border-border/40 p-5 lg:border-b-0 lg:border-r lg:p-6">
-          <p className="text-[11px] uppercase tracking-[0.22em] text-muted-foreground">
-            Cast library
-          </p>
-          <h2 className="font-heading mt-2 text-2xl tracking-tight">Teach faces</h2>
-          <p className="mt-2 max-w-[36ch] text-sm leading-relaxed text-muted-foreground">
-            Drop named stills (Ahsoka.png) or pin a photo on a character in Gallery. Updates the
-            character match and scene plates from prior scan data.
+        <div className="border-b border-border/40 p-5 lg:border-b-0 lg:border-r">
+          <p className="max-w-[42ch] text-sm leading-relaxed text-muted-foreground">
+            Name each image file after the character (for example{" "}
+            <span className="font-mono text-xs">Ahsoka.png</span>), or pin a photo to a character
+            from the Gallery dossier.
           </p>
           <div className="mt-4 flex flex-wrap gap-2">
             {animeReady === null ? (
@@ -103,7 +104,7 @@ export function CastTeachPanel({ className }: CastTeachPanelProps) {
           </div>
         </div>
 
-        <div className="flex flex-col justify-center gap-3 p-5 lg:p-6">
+        <div className="flex flex-col justify-center gap-3 p-5">
           <Button
             type="button"
             className="min-h-11 gap-2"
@@ -111,7 +112,7 @@ export function CastTeachPanel({ className }: CastTeachPanelProps) {
             onClick={() => setPackOpen(true)}
           >
             <ImagePlus className="size-4" />
-            Cast photos
+            Add character photos
           </Button>
           <Button
             type="button"
@@ -121,7 +122,7 @@ export function CastTeachPanel({ className }: CastTeachPanelProps) {
             onClick={() => nav("/gallery")}
           >
             <ScanFace className="size-4" />
-            Open gallery dossier
+            Open Gallery
           </Button>
           {animeReady === false ? (
             <Button
@@ -137,13 +138,9 @@ export function CastTeachPanel({ className }: CastTeachPanelProps) {
           ) : null}
           {!ready ? (
             <p className="text-xs text-muted-foreground">
-              Import footage, finish a scan, then teach names here or in Gallery.
+              Available once a project has finished scanning.
             </p>
-          ) : (
-            <p className="text-xs text-muted-foreground">
-              Filename = character name in pack mode. Dossier Teach face pins to the selected person.
-            </p>
-          )}
+          ) : null}
         </div>
       </div>
 

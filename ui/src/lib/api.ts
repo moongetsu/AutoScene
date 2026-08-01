@@ -311,6 +311,25 @@ export type AppSettings = {
   data_dir: string
 }
 
+/** Shipped defaults — used to fill gaps and to power "Reset" in Settings. */
+export const SETTINGS_DEFAULTS = {
+  sample_fps: 12,
+  det_size: 1280,
+  detect_max_edge: 1920,
+  min_face_size: 40,
+  cluster_min_size: 8,
+  cluster_merge_sim: 0.55,
+  prefetch_depth: 8,
+  face_select_mode: "all" as FaceSelectMode,
+  face_relative_pct: 40,
+  face_top_n: 2,
+  default_backend: "insightface",
+  default_model: "buffalo_l",
+  scene_cut_detector: "auto" as SceneCutDetector,
+  scene_cut_adaptive_threshold: 3,
+  scene_cut_transnet_threshold: 0.5,
+} as const
+
 export function normalizeSettings(
   raw: Partial<AppSettings> & { data_dir: string },
 ): AppSettings {
@@ -330,26 +349,28 @@ export function normalizeSettings(
       ? cutRaw
       : "auto"
   return {
-    sample_fps: raw.sample_fps ?? 12,
-    det_size: raw.det_size ?? 1280,
-    detect_max_edge: raw.detect_max_edge ?? 1920,
-    min_face_size: raw.min_face_size ?? 40,
-    cluster_min_size: raw.cluster_min_size ?? 8,
-    cluster_merge_sim: raw.cluster_merge_sim ?? 0.55,
+    sample_fps: raw.sample_fps ?? SETTINGS_DEFAULTS.sample_fps,
+    det_size: raw.det_size ?? SETTINGS_DEFAULTS.det_size,
+    detect_max_edge: raw.detect_max_edge ?? SETTINGS_DEFAULTS.detect_max_edge,
+    min_face_size: raw.min_face_size ?? SETTINGS_DEFAULTS.min_face_size,
+    cluster_min_size: raw.cluster_min_size ?? SETTINGS_DEFAULTS.cluster_min_size,
+    cluster_merge_sim: raw.cluster_merge_sim ?? SETTINGS_DEFAULTS.cluster_merge_sim,
     content_preset,
     content_presets: raw.content_presets,
     animecv_models: raw.animecv_models?.length
       ? raw.animecv_models
       : ANIMECV_MODEL_FALLBACK,
-    prefetch_depth: raw.prefetch_depth ?? 8,
+    prefetch_depth: raw.prefetch_depth ?? SETTINGS_DEFAULTS.prefetch_depth,
     face_select_mode,
-    face_relative_pct: raw.face_relative_pct ?? 40,
-    face_top_n: raw.face_top_n ?? 2,
-    default_backend: raw.default_backend ?? "insightface",
-    default_model: raw.default_model ?? "buffalo_l",
+    face_relative_pct: raw.face_relative_pct ?? SETTINGS_DEFAULTS.face_relative_pct,
+    face_top_n: raw.face_top_n ?? SETTINGS_DEFAULTS.face_top_n,
+    default_backend: raw.default_backend ?? SETTINGS_DEFAULTS.default_backend,
+    default_model: raw.default_model ?? SETTINGS_DEFAULTS.default_model,
     scene_cut_detector,
-    scene_cut_adaptive_threshold: raw.scene_cut_adaptive_threshold ?? 3,
-    scene_cut_transnet_threshold: raw.scene_cut_transnet_threshold ?? 0.5,
+    scene_cut_adaptive_threshold:
+      raw.scene_cut_adaptive_threshold ?? SETTINGS_DEFAULTS.scene_cut_adaptive_threshold,
+    scene_cut_transnet_threshold:
+      raw.scene_cut_transnet_threshold ?? SETTINGS_DEFAULTS.scene_cut_transnet_threshold,
     scene_cut_capabilities: raw.scene_cut_capabilities,
     data_dir: raw.data_dir,
   }

@@ -1,35 +1,39 @@
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { motion } from "motion/react"
 import {
+  Boxes,
   Cpu,
   Gauge,
-  HardDrive,
+  MonitorCog,
   RefreshCw,
+  RotateCcw,
   Save,
   ScanFace,
+  Scissors,
   SlidersHorizontal,
+  Undo2,
 } from "lucide-react"
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
-import { Separator } from "@/components/ui/separator"
-import { Slider } from "@/components/ui/slider"
+import { Switch } from "@/components/ui/switch"
 import { PageHeader } from "@/components/app/PageHeader"
 import { CastTeachPanel } from "@/components/settings/CastTeachPanel"
 import { ModelVault } from "@/components/settings/ModelVault"
+import {
+  ChoiceTiles,
+  InfoRow,
+  NumberControl,
+  SelectControl,
+  SettingRow,
+  SettingsGroup,
+  SliderControl,
+} from "@/components/settings/SettingsPrimitives"
 import { CopyButton } from "@/components/shared/CopyButton"
 import { LoadingBlock } from "@/components/shared/LoadingBlock"
 import {
   CONTENT_PRESET_FALLBACK,
+  SETTINGS_DEFAULTS,
   type AppSettings,
   type ContentPresetId,
   type FaceSelectMode,
@@ -39,48 +43,98 @@ import { useAppSettings } from "@/state/settings"
 import { friendlyBackend, friendlyGpuLine, friendlyModel, friendlyError } from "@/lib/plainCopy"
 import { cn } from "@/lib/utils"
 
+type SectionId = "general" | "faces" | "quality" | "models" | "system"
+
+const SECTIONS: {
+  id: SectionId
+  label: string
+  blurb: string
+  icon: typeof SlidersHorizontal
+}[] = [
+  {
+    id: "general",
+    label: "General",
+    blurb: "What you are scanning",
+    icon: SlidersHorizontal,
+  },
+  { id: "faces", label: "Faces", blurb: "Who gets picked up", icon: ScanFace },
+  { id: "quality", label: "Scan quality", blurb: "Speed vs detail", icon: Gauge },
+  { id: "models", label: "Models", blurb: "Downloads and packs", icon: Boxes },
+  { id: "system", label: "System", blurb: "Device and files", icon: MonitorCog },
+]
+
 const FACE_MODES: {
   id: FaceSelectMode
-  title: string
+  label: string
   blurb: string
 }[] = [
   {
     id: "all",
-    title: "All faces",
-    blurb: "Every detection above min size. Max cast coverage.",
+    label: "Everyone in frame",
+    blurb: "Keeps every face found. Best cast coverage, slowest.",
   },
   {
     id: "largest",
-    title: "Largest only",
-    blurb: "One face per frame. Lead subject focus.",
+    label: "Main subject only",
+    blurb: "One face per frame — the biggest one. Good for interviews.",
   },
   {
     id: "relative",
-    title: "Relative cut",
-    blurb: "Keep faces at least this % of the largest in-frame.",
+    label: "Bigger faces only",
+    blurb: "Skips background faces below a size you choose.",
   },
   {
     id: "top_n",
-    title: "Top N",
-    blurb: "N largest faces. Two-shots and small ensembles.",
+    label: "A few per frame",
+    blurb: "Keeps the largest few faces. Good for two-shots.",
   },
 ]
 
-const PRESET_ACCENT: Record<string, string> = {
-  live_action: "from-primary/15 via-transparent to-transparent",
-  animation: "from-[oklch(0.55_0.08_250/0.18)] via-transparent to-transparent",
-  anime: "from-[oklch(0.65_0.12_25/0.2)] via-transparent to-transparent",
+/** Fields each section owns — drives the per-section "Reset" button. */
+const SECTION_FIELDS: Record<SectionId, (keyof AppSettings)[]> = {
+  general: ["content_preset", "default_backend", "default_model"],
+  faces: ["face_select_mode", "face_relative_pct", "face_top_n"],
+  quality: [
+    "sample_fps",
+    "det_size",
+    "detect_max_edge",
+    "prefetch_depth",
+    "min_face_size",
+    "cluster_min_size",
+    "cluster_merge_sim",
+    "scene_cut_detector",
+    "scene_cut_adaptive_threshold",
+    "scene_cut_transnet_threshold",
+  ],
+  models: [],
+  system: [],
 }
+
+const SAVED_FIELDS = [
+  "sample_fps",
+  "det_size",
+  "detect_max_edge",
+  "prefetch_depth",
+  "min_face_size",
+  "cluster_min_size",
+  "cluster_merge_sim",
+  "content_preset",
+  "default_backend",
+  "default_model",
+  "face_select_mode",
+  "face_relative_pct",
+  "face_top_n",
+  "scene_cut_detector",
+  "scene_cut_adaptive_threshold",
+  "scene_cut_transnet_threshold",
+] as const satisfies readonly (keyof AppSettings)[]
 
 export function SettingsPage() {
   const { gpu, gpuReady, refreshGpu } = useProjects()
-  const {
-    settings,
-    settingsError,
-    refreshSettings,
-    saveSettings,
-  } = useAppSettings()
+  const { settings, settingsError, refreshSettings, saveSettings } = useAppSettings()
   const [draft, setDraft] = useState<AppSettings | null>(null)
+  const [section, setSection] = useState<SectionId>("general")
+  const [advanced, setAdvanced] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const [saving, setSaving] = useState(false)
 
@@ -92,50 +146,63 @@ export function SettingsPage() {
     void refreshSettings()
   }, [refreshSettings])
 
-  const dirty =
-    !!settings &&
-    !!draft &&
-    (settings.sample_fps !== draft.sample_fps ||
-      settings.det_size !== draft.det_size ||
-      settings.detect_max_edge !== draft.detect_max_edge ||
-      settings.prefetch_depth !== draft.prefetch_depth ||
-      settings.min_face_size !== draft.min_face_size ||
-      settings.cluster_min_size !== draft.cluster_min_size ||
-      settings.cluster_merge_sim !== draft.cluster_merge_sim ||
-      settings.content_preset !== draft.content_preset ||
-      settings.default_backend !== draft.default_backend ||
-      settings.default_model !== draft.default_model ||
-      settings.face_select_mode !== draft.face_select_mode ||
-      settings.face_relative_pct !== draft.face_relative_pct ||
-      settings.face_top_n !== draft.face_top_n ||
-      settings.scene_cut_detector !== draft.scene_cut_detector ||
-      settings.scene_cut_adaptive_threshold !== draft.scene_cut_adaptive_threshold ||
-      settings.scene_cut_transnet_threshold !== draft.scene_cut_transnet_threshold)
+  const changed = useMemo(() => {
+    const set = new Set<keyof AppSettings>()
+    if (!settings || !draft) return set
+    for (const key of SAVED_FIELDS) {
+      if (settings[key] !== draft[key]) set.add(key)
+    }
+    return set
+  }, [settings, draft])
+
+  const dirty = changed.size > 0
+
+  const patch = (next: Partial<AppSettings>) =>
+    setDraft((d) => (d ? { ...d, ...next } : d))
+
+  const resetField = (key: keyof typeof SETTINGS_DEFAULTS) =>
+    patch({ [key]: SETTINGS_DEFAULTS[key] } as Partial<AppSettings>)
+
+  const resetSection = (id: SectionId) => {
+    if (!draft) return
+    const next: Partial<AppSettings> = {}
+    for (const key of SECTION_FIELDS[id]) {
+      if (key in SETTINGS_DEFAULTS) {
+        Object.assign(next, {
+          [key]: SETTINGS_DEFAULTS[key as keyof typeof SETTINGS_DEFAULTS],
+        })
+      }
+    }
+    if (id === "general") {
+      // Back to the shipped footage type, knobs included.
+      const presets = draft.content_presets?.length
+        ? draft.content_presets
+        : CONTENT_PRESET_FALLBACK
+      const base = presets.find((p) => p.id === "live_action") ?? presets[0]
+      if (base) {
+        next.content_preset = base.id
+        next.cluster_merge_sim = base.cluster_merge_sim
+        next.cluster_min_size = base.cluster_min_size
+        next.min_face_size = base.min_face_size
+        next.det_size = base.det_size
+        next.default_backend = base.default_backend || draft.default_backend
+        next.default_model = base.default_model || draft.default_model
+      }
+    }
+    patch(next)
+  }
 
   const save = async () => {
     if (!draft) return
     setSaving(true)
     try {
-      const next = await saveSettings({
-        sample_fps: draft.sample_fps,
-        det_size: draft.det_size,
-        detect_max_edge: draft.detect_max_edge,
-        prefetch_depth: draft.prefetch_depth,
-        min_face_size: draft.min_face_size,
-        cluster_min_size: draft.cluster_min_size,
-        cluster_merge_sim: draft.cluster_merge_sim,
-        content_preset: draft.content_preset,
-        default_backend: draft.default_backend,
-        default_model: draft.default_model,
-        face_select_mode: draft.face_select_mode,
-        face_relative_pct: draft.face_relative_pct,
-        face_top_n: draft.face_top_n,
-        scene_cut_detector: draft.scene_cut_detector,
-        scene_cut_adaptive_threshold: draft.scene_cut_adaptive_threshold,
-        scene_cut_transnet_threshold: draft.scene_cut_transnet_threshold,
-      })
+      const next = await saveSettings(
+        Object.fromEntries(SAVED_FIELDS.map((k) => [k, draft[k]])) as Parameters<
+          typeof saveSettings
+        >[0],
+      )
       setDraft(next)
-      toast.success("Settings saved. New scans use these from the next start.")
+      toast.success("Settings saved. Your next scan uses them.")
     } catch (e) {
       toast.error(friendlyError(e))
     } finally {
@@ -143,607 +210,706 @@ export function SettingsPage() {
     }
   }
 
+  const sectionDirty = (id: SectionId) =>
+    SECTION_FIELDS[id].some((k) => changed.has(k))
+
+  const current = SECTIONS.find((s) => s.id === section)!
+
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-auto">
       <PageHeader
         eyebrow="Settings"
         title="Settings"
-        description="Install models, pick a content preset, and tune scan options. Changes apply on the next scan."
+        description="Pick what you are scanning, then leave the rest alone. Changes apply to your next scan."
         actions={
-          <Button size="sm" disabled={!dirty || saving || !draft} onClick={() => void save()}>
-            <Save className="size-3.5" />
-            {saving ? "Saving…" : dirty ? "Save" : "Saved"}
-          </Button>
+          <>
+            <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-border/45 bg-background/40 px-3 py-1.5">
+              <Switch
+                id="advanced-mode"
+                checked={advanced}
+                onCheckedChange={setAdvanced}
+              />
+              <span className="text-xs text-muted-foreground">Advanced</span>
+            </label>
+            <Button size="sm" disabled={!dirty || saving || !draft} onClick={() => void save()}>
+              <Save className="size-3.5" />
+              {saving ? "Saving…" : dirty ? `Save ${changed.size}` : "Saved"}
+            </Button>
+          </>
         }
       />
 
-      <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 p-5 lg:gap-8 lg:p-8">
-        {/* Signal + Armory */}
-        <div className="grid gap-4 lg:grid-cols-12 lg:gap-5">
-          <motion.section
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ type: "spring", stiffness: 260, damping: 28 }}
-            className="panel-surface relative overflow-hidden lg:col-span-4"
-          >
-            <div
-              aria-hidden
-              className="pointer-events-none absolute inset-0 bg-gradient-to-br from-primary/10 via-transparent to-transparent"
-            />
-            <div className="relative flex h-full flex-col justify-between p-5">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="text-[11px] uppercase tracking-[0.2em] text-muted-foreground">
-                    Device
-                  </p>
-                  <h2 className="font-heading mt-1 flex items-center gap-2 text-xl tracking-tight">
-                    <Cpu className="size-4 text-primary" />
-                    Graphics
-                  </h2>
-                </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={refreshing}
-                  className="min-h-9"
-                  onClick={async () => {
-                    setRefreshing(true)
-                    try {
-                      await refreshGpu()
-                    } finally {
-                      setRefreshing(false)
-                    }
-                  }}
-                >
-                  <RefreshCw className={`size-3.5 ${refreshing ? "animate-spin" : ""}`} />
-                  Refresh
-                </Button>
-              </div>
-              {gpuReady && gpu ? (
-                <div className="mt-6 space-y-3">
-                  <Badge variant={gpu.available ? "default" : "secondary"}>
-                    {gpu.available ? "Graphics ready" : "Graphics unavailable"}
-                  </Badge>
-                  <p className="text-sm font-medium leading-snug">
-                    {friendlyGpuLine(gpu.available, gpu.name, gpu.detail)}
-                  </p>
-                </div>
-              ) : (
-                <div className="mt-6">
-                  <LoadingBlock label="Loading graphics status…" rows={3} />
-                </div>
-              )}
+      <div className="mx-auto flex w-full max-w-6xl flex-col gap-5 p-5 lg:flex-row lg:gap-8 lg:p-8">
+        {/* Section rail — horizontal chips on small screens */}
+        <nav
+          aria-label="Settings sections"
+          className="-mx-1 flex shrink-0 gap-1.5 overflow-x-auto px-1 pb-1 lg:sticky lg:top-4 lg:mx-0 lg:w-56 lg:flex-col lg:self-start lg:overflow-visible lg:px-0"
+        >
+          {SECTIONS.map((s) => {
+            const Icon = s.icon
+            const active = s.id === section
+            return (
+              <button
+                key={s.id}
+                type="button"
+                aria-current={active ? "page" : undefined}
+                onClick={() => setSection(s.id)}
+                className={cn(
+                  "group flex shrink-0 items-center gap-2.5 rounded-xl border px-3 py-2 text-left transition lg:w-full lg:py-2.5",
+                  active
+                    ? "border-primary/45 bg-primary/[0.07] text-foreground"
+                    : "border-transparent text-muted-foreground hover:border-border/50 hover:bg-card/50 hover:text-foreground",
+                )}
+              >
+                <Icon className={cn("size-4 shrink-0", active && "text-primary")} />
+                <span className="min-w-0">
+                  <span className="block whitespace-nowrap text-sm font-medium">
+                    {s.label}
+                  </span>
+                  <span className="hidden text-[11px] leading-tight text-muted-foreground lg:block">
+                    {s.blurb}
+                  </span>
+                </span>
+                {sectionDirty(s.id) ? (
+                  <span
+                    aria-label="Unsaved changes"
+                    className="ml-auto size-1.5 shrink-0 rounded-full bg-primary"
+                  />
+                ) : null}
+              </button>
+            )
+          })}
+        </nav>
+
+        <motion.div
+          key={section}
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ type: "spring", stiffness: 260, damping: 28 }}
+          className="flex min-w-0 flex-1 flex-col gap-5"
+        >
+          {section !== "models" && SECTION_FIELDS[section].length > 0 ? (
+            <div className="flex items-center justify-between gap-3 px-0.5">
+              <p className="text-[11px] uppercase tracking-[0.2em] text-muted-foreground">
+                {current.label}
+              </p>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="text-muted-foreground"
+                disabled={!draft}
+                onClick={() => resetSection(section)}
+              >
+                <RotateCcw className="size-3" />
+                Reset this page
+              </Button>
             </div>
-          </motion.section>
+          ) : null}
 
-          <motion.div
-            initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.05, type: "spring", stiffness: 260, damping: 28 }}
-            className="lg:col-span-8"
-          >
-            <ModelVault />
-          </motion.div>
-        </div>
+          {section === "general" ? (
+            <GeneralSection
+              draft={draft}
+              settings={settings}
+              settingsError={settingsError}
+              changed={changed}
+              patch={patch}
+            />
+          ) : null}
 
+          {section === "faces" ? (
+            <FacesSection
+              draft={draft}
+              changed={changed}
+              patch={patch}
+              resetField={resetField}
+            />
+          ) : null}
+
+          {section === "quality" ? (
+            <QualitySection
+              draft={draft}
+              advanced={advanced}
+              changed={changed}
+              patch={patch}
+              resetField={resetField}
+              onShowAdvanced={() => setAdvanced(true)}
+            />
+          ) : null}
+
+          {section === "models" ? <ModelVault /> : null}
+
+          {section === "system" ? (
+            <SystemSection
+              settings={settings}
+              gpu={gpu}
+              gpuReady={gpuReady}
+              refreshing={refreshing}
+              onRefresh={async () => {
+                setRefreshing(true)
+                try {
+                  await refreshGpu()
+                } finally {
+                  setRefreshing(false)
+                }
+              }}
+            />
+          ) : null}
+        </motion.div>
+      </div>
+
+      {dirty ? (
         <motion.div
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.08, type: "spring", stiffness: 260, damping: 28 }}
+          className="sticky bottom-4 z-10 mx-auto mb-4 flex w-[min(28rem,calc(100%-2.5rem))] items-center justify-between gap-3 rounded-2xl border border-primary/35 bg-[oklch(0.12_0.02_280/0.92)] px-4 py-3 shadow-lg backdrop-blur-md"
         >
-          <CastTeachPanel />
-        </motion.div>
-
-        {/* Footage language */}
-        <section className="space-y-3">
-          <div className="flex items-end justify-between gap-3 px-0.5">
-            <div>
-              <p className="text-[11px] uppercase tracking-[0.2em] text-muted-foreground">
-                Content
-              </p>
-              <h2 className="font-heading mt-1 text-xl tracking-tight">Content preset</h2>
-            </div>
-            {!draft?.content_preset ? (
-              <Badge variant="secondary" className="text-amber-400/90">
-                Custom
-              </Badge>
-            ) : null}
-          </div>
-          {draft ? (
-            <div className="grid gap-3 md:grid-cols-3">
-              {(draft.content_presets?.length
-                ? draft.content_presets
-                : CONTENT_PRESET_FALLBACK
-              ).map((preset, i) => {
-                const active = draft.content_preset === preset.id
-                return (
-                  <motion.button
-                    key={preset.id}
-                    type="button"
-                    initial={{ opacity: 0, y: 8 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0.04 * i }}
-                    onClick={() => {
-                      const id = preset.id as Exclude<ContentPresetId, "">
-                      setDraft({
-                        ...draft,
-                        content_preset: id,
-                        cluster_merge_sim: preset.cluster_merge_sim,
-                        cluster_min_size: preset.cluster_min_size,
-                        min_face_size: preset.min_face_size,
-                        det_size: preset.det_size,
-                        default_backend: preset.default_backend || draft.default_backend,
-                        default_model: preset.default_model || draft.default_model,
-                      })
-                    }}
-                    className={cn(
-                      "relative overflow-hidden rounded-2xl border px-4 py-4 text-left transition",
-                      active
-                        ? "border-primary/50 bg-card/80 shadow-[0_0_0_1px_oklch(0.78_0.14_65/0.25)]"
-                        : "border-border/40 bg-card/40 hover:border-border hover:bg-card/60",
-                      i === 1 && "md:translate-y-2",
-                    )}
-                  >
-                    <div
-                      aria-hidden
-                      className={cn(
-                        "pointer-events-none absolute inset-0 bg-gradient-to-br",
-                        PRESET_ACCENT[preset.id] || PRESET_ACCENT.live_action,
-                      )}
-                    />
-                    <div className="relative">
-                      <div className="flex items-center justify-between gap-2">
-                        <p className="font-heading text-base tracking-tight">{preset.label}</p>
-                        {active ? (
-                          <Badge variant="secondary" className="border-primary/30 text-primary">
-                            Active
-                          </Badge>
-                        ) : null}
-                      </div>
-                      <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-                        {preset.blurb}
-                      </p>
-                      <p className="timecode mt-3 text-[11px] tabular-nums text-muted-foreground">
-                        {friendlyBackend(preset.default_backend)} ·{" "}
-                        {friendlyModel(preset.default_backend, preset.default_model)}
-                      </p>
-                    </div>
-                  </motion.button>
-                )
-              })}
-            </div>
-          ) : (
-            <div className="panel-surface px-5 py-5">
-              <LoadingBlock
-                label={
-                  settingsError
-                    ? "Could not load presets — is AutoScene running?"
-                    : "Loading presets…"
-                }
-                rows={3}
-                dense
-              />
-            </div>
-          )}
-        </section>
-
-        {/* Face + Throughput deck */}
-        <div className="grid gap-5 lg:grid-cols-12">
-          <section className="panel-surface p-5 lg:col-span-5">
-            <div className="mb-4 flex items-center gap-2">
-              <ScanFace className="size-4 text-primary" />
-              <h2 className="font-heading text-lg tracking-tight">Face detection</h2>
-            </div>
-            {draft ? (
-              <div className="space-y-3">
-                <div className="grid grid-cols-2 gap-2">
-                  {FACE_MODES.map((mode) => {
-                    const active = draft.face_select_mode === mode.id
-                    return (
-                      <button
-                        key={mode.id}
-                        type="button"
-                        onClick={() => setDraft({ ...draft, face_select_mode: mode.id })}
-                        className={cn(
-                          "min-h-[5.5rem] rounded-xl border px-3 py-3 text-left transition",
-                          active
-                            ? "border-primary/45 bg-primary/5"
-                            : "border-border/40 bg-background/30 hover:border-border",
-                        )}
-                      >
-                        <p className="text-sm font-medium">{mode.title}</p>
-                        <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
-                          {mode.blurb}
-                        </p>
-                      </button>
-                    )
-                  })}
-                </div>
-                {draft.face_select_mode === "relative" ? (
-                  <div className="space-y-3 border-t border-border/35 pt-4">
-                    <div className="flex items-end justify-between">
-                      <Label htmlFor="relative-pct">Vs largest</Label>
-                      <span className="timecode text-sm text-primary">
-                        {Math.round(draft.face_relative_pct)}%
-                      </span>
-                    </div>
-                    <Slider
-                      id="relative-pct"
-                      min={1}
-                      max={100}
-                      step={1}
-                      value={[Math.round(draft.face_relative_pct)]}
-                      onValueChange={(v) => {
-                        const n = Array.isArray(v) ? v[0] : v
-                        if (typeof n === "number") {
-                          setDraft({ ...draft, face_relative_pct: n })
-                        }
-                      }}
-                    />
-                  </div>
-                ) : null}
-                {draft.face_select_mode === "top_n" ? (
-                  <div className="space-y-2 border-t border-border/35 pt-4">
-                    <Label htmlFor="top-n">Keep N</Label>
-                    <Input
-                      id="top-n"
-                      type="number"
-                      min={1}
-                      max={12}
-                      className="max-w-[8rem] bg-background/50"
-                      value={draft.face_top_n}
-                      onChange={(e) =>
-                        setDraft({
-                          ...draft,
-                          face_top_n: Math.max(1, Math.min(12, Number(e.target.value) || 1)),
-                        })
-                      }
-                    />
-                  </div>
-                ) : null}
-              </div>
-            ) : (
-              <LoadingBlock label="Loading face options…" rows={4} dense />
-            )}
-          </section>
-
-          <section className="panel-surface p-5 lg:col-span-7">
-            <div className="mb-4 flex items-center gap-2">
-              <Gauge className="size-4 text-primary" />
-              <h2 className="font-heading text-lg tracking-tight">Scan options</h2>
-            </div>
-            {draft ? (
-              <div className="space-y-5">
-                <KnobSlider
-                  id="sample-fps"
-                  label="Sample FPS"
-                  value={Math.round(draft.sample_fps)}
-                  display={draft.sample_fps.toFixed(0)}
-                  min={1}
-                  max={60}
-                  marks={["1 light", "12 default", "60 max"]}
-                  onChange={(n) => setDraft({ ...draft, sample_fps: n })}
-                />
-                <KnobSlider
-                  id="prefetch"
-                  label="Decode prefetch"
-                  value={draft.prefetch_depth}
-                  display={String(draft.prefetch_depth)}
-                  min={1}
-                  max={32}
-                  onChange={(n) => setDraft({ ...draft, prefetch_depth: n })}
-                />
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <FieldSelect
-                    label="Detection size"
-                    value={String(draft.det_size)}
-                    onChange={(v) =>
-                      setDraft({ ...draft, content_preset: "", det_size: Number(v) })
-                    }
-                    options={[
-                      { v: "640", t: "640 · faster" },
-                      { v: "960", t: "960 · balanced" },
-                      { v: "1280", t: "1280 · quality" },
-                    ]}
-                  />
-                  <FieldSelect
-                    label="Detect max edge"
-                    value={String(draft.detect_max_edge)}
-                    onChange={(v) => setDraft({ ...draft, detect_max_edge: Number(v) })}
-                    options={[
-                      { v: "1280", t: "1280 · fast 4K" },
-                      { v: "1920", t: "1920 · default" },
-                      { v: "2560", t: "2560 · sharper" },
-                      { v: "0", t: "0 · native" },
-                    ]}
-                  />
-                </div>
-                <div className="grid gap-3 sm:grid-cols-3">
-                  <NumField
-                    id="min-face"
-                    label="Min face px"
-                    value={draft.min_face_size}
-                    min={16}
-                    max={256}
-                    onChange={(n) =>
-                      setDraft({ ...draft, content_preset: "", min_face_size: n })
-                    }
-                  />
-                  <NumField
-                    id="cluster-min"
-                    label="Min group size"
-                    value={draft.cluster_min_size}
-                    min={2}
-                    max={64}
-                    onChange={(n) =>
-                      setDraft({ ...draft, content_preset: "", cluster_min_size: n })
-                    }
-                  />
-                  <NumField
-                    id="cluster-merge"
-                    label="Group merge"
-                    value={draft.cluster_merge_sim}
-                    min={0.25}
-                    max={0.9}
-                    step={0.01}
-                    onChange={(n) =>
-                      setDraft({ ...draft, content_preset: "", cluster_merge_sim: n })
-                    }
-                  />
-                </div>
-                <p className="text-[11px] leading-relaxed text-muted-foreground">
-                  Detect max edge shrinks frames before the model. Live face preview still crops
-                  native source pixels.
-                </p>
-
-                <div className="border-t border-border/40 pt-5">
-                  <h3 className="font-heading text-base tracking-tight">Scene breaks</h3>
-                  <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
-                    TransNet finds breaks, then a hard-cut snap locks each boundary to the true
-                    frame peak (fixes early/late instant cuts). Soft fades uses a gentler
-                    threshold for dissolves.
-                  </p>
-                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                    <FieldSelect
-                      label="Mode"
-                      value={draft.scene_cut_detector}
-                      onChange={(v) =>
-                        setDraft({
-                          ...draft,
-                          scene_cut_detector: v as typeof draft.scene_cut_detector,
-                        })
-                      }
-                      options={[
-                        { v: "auto", t: "Auto" },
-                        { v: "transnet", t: "Precise" },
-                        {
-                          v: "adaptive",
-                          t: draft.scene_cut_capabilities?.transnet
-                            ? "Soft fades"
-                            : "Soft fades · install scene tool",
-                        },
-                      ]}
-                    />
-                    <div className="rounded-lg border border-border/40 bg-background/40 px-3 py-2 text-[11px] text-muted-foreground">
-                      <p>Requires graphics acceleration</p>
-                      <p className="mt-0.5">
-                        Scene tool:{" "}
-                        {draft.scene_cut_capabilities?.transnet
-                          ? "ready"
-                          : "Settings → Model vault"}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                    <NumField
-                      id="cut-adaptive"
-                      label="Soft fade sensitivity"
-                      value={draft.scene_cut_adaptive_threshold}
-                      min={1}
-                      max={10}
-                      step={0.1}
-                      onChange={(n) =>
-                        setDraft({ ...draft, scene_cut_adaptive_threshold: n })
-                      }
-                    />
-                    <NumField
-                      id="cut-transnet"
-                      label="Precise sensitivity"
-                      value={draft.scene_cut_transnet_threshold}
-                      min={0.1}
-                      max={0.95}
-                      step={0.05}
-                      onChange={(n) =>
-                        setDraft({ ...draft, scene_cut_transnet_threshold: n })
-                      }
-                    />
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <LoadingBlock label="Loading scan options…" rows={5} dense />
-            )}
-          </section>
-        </div>
-
-        {/* Paths */}
-        <section className="panel-surface overflow-hidden">
-          <div className="grid gap-0 md:grid-cols-[1fr_1.4fr]">
-            <div className="border-b border-border/40 p-5 md:border-b-0 md:border-r">
-              <div className="mb-3 flex items-center gap-2">
-                <SlidersHorizontal className="size-4 text-primary" />
-                <h2 className="font-heading text-lg tracking-tight">Active defaults</h2>
-              </div>
-              {settings ? (
-                <dl className="grid grid-cols-2 gap-2 text-sm">
-                  <Row k="Footage type" v={friendlyBackend(settings.default_backend)} />
-                  <Row k="Quality pack" v={friendlyModel(settings.default_backend, settings.default_model)} />
-                </dl>
-              ) : (
-                <p className="text-sm text-muted-foreground">…</p>
-              )}
-            </div>
-            <div className="p-5">
-              <div className="mb-3 flex items-center gap-2">
-                <HardDrive className="size-4 text-primary" />
-                <h2 className="font-heading text-lg tracking-tight">Workspace</h2>
-              </div>
-              {settings ? (
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div className="min-w-0 flex-1">
-                    <p className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
-                      Data directory
-                    </p>
-                    <p className="mt-1 break-all font-mono text-xs leading-relaxed">
-                      {settings.data_dir}
-                    </p>
-                  </div>
-                  <CopyButton text={settings.data_dir} label="Copy" toastLabel="Data path copied" />
-                </div>
-              ) : null}
-              <Separator className="my-4" />
-              <p className="text-[11px] leading-relaxed text-muted-foreground">
-                Some face packs need a commercial license for shipping products. Check your
-                rights before release.
-              </p>
-            </div>
-          </div>
-        </section>
-
-        {dirty ? (
-          <motion.div
-            initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="sticky bottom-4 z-10 mx-auto flex w-full max-w-md items-center justify-between gap-3 rounded-2xl border border-primary/35 bg-[oklch(0.12_0.02_280/0.92)] px-4 py-3 shadow-lg backdrop-blur-md"
-          >
-            <p className="text-xs text-muted-foreground">Unsaved changes</p>
+          <p className="text-xs text-muted-foreground">
+            {changed.size} unsaved {changed.size === 1 ? "change" : "changes"}
+          </p>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={saving}
+              onClick={() => settings && setDraft(settings)}
+            >
+              <Undo2 className="size-3.5" />
+              Discard
+            </Button>
             <Button size="sm" disabled={saving} onClick={() => void save()}>
               <Save className="size-3.5" />
               {saving ? "Saving…" : "Save"}
             </Button>
-          </motion.div>
-        ) : null}
-      </div>
-    </div>
-  )
-}
-
-function KnobSlider({
-  id,
-  label,
-  value,
-  display,
-  min,
-  max,
-  marks,
-  onChange,
-}: {
-  id: string
-  label: string
-  value: number
-  display: string
-  min: number
-  max: number
-  marks?: string[]
-  onChange: (n: number) => void
-}) {
-  return (
-    <div className="space-y-2">
-      <div className="flex items-end justify-between gap-3">
-        <Label htmlFor={id}>{label}</Label>
-        <span className="timecode text-sm tabular-nums text-primary">{display}</span>
-      </div>
-      <Slider
-        id={id}
-        min={min}
-        max={max}
-        step={1}
-        value={[value]}
-        onValueChange={(v) => {
-          const n = Array.isArray(v) ? v[0] : v
-          if (typeof n === "number") onChange(n)
-        }}
-      />
-      {marks ? (
-        <div className="flex justify-between text-[10px] uppercase tracking-wider text-muted-foreground">
-          {marks.map((m) => (
-            <span key={m}>{m}</span>
-          ))}
-        </div>
+          </div>
+        </motion.div>
       ) : null}
     </div>
   )
 }
 
-function FieldSelect({
-  label,
-  value,
-  onChange,
-  options,
+function GeneralSection({
+  draft,
+  settings,
+  settingsError,
+  changed,
+  patch,
 }: {
-  label: string
-  value: string
-  onChange: (v: string) => void
-  options: { v: string; t: string }[]
+  draft: AppSettings | null
+  settings: AppSettings | null
+  settingsError: string | null
+  changed: Set<keyof AppSettings>
+  patch: (next: Partial<AppSettings>) => void
 }) {
+  const presets = draft?.content_presets?.length
+    ? draft.content_presets
+    : CONTENT_PRESET_FALLBACK
+
   return (
-    <div className="space-y-2">
-      <Label>{label}</Label>
-      <Select value={value} onValueChange={(v) => v && onChange(v)}>
-        <SelectTrigger className="bg-background/50">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {options.map((o) => (
-            <SelectItem key={o.v} value={o.v}>
-              {o.t}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-    </div>
+    <>
+      <SettingsGroup
+        title="What are you scanning?"
+        description="This one choice sets the face model and grouping for you. Most people never need anything else on this page."
+        aside={
+          draft && !draft.content_preset ? (
+            <Badge variant="secondary" className="text-amber-400/90">
+              Custom
+            </Badge>
+          ) : null
+        }
+      >
+        <SettingRow
+          label="Footage type"
+          hint="Pick the one closest to your source. Changing it overwrites the tuning knobs under Scan quality."
+          changed={changed.has("content_preset")}
+          full
+        >
+          {draft ? (
+            <ChoiceTiles
+              columns={3}
+              value={draft.content_preset || ""}
+              options={presets.map((p) => ({
+                id: p.id as ContentPresetId,
+                label: p.label,
+                blurb: p.blurb,
+                meta: `${friendlyBackend(p.default_backend)} · ${friendlyModel(
+                  p.default_backend,
+                  p.default_model,
+                )}`,
+              }))}
+              onChange={(id) => {
+                const preset = presets.find((p) => p.id === id)
+                if (!preset) return
+                patch({
+                  content_preset: preset.id,
+                  cluster_merge_sim: preset.cluster_merge_sim,
+                  cluster_min_size: preset.cluster_min_size,
+                  min_face_size: preset.min_face_size,
+                  det_size: preset.det_size,
+                  default_backend: preset.default_backend || draft.default_backend,
+                  default_model: preset.default_model || draft.default_model,
+                })
+              }}
+            />
+          ) : (
+            <LoadingBlock
+              label={
+                settingsError
+                  ? "Could not load presets — is AutoScene running?"
+                  : "Loading presets…"
+              }
+              rows={2}
+              dense
+            />
+          )}
+        </SettingRow>
+      </SettingsGroup>
+
+      <SettingsGroup
+        title="In use right now"
+        description="What your next scan will run with, after your last save."
+      >
+        <InfoRow
+          label="Footage type"
+          value={settings ? friendlyBackend(settings.default_backend) : "…"}
+        />
+        <InfoRow
+          label="Quality pack"
+          value={
+            settings ? friendlyModel(settings.default_backend, settings.default_model) : "…"
+          }
+        />
+      </SettingsGroup>
+    </>
   )
 }
 
-function NumField({
-  id,
-  label,
-  value,
-  min,
-  max,
-  step,
-  onChange,
+function FacesSection({
+  draft,
+  changed,
+  patch,
+  resetField,
 }: {
-  id: string
-  label: string
-  value: number
-  min: number
-  max: number
-  step?: number
-  onChange: (n: number) => void
+  draft: AppSettings | null
+  changed: Set<keyof AppSettings>
+  patch: (next: Partial<AppSettings>) => void
+  resetField: (key: keyof typeof SETTINGS_DEFAULTS) => void
 }) {
   return (
-    <div className="space-y-2">
-      <Label htmlFor={id}>{label}</Label>
-      <Input
-        id={id}
-        type="number"
-        min={min}
-        max={max}
-        step={step}
-        className="bg-background/50"
-        value={value}
-        onChange={(e) => onChange(Number(e.target.value) || value)}
-      />
-    </div>
+    <>
+      <SettingsGroup
+        title="Which faces to keep"
+        description="Fewer faces means a faster scan and a shorter cast list. More faces catches extras and background characters."
+      >
+        <SettingRow
+          label="Faces per frame"
+          hint="Not sure? Leave it on Everyone in frame."
+          changed={changed.has("face_select_mode")}
+          full
+        >
+          {draft ? (
+            <ChoiceTiles
+              value={draft.face_select_mode}
+              options={FACE_MODES.map((m) => ({
+                id: m.id,
+                label: m.label,
+                blurb: m.blurb,
+              }))}
+              onChange={(id) => patch({ face_select_mode: id })}
+            />
+          ) : (
+            <LoadingBlock label="Loading face options…" rows={2} dense />
+          )}
+        </SettingRow>
+
+        {draft?.face_select_mode === "relative" ? (
+          <SettingRow
+            label="How much smaller than the biggest face"
+            hint="A face is kept when it is at least this share of the largest face in the same frame."
+            htmlFor="relative-pct"
+            changed={changed.has("face_relative_pct")}
+            onReset={() => resetField("face_relative_pct")}
+          >
+            <SliderControl
+              id="relative-pct"
+              min={1}
+              max={100}
+              value={Math.round(draft.face_relative_pct)}
+              display={`${Math.round(draft.face_relative_pct)}%`}
+              minLabel="Keep more"
+              maxLabel="Keep fewer"
+              onChange={(n) => patch({ face_relative_pct: n })}
+            />
+          </SettingRow>
+        ) : null}
+
+        {draft?.face_select_mode === "top_n" ? (
+          <SettingRow
+            label="How many faces per frame"
+            hint="The largest faces are kept, the rest are ignored."
+            htmlFor="top-n"
+            changed={changed.has("face_top_n")}
+            onReset={() => resetField("face_top_n")}
+          >
+            <NumberControl
+              id="top-n"
+              value={draft.face_top_n}
+              min={1}
+              max={12}
+              suffix="faces"
+              onChange={(n) => patch({ face_top_n: Math.max(1, Math.min(12, n)) })}
+            />
+          </SettingRow>
+        ) : null}
+      </SettingsGroup>
+
+      <CastTeachPanel />
+    </>
   )
 }
 
-function Row({ k, v }: { k: string; v: string }) {
+function QualitySection({
+  draft,
+  advanced,
+  changed,
+  patch,
+  resetField,
+  onShowAdvanced,
+}: {
+  draft: AppSettings | null
+  advanced: boolean
+  changed: Set<keyof AppSettings>
+  patch: (next: Partial<AppSettings>) => void
+  resetField: (key: keyof typeof SETTINGS_DEFAULTS) => void
+  onShowAdvanced: () => void
+}) {
+  if (!draft) {
+    return (
+      <div className="panel-surface px-5 py-5">
+        <LoadingBlock label="Loading scan options…" rows={5} dense />
+      </div>
+    )
+  }
+
+  const hiddenNote = advanced ? null : (
+    <button
+      type="button"
+      onClick={onShowAdvanced}
+      className="text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+    >
+      More fine-tuning is hidden. Turn on Advanced in the header to show it.
+    </button>
+  )
+
   return (
-    <div className="rounded-lg border border-border/35 bg-background/30 px-3 py-2">
-      <dt className="text-[10px] uppercase tracking-wider text-muted-foreground">{k}</dt>
-      <dd className="mt-0.5 font-medium capitalize">{v}</dd>
-    </div>
+    <>
+      <SettingsGroup
+        title="Speed vs detail"
+        description="Higher settings find more faces in fast-moving footage and cost scan time."
+        footer={hiddenNote}
+      >
+        <SettingRow
+          label="Frames checked each second"
+          hint="Low is quick but can miss faces in fast cuts. High is thorough and slow."
+          htmlFor="sample-fps"
+          changed={changed.has("sample_fps")}
+          onReset={() => resetField("sample_fps")}
+        >
+          <SliderControl
+            id="sample-fps"
+            min={1}
+            max={60}
+            value={Math.round(draft.sample_fps)}
+            display={`${Math.round(draft.sample_fps)} fps`}
+            minLabel="Fast"
+            maxLabel="Thorough"
+            onChange={(n) => patch({ sample_fps: n })}
+          />
+        </SettingRow>
+
+        <SettingRow
+          label="Face detail"
+          hint="How closely each frame is inspected. Sharper catches small faces and runs slower."
+          changed={changed.has("det_size")}
+          onReset={() => resetField("det_size")}
+        >
+          <SelectControl
+            ariaLabel="Face detail"
+            value={String(draft.det_size)}
+            onChange={(v) => patch({ content_preset: "", det_size: Number(v) })}
+            options={[
+              { value: "640", label: "Faster" },
+              { value: "960", label: "Balanced" },
+              { value: "1280", label: "Sharper (default)" },
+            ]}
+          />
+        </SettingRow>
+
+        {advanced ? (
+          <SettingRow
+            label="Working resolution"
+            hint="Frames are shrunk to this longest side before faces are found. Previews still use full-size source pixels."
+            changed={changed.has("detect_max_edge")}
+            onReset={() => resetField("detect_max_edge")}
+          >
+            <SelectControl
+              ariaLabel="Working resolution"
+              value={String(draft.detect_max_edge)}
+              onChange={(v) => patch({ detect_max_edge: Number(v) })}
+              options={[
+                { value: "1280", label: "1280 · fastest on 4K" },
+                { value: "1920", label: "1920 · default" },
+                { value: "2560", label: "2560 · sharper" },
+                { value: "0", label: "Full size · slowest" },
+              ]}
+            />
+          </SettingRow>
+        ) : null}
+
+        {advanced ? (
+          <SettingRow
+            label="Video read-ahead"
+            hint="How many frames are queued up while scanning. Raise it only if your drive is fast and the scan looks starved."
+            htmlFor="prefetch"
+            changed={changed.has("prefetch_depth")}
+            onReset={() => resetField("prefetch_depth")}
+          >
+            <SliderControl
+              id="prefetch"
+              min={1}
+              max={32}
+              value={draft.prefetch_depth}
+              display={String(draft.prefetch_depth)}
+              minLabel="Less memory"
+              maxLabel="More memory"
+              onChange={(n) => patch({ prefetch_depth: n })}
+            />
+          </SettingRow>
+        ) : null}
+      </SettingsGroup>
+
+      {advanced ? (
+        <SettingsGroup
+          title="Grouping characters"
+          description="How found faces get merged into one character in Gallery. Only change these if characters keep splitting apart or blending together."
+        >
+          <SettingRow
+            label="Smallest face to keep"
+            hint="Faces smaller than this are treated as background and skipped."
+            htmlFor="min-face"
+            changed={changed.has("min_face_size")}
+            onReset={() => resetField("min_face_size")}
+          >
+            <NumberControl
+              id="min-face"
+              value={draft.min_face_size}
+              min={16}
+              max={256}
+              suffix="px"
+              onChange={(n) => patch({ content_preset: "", min_face_size: n })}
+            />
+          </SettingRow>
+
+          <SettingRow
+            label="Fewest faces per character"
+            hint="A character needs at least this many face finds to show up. Raise it to hide one-off extras."
+            htmlFor="cluster-min"
+            changed={changed.has("cluster_min_size")}
+            onReset={() => resetField("cluster_min_size")}
+          >
+            <NumberControl
+              id="cluster-min"
+              value={draft.cluster_min_size}
+              min={2}
+              max={64}
+              suffix="faces"
+              onChange={(n) => patch({ content_preset: "", cluster_min_size: n })}
+            />
+          </SettingRow>
+
+          <SettingRow
+            label="Grouping strength"
+            hint="Lower merges lookalikes into one character. Higher keeps similar faces apart."
+            htmlFor="cluster-merge"
+            changed={changed.has("cluster_merge_sim")}
+            onReset={() => resetField("cluster_merge_sim")}
+          >
+            <SliderControl
+              id="cluster-merge"
+              min={0.25}
+              max={0.9}
+              step={0.01}
+              value={draft.cluster_merge_sim}
+              display={draft.cluster_merge_sim.toFixed(2)}
+              minLabel="Merge more"
+              maxLabel="Split more"
+              onChange={(n) => patch({ content_preset: "", cluster_merge_sim: n })}
+            />
+          </SettingRow>
+        </SettingsGroup>
+      ) : null}
+
+      <SettingsGroup
+        title="Scene breaks"
+        description="How AutoScene decides where one shot ends and the next begins."
+        aside={
+          <Badge variant="secondary" className="gap-1.5">
+            <Scissors className="size-3" />
+            {draft.scene_cut_capabilities?.transnet ? "Scene tool ready" : "Scene tool missing"}
+          </Badge>
+        }
+        footer={
+          draft.scene_cut_capabilities?.transnet ? null : (
+            <p className="text-xs text-muted-foreground">
+              Precise mode needs the scene tool. Install it under Models.
+            </p>
+          )
+        }
+      >
+        <SettingRow
+          label="Cut style"
+          hint="Auto suits most footage. Precise locks hard cuts to the exact frame. Soft fades helps with dissolves."
+          changed={changed.has("scene_cut_detector")}
+          onReset={() => resetField("scene_cut_detector")}
+        >
+          <SelectControl
+            ariaLabel="Cut style"
+            value={draft.scene_cut_detector}
+            onChange={(v) =>
+              patch({ scene_cut_detector: v as AppSettings["scene_cut_detector"] })
+            }
+            options={[
+              { value: "auto", label: "Auto (recommended)" },
+              {
+                value: "transnet",
+                label: draft.scene_cut_capabilities?.transnet
+                  ? "Precise"
+                  : "Precise · needs scene tool",
+              },
+              { value: "adaptive", label: "Soft fades" },
+            ]}
+          />
+        </SettingRow>
+
+        {advanced ? (
+          <SettingRow
+            label="Soft fade sensitivity"
+            hint="Lower finds more dissolves, and more false cuts with it."
+            htmlFor="cut-adaptive"
+            changed={changed.has("scene_cut_adaptive_threshold")}
+            onReset={() => resetField("scene_cut_adaptive_threshold")}
+          >
+            <NumberControl
+              id="cut-adaptive"
+              value={draft.scene_cut_adaptive_threshold}
+              min={1}
+              max={10}
+              step={0.1}
+              onChange={(n) => patch({ scene_cut_adaptive_threshold: n })}
+            />
+          </SettingRow>
+        ) : null}
+
+        {advanced ? (
+          <SettingRow
+            label="Precise sensitivity"
+            hint="Lower reports more cuts. Higher keeps only the obvious ones."
+            htmlFor="cut-transnet"
+            changed={changed.has("scene_cut_transnet_threshold")}
+            onReset={() => resetField("scene_cut_transnet_threshold")}
+          >
+            <NumberControl
+              id="cut-transnet"
+              value={draft.scene_cut_transnet_threshold}
+              min={0.1}
+              max={0.95}
+              step={0.05}
+              onChange={(n) => patch({ scene_cut_transnet_threshold: n })}
+            />
+          </SettingRow>
+        ) : null}
+      </SettingsGroup>
+    </>
+  )
+}
+
+function SystemSection({
+  settings,
+  gpu,
+  gpuReady,
+  refreshing,
+  onRefresh,
+}: {
+  settings: AppSettings | null
+  gpu: ReturnType<typeof useProjects>["gpu"]
+  gpuReady: boolean
+  refreshing: boolean
+  onRefresh: () => void | Promise<void>
+}) {
+  return (
+    <>
+      <SettingsGroup
+        title="Device"
+        description="AutoScene needs graphics acceleration to scan at a usable speed."
+        aside={
+          <Button variant="outline" size="sm" disabled={refreshing} onClick={() => void onRefresh()}>
+            <RefreshCw className={cn("size-3.5", refreshing && "animate-spin")} />
+            Check again
+          </Button>
+        }
+      >
+        {gpuReady && gpu ? (
+          <>
+            <InfoRow
+              label="Graphics"
+              value={
+                <Badge variant={gpu.available ? "default" : "secondary"}>
+                  {gpu.available ? "Ready" : "Unavailable"}
+                </Badge>
+              }
+            />
+            <InfoRow
+              label="Device"
+              value={friendlyGpuLine(gpu.available, gpu.name, gpu.detail)}
+            />
+          </>
+        ) : (
+          <div className="px-5 py-4">
+            <LoadingBlock label="Checking graphics…" rows={2} dense />
+          </div>
+        )}
+      </SettingsGroup>
+
+      <SettingsGroup
+        title="Files"
+        description="Projects, portraits, and exports all live here."
+        footer={
+          <p className="flex items-start gap-2 text-xs leading-relaxed text-muted-foreground">
+            <Cpu className="mt-0.5 size-3.5 shrink-0" />
+            Some face packs need a commercial license for shipping products. Check your rights
+            before release.
+          </p>
+        }
+      >
+        {settings ? (
+          <InfoRow
+            label="Data folder"
+            mono
+            value={settings.data_dir}
+            action={
+              <CopyButton
+                text={settings.data_dir}
+                label="Copy"
+                toastLabel="Data path copied"
+              />
+            }
+          />
+        ) : (
+          <div className="px-5 py-4">
+            <LoadingBlock label="Loading paths…" rows={1} dense />
+          </div>
+        )}
+      </SettingsGroup>
+    </>
   )
 }

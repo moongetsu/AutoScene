@@ -1,80 +1,54 @@
-import { useEffect } from "react"
-import { Minus, X } from "lucide-react"
+import { useEffect, useState } from "react"
+import { Copy, Minus, Square, X } from "lucide-react"
 import { AutoSceneMark } from "@/components/brand/AutoSceneMark"
 import { isTauri } from "@/lib/desktop"
 import { useProjects } from "@/state/project"
 import { cn } from "@/lib/utils"
 
-const LOCK_W = 1280
-const LOCK_H = 800
-
-async function lockWindowSize() {
-  const { getCurrentWindow } = await import("@tauri-apps/api/window")
-  const { LogicalSize } = await import("@tauri-apps/api/dpi")
-  const win = getCurrentWindow()
-  const size = new LogicalSize(LOCK_W, LOCK_H)
-  try {
-    await win.setMaximizable(false)
-  } catch {
-    /* older runtime */
-  }
-  try {
-    await win.setResizable(false)
-  } catch {
-    /* ignore */
-  }
-  try {
-    await win.setFullscreen(false)
-  } catch {
-    /* ignore */
-  }
-  try {
-    if (await win.isMaximized()) await win.unmaximize()
-  } catch {
-    /* ignore */
-  }
-  try {
-    await win.setSize(size)
-  } catch {
-    /* ignore */
-  }
-}
-
 /**
- * Frameless custom chrome. Fixed 1280×800 — no maximize / fullscreen.
+ * Frameless custom chrome for Windows / Linux. The window is freely resizable —
+ * bounds live in tauri.windows.conf.json, never here. Because the frame is
+ * undecorated we supply the caption buttons ourselves; the OS still provides
+ * the invisible resize border and Aero Snap on the WS_THICKFRAME window.
  */
 export function TitleBar({ className }: { className?: string }) {
   const { active } = useProjects()
   const tauri = isTauri()
+  const [maximized, setMaximized] = useState(false)
 
+  // Keep the caption glyph in sync — the window also maximizes from a
+  // drag-region double-click and from Aero Snap, neither of which route
+  // through our button.
   useEffect(() => {
     if (!tauri) return
     let unlisten: (() => void) | undefined
     let cancelled = false
 
     void (async () => {
-      await lockWindowSize()
-      if (cancelled) return
       const { getCurrentWindow } = await import("@tauri-apps/api/window")
       const win = getCurrentWindow()
-      unlisten = await win.onResized(() => {
-        void lockWindowSize()
-      })
-    })()
 
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "F11") {
-        e.preventDefault()
-        e.stopPropagation()
-        void lockWindowSize()
+      const sync = async () => {
+        try {
+          const next = await win.isMaximized()
+          if (!cancelled) setMaximized(next)
+        } catch {
+          /* ignore */
+        }
       }
-    }
-    window.addEventListener("keydown", onKey, true)
+
+      await sync()
+      const off = await win.onResized(() => void sync())
+      if (cancelled) {
+        off()
+        return
+      }
+      unlisten = off
+    })()
 
     return () => {
       cancelled = true
       unlisten?.()
-      window.removeEventListener("keydown", onKey, true)
     }
   }, [tauri])
 
@@ -82,6 +56,12 @@ export function TitleBar({ className }: { className?: string }) {
     if (!tauri) return
     const { getCurrentWindow } = await import("@tauri-apps/api/window")
     await getCurrentWindow().minimize()
+  }
+
+  const toggleMaximize = async () => {
+    if (!tauri) return
+    const { getCurrentWindow } = await import("@tauri-apps/api/window")
+    await getCurrentWindow().toggleMaximize()
   }
 
   const close = async () => {
@@ -126,6 +106,18 @@ export function TitleBar({ className }: { className?: string }) {
           className="flex w-11 items-center justify-center text-muted-foreground transition-colors hover:bg-white/5 hover:text-foreground"
         >
           <Minus className="size-3.5" strokeWidth={2} />
+        </button>
+        <button
+          type="button"
+          aria-label={maximized ? "Restore" : "Maximize"}
+          onClick={() => void toggleMaximize()}
+          className="flex w-11 items-center justify-center text-muted-foreground transition-colors hover:bg-white/5 hover:text-foreground"
+        >
+          {maximized ? (
+            <Copy className="size-3" strokeWidth={2} />
+          ) : (
+            <Square className="size-3" strokeWidth={2} />
+          )}
         </button>
         <button
           type="button"

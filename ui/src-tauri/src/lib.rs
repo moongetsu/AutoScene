@@ -183,20 +183,9 @@ pub fn run() {
             }
             app.manage(BackendProcess(Mutex::new(child)));
 
-            // Hard lock: fixed 1280x800, never maximize / fullscreen.
-            // macOS is fully resizable and takes its bounds from
-            // tauri.macos.conf.json, so this lock must not run there.
-            #[cfg(not(target_os = "macos"))]
-            {
-                if let Some(win) = app.get_webview_window("main") {
-                    let _ = win.set_maximizable(false);
-                    let _ = win.set_resizable(false);
-                    let _ = win.set_fullscreen(false);
-                    if win.is_maximized().unwrap_or(false) {
-                        let _ = win.unmaximize();
-                    }
-                }
-            }
+            // Window bounds come from config only — tauri.macos.conf.json and
+            // tauri.windows.conf.json both declare a resizable window with no
+            // min/max clamp. No runtime override here, or it would fight them.
 
             Ok(())
         })
