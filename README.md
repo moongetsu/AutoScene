@@ -92,8 +92,22 @@ Production build:
 
 ```bash
 cd ui
+export TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/autoscene-updater.key)"
 npm run tauri:build
 ```
+
+The signing key is required because the build also emits updater artifacts.
+See [ui/UPDATES.md](ui/UPDATES.md).
+
+## Updates
+
+AutoScene checks for a new version on launch (macOS and Windows) and asks
+before installing anything — **Update Now**, **Update Later**, or **Remind Me
+Later**. Manual check: **AutoScene → Check for Updates…** on macOS, or
+**Settings → System → Updates** on any platform.
+
+To exercise the prompt without a release server, drop a `simulate` block in
+`~/.autoscene/updates.json` — full recipe in [ui/UPDATES.md](ui/UPDATES.md).
 
 ## Run (browser dev)
 

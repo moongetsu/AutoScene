@@ -25,3 +25,6 @@ tauri = { version = "2.11.3", features = [] }
 tauri-plugin-log = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
+tauri-plugin-updater = "2"
+# Only for the simulated-download timer in updater.rs; tauri already pulls tokio.
+tokio = { version = "1", features = ["time"] }

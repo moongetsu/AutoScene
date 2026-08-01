@@ -30,6 +30,11 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     let app_menu = SubmenuBuilder::new(app, "AutoScene")
         .about(Some(about))
         .separator()
+        // Directly under About is where macOS apps put this, and where people
+        // look for it. Handled in the webview so it shares the launch check's
+        // dialog instead of growing a second one.
+        .item(&MenuItemBuilder::with_id("app:check-updates", "Check for Updates…").build(app)?)
+        .separator()
         .item(
             &MenuItemBuilder::with_id("app:settings", "Settings…")
                 .accelerator("CmdOrCtrl+,")

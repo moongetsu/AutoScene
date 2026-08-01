@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom"
 import { useSidebar } from "@/components/ui/sidebar"
 import { isMacDesktop } from "@/lib/desktop"
 import { useMenuActions, type MenuActionId } from "@/state/menu-actions"
+import { useUpdates } from "@/state/updates"
 
 /**
  * Bridges native macOS menu events to router navigation and page actions.
@@ -16,6 +17,7 @@ export function MacMenuBridge() {
   const navigate = useNavigate()
   const { toggleSidebar } = useSidebar()
   const { run, defer } = useMenuActions()
+  const { check } = useUpdates()
 
   // Refs keep the listener stable — it subscribes once and never resubscribes
   // on navigation, which would drop events mid-flight.
@@ -27,6 +29,8 @@ export function MacMenuBridge() {
   runRef.current = run
   const deferRef = useRef(defer)
   deferRef.current = defer
+  const checkRef = useRef(check)
+  checkRef.current = check
 
   useEffect(() => {
     if (!isMacDesktop()) return
@@ -46,6 +50,10 @@ export function MacMenuBridge() {
       switch (id) {
         case "app:settings":
           navRef.current("/settings")
+          break
+        case "app:check-updates":
+          // Manual check — reports "up to date" instead of staying silent.
+          void checkRef.current(true)
           break
         case "file:new-project":
           navRef.current("/import")
