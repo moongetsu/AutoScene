@@ -9,7 +9,7 @@ import uuid
 from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from autoscene.config import settings
 
@@ -203,6 +203,81 @@ class SceneRecord:
 
 
 @dataclass
+class SceneGroupRecord:
+    """
+    A run of consecutive shots that plays as one dramatic scene.
+
+    Distinct from SceneRecord above, which is a co-presence overlap window
+    derived from face timing. This one is shot structure: it is what "the whole
+    scene leading up to their appearance" resolves to when building a pack.
+    """
+
+    scene_index: int
+    start_sec: float
+    end_sec: float
+    shot_indices: list[int] = field(default_factory=list)
+
+
+# How much context a pack keeps around each detected appearance.
+PACK_CONTEXT_MODES = ("face", "shot", "conversation", "scene")
+DEFAULT_PACK_CONTEXT = "conversation"
+
+
+@dataclass
+class PackSettings:
+    """
+    Per-character pack shape. Lives outside `segments` on purpose — pipeline
+    rewrites that list wholesale on every publish, so anything stored there is
+    destroyed by a rescan.
+    """
+
+    person_id: int
+    context_mode: str = DEFAULT_PACK_CONTEXT
+    lead_shots: int = 0
+    tail_shots: int = 0
+    max_clip_sec: float | None = None
+
+
+@dataclass
+class ClipOverride:
+    """
+    A user decision about one shot in one character's pack.
+
+    Keyed on shot index rather than float timestamps: run_scan preserves
+    project.shots across face rescans, so the index survives where a
+    (person, start, end) tuple would drift.
+    """
+
+    person_id: int
+    shot_index: int
+    # "include" pulls an undetected shot into the pack; "exclude" drops one.
+    action: str = "include"
+
+
+@dataclass
+class ManualSegment:
+    """
+    A user-drawn in/out range, taggable to several cast members.
+
+    Kept out of `segments` on purpose: pipeline.py rewrites that list
+    wholesale on every scan publish, so anything stored there is destroyed
+    by a rescan. These carry a stable id (scan segments have none) and are
+    folded into export packs by api._active_segments.
+
+    Deliberately excluded from scene / co-cast derivation: those describe
+    where faces were actually detected, and mixing user intent in would
+    corrupt the overlap graph behind the "shares the frame" badge.
+    """
+
+    id: str
+    start_sec: float
+    end_sec: float
+    person_ids: list[int] = field(default_factory=list)
+    label: str = ""
+    created_at: str = ""
+
+
+@dataclass
 class MergedExportRecord:
     """Completed merged export for Export landing / history."""
 
@@ -255,26 +330,73 @@ class ProjectState:
     model: str = "buffalo_l"
     # Shot spans from pre-scan scene cut detect (full-shot export plates).
     shots: list[ShotRecord] = field(default_factory=list)
+    # Consecutive shots grouped into dramatic scenes (scene_groups.py).
+    scene_groups: list[SceneGroupRecord] = field(default_factory=list)
     scene_cut_detector_used: str = ""
     # Live cut-phase telemetry (provisional during TransNet).
     cuts_found: int = 0
     people: list[PersonRecord] = field(default_factory=list)
     segments: list[SegmentRecord] = field(default_factory=list)
     excluded_segments: list[SegmentExclusion] = field(default_factory=list)
+    # User-drawn ranges; survive rescans because they live outside segments.
+    manual_segments: list[ManualSegment] = field(default_factory=list)
+    # Pack shape per character + per-shot user fixes. Also outside segments.
+    pack_settings: list[PackSettings] = field(default_factory=list)
+    clip_overrides: list[ClipOverride] = field(default_factory=list)
     merged_exports: list[MergedExportRecord] = field(default_factory=list)
     selected_person_id: int | None = None
     # Soft-era / stale identity signal (set on load, cleared after rescan).
     needs_rescan: bool = False
     identity_pipeline_version: int = 0
 
-    def shared_scenes(self) -> list[SceneRecord]:
-        """Derive scenes from pairwise segment overlap (connected components)."""
-        from autoscene.cluster import Segment, build_shared_scenes
+    # Memoized (scenes, cocast_edges). NOT a dataclass field: asdict() walks
+    # fields() only, so this can never leak into project.json. Declared
+    # ClassVar so type checkers accept the per-instance assignment below.
+    _derived_memo: ClassVar[tuple[Any, list[Any], list[Any]] | None] = None
+
+    def _derived_key(self) -> tuple[Any, ...]:
+        """Cheap O(n) fingerprint of everything the derivation depends on."""
+        from autoscene.config import settings
+
+        return (
+            self.backend,
+            settings.content_preset,
+            settings.min_segment_sec,
+            len(self.segments),
+            hash(
+                tuple(
+                    (
+                        s.person_id,
+                        s.start_sec,
+                        s.end_sec,
+                        s.preview_start_sec,
+                        s.preview_end_sec,
+                    )
+                    for s in self.segments
+                )
+            ),
+        )
+
+    def _derived(self) -> tuple[list[SceneRecord], list[dict[str, float | int]]]:
+        """
+        Scenes + co-cast, derived once per distinct segment set.
+
+        Without this, a ready project re-ran two O(n^2) passes on every
+        1.2s UI poll and every disk save. Keyed on a segment fingerprint
+        rather than explicit invalidation because segments are rewritten
+        from five places (scan publish, merge, teach, rescan).
+        """
+        key = self._derived_key()
+        cached = getattr(self, "_derived_memo", None)
+        if cached is not None and cached[0] == key:
+            return cached[1], cached[2]
+
+        from autoscene.cluster import Segment, derive_scenes_and_cocast
         from autoscene.config import settings
         from autoscene.identity_gates import gate_config_for
 
         cfg = gate_config_for(settings.content_preset, self.backend)
-        built = build_shared_scenes(
+        built, pairs = derive_scenes_and_cocast(
             [
                 Segment(
                     s.person_id,
@@ -286,11 +408,10 @@ class ProjectState:
                 )
                 for s in self.segments
             ],
-            gap_sec=0.35,
             min_segment_sec=settings.min_segment_sec,
             min_presence_sec=float(cfg.cocast_min_overlap_sec),
         )
-        return [
+        scenes = [
             SceneRecord(
                 scene_id=s.scene_id,
                 start_sec=s.start_sec,
@@ -299,32 +420,20 @@ class ProjectState:
             )
             for s in built
         ]
-
-    def cocast_edges(self) -> list[dict[str, float | int]]:
-        """Honest co-cast pairs for WITH UI (segment overlap, not scene union)."""
-        from autoscene.cluster import Segment, cocast_pairs
-        from autoscene.config import settings
-        from autoscene.identity_gates import gate_config_for
-
-        cfg = gate_config_for(settings.content_preset, self.backend)
-        pairs = cocast_pairs(
-            [
-                Segment(
-                    s.person_id,
-                    s.start_sec,
-                    s.end_sec,
-                    preview_start_sec=s.preview_start_sec,
-                    preview_end_sec=s.preview_end_sec,
-                    face_time_sec=s.face_time_sec,
-                )
-                for s in self.segments
-            ],
-            min_overlap_sec=float(cfg.cocast_min_overlap_sec),
-        )
-        return [
+        edges: list[dict[str, float | int]] = [
             {"a": int(a), "b": int(b), "overlap_sec": round(float(sec), 4)}
             for a, b, sec in pairs
         ]
+        self._derived_memo = (key, scenes, edges)
+        return scenes, edges
+
+    def shared_scenes(self) -> list[SceneRecord]:
+        """Derive scenes from pairwise segment overlap (connected components)."""
+        return self._derived()[0]
+
+    def cocast_edges(self) -> list[dict[str, float | int]]:
+        """Honest co-cast pairs for WITH UI (segment overlap, not scene union)."""
+        return self._derived()[1]
 
     def to_dict(self, *, light: bool | None = None) -> dict[str, Any]:
         """Full state for disk persistence (includes teach centroids)."""
@@ -340,8 +449,11 @@ class ProjectState:
             data["scenes"] = []
             data["cocast_edges"] = []
         else:
-            data["scenes"] = [asdict(s) for s in self.shared_scenes()]
-            data["cocast_edges"] = self.cocast_edges()
+            scenes, edges = self._derived()
+            data["scenes"] = [asdict(s) for s in scenes]
+            # Shallow copy so a caller mutating the payload cannot corrupt
+            # the memo the next poll will serve.
+            data["cocast_edges"] = list(edges)
         return data
 
     def to_api_dict(self) -> dict[str, Any]:
@@ -369,7 +481,31 @@ class ProjectState:
             for s in data.get("shots", [])
             if isinstance(s, dict)
         ]
+        group_allowed = {f.name for f in fields(SceneGroupRecord)}
+        scene_groups = [
+            SceneGroupRecord(**{k: v for k, v in g.items() if k in group_allowed})
+            for g in data.get("scene_groups", [])
+            if isinstance(g, dict)
+        ]
+        pack_allowed = {f.name for f in fields(PackSettings)}
+        pack_settings = [
+            PackSettings(**{k: v for k, v in p.items() if k in pack_allowed})
+            for p in data.get("pack_settings", [])
+            if isinstance(p, dict) and p.get("person_id") is not None
+        ]
+        override_allowed = {f.name for f in fields(ClipOverride)}
+        clip_overrides = [
+            ClipOverride(**{k: v for k, v in o.items() if k in override_allowed})
+            for o in data.get("clip_overrides", [])
+            if isinstance(o, dict) and o.get("person_id") is not None
+        ]
         excluded = [SegmentExclusion(**s) for s in data.get("excluded_segments", [])]
+        manual_allowed = {f.name for f in fields(ManualSegment)}
+        manual_segments = [
+            ManualSegment(**{k: v for k, v in m.items() if k in manual_allowed})
+            for m in data.get("manual_segments", [])
+            if isinstance(m, dict) and m.get("id")
+        ]
         export_allowed = {f.name for f in fields(MergedExportRecord)}
         merged_exports = [
             MergedExportRecord(**{k: v for k, v in e.items() if k in export_allowed})
@@ -381,13 +517,31 @@ class ProjectState:
             "people": people,
             "segments": segments,
             "shots": shots,
+            "scene_groups": scene_groups,
             "excluded_segments": excluded,
+            "manual_segments": manual_segments,
+            "pack_settings": pack_settings,
+            "clip_overrides": clip_overrides,
             "merged_exports": merged_exports,
         }
         allowed = {f.name for f in fields(cls)}
         state = cls(**{k: v for k, v in raw.items() if k in allowed})
         state.needs_rescan = detect_needs_rescan(state)
         return state
+
+    def pack_settings_for(self, person_id: int) -> PackSettings:
+        """
+        Pack shape for a character, defaulted for projects that predate it.
+
+        Projects scanned before scene grouping have no scene_groups, so the
+        wider modes have nothing to widen to — they default to `shot` and keep
+        behaving exactly as they did. New scans get conversation context.
+        """
+        for ps in self.pack_settings:
+            if int(ps.person_id) == int(person_id):
+                return ps
+        default = DEFAULT_PACK_CONTEXT if self.scene_groups else "shot"
+        return PackSettings(person_id=int(person_id), context_mode=default)
 
 
 def detect_needs_rescan(state: ProjectState) -> bool:
@@ -561,7 +715,9 @@ class ProjectStore:
         # Memory first — UI polls must not open project.json under the writer.
         self._live[state.id] = state
         try:
-            _atomic_write_json(self._meta(state.id), state.to_dict())
+            # light=True: scenes/cocast are derived, never read back by
+            # from_dict(). Persisting them cost a full derivation per save.
+            _atomic_write_json(self._meta(state.id), state.to_dict(light=True))
         except OSError as exc:
             if soft and _is_windows_lock_error(exc):
                 # Scan/UI must not die on a brief AV / sharing lock.

@@ -22,7 +22,6 @@ from autoscene.identity_gates import (
     gate_config_for,
     gated_assign,
     identity_tracks,
-    laplacian_var,
     quality_mask,
     shot_ids_for,
     unit_rows,
@@ -31,13 +30,15 @@ from autoscene.decode import (
     downscale_for_detect,
     expected_sample_count,
     iter_sampled_frames_prefetched,
+    plan_shot_samples,
+    plan_uniform_samples,
     probe_video,
 )
 from autoscene.faces import create_backend
 from autoscene.faces.base import FaceDetection
 from autoscene.faces.filter import filter_faces_per_frame
 from autoscene.faces.quality import pick_best_avatar
-from autoscene.faces.thumb import make_face_thumbnail, render_hq_avatar
+from autoscene.faces.thumb import render_hq_avatar
 from autoscene.project import (
     PersonRecord,
     ProjectState,
@@ -46,6 +47,8 @@ from autoscene.project import (
     ShotRecord,
 )
 from autoscene.scan_debug import ScanDebugger
+from autoscene.scene_groups import build_scene_groups
+from autoscene.shot_fingerprint import ShotFingerprints
 
 log = logging.getLogger(__name__)
 
@@ -330,14 +333,13 @@ def _map_faces_to_source(
         bw, bh = ix2 - ix1, iy2 - iy1
         if bw < min_face_size or bh < min_face_size:
             continue
-        thumb = make_face_thumbnail(source_bgr, (ix1, iy1, ix2, iy2))
         out.append(
-            FaceDetection(
+            FaceDetection.with_thumb(
                 timestamp_sec=face.timestamp_sec,
                 bbox=(ix1, iy1, ix2, iy2),
                 embedding=face.embedding,
                 det_score=face.det_score,
-                thumbnail_bgr=thumb,
+                frame_bgr=source_bgr,
             )
         )
     return out
@@ -378,9 +380,10 @@ def _save_live_preview(
     xa, ya = max(0, xa), max(0, ya)
     crop = frame_bgr[ya:yb, xa:xb]
     if crop.size == 0:
-        if face.thumbnail_bgr is None or face.thumbnail_bgr.size == 0:
+        fallback = face.thumb_bgr()
+        if fallback is None:
             return
-        crop = face.thumbnail_bgr
+        crop = fallback
     # Exact square from source pixels — never resize down for preview
     ch, cw = crop.shape[:2]
     if ch != cw:
@@ -540,7 +543,7 @@ def _assign_detections_to_people(
                 screen_time_sec=person.screen_time_sec,
                 first_sec=times[0],
                 last_sec=times[-1],
-                thumbnail_bgr=best_face.thumbnail_bgr if best_face else None,
+                thumbnail_bgr=best_face.thumb_bgr() if best_face else None,
                 avatar_score=float(av_score) if av_score >= 0 else 0.0,
             )
         )
@@ -570,13 +573,10 @@ def _publish_live_cast(
     # Gates 1-3: quality mask + tracklets. Orphans and weak detections can
     # never enter clustering, assignment, or segments.
     ts, bboxes, det_scores, X = _detection_arrays(detections)
+    # Measured once at crop time. This used to run cv2.Laplacian over every
+    # thumbnail on every publish — an O(hits) image pass repeating each cycle.
     lap_vars = np.asarray(
-        [
-            laplacian_var(d.thumbnail_bgr)
-            if d.thumbnail_bgr is not None
-            else np.nan
-            for d in detections
-        ],
+        [d.laplacian_var if d.has_thumb else np.nan for d in detections],
         dtype=np.float64,
     )
     q_ok = quality_mask(
@@ -697,7 +697,7 @@ def _publish_live_cast(
         ]
         best_face, av_score = pick_best_avatar(subset, anime_soft=anime_soft)
         thumb_bgr = (
-            best_face.thumbnail_bgr
+            best_face.thumb_bgr()
             if best_face is not None
             else person.thumbnail_bgr
         )
@@ -937,21 +937,41 @@ def run_scan(
     )
     info = probe_video(video)
     project.duration_sec = info.duration_sec
-    samples_total, approx = expected_sample_count(
+
+    # Scene-aware sampling: the cut phase has already run, so spend detector
+    # calls per shot instead of sweeping the whole file at a flat rate. Burst
+    # geometry comes from the same GateConfig the identity gates use, so every
+    # burst is dense enough to form a tracklet (see decode.plan_shot_samples).
+    scan_cfg = gate_config_for(settings.content_preset, project.backend)
+    shot_spans = _shots_for_project(project, allow_detect=False)
+    if shot_spans:
+        sample_plan = plan_shot_samples(
+            shot_spans,
+            settings.sample_fps,
+            max_track_gap_sec=scan_cfg.max_track_gap_sec,
+            min_track_len=scan_cfg.min_track_len,
+        )
+    else:
+        # No cuts (detector unavailable, or a single unbroken take).
+        sample_plan = plan_uniform_samples(info.duration_sec, settings.sample_fps)
+    samples_total = len(sample_plan)
+    approx = False
+    uniform_total, _ = expected_sample_count(
         info.frame_count, info.fps, settings.sample_fps
     )
     dbg.info(
         "probe w=%s h=%s fps=%.3f frames=%s duration=%.2fs sample_fps=%.2f "
-        "samples_total=%s approx=%s step~%s",
+        "shots=%s planned_samples=%s uniform_samples=%s reduction=%.2fx",
         info.width,
         info.height,
         info.fps,
         info.frame_count,
         info.duration_sec,
         settings.sample_fps,
+        len(shot_spans) if shot_spans else 0,
         samples_total,
-        approx,
-        max(1, int(round(max(0.1, info.fps) / max(0.1, settings.sample_fps)))),
+        uniform_total,
+        uniform_total / max(1, samples_total),
     )
     set_progress(
         overall=PHASE_PROBE,
@@ -1053,6 +1073,7 @@ def run_scan(
     )
 
     detections: list[FaceDetection] = []
+    shot_fingerprints = ShotFingerprints(len(shot_spans) if shot_spans else 0)
     seen = 0
     ema_fps: float | None = None
     # (monotonic_t, frames_done) samples for windowed rate
@@ -1091,10 +1112,12 @@ def run_scan(
     )
 
     try:
-      for ts, frame in iter_sampled_frames_prefetched(
+      for ts, frame, shot_idx in iter_sampled_frames_prefetched(
           video,
           sample_fps=settings.sample_fps,
           queue_size=settings.prefetch_depth,
+          plan=sample_plan,
+          info=info,
       ):
         if store.is_deleted(project.id) or (should_cancel and should_cancel()):
             if not store.is_deleted(project.id):
@@ -1108,6 +1131,11 @@ def run_scan(
         _wait_if_paused(store, project, should_cancel, should_pause)
 
         t_frame0 = time.monotonic()
+        # Visual fingerprint for shot -> scene grouping. Free here: the frame
+        # is already decoded and resident, and this is the only pass that sees
+        # every sampled frame regardless of which cut detector ran.
+        if shot_idx >= 0:
+            shot_fingerprints.accumulate(shot_idx, frame)
         detect_frame, coord_scale = downscale_for_detect(frame, detect_max_edge)
         detected = backend.detect(detect_frame, ts)
         n_raw = len(detected)
@@ -1352,6 +1380,26 @@ def run_scan(
         len(project.people),
         len(project.segments),
     )
+
+    # Shot -> scene grouping. Needs the final segments (for per-shot cast) and
+    # the fingerprints gathered during detect, so it runs after the last publish.
+    if shot_spans:
+        shot_fingerprints.save(store._dir(project.id))
+        try:
+            fingerprints, _counts = shot_fingerprints.finalize()
+            project.scene_groups = build_scene_groups(
+                shot_spans, project.segments, fingerprints=fingerprints
+            )
+            dbg.info(
+                "scene groups shots=%s groups=%s",
+                len(shot_spans),
+                len(project.scene_groups),
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Packs fall back to shot mode without groups; never fail the scan.
+            log.warning("scene grouping failed project=%s: %s", project.id, exc)
+            dbg.exception("scene grouping failed")
+
     set_progress(
         overall=detect_base + PHASE_DETECT + PHASE_CLUSTER + PHASE_THUMBS,
         stage=f"Ready · {len(project.people)} characters",

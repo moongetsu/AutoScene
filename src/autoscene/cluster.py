@@ -97,60 +97,29 @@ def _segment_intervals(
     return sorted(rows, key=lambda row: (row[0], row[1], row[2]))
 
 
-def cocast_pairs(
+def derive_scenes_and_cocast(
     segments: list[Segment],
-    min_overlap_sec: float = 0.2,
-) -> list[tuple[int, int, float]]:
-    """
-    Honest co-cast graph: person pairs whose face-presence windows overlap
-    by at least min_overlap_sec (sum per unordered pair).
-
-    Uses preview_* when set so full-shot export plates do not falsely WITH
-    two characters who only appear in different halves of the same cut.
-    """
-    intervals = _segment_intervals(segments, face_presence=True)
-    if not intervals:
-        return []
-
-    pair_overlap: dict[tuple[int, int], float] = {}
-    for i, (sa, ea, pa) in enumerate(intervals):
-        for sb, eb, pb in intervals[i + 1 :]:
-            if pa == pb:
-                continue
-            ov = min(ea, eb) - max(sa, sb)
-            if ov >= min_overlap_sec:
-                key = pair_key(pa, pb)
-                pair_overlap[key] = pair_overlap.get(key, 0.0) + ov
-
-    return sorted(
-        (a, b, float(sec))
-        for (a, b), sec in pair_overlap.items()
-    )
-
-
-def build_shared_scenes(
-    segments: list[Segment],
-    gap_sec: float = 0.35,
+    *,
     min_segment_sec: float = 0.5,
     min_presence_sec: float = 0.2,
-) -> list[SharedScene]:
+    min_overlap_sec: float | None = None,
+) -> tuple[list[SharedScene], list[tuple[int, int, float]]]:
     """
-    Build timeline scenes from pairwise face-presence overlap.
+    Build shared scenes and the co-cast graph in one pass.
 
-    Segments from different people link when their face windows overlap by
-    >= min_presence_sec. Each connected component becomes one scene; its
-    time range is the union of member face windows. Single-person components
-    are kept. Reverse-shot segments with no simultaneous face overlap never
-    share a multi-person scene (union glue alone cannot create WITH).
+    Scenes and co-cast read the same sorted face-presence intervals and the
+    same pairwise-overlap test, so deriving them together halves the work.
+    Callers that need only one of the two use the thin wrappers below.
 
-    gap_sec is retained for API compatibility but no longer glues scenes;
-    co-presence requires actual overlap, not adjacency.
+    min_overlap_sec defaults to min_presence_sec (how every in-tree caller
+    uses it — both thresholds come from cfg.cocast_min_overlap_sec).
     """
-    del gap_sec  # legacy param; overlap graph replaces time-union glue
+    if min_overlap_sec is None:
+        min_overlap_sec = min_presence_sec
 
     intervals = _segment_intervals(segments, face_presence=True)
     if not intervals:
-        return []
+        return [], []
 
     n = len(intervals)
     parent = list(range(n))
@@ -166,14 +135,26 @@ def build_shared_scenes(
         if ri != rj:
             parent[ri] = rj
 
-    for i, (sa, ea, pa) in enumerate(intervals):
+    pair_overlap: dict[tuple[int, int], float] = {}
+    # Intervals are start-sorted, so once a later start is too far past this
+    # end to clear the smaller threshold, no remaining j can overlap either.
+    stop_slack = min(min_presence_sec, min_overlap_sec)
+
+    for i in range(n):
+        sa, ea, pa = intervals[i]
         for j in range(i + 1, n):
             sb, eb, pb = intervals[j]
+            if ea - sb < stop_slack:
+                break
             if pa == pb:
                 continue
-            ov = min(ea, eb) - max(sa, sb)
+            # sb >= sa because intervals are start-sorted.
+            ov = min(ea, eb) - sb
             if ov >= min_presence_sec:
                 union(i, j)
+            if ov >= min_overlap_sec:
+                key = pair_key(pa, pb)
+                pair_overlap[key] = pair_overlap.get(key, 0.0) + ov
 
     buckets: dict[int, list[int]] = {}
     for i in range(n):
@@ -199,7 +180,56 @@ def build_shared_scenes(
     raw.sort(key=lambda s: (s.start_sec, s.end_sec, s.person_ids))
     for idx, scene in enumerate(raw):
         scene.scene_id = idx
-    return raw
+
+    pairs = sorted((a, b, float(sec)) for (a, b), sec in pair_overlap.items())
+    return raw, pairs
+
+
+def cocast_pairs(
+    segments: list[Segment],
+    min_overlap_sec: float = 0.2,
+) -> list[tuple[int, int, float]]:
+    """
+    Honest co-cast graph: person pairs whose face-presence windows overlap
+    by at least min_overlap_sec (sum per unordered pair).
+
+    Uses preview_* when set so full-shot export plates do not falsely WITH
+    two characters who only appear in different halves of the same cut.
+    """
+    _, pairs = derive_scenes_and_cocast(
+        segments,
+        min_presence_sec=min_overlap_sec,
+        min_overlap_sec=min_overlap_sec,
+    )
+    return pairs
+
+
+def build_shared_scenes(
+    segments: list[Segment],
+    gap_sec: float = 0.35,
+    min_segment_sec: float = 0.5,
+    min_presence_sec: float = 0.2,
+) -> list[SharedScene]:
+    """
+    Build timeline scenes from pairwise face-presence overlap.
+
+    Segments from different people link when their face windows overlap by
+    >= min_presence_sec. Each connected component becomes one scene; its
+    time range is the union of member face windows. Single-person components
+    are kept. Reverse-shot segments with no simultaneous face overlap never
+    share a multi-person scene (union glue alone cannot create WITH).
+
+    gap_sec is retained for API compatibility but no longer glues scenes;
+    co-presence requires actual overlap, not adjacency.
+    """
+    del gap_sec  # legacy param; overlap graph replaces time-union glue
+
+    scenes, _ = derive_scenes_and_cocast(
+        segments,
+        min_segment_sec=min_segment_sec,
+        min_presence_sec=min_presence_sec,
+    )
+    return scenes
 
 
 def _normalize_rows(X: np.ndarray) -> np.ndarray:
@@ -429,7 +459,9 @@ def cluster_faces(
             screen = max(0.1, unique_t[-1] - unique_t[0])
             # refine via gaps later in segments
         best, av_score = pick_best_avatar(subset, anime_soft=anime_soft)
-        thumb = best.thumbnail_bgr if best is not None else None
+        # One decode per cluster, not per detection — pick_best_avatar ranks
+        # on the stats cached at crop time and never touches pixels.
+        thumb = best.thumb_bgr() if best is not None else None
         people.append(
             PersonCluster(
                 person_id=label,

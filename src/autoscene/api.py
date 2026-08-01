@@ -4,6 +4,9 @@ import logging
 import shutil
 import subprocess
 import threading
+import uuid
+from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +20,16 @@ from autoscene.ffmpeg_encode import VIDEO_CODEC_CHOICES, default_video_codec
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from autoscene.config import settings
-from autoscene.project import ProjectStore, SegmentExclusion, SegmentRecord, is_segment_excluded
+from autoscene.project import (
+    PACK_CONTEXT_MODES,
+    ClipOverride,
+    ManualSegment,
+    PackSettings,
+    ProjectStore,
+    SegmentExclusion,
+    SegmentRecord,
+    is_segment_excluded,
+)
 from autoscene.security import (
     SecurityError,
     assert_export_output,
@@ -261,6 +273,20 @@ class ToggleSegmentBody(BaseModel):
     excluded: bool
 
 
+class ManualSegmentBody(BaseModel):
+    start_sec: float
+    end_sec: float
+    person_ids: list[int] = Field(default_factory=list)
+    label: str = ""
+
+
+class ManualSegmentPatchBody(BaseModel):
+    start_sec: float | None = None
+    end_sec: float | None = None
+    person_ids: list[int] | None = None
+    label: str | None = None
+
+
 class RenameBody(BaseModel):
     label: str
 
@@ -272,6 +298,19 @@ class MergePeopleBody(BaseModel):
 
 class OpenFolderBody(BaseModel):
     path: str
+
+
+class PackSettingsBody(BaseModel):
+    context_mode: str | None = None
+    lead_shots: int | None = None
+    tail_shots: int | None = None
+    max_clip_sec: float | None = None
+
+
+class ClipOverrideBody(BaseModel):
+    shot_index: int
+    # include | exclude | clear
+    action: str = "include"
 
 
 @app.get("/api/health")
@@ -787,19 +826,369 @@ def toggle_segment_exclusion(
     return project.to_api_dict()
 
 
+def _clamp_manual_range(
+    project, start_sec: float, end_sec: float
+) -> tuple[float, float]:
+    limit = float(project.duration_sec or 0.0)
+    a, b = float(start_sec), float(end_sec)
+    if b < a:
+        a, b = b, a
+    a = max(0.0, a)
+    if limit > 0:
+        a = min(a, limit)
+        b = min(b, limit)
+    if b - a < 0.04:
+        raise HTTPException(400, "Range is too short")
+    return a, b
+
+
+def _valid_person_ids(project, person_ids: list[int]) -> list[int]:
+    """
+    Validate cast tags, rejecting unknown ids rather than dropping them.
+
+    Silently discarding an id would report "range added to 2 packs" while
+    the range landed in none — the client only ever sends ids from the
+    cast it just rendered, so a mismatch is a real desync worth surfacing.
+    """
+    known = {p.person_id for p in project.people}
+    wanted = {int(pid) for pid in person_ids}
+    unknown = sorted(wanted - known)
+    if unknown:
+        raise HTTPException(400, f"Unknown cast member(s): {unknown}")
+    return sorted(wanted)
+
+
+@app.post("/api/projects/{project_id}/manual-segments")
+def create_manual_segment(project_id: str, body: ManualSegmentBody) -> dict[str, Any]:
+    """Add a user-drawn range, tagged to zero or more cast members."""
+    try:
+        assert_project_id(project_id)
+    except SecurityError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    project = store.load(project_id)
+    start, end = _clamp_manual_range(project, body.start_sec, body.end_sec)
+    project.manual_segments.append(
+        ManualSegment(
+            id=uuid.uuid4().hex[:12],
+            start_sec=start,
+            end_sec=end,
+            person_ids=_valid_person_ids(project, body.person_ids),
+            label=body.label.strip()[:120],
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )
+    )
+    project.manual_segments.sort(key=lambda m: m.start_sec)
+    store.save(project)
+    return project.to_api_dict()
+
+
+@app.patch("/api/projects/{project_id}/manual-segments/{segment_id}")
+def update_manual_segment(
+    project_id: str, segment_id: str, body: ManualSegmentPatchBody
+) -> dict[str, Any]:
+    try:
+        assert_project_id(project_id)
+    except SecurityError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    project = store.load(project_id)
+    target = next((m for m in project.manual_segments if m.id == segment_id), None)
+    if target is None:
+        raise HTTPException(404, "Manual segment not found")
+    start = body.start_sec if body.start_sec is not None else target.start_sec
+    end = body.end_sec if body.end_sec is not None else target.end_sec
+    target.start_sec, target.end_sec = _clamp_manual_range(project, start, end)
+    if body.person_ids is not None:
+        target.person_ids = _valid_person_ids(project, body.person_ids)
+    if body.label is not None:
+        target.label = body.label.strip()[:120]
+    project.manual_segments.sort(key=lambda m: m.start_sec)
+    store.save(project)
+    return project.to_api_dict()
+
+
+@app.delete("/api/projects/{project_id}/manual-segments/{segment_id}")
+def delete_manual_segment(project_id: str, segment_id: str) -> dict[str, Any]:
+    try:
+        assert_project_id(project_id)
+    except SecurityError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    project = store.load(project_id)
+    before = len(project.manual_segments)
+    project.manual_segments = [m for m in project.manual_segments if m.id != segment_id]
+    if len(project.manual_segments) == before:
+        raise HTTPException(404, "Manual segment not found")
+    store.save(project)
+    return project.to_api_dict()
+
+
+def _require_person(project, person_id: int):
+    person = next(
+        (p for p in project.people if int(p.person_id) == int(person_id)), None
+    )
+    if person is None:
+        raise HTTPException(404, f"Unknown cast member: {person_id}")
+    return person
+
+
+@app.patch("/api/projects/{project_id}/packs/{person_id}")
+def update_pack_settings(
+    project_id: str, person_id: int, body: PackSettingsBody
+) -> dict[str, Any]:
+    """
+    Set how much context this character's pack keeps around each appearance.
+
+    Applies immediately — clips are widened when a pack is read, so changing
+    mode never needs a rescan.
+    """
+    try:
+        assert_project_id(project_id)
+    except SecurityError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    project = store.load(project_id)
+    _require_person(project, person_id)
+
+    row = next(
+        (p for p in project.pack_settings if int(p.person_id) == int(person_id)),
+        None,
+    )
+    if row is None:
+        row = PackSettings(**asdict(project.pack_settings_for(person_id)))
+        project.pack_settings.append(row)
+
+    if body.context_mode is not None:
+        mode = body.context_mode.strip().lower()
+        if mode not in PACK_CONTEXT_MODES:
+            raise HTTPException(
+                400, f"context_mode must be one of {list(PACK_CONTEXT_MODES)}"
+            )
+        if mode in ("conversation", "scene") and not project.scene_groups:
+            raise HTTPException(
+                409,
+                "This project has no scene grouping yet. Rebuild scenes first.",
+            )
+        row.context_mode = mode
+    if body.lead_shots is not None:
+        row.lead_shots = max(0, min(10, int(body.lead_shots)))
+    if body.tail_shots is not None:
+        row.tail_shots = max(0, min(10, int(body.tail_shots)))
+    if body.max_clip_sec is not None:
+        row.max_clip_sec = max(1.0, float(body.max_clip_sec)) or None
+
+    store.save(project)
+    return {
+        "project": project.to_api_dict(),
+        "clips": _clips_payload(project, person_id),
+    }
+
+
+@app.post("/api/projects/{project_id}/packs/{person_id}/overrides")
+def set_clip_override(
+    project_id: str, person_id: int, body: ClipOverrideBody
+) -> dict[str, Any]:
+    """Pull a missed shot into the pack, drop one that does not fit, or reset."""
+    try:
+        assert_project_id(project_id)
+    except SecurityError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    project = store.load(project_id)
+    _require_person(project, person_id)
+
+    action = body.action.strip().lower()
+    if action not in ("include", "exclude", "clear"):
+        raise HTTPException(400, "action must be include, exclude or clear")
+    shot_index = int(body.shot_index)
+    if not (0 <= shot_index < len(project.shots)):
+        raise HTTPException(404, f"No shot at index {shot_index}")
+
+    project.clip_overrides = [
+        o
+        for o in project.clip_overrides
+        if not (
+            int(o.person_id) == int(person_id) and int(o.shot_index) == shot_index
+        )
+    ]
+    if action != "clear":
+        project.clip_overrides.append(
+            ClipOverride(
+                person_id=int(person_id), shot_index=shot_index, action=action
+            )
+        )
+    store.save(project)
+    return {
+        "project": project.to_api_dict(),
+        "clips": _clips_payload(project, person_id),
+    }
+
+
+@app.post("/api/projects/{project_id}/scene-groups/rebuild")
+def rebuild_scene_groups(project_id: str) -> dict[str, Any]:
+    """
+    Regroup shots into scenes from the current cast.
+
+    Also the migration path for projects scanned before grouping existed: their
+    fingerprints are missing, so grouping falls back to cast continuity, which
+    is weaker on faceless establishing shots but still unlocks the wider modes.
+    """
+    try:
+        assert_project_id(project_id)
+    except SecurityError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    project = store.load(project_id)
+    if project.status != "ready":
+        raise HTTPException(409, "Scenes can only be rebuilt on a ready project.")
+    if not project.shots:
+        raise HTTPException(409, "This project has no scene cuts to group.")
+
+    from autoscene.scene_cuts import ShotSpan
+    from autoscene.scene_groups import build_scene_groups
+    from autoscene.shot_fingerprint import load_fingerprints
+
+    spans = [
+        ShotSpan(float(s.start_sec), float(s.end_sec)) for s in project.shots
+    ]
+    project.scene_groups = build_scene_groups(
+        spans,
+        project.segments,
+        fingerprints=load_fingerprints(store._dir(project_id)),
+    )
+    store.save(project)
+    return project.to_api_dict()
+
+
+@app.get("/api/projects/{project_id}/packs/{person_id}/clips")
+def get_pack_clips(project_id: str, person_id: int) -> dict[str, Any]:
+    """
+    The clips this character's pack will export, at the current context mode.
+
+    Served per-person on demand rather than folded into the project payload,
+    which the UI polls about once a second.
+    """
+    try:
+        assert_project_id(project_id)
+    except SecurityError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    project = store.load(project_id)
+    _require_person(project, person_id)
+    return _clips_payload(project, person_id)
+
+
+def _clips_payload(project, person_id: int) -> dict[str, Any]:
+    settings_row = project.pack_settings_for(person_id)
+    clips = _active_segments(project, person_id)
+    shot_starts = [float(sh.start_sec) for sh in project.shots]
+
+    covered: set[int] = set()
+    for c in clips:
+        for i, s in enumerate(shot_starts):
+            if c.start_sec <= s < c.end_sec:
+                covered.add(i)
+
+    # Shots holding a detection of this character that the pack does not
+    # currently ship — the "you're missing this" hint the timeline renders.
+    detected_shots: set[int] = set()
+    for seg in project.segments:
+        if int(seg.person_id) != int(person_id):
+            continue
+        for i, s in enumerate(shot_starts):
+            if abs(s - float(seg.start_sec)) <= 0.06:
+                detected_shots.add(i)
+                break
+
+    return {
+        "person_id": int(person_id),
+        "context_mode": settings_row.context_mode,
+        "lead_shots": settings_row.lead_shots,
+        "tail_shots": settings_row.tail_shots,
+        "max_clip_sec": settings_row.max_clip_sec,
+        "clips": [asdict(c) for c in clips],
+        "covered_shot_indices": sorted(covered),
+        "missing_shot_indices": sorted(detected_shots - covered),
+        "overrides": [
+            asdict(o)
+            for o in project.clip_overrides
+            if int(o.person_id) == int(person_id)
+        ],
+    }
+
+
 def _person_segments(project, person_id: int) -> list[SegmentRecord]:
     segs = [s for s in project.segments if s.person_id == person_id]
     segs.sort(key=lambda s: s.start_sec)
     return segs
 
 
+def _manual_segments_for(project, person_id: int) -> list[SegmentRecord]:
+    """User-drawn ranges tagged with this person, as plain segments."""
+    out: list[SegmentRecord] = []
+    for ms in getattr(project, "manual_segments", None) or []:
+        if person_id not in (ms.person_ids or []):
+            continue
+        out.append(
+            SegmentRecord(
+                person_id=person_id,
+                start_sec=float(ms.start_sec),
+                end_sec=float(ms.end_sec),
+            )
+        )
+    return out
+
+
 def _active_segments(project, person_id: int) -> list[SegmentRecord]:
-    """Non-excluded segments for export, coalesced to drop near-duplicate chops."""
+    """
+    The clips this character's pack actually ships.
+
+    One choke point for everything that reads a pack — /export, /export/merged
+    and /packs/{id}/clips all route through here, so context mode, user
+    overrides and exclusions can never disagree between preview and export.
+
+    Order matters: widen for context FIRST, then drop what the user excluded.
+    Excluding first would let a removed shot come back as context for a
+    neighbouring one.
+    """
     from autoscene.cluster import Segment, coalesce_segments
+    from autoscene.pack_context import expand_segments
+
+    settings_row = project.pack_settings_for(person_id)
+    overrides = [
+        o
+        for o in getattr(project, "clip_overrides", None) or []
+        if int(o.person_id) == int(person_id)
+    ]
+    includes = {int(o.shot_index) for o in overrides if o.action == "include"}
+    excludes = {int(o.shot_index) for o in overrides if o.action == "exclude"}
+
+    detected = expand_segments(
+        _person_segments(project, person_id),
+        person_id=person_id,
+        shots=project.shots,
+        scene_groups=project.scene_groups,
+        cocast_edges=project.cocast_edges(),
+        all_segments=project.segments,
+        mode=settings_row.context_mode,
+        lead_shots=settings_row.lead_shots,
+        tail_shots=settings_row.tail_shots,
+        max_clip_sec=settings_row.max_clip_sec,
+        extra_shot_indices=includes,
+        excluded_shot_indices=excludes,
+    )
+
+    # Manual ranges join the pack here, so both /export and /export/merged
+    # pick them up. They are user-drawn verbatim and never widened.
+    candidates = [
+        SegmentRecord(
+            person_id=s.person_id,
+            start_sec=s.start_sec,
+            end_sec=s.end_sec,
+            preview_start_sec=s.preview_start_sec,
+            preview_end_sec=s.preview_end_sec,
+            face_time_sec=s.face_time_sec,
+        )
+        for s in detected
+    ] + _manual_segments_for(project, person_id)
 
     active = [
         s
-        for s in _person_segments(project, person_id)
+        for s in candidates
         if not is_segment_excluded(
             project.excluded_segments,
             s.person_id,
@@ -807,6 +1196,7 @@ def _active_segments(project, person_id: int) -> list[SegmentRecord]:
             s.end_sec,
         )
     ]
+    active.sort(key=lambda s: s.start_sec)
     coalesced = coalesce_segments(
         [
             Segment(
@@ -815,6 +1205,7 @@ def _active_segments(project, person_id: int) -> list[SegmentRecord]:
                 s.end_sec,
                 preview_start_sec=s.preview_start_sec,
                 preview_end_sec=s.preview_end_sec,
+                face_time_sec=s.face_time_sec,
             )
             for s in active
         ],
@@ -828,6 +1219,7 @@ def _active_segments(project, person_id: int) -> list[SegmentRecord]:
             end_sec=s.end_sec,
             preview_start_sec=s.preview_start_sec,
             preview_end_sec=s.preview_end_sec,
+            face_time_sec=s.face_time_sec,
         )
         for s in coalesced
     ]
@@ -1100,9 +1492,88 @@ def project_scene_frame(
     )
 
 
+_video_probe_cache: dict[tuple[str, int, int], dict[str, Any]] = {}
+_video_probe_lock = threading.Lock()
+
+
+def _probe_video_format(video: Path) -> dict[str, Any]:
+    """
+    Frame rate / dimensions for the UI player, cached per path+mtime+size.
+
+    Prefers ffprobe's exact rational (24000/1001) over OpenCV's rounded
+    float — frame stepping and HH:MM:SS:FF drift badly at 24 vs 23.976.
+    """
+    try:
+        st = video.stat()
+        key = (str(video), int(st.st_mtime), int(st.st_size))
+    except OSError:
+        return {"fps": None, "fps_num": None, "fps_den": None,
+                "width": 0, "height": 0, "frame_count": 0}
+
+    with _video_probe_lock:
+        hit = _video_probe_cache.get(key)
+    if hit is not None:
+        return hit
+
+    out: dict[str, Any] = {
+        "fps": None, "fps_num": None, "fps_den": None,
+        "width": 0, "height": 0, "frame_count": 0,
+    }
+    try:
+        import json as _json
+
+        from autoscene.video_proxy import _ensure_ffprobe
+
+        proc = subprocess.run(
+            [
+                _ensure_ffprobe(), "-v", "quiet", "-print_format", "json",
+                "-select_streams", "v:0", "-show_streams", str(video),
+            ],
+            check=False, capture_output=True, text=True,
+        )
+        stream = ((_json.loads(proc.stdout or "{}").get("streams") or [None]) or [None])[0]
+        if stream:
+            out["width"] = int(stream.get("width") or 0)
+            out["height"] = int(stream.get("height") or 0)
+            out["frame_count"] = int(stream.get("nb_frames") or 0)
+            rate = stream.get("avg_frame_rate") or stream.get("r_frame_rate")
+            if rate and rate not in ("N/A", "0/0"):
+                text = str(rate)
+                if "/" in text:
+                    num, den = text.split("/", 1)
+                    n, d = int(float(num)), int(float(den))
+                    if d > 0 and n > 0:
+                        out["fps_num"], out["fps_den"] = n, d
+                        out["fps"] = n / d
+                else:
+                    val = float(text)
+                    if val > 0:
+                        out["fps"] = val
+    except Exception:  # noqa: BLE001 - probing is best-effort
+        log.debug("ffprobe video-meta failed for %s", video, exc_info=True)
+
+    if not out["fps"]:
+        # OpenCV fallback: rounded, but better than hiding frame controls.
+        try:
+            from autoscene.decode import probe_video
+
+            info = probe_video(video)
+            if info.fps > 0:
+                out["fps"] = float(info.fps)
+            out["width"] = out["width"] or int(info.width)
+            out["height"] = out["height"] or int(info.height)
+            out["frame_count"] = out["frame_count"] or int(info.frame_count)
+        except Exception:  # noqa: BLE001
+            log.debug("opencv video-meta fallback failed for %s", video, exc_info=True)
+
+    with _video_probe_lock:
+        _video_probe_cache[key] = out
+    return out
+
+
 @app.get("/api/projects/{project_id}/video-meta")
 def project_video_meta(project_id: str) -> dict[str, Any]:
-    """Filesystem size/path for UI (path imports have no browser File.size)."""
+    """Filesystem size/path plus frame rate for the UI player."""
     try:
         project = store.load(project_id)
     except FileNotFoundError as exc:
@@ -1112,11 +1583,19 @@ def project_video_meta(project_id: str) -> dict[str, Any]:
         size = video.stat().st_size if video.exists() else 0
     except OSError:
         size = 0
-    return {
+    meta: dict[str, Any] = {
         "video_path": str(video),
         "video_bytes": size,
         "exists": video.exists(),
     }
+    if video.exists():
+        meta.update(_probe_video_format(video))
+    else:
+        meta.update(
+            {"fps": None, "fps_num": None, "fps_den": None,
+             "width": 0, "height": 0, "frame_count": 0}
+        )
+    return meta
 
 
 @app.post("/api/system/open-folder")

@@ -178,6 +178,22 @@ function pickBusyProject(list: Project[]): Project | undefined {
   })[0]
 }
 
+/**
+ * Timestamp of the last mutation whose response we applied directly.
+ *
+ * The "never wipe a non-empty list" guards below exist for thin polls, but
+ * they also make it impossible to clear a list on purpose: delete the last
+ * manual range (or restore every excluded clip) and the next poll — which
+ * correctly returns [] — gets overridden from `prev`. After an explicit
+ * write we trust an empty list for a short window.
+ */
+let authoritativeWriteAt = 0
+const AUTHORITATIVE_MS = 5000
+
+export function markAuthoritativeWrite() {
+  authoritativeWriteAt = Date.now()
+}
+
 /** List payload is full project JSON — paint immediately on reload. */
 function mergeProjectRow(prev: Project | null, row: Project): Project {
   if (!prev || prev.id !== row.id) return row
@@ -206,11 +222,22 @@ function mergeProjectRow(prev: Project | null, row: Project): Project {
   if ((base.scenes?.length ?? 0) === 0 && (prev.scenes?.length ?? 0) > 0) {
     base.scenes = prev.scenes
   }
+  // User-editable lists: an empty payload right after an explicit write is
+  // the truth, not a thin poll.
+  const trustEmpty = Date.now() - authoritativeWriteAt < AUTHORITATIVE_MS
   if (
+    !trustEmpty &&
     (base.excluded_segments?.length ?? 0) === 0 &&
     (prev.excluded_segments?.length ?? 0) > 0
   ) {
     base.excluded_segments = prev.excluded_segments
+  }
+  if (
+    !trustEmpty &&
+    (base.manual_segments?.length ?? 0) === 0 &&
+    (prev.manual_segments?.length ?? 0) > 0
+  ) {
+    base.manual_segments = prev.manual_segments
   }
   return base
 }

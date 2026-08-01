@@ -27,10 +27,12 @@ RUNTIME_SETTING_KEYS = (
     "scene_cut_detector",
     "scene_cut_adaptive_threshold",
     "scene_cut_transnet_threshold",
+    "decode_backend",
 )
 
 FACE_SELECT_MODES = frozenset({"all", "largest", "relative", "top_n"})
 SCENE_CUT_MODES = frozenset({"adaptive", "transnet", "auto"})
+DECODE_BACKENDS = frozenset({"opencv", "ffmpeg"})
 
 # Canonical identity flow (research-locked, 2026 OSS practice):
 #   detect (RetinaFace / EfficientDet) → quality gates → embed (ArcFace / OML)
@@ -110,6 +112,12 @@ class Settings(BaseSettings):
     animecv_score_threshold: float = 0.58
     # Decode thread queue depth — keeps GPU fed while CPU reads frames
     prefetch_depth: int = 8
+    # opencv | ffmpeg. OpenCV measured faster than an ffmpeg rawvideo pipe on
+    # every Apple Silicon case tried (720p 6.7x, 1080p 1.9x, 4K 1.2x), and
+    # VideoToolbox hwaccel was no better than software decode. The pipe is kept
+    # for `-hwaccel cuda` on Windows NVIDIA, which was not benchmarked — do not
+    # flip this default without measuring on that hardware.
+    decode_backend: str = "opencv"
     # Per-frame face selection (geometric; not semantic "background" detection)
     # all | largest | relative | top_n
     face_select_mode: str = "all"
@@ -209,6 +217,10 @@ class Settings(BaseSettings):
             )
         if "prefetch_depth" in patch and patch["prefetch_depth"] is not None:
             self.prefetch_depth = int(max(1, min(32, int(patch["prefetch_depth"]))))
+        if "decode_backend" in patch and patch["decode_backend"] is not None:
+            raw = str(patch["decode_backend"]).strip().lower()
+            if raw in DECODE_BACKENDS:
+                self.decode_backend = raw
         if "face_select_mode" in patch and patch["face_select_mode"] is not None:
             mode = str(patch["face_select_mode"]).strip().lower()
             if mode in FACE_SELECT_MODES:
@@ -296,6 +308,7 @@ class Settings(BaseSettings):
                 for m in ANIMECV_ENCODERS.values()
             ],
             "prefetch_depth": self.prefetch_depth,
+            "decode_backend": self.decode_backend,
             "face_select_mode": self.face_select_mode,
             "face_relative_pct": self.face_relative_pct,
             "face_top_n": self.face_top_n,
