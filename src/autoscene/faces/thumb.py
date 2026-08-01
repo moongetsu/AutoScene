@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import cv2
 import numpy as np
+
+# JPEG quality for stored face crops. 92 is visually indistinguishable from the
+# raw crop at 256px and lands ~10KB vs 196KB for the BGR array.
+_THUMB_JPEG_QUALITY = 92
 
 
 def make_face_thumbnail(
@@ -54,6 +60,64 @@ def make_face_thumbnail(
     oy = (size - nh) // 2
     canvas[oy : oy + nh, ox : ox + nw] = resized
     return canvas
+
+
+def thumb_stats(bgr: np.ndarray | None) -> tuple[float, float]:
+    """(laplacian variance, mean intensity) for a BGR crop; (0, 0) when empty."""
+    if bgr is None or bgr.size == 0:
+        return 0.0, 0.0
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY) if bgr.ndim == 3 else bgr
+    return float(cv2.Laplacian(gray, cv2.CV_64F).var()), float(np.mean(bgr))
+
+
+def encode_thumb(bgr: np.ndarray | None) -> bytes | None:
+    if bgr is None or bgr.size == 0:
+        return None
+    ok, buf = cv2.imencode(
+        ".jpg", bgr, [int(cv2.IMWRITE_JPEG_QUALITY), _THUMB_JPEG_QUALITY]
+    )
+    return buf.tobytes() if ok else None
+
+
+def decode_thumb(data: bytes | None) -> np.ndarray | None:
+    if not data:
+        return None
+    img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+    return img if img is not None and img.size else None
+
+
+@dataclass(frozen=True)
+class ThumbRecord:
+    """Encoded face crop plus the stats measured while it was still decoded."""
+
+    jpeg: bytes
+    laplacian_var: float
+    mean: float
+
+
+def build_thumb(
+    frame_bgr: np.ndarray,
+    bbox: tuple[int, int, int, int],
+    *,
+    size: int = 256,
+    pad_scale: float = 1.35,
+) -> ThumbRecord | None:
+    """
+    Crop, measure, encode — in one pass over the pixels.
+
+    Detections are held in memory for the whole scan, so they store the JPEG
+    rather than the array. Sharpness/exposure are measured here because the
+    avatar ranking would otherwise have to decode every thumbnail again on
+    every live-cluster publish.
+    """
+    crop = make_face_thumbnail(frame_bgr, bbox, size=size, pad_scale=pad_scale)
+    if crop is None:
+        return None
+    jpeg = encode_thumb(crop)
+    if jpeg is None:
+        return None
+    lap, mean = thumb_stats(crop)
+    return ThumbRecord(jpeg=jpeg, laplacian_var=lap, mean=mean)
 
 
 def square_letterbox(bgr: np.ndarray, size: int = 256) -> np.ndarray | None:

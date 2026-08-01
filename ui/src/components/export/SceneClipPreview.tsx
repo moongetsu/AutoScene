@@ -1,5 +1,7 @@
-import { useEffect, useRef, useState } from "react"
-import { api, appendQuery } from "@/lib/api"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { api, appendQuery, FPS_FALLBACK } from "@/lib/api"
+import { useVideoClock } from "@/components/player/useVideoClock"
+import { useVideoFps } from "@/components/player/useVideoFps"
 import { cn } from "@/lib/utils"
 
 type SceneClipPreviewProps = {
@@ -49,6 +51,32 @@ export function SceneClipPreview({
         )
   const endAt = Math.max(stillAt + 0.1, endSec - 0.04)
   const videoSrc = appendQuery(api.videoUrl(projectId), { v: projectId })
+
+  // Loop the clip with the shared frame-accurate clock instead of the old
+  // `timeupdate >= endAt` check, which fires ~4x/sec and so overran the cut
+  // by up to a quarter second on every lap.
+  const { fps } = useVideoFps(projectId)
+  const hoverActive = hovering && hoverVideoEnabled
+  const loopRange = useMemo(
+    () => ({ startSec: stillAt, endSec: endAt }),
+    [stillAt, endAt],
+  )
+  const clock = useVideoClock({
+    videoRef,
+    fps: fps ?? FPS_FALLBACK,
+    activeRange: hoverActive ? loopRange : null,
+    onRangeEnd: useCallback(() => {
+      const v = videoRef.current
+      if (!v || !hoverRef.current) return
+      try {
+        v.currentTime = stillAt
+      } catch {
+        /* ignore */
+      }
+    }, [stillAt]),
+    attachToken: hoverActive,
+  })
+  void clock
   // Full-frame plate only. Face crops stay on gallery cast + import live preview.
   const frameSrc = appendQuery(api.sceneFrameUrl(projectId, stillAt), {
     v: "5",
@@ -175,17 +203,6 @@ export function SceneClipPreview({
             if (hoverRef.current) setVideoReady(true)
           }}
           onPlaying={() => setVideoReady(true)}
-          onTimeUpdate={() => {
-            const v = videoRef.current
-            if (!v || !hoverRef.current) return
-            if (v.currentTime >= endAt) {
-              try {
-                v.currentTime = stillAt
-              } catch {
-                /* ignore */
-              }
-            }
-          }}
         />
       ) : null}
 

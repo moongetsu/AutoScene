@@ -6,7 +6,6 @@ import cv2
 import numpy as np
 
 from autoscene.faces.base import FaceDetection
-from autoscene.faces.thumb import make_face_thumbnail
 
 log = logging.getLogger(__name__)
 
@@ -76,14 +75,13 @@ class DeepFaceBackend:
             norm = np.linalg.norm(emb)
             if norm > 0:
                 emb = emb / norm
-            thumb = make_face_thumbnail(frame_bgr, (x1, y1, x2, y2))
             out.append(
-                FaceDetection(
+                FaceDetection.with_thumb(
                     timestamp_sec=timestamp_sec,
                     bbox=(x1, y1, x2, y2),
                     embedding=emb,
                     det_score=float(obj.get("face_confidence", 1.0) or 1.0),
-                    thumbnail_bgr=thumb,
+                    frame_bgr=frame_bgr,
                 )
             )
         return out

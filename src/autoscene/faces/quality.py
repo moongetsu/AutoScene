@@ -2,20 +2,10 @@
 
 from __future__ import annotations
 
-import cv2
 import numpy as np
 
 from autoscene.faces.base import FaceDetection
-
-
-def _laplacian_var(bgr: np.ndarray | None) -> float:
-    if bgr is None or bgr.size == 0:
-        return 0.0
-    if bgr.ndim == 3:
-        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-    else:
-        gray = bgr
-    return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+from autoscene.faces.thumb import thumb_stats
 
 
 def _clamp01(x: float) -> float:
@@ -36,7 +26,7 @@ def face_avatar_score(
     land ~5–200 Laplacian var on 256px lettersboxed crops).
     Detector score is a weak tie-breaker only.
     """
-    if det.thumbnail_bgr is None or det.thumbnail_bgr.size == 0:
+    if not det.has_thumb:
         return -1.0
 
     x1, y1, x2, y2 = det.bbox
@@ -56,7 +46,8 @@ def face_avatar_score(
         frac = area / float(frame_area)
         size_term = max(size_term, _clamp01(frac / 0.045))
 
-    sharp = _laplacian_var(det.thumbnail_bgr)
+    # Measured at crop time (FaceDetection.with_thumb); never decoded here.
+    sharp = float(det.laplacian_var)
     # Empiric: mush ~3–15, ok ~40–120, crisp ~180–350 on our 256 thumbs
     sharp_lo = 8.0 if anime_soft else 18.0
     sharp_hi = 120.0 if anime_soft else 220.0
@@ -70,7 +61,7 @@ def face_avatar_score(
     det_raw = float(det.det_score)
     det_term = _clamp01(det_raw / 100.0) if det_raw > 1.0 else _clamp01(det_raw)
 
-    mean = float(np.mean(det.thumbnail_bgr))
+    mean = float(det.thumb_mean)
     # Crush near-black / crushed CGI stills
     if mean < 18.0:
         exposure = 0.15
@@ -100,12 +91,16 @@ def avatar_score_from_bgr(
     if bgr is None or bgr.size == 0:
         return -1.0
     h, w = bgr.shape[:2]
+    lap, mean = thumb_stats(bgr)
     fake = FaceDetection(
         timestamp_sec=0.0,
         bbox=(0, 0, w, h),
         embedding=np.zeros(1, dtype=np.float32),
         det_score=det_score,
-        thumbnail_bgr=bgr,
+        # Sentinel: face_avatar_score only checks presence, never decodes.
+        thumbnail_jpeg=b"\xff",
+        laplacian_var=lap,
+        thumb_mean=mean,
     )
     return face_avatar_score(fake, anime_soft=anime_soft)
 
@@ -128,7 +123,7 @@ def pick_best_avatar(
             best = det
     if best is None and detections:
         # Last resort: largest face with a thumb
-        with_thumb = [d for d in detections if d.thumbnail_bgr is not None]
+        with_thumb = [d for d in detections if d.has_thumb]
         pool = with_thumb or detections
         best = max(
             pool,

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { motion } from "motion/react"
 import { EyeOff } from "lucide-react"
 import {
@@ -12,7 +12,7 @@ import {
   type SegmentExclusion,
 } from "@/lib/api"
 import { SceneClipPreview } from "@/components/export/SceneClipPreview"
-import { coCastForSegment, segmentPreviewRange } from "@/lib/scenes"
+import { buildCoCastMap, segmentKey, segmentPreviewRange } from "@/lib/scenes"
 import { cn } from "@/lib/utils"
 
 type SceneClipGridProps = {
@@ -38,6 +38,17 @@ export function SceneClipGrid({
   onToggle,
 }: SceneClipGridProps) {
   const [hoverVideoEnabled, setHoverVideoEnabled] = useState(false)
+  // One pass for the whole grid — coCastForSegment per tile was O(n^2)
+  // on every render, and the 1.2s project poll re-renders constantly.
+  const coCast = useMemo(
+    () =>
+      buildCoCastMap(
+        segments,
+        allSegments?.length ? allSegments : segments,
+        people,
+      ),
+    [segments, allSegments, people],
+  )
   const [proxyHint, setProxyHint] = useState<string | null>(null)
 
   // Warm browser-playable proxy once per project (HEVC sources need this for hover).
@@ -100,11 +111,7 @@ export function SceneClipGrid({
         {segments.map((segment, index) => {
           const excluded = isSegmentExcluded(exclusions, segment)
           const duration = segment.end_sec - segment.start_sec
-          const others = coCastForSegment(
-            segment,
-            allSegments?.length ? allSegments : segments,
-            people,
-          )
+          const others = coCast.get(segmentKey(segment)) ?? []
           const preview = segmentPreviewRange(segment)
 
           return (

@@ -44,6 +44,59 @@ export function coCastForSegment(
     .filter((p): p is Person => Boolean(p))
 }
 
+/** Stable key for a segment, matching the server's rounded-tuple identity. */
+export function segmentKey(segment: Segment): string {
+  return `${segment.person_id}:${segment.start_sec.toFixed(3)}:${segment.end_sec.toFixed(3)}`
+}
+
+/**
+ * Co-cast for every segment at once.
+ *
+ * coCastForSegment is O(n) per call, so calling it inside a render map is
+ * O(n^2) every render. Build this once in a useMemo and look rows up by
+ * segmentKey instead.
+ */
+export function buildCoCastMap(
+  segments: Segment[],
+  allSegments: Segment[],
+  people: Person[],
+  minOverlapSec = 0.2,
+): Map<string, Person[]> {
+  const byId = new Map(people.map((p) => [p.person_id, p]))
+  const out = new Map<string, Person[]>()
+  if (!segments.length) return out
+
+  const pool = segmentIntervals(allSegments)
+  const targets = segments.map((s) => ({ segment: s, range: segmentFaceRange(s) }))
+  // Walk both in start order so the pool scan can stop early.
+  targets.sort((a, b) => a.range.startSec - b.range.startSec)
+
+  let head = 0
+  for (const { segment, range } of targets) {
+    // Pool entries ending before this range starts can never overlap it,
+    // and never will for any later (start-sorted) target either.
+    while (head < pool.length && pool[head].end - range.startSec < minOverlapSec) {
+      head++
+    }
+    const ids = new Set<number>()
+    for (let j = head; j < pool.length; j++) {
+      const b = pool[j]
+      if (b.start - range.endSec > -minOverlapSec) break
+      if (b.personId === segment.person_id) continue
+      const overlap = Math.min(b.end, range.endSec) - Math.max(b.start, range.startSec)
+      if (overlap >= minOverlapSec) ids.add(b.personId)
+    }
+    out.set(
+      segmentKey(segment),
+      [...ids]
+        .sort((a, b) => a - b)
+        .map((id) => byId.get(id))
+        .filter((p): p is Person => Boolean(p)),
+    )
+  }
+  return out
+}
+
 type Interval = { start: number; end: number; personId: number; index: number }
 
 function segmentIntervals(segments: Segment[]): Interval[] {
@@ -97,8 +150,12 @@ export function buildSharedScenesClient(
     const a = intervals[i]
     for (let j = i + 1; j < intervals.length; j++) {
       const b = intervals[j]
+      // Start-sorted: once a later start is too far past this end to clear
+      // the threshold, no remaining j can overlap either. Mirrors the
+      // server-side short-circuit in cluster.derive_scenes_and_cocast.
+      if (a.end - b.start < minPresenceSec) break
       if (a.personId === b.personId) continue
-      const overlap = Math.min(a.end, b.end) - Math.max(a.start, b.start)
+      const overlap = Math.min(a.end, b.end) - b.start
       if (overlap >= minPresenceSec) union(i, j)
     }
   }

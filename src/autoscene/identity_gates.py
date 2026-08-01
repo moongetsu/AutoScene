@@ -158,26 +158,12 @@ def embedding_ok(emb: np.ndarray) -> bool:
     return float(np.linalg.norm(v)) >= _MIN_EMB_NORM
 
 
-def laplacian_var(bgr: np.ndarray | None) -> float:
-    """Laplacian variance on a BGR crop; 0.0 when missing or empty."""
-    if bgr is None or bgr.size == 0:
-        return 0.0
-    import cv2
-
-    if bgr.ndim == 3:
-        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-    else:
-        gray = bgr
-    return float(cv2.Laplacian(gray, cv2.CV_64F).var())
-
-
 def quality_mask(
     det_scores: np.ndarray,
     embeddings: np.ndarray,
     cfg: GateConfig,
     *,
     bboxes: np.ndarray | None = None,
-    thumbnails: list[np.ndarray | None] | None = None,
     laplacian_vars: np.ndarray | None = None,
 ) -> np.ndarray:
     """Gates 1+2 as a vectorized mask over the raw detection list.
@@ -185,9 +171,11 @@ def quality_mask(
     When bboxes are provided, faces smaller than ``min_face_side`` are
     rejected here so tiny / unstable crops never enter clustering.
 
-    Blur reject uses ``min_laplacian_var`` when BGR thumbs or a parallel
-    ``laplacian_vars`` array is supplied. Rows with no measurement (NaN)
-    skip the blur gate so nothing is mass-rejected.
+    Blur reject uses ``min_laplacian_var`` against the parallel
+    ``laplacian_vars`` array. Callers pass the values measured once at crop
+    time (``FaceDetection.laplacian_var``) — this gate runs on every live
+    publish, so it must never touch thumbnail pixels itself. Rows with no
+    measurement (NaN) skip the blur gate so nothing is mass-rejected.
     """
     scores = np.asarray(det_scores, dtype=np.float64).reshape(-1)
     X = np.asarray(embeddings, dtype=np.float64)
@@ -203,11 +191,6 @@ def quality_mask(
     lv: np.ndarray | None = None
     if laplacian_vars is not None:
         lv = np.asarray(laplacian_vars, dtype=np.float64).reshape(-1)
-    elif thumbnails is not None and len(thumbnails):
-        lv = np.asarray(
-            [laplacian_var(t) if t is not None else np.nan for t in thumbnails],
-            dtype=np.float64,
-        )
     if lv is not None and lv.shape[0] == ok.shape[0]:
         measured = np.isfinite(lv)
         blur_ok = np.ones(ok.shape[0], dtype=bool)

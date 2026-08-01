@@ -1,6 +1,15 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useNavigate } from "react-router-dom"
-import { Clapperboard, ListPlus, Loader2, RotateCcw, ScanFace, Square, LayoutGrid } from "lucide-react"
+import {
+  Clapperboard,
+  Files,
+  LayoutGrid,
+  ListPlus,
+  Loader2,
+  RotateCcw,
+  ScanFace,
+  Square,
+} from "lucide-react"
 import { toast } from "sonner"
 import {
   AlertDialog,
@@ -13,6 +22,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { Button as AnimatedButton } from "@/components/ui/animated-button"
+import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -29,6 +39,7 @@ import { EmptyState } from "@/components/app/EmptyState"
 import { LoadingBlock } from "@/components/shared/LoadingBlock"
 import { SceneClipGrid } from "@/components/export/SceneClipGrid"
 import { MergedExportResultPanel } from "@/components/export/MergedExportResultPanel"
+import { ExportResultPanel } from "@/components/export/ExportResultPanel"
 import { ExportTargetsPanel } from "@/components/export/ExportTargetsPanel"
 import { FacePortrait } from "@/components/shared/FacePortrait"
 import {
@@ -50,6 +61,13 @@ type MergedExportResult = {
   output_path: string
   scene_count: number
   person_label: string
+}
+
+/** Shape returned by POST /api/projects/{id}/export (one file per scene). */
+type ClipExportResult = {
+  out_dir: string
+  count: number
+  clips: string[]
 }
 
 type ExportMode = "quality" | "lossless" | "copy"
@@ -115,6 +133,8 @@ export function ExportPage() {
   const [exportProgress, setExportProgress] = useState(0)
   const [exportStage, setExportStage] = useState("")
   const [result, setResult] = useState<MergedExportResult | null>(null)
+  const [clipsBusy, setClipsBusy] = useState(false)
+  const [clipsResult, setClipsResult] = useState<ClipExportResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [cancelOpen, setCancelOpen] = useState(false)
   const seenQueueJobs = useRef<Set<string>>(new Set())
@@ -229,12 +249,31 @@ export function ExportPage() {
       ? (exportProject?.people.find((p) => p.person_id === selectedPersonId) ?? null)
       : null
 
+  /**
+   * Manual ranges tagged to a person, shaped as segments.
+   *
+   * The server folds these into the pack in api._active_segments, so the
+   * grid has to show them too or Export would under-report what it ships.
+   */
+  const manualAsSegments = useCallback(
+    (personId: number): Segment[] =>
+      (exportProject?.manual_segments ?? [])
+        .filter((m) => m.person_ids.includes(personId))
+        .map((m) => ({
+          person_id: personId,
+          start_sec: m.start_sec,
+          end_sec: m.end_sec,
+        })),
+    [exportProject?.manual_segments],
+  )
+
   const segments = useMemo(() => {
     if (!exportProject || !person) return []
-    return exportProject.segments
-      .filter((s) => s.person_id === person.person_id)
-      .sort((a, b) => a.start_sec - b.start_sec)
-  }, [exportProject, person])
+    return [
+      ...exportProject.segments.filter((s) => s.person_id === person.person_id),
+      ...manualAsSegments(person.person_id),
+    ].sort((a, b) => a.start_sec - b.start_sec)
+  }, [exportProject, person, manualAsSegments])
 
   const scenes = useMemo(
     () =>
@@ -266,14 +305,17 @@ export function ExportPage() {
     const ex = exportProject.excluded_segments ?? []
     return exportProject.people
       .map((p) => {
-        const segs = exportProject.segments.filter((s) => s.person_id === p.person_id)
+        const segs = [
+          ...exportProject.segments.filter((s) => s.person_id === p.person_id),
+          ...manualAsSegments(p.person_id),
+        ]
         const activeSegs = segs.filter((s) => !isSegmentExcluded(ex, s))
         const dur = activeSegs.reduce((sum, s) => sum + (s.end_sec - s.start_sec), 0)
         return { person: p, sceneCount: segs.length, activeDuration: dur }
       })
       .filter((row) => row.sceneCount > 0)
       .sort((a, b) => b.activeDuration - a.activeDuration || b.sceneCount - a.sceneCount)
-  }, [exportProject])
+  }, [exportProject, manualAsSegments])
 
   const finishedFiles = useMemo(() => {
     const fromProject = exportProject?.merged_exports ?? []
@@ -384,6 +426,7 @@ export function ExportPage() {
         files={finishedFiles}
         onSelectPack={(id) => {
           setResult(null)
+          setClipsResult(null)
           setSelectedPersonId(id)
         }}
         onSelectFile={(file) => {
@@ -487,6 +530,38 @@ export function ExportPage() {
     }
   }
 
+  /**
+   * Per-clip export: one file per scene into a folder.
+   *
+   * Unlike /export/merged this endpoint runs synchronously server-side, so
+   * there is no queue to poll — hold a busy state for the round trip.
+   */
+  const exportClips = async () => {
+    if (!activeScenes.length) {
+      toast.error("Select at least one scene to export")
+      return
+    }
+    setClipsBusy(true)
+    setError(null)
+    setClipsResult(null)
+    try {
+      const res = await api.exportPerson(
+        exportProject.id,
+        person.person_id,
+        forceReencode || exportMode !== "copy",
+      )
+      setClipsResult(res)
+      toast.success(`Exported ${res.count} clip${res.count === 1 ? "" : "s"}`)
+      void refreshActive()
+    } catch (e) {
+      const msg = friendlyError(e)
+      setError(msg)
+      toast.error(msg)
+    } finally {
+      setClipsBusy(false)
+    }
+  }
+
   const cancelQueue = async () => {
     setEnqueueBusy(true)
     try {
@@ -521,6 +596,7 @@ export function ExportPage() {
               onClick={() => {
                 setSelectedPersonId(null)
                 setResult(null)
+                setClipsResult(null)
               }}
               className="inline-flex items-center gap-1.5 rounded-md border border-[rgba(242,237,230,0.10)] px-2.5 py-1.5 text-xs text-[#9A948A] transition hover:border-[#C4A35A]/40 hover:text-[#F2EDE6]"
             >
@@ -728,13 +804,14 @@ export function ExportPage() {
             ) : null}
 
             {result ? <MergedExportResultPanel result={result} /> : null}
+            {clipsResult ? <ExportResultPanel result={clipsResult} /> : null}
             </div>
           </ScrollArea>
 
           <div className="shrink-0 space-y-3 border-t border-border/40 bg-card/40 px-5 py-4">
             <AnimatedButton
               className="h-10 w-full gap-2"
-              disabled={enqueueBusy || toggleBusy || !activeScenes.length}
+              disabled={enqueueBusy || toggleBusy || clipsBusy || !activeScenes.length}
               onClick={() => void exportMerged()}
             >
               {enqueueBusy ? (
@@ -754,6 +831,26 @@ export function ExportPage() {
                 </>
               )}
             </AnimatedButton>
+
+            <Button
+              variant="secondary"
+              className="h-9 w-full gap-2"
+              disabled={enqueueBusy || toggleBusy || clipsBusy || !activeScenes.length}
+              onClick={() => void exportClips()}
+            >
+              {clipsBusy ? (
+                <>
+                  <Loader2 className="size-4 animate-spin" />
+                  Exporting {activeScenes.length} clip
+                  {activeScenes.length === 1 ? "" : "s"}…
+                </>
+              ) : (
+                <>
+                  <Files className="size-4" />
+                  Export separate clips
+                </>
+              )}
+            </Button>
 
             {queueActive ? (
               <div className="space-y-2">

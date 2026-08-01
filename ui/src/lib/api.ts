@@ -117,12 +117,71 @@ export type SegmentExclusion = {
   end_sec: number
 }
 
+/**
+ * A user-drawn in/out range. Unlike detected segments it has a stable id
+ * and can belong to several cast members at once.
+ */
+export type ManualSegment = {
+  id: string
+  start_sec: number
+  end_sec: number
+  person_ids: number[]
+  label?: string
+  created_at?: string
+}
+
 /** Shared timeline scene: all characters present in this time window. */
 export type Scene = {
   scene_id: number
   start_sec: number
   end_sec: number
   person_ids: number[]
+}
+
+/**
+ * A run of consecutive shots that plays as one dramatic scene.
+ *
+ * Not the same thing as `Scene` above, which is a co-presence window derived
+ * from face timing. This is shot structure — what "the whole scene" means when
+ * widening a pack clip.
+ */
+export type SceneGroup = {
+  scene_index: number
+  start_sec: number
+  end_sec: number
+  shot_indices: number[]
+}
+
+/** How much context a pack keeps around each appearance. */
+export type PackContextMode = "face" | "shot" | "conversation" | "scene"
+
+export const PACK_CONTEXT_LABELS: Record<PackContextMode, string> = {
+  face: "Face only",
+  shot: "Full shot",
+  conversation: "Conversation",
+  scene: "Full scene",
+}
+
+export const PACK_CONTEXT_BLURBS: Record<PackContextMode, string> = {
+  face: "Trim to the moment the face is on screen.",
+  shot: "The whole cut the character appears in.",
+  conversation: "The whole exchange, including reverse shots of who they're with.",
+  scene: "The whole scene, including establishing shots before they appear.",
+}
+
+/** What a character's pack will actually export, at the current context mode. */
+export type PackClips = {
+  person_id: number
+  context_mode: PackContextMode
+  lead_shots: number
+  tail_shots: number
+  max_clip_sec: number | null
+  clips: Segment[]
+  /** Shot indices the pack currently covers. */
+  covered_shot_indices: number[]
+  /** Shots holding a detection of this person that the pack does NOT ship. */
+  missing_shot_indices: number[]
+  overrides: { person_id: number; shot_index: number; action: string }[]
 }
 
 export type TeachCastMatch = {
@@ -168,8 +227,12 @@ export type Project = {
   people: Person[]
   segments: Segment[]
   excluded_segments: SegmentExclusion[]
+  /** User-drawn ranges; survive rescans, fold into export packs. */
+  manual_segments?: ManualSegment[]
   /** Derived multi-cast scenes (pairwise overlap components). */
   scenes?: Scene[]
+  /** Consecutive shots grouped into dramatic scenes; drives the wider modes. */
+  scene_groups?: SceneGroup[]
   /** Honest co-cast edges (segment overlap, not scene union). */
   cocast_edges?: { a: number; b: number; overlap_sec: number }[]
   /** True when identity data predates current pipeline; rescan recommended. */
@@ -190,6 +253,23 @@ export type MergedExport = {
   export_mode?: string
   video_codec?: string
 }
+
+export type VideoMeta = {
+  video_path: string
+  video_bytes: number
+  exists: boolean
+  /** Source frame rate. null when probing failed — hide frame controls. */
+  fps?: number | null
+  /** Exact rational (24000/1001) when ffprobe reported one. */
+  fps_num?: number | null
+  fps_den?: number | null
+  width?: number
+  height?: number
+  frame_count?: number
+}
+
+/** Frame rate to use when probing failed. Steps stay usable, TC is approximate. */
+export const FPS_FALLBACK = 24
 
 export type ExportQueueJob = {
   id: string
@@ -643,6 +723,70 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }),
+  createManualSegment: (
+    projectId: string,
+    body: {
+      start_sec: number
+      end_sec: number
+      person_ids: number[]
+      label?: string
+    },
+  ) =>
+    req<Project>(`/api/projects/${projectId}/manual-segments`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  updateManualSegment: (
+    projectId: string,
+    segmentId: string,
+    body: {
+      start_sec?: number
+      end_sec?: number
+      person_ids?: number[]
+      label?: string
+    },
+  ) =>
+    req<Project>(`/api/projects/${projectId}/manual-segments/${segmentId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  deleteManualSegment: (projectId: string, segmentId: string) =>
+    req<Project>(`/api/projects/${projectId}/manual-segments/${segmentId}`, {
+      method: "DELETE",
+    }),
+  /** Clips this character's pack will export, at the current context mode. */
+  packClips: (projectId: string, personId: number) =>
+    req<PackClips>(`/api/projects/${projectId}/packs/${personId}/clips`),
+  updatePackSettings: (
+    projectId: string,
+    personId: number,
+    body: {
+      context_mode?: PackContextMode
+      lead_shots?: number
+      tail_shots?: number
+      max_clip_sec?: number | null
+    },
+  ) =>
+    req<{ project: Project; clips: PackClips }>(
+      `/api/projects/${projectId}/packs/${personId}`,
+      { method: "PATCH", body: JSON.stringify(body) },
+    ),
+  /** Pull a missed shot into the pack, drop one that doesn't fit, or reset. */
+  setClipOverride: (
+    projectId: string,
+    personId: number,
+    body: { shot_index: number; action: "include" | "exclude" | "clear" },
+  ) =>
+    req<{ project: Project; clips: PackClips }>(
+      `/api/projects/${projectId}/packs/${personId}/overrides`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  rebuildSceneGroups: (projectId: string) =>
+    req<Project>(`/api/projects/${projectId}/scene-groups/rebuild`, {
+      method: "POST",
+    }),
   exportMerged: (
     projectId: string,
     body: {
@@ -729,10 +873,7 @@ export const api = {
       proxy_path: string | null
       needs_transcode?: boolean
     }>(`/api/projects/${projectId}/video-proxy-status`),
-  videoMeta: (projectId: string) =>
-    req<{ video_path: string; video_bytes: number; exists: boolean }>(
-      `/api/projects/${projectId}/video-meta`,
-    ),
+  videoMeta: (projectId: string) => req<VideoMeta>(`/api/projects/${projectId}/video-meta`),
   mediaUrl: (projectId: string, rel: string) =>
     withTokenQuery(`${apiBase()}/api/projects/${projectId}/media/${rel}`),
   /** Cache-busted latest detect crop for Import tracker. */
