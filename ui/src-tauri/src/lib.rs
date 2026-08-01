@@ -9,6 +9,7 @@ use tauri::Manager;
 
 #[cfg(target_os = "macos")]
 mod mac_menu;
+mod updater;
 
 struct BackendProcess(Mutex<Option<Child>>);
 
@@ -29,12 +30,17 @@ fn probe_api_port() -> bool {
     api_ready()
 }
 
-pub(crate) fn api_log_path() -> std::path::PathBuf {
+/// `~/.autoscene` — the shared data root the Python side already uses.
+pub(crate) fn autoscene_dir() -> std::path::PathBuf {
     let home = std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from("."));
-    let dir = home.join(".autoscene").join("logs");
+    home.join(".autoscene")
+}
+
+pub(crate) fn api_log_path() -> std::path::PathBuf {
+    let dir = autoscene_dir().join("logs");
     let _ = fs::create_dir_all(&dir);
     dir.join("api.log")
 }
@@ -155,7 +161,13 @@ pub fn run() {
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![probe_api_port]);
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .invoke_handler(tauri::generate_handler![
+            probe_api_port,
+            updater::update_check,
+            updater::update_install,
+            updater::update_relaunch,
+        ]);
 
     // macOS gets a full native menu bar. Windows/Linux keep the custom
     // frameless chrome and no menu — Tauri only auto-installs one on macOS.

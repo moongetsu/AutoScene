@@ -20,6 +20,7 @@ import { Switch } from "@/components/ui/switch"
 import { PageHeader } from "@/components/app/PageHeader"
 import { CastTeachPanel } from "@/components/settings/CastTeachPanel"
 import { ModelVault } from "@/components/settings/ModelVault"
+import { UpdatesPanel } from "@/components/settings/UpdatesPanel"
 import {
   ChoiceTiles,
   InfoRow,
@@ -60,7 +61,7 @@ const SECTIONS: {
   { id: "faces", label: "Faces", blurb: "Who gets picked up", icon: ScanFace },
   { id: "quality", label: "Scan quality", blurb: "Speed vs detail", icon: Gauge },
   { id: "models", label: "Models", blurb: "Downloads and packs", icon: Boxes },
-  { id: "system", label: "System", blurb: "Device and files", icon: MonitorCog },
+  { id: "system", label: "System", blurb: "Device, files, updates", icon: MonitorCog },
 ]
 
 const FACE_MODES: {
@@ -848,6 +849,8 @@ function SystemSection({
 }) {
   return (
     <>
+      <UpdatesPanel />
+
       <SettingsGroup
         title="Device"
         description="AutoScene needs graphics acceleration to scan at a usable speed."

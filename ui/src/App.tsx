@@ -5,6 +5,8 @@ import { AppShell } from "@/components/app/AppShell"
 import { ProjectProvider } from "@/state/project"
 import { SettingsProvider } from "@/state/settings"
 import { MenuActionsProvider } from "@/state/menu-actions"
+import { UpdatesProvider } from "@/state/updates"
+import { UpdateDialog } from "@/components/app/UpdateDialog"
 import { DashboardPage } from "@/pages/DashboardPage"
 import { ImportPage } from "@/pages/ImportPage"
 import { GalleryPage } from "@/pages/GalleryPage"
@@ -18,19 +20,23 @@ export default function App() {
       <ProjectProvider>
         <SettingsProvider>
           <MenuActionsProvider>
-            <BrowserRouter>
-              <AppShell>
-                <Routes>
-                  <Route path="/" element={<DashboardPage />} />
-                  <Route path="/import" element={<ImportPage />} />
-                  <Route path="/gallery" element={<GalleryPage />} />
-                  <Route path="/timeline" element={<TimelinePage />} />
-                  <Route path="/export" element={<ExportPage />} />
-                  <Route path="/settings" element={<SettingsPage />} />
-                  <Route path="*" element={<Navigate to="/" replace />} />
-                </Routes>
-              </AppShell>
-            </BrowserRouter>
+            <UpdatesProvider>
+              <BrowserRouter>
+                <AppShell>
+                  <Routes>
+                    <Route path="/" element={<DashboardPage />} />
+                    <Route path="/import" element={<ImportPage />} />
+                    <Route path="/gallery" element={<GalleryPage />} />
+                    <Route path="/timeline" element={<TimelinePage />} />
+                    <Route path="/export" element={<ExportPage />} />
+                    <Route path="/settings" element={<SettingsPage />} />
+                    <Route path="*" element={<Navigate to="/" replace />} />
+                  </Routes>
+                </AppShell>
+              </BrowserRouter>
+              {/* Outside the router — an update can surface on any page. */}
+              <UpdateDialog />
+            </UpdatesProvider>
           </MenuActionsProvider>
           <Toaster position="bottom-right" richColors closeButton />
         </SettingsProvider>

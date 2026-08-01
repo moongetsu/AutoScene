@@ -8,6 +8,7 @@
     "log:default",
     "dialog:default",
     "allow-probe-api-port",
+    "allow-updates",
     "opener:deny-open-url",
     "opener:deny-open-path",
     "opener:allow-reveal-item-in-dir",
