@@ -64,13 +64,23 @@ def _avatar_anime_soft(project: ProjectState) -> bool:
     preset = (getattr(settings, "content_preset", None) or "").lower()
     return preset in {"anime", "animation"}
 
-# Phase budgets must sum to 1.0
-PHASE_PROBE = 0.02
-PHASE_MODEL = 0.04
-PHASE_DETECT = 0.75
-PHASE_CLUSTER = 0.08
-PHASE_THUMBS = 0.09
-PHASE_SEAL = 0.02
+# Overall ingest progress (cuts + faces share one continuous bar).
+# Path/probe ≈1%, cuts 2–15%, prepare+detect 16–80%, group+portraits 81–99%, done 100%.
+PROG_PATH = 0.01
+PROG_CUTS_LO = 0.02
+PROG_CUTS_HI = 0.15
+PROG_FACE_LO = 0.16
+PROG_PREPARE_HI = 0.20  # prepare (model) within face band
+PROG_DETECT_HI = 0.80
+PROG_GROUP_LO = 0.81
+PROG_CLUSTER_MID = 0.90
+PROG_GROUP_HI = 0.99
+
+
+def _map_cut_progress(local: float) -> float:
+    """Map detector-local 0..1 into overall cuts band 2–15%."""
+    t = max(0.0, min(1.0, float(local)))
+    return PROG_CUTS_LO + (PROG_CUTS_HI - PROG_CUTS_LO) * t
 
 # Live gallery: re-cluster during detect so cast appears while scanning
 # Live Gallery cast while scanning. Keep sparse — full HDBSCAN on 7k+ hits
@@ -195,9 +205,9 @@ def run_scene_cuts_phase(
         raise FileNotFoundError(project.error)
 
     project.status = "cutting"
-    project.progress = 0.05
-    project.stage = "Preparing scene pass…"
-    project.progress_phase = "cuts"
+    project.progress = PROG_PATH
+    project.stage = "Loading video…"
+    project.progress_phase = "probe"
     project.error = None
     project.eta_sec = None
     project.cuts_found = 0
@@ -205,13 +215,14 @@ def run_scene_cuts_phase(
     project.frames_total = 0
     store.save(project)
 
+    # Path already on disk (upload write or linked path) — probe only, never copy.
     info = probe_video(video)
     project.duration_sec = info.duration_sec
     if should_cancel and should_cancel():
         raise ScanCancelled(project.id)
 
     mode = str(getattr(settings, "scene_cut_detector", "auto") or "auto")
-    project.progress = 0.12
+    project.progress = PROG_CUTS_LO
     project.stage = "Finding scene breaks…"
     project.progress_phase = "cuts"
     store.save(project)
@@ -239,7 +250,8 @@ def run_scene_cuts_phase(
             project.progress_phase = "cuts_finalize"
         else:
             project.progress_phase = "cuts"
-        project.progress = float(max(0.0, min(1.0, ev.get("progress", project.progress))))
+        local = float(ev.get("progress", 0.0))
+        project.progress = _map_cut_progress(local)
         project.stage = str(ev.get("stage") or project.stage)
         if "frames_done" in ev:
             project.frames_done = int(ev["frames_done"])
@@ -249,7 +261,7 @@ def run_scene_cuts_phase(
             project.cuts_found = int(ev["cuts_found"])
         store.remember(project)
         now = time.monotonic()
-        if now - last_save >= 0.45 or project.progress >= 0.95:
+        if now - last_save >= 0.45 or project.progress >= PROG_CUTS_HI - 0.005:
             last_save = now
             store.save(project)
 
@@ -295,8 +307,8 @@ def run_scene_cuts_phase(
     ]
     project.scene_cut_detector_used = used
     project.cuts_found = len(spans)
-    project.progress = 1.0
-    project.stage = f"Scenes ready · {len(spans)} · snap-locked"
+    project.progress = PROG_CUTS_HI
+    project.stage = f"Scenes ready · {len(spans)}"
     project.progress_phase = "cuts"
     store.save(project)
     _SHOT_CACHE[project.id] = spans
@@ -340,6 +352,11 @@ def _map_faces_to_source(
                 embedding=face.embedding,
                 det_score=face.det_score,
                 frame_bgr=source_bgr,
+                kps=(
+                    [(x * coord_scale, y * coord_scale) for x, y in face.kps]
+                    if face.kps
+                    else None
+                ),
             )
         )
     return out
@@ -519,6 +536,8 @@ def _assign_detections_to_people(
     labels = gated_assign(X, C, cfg, tracks=tracks, quality=scores)
     Xn = unit_rows(X)
 
+    from autoscene.cluster import detection_identity_weights, weighted_centroid
+
     rebuilt: list[PersonCluster] = []
     for row, person in enumerate(people):
         keep = np.where(labels == row)[0].tolist()
@@ -526,10 +545,9 @@ def _assign_detections_to_people(
             continue
         subset = [detections[i] for i in keep]
         emb = Xn[keep]
-        centroid = emb.mean(axis=0)
-        cn = float(np.linalg.norm(centroid))
-        if cn > 0:
-            centroid = centroid / cn
+        centroid = weighted_centroid(
+            emb, detection_identity_weights(detections, keep)
+        )
         times = sorted(d.timestamp_sec for d in subset)
         best_face, av_score = pick_best_avatar(subset, anime_soft=anime_soft)
         rebuilt.append(
@@ -926,8 +944,8 @@ def run_scan(
         raise FileNotFoundError(project.error)
 
     set_progress(
-        overall=0.0,
-        stage="Checking video…",
+        overall=PROG_FACE_LO,
+        stage="Preparing face scan…",
         phase="probe",
         frames_done=0,
         frames_total=0,
@@ -974,7 +992,7 @@ def run_scan(
         uniform_total / max(1, samples_total),
     )
     set_progress(
-        overall=PHASE_PROBE,
+        overall=PROG_FACE_LO,
         stage="Video ready",
         phase="probe",
         frames_done=0,
@@ -984,7 +1002,7 @@ def run_scan(
     )
 
     set_progress(
-        overall=PHASE_PROBE,
+        overall=PROG_FACE_LO,
         stage="Preparing face pack…",
         phase="model",
         force=True,
@@ -1041,7 +1059,7 @@ def run_scan(
         if want in ("insightface", "") and got not in ("insightface", ""):
             dbg.info("NOTE backend name=%s for insightface request", got)
         set_progress(
-            overall=PHASE_PROBE,
+            overall=PROG_FACE_LO,
             stage="Preparing face pack…",
             phase="model",
             force=True,
@@ -1066,7 +1084,7 @@ def run_scan(
         dbg.close()
         raise
     set_progress(
-        overall=PHASE_PROBE + PHASE_MODEL,
+        overall=PROG_PREPARE_HI,
         stage="Face pack ready",
         phase="model",
         force=True,
@@ -1084,7 +1102,7 @@ def run_scan(
     live_cluster_cooldown = LIVE_CLUSTER_EVERY_SEC
     last_heartbeat = 0.0
     prev_live: list[tuple[np.ndarray, PersonRecord]] = []
-    detect_base = PHASE_PROBE + PHASE_MODEL
+    detect_span = PROG_DETECT_HI - PROG_PREPARE_HI
     detect_t0 = time.monotonic()
     # Clear previous live preview so UI does not show a stale face
     try:
@@ -1094,7 +1112,7 @@ def run_scan(
     except OSError:
         pass
     set_progress(
-        overall=detect_base,
+        overall=PROG_PREPARE_HI,
         stage="Finding faces…",
         phase="detect",
         frames_done=0,
@@ -1172,7 +1190,7 @@ def run_scan(
             approx = True
 
         frac = seen / max(1, samples_total)
-        overall = detect_base + PHASE_DETECT * min(1.0, frac)
+        overall = PROG_PREPARE_HI + detect_span * min(1.0, frac)
 
         # Windowed sample rate (recent ETA_WINDOW_SEC) + light EMA
         now_rate = time.monotonic()
@@ -1329,7 +1347,7 @@ def run_scan(
     # Snap detect phase complete with exact count
     samples_total = max(samples_total, seen)
     set_progress(
-        overall=detect_base + PHASE_DETECT,
+        overall=PROG_DETECT_HI,
         stage=f"Faces found · {seen} checked · {len(detections)} faces",
         phase="detect",
         frames_done=seen,
@@ -1341,7 +1359,7 @@ def run_scan(
     )
 
     set_progress(
-        overall=detect_base + PHASE_DETECT,
+        overall=PROG_GROUP_LO,
         stage="Grouping characters…",
         phase="cluster",
         clear_eta=True,
@@ -1358,7 +1376,7 @@ def run_scan(
         raise ScanCancelled(project.id)
 
     set_progress(
-        overall=detect_base + PHASE_DETECT + PHASE_CLUSTER * 0.4,
+        overall=PROG_CLUSTER_MID,
         stage="Saving portraits…",
         phase="thumbs",
         force=True,
@@ -1401,7 +1419,7 @@ def run_scan(
             dbg.exception("scene grouping failed")
 
     set_progress(
-        overall=detect_base + PHASE_DETECT + PHASE_CLUSTER + PHASE_THUMBS,
+        overall=PROG_GROUP_HI,
         stage=f"Ready · {len(project.people)} characters",
         phase="thumbs",
         force=True,

@@ -405,7 +405,7 @@ export const SETTINGS_DEFAULTS = {
   face_top_n: 2,
   default_backend: "insightface",
   default_model: "buffalo_l",
-  scene_cut_detector: "auto" as SceneCutDetector,
+  scene_cut_detector: "adaptive" as SceneCutDetector,
   scene_cut_adaptive_threshold: 3,
   scene_cut_transnet_threshold: 0.5,
 } as const
@@ -423,7 +423,7 @@ export function normalizeSettings(
     presetRaw === "live_action" || presetRaw === "animation" || presetRaw === "anime"
       ? presetRaw
       : ""
-  const cutRaw = (raw.scene_cut_detector || "auto").toLowerCase()
+  const cutRaw = (raw.scene_cut_detector || "adaptive").toLowerCase()
   const scene_cut_detector: SceneCutDetector =
     cutRaw === "adaptive" || cutRaw === "transnet" || cutRaw === "auto"
       ? cutRaw
@@ -863,6 +863,41 @@ export const api = {
       `${apiBase()}/api/projects/${projectId}/scene-frame?t=${t}${pid}`,
     )
   },
+  /** Kick background GPU/CPU extract + RAM cache for Export stills. */
+  prefetchSceneFrames: (projectId: string, timesSec: number[]) =>
+    req<{
+      ok: boolean
+      started?: boolean
+      building?: boolean
+      count?: number
+      reason?: string
+    }>(`/api/projects/${projectId}/scene-frames/prefetch`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ times_sec: timesSec }),
+    }),
+  /** Short per-scene H.264 clip for Export hover (not the full-film proxy). */
+  sceneHoverUrl: (projectId: string, startSec: number, endSec: number) => {
+    const s = encodeURIComponent(String(Math.max(0, startSec)))
+    const e = encodeURIComponent(String(Math.max(startSec + 0.12, endSec)))
+    return withTokenQuery(
+      `${apiBase()}/api/projects/${projectId}/scene-hover?start=${s}&end=${e}`,
+    )
+  },
+  prefetchHoverClips: (
+    projectId: string,
+    ranges: Array<[number, number]>,
+  ) =>
+    req<{
+      ok: boolean
+      total?: number
+      ready?: number
+      started?: number
+    }>(`/api/projects/${projectId}/scene-hovers/prefetch`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ranges }),
+    }),
   videoProxyStatus: (projectId: string) =>
     req<{
       source_suffix: string
@@ -872,6 +907,9 @@ export const api = {
       proxy_ready: boolean
       proxy_path: string | null
       needs_transcode?: boolean
+      /** True while background H.264 proxy encode is running. */
+      building?: boolean
+      build_error?: string | null
     }>(`/api/projects/${projectId}/video-proxy-status`),
   videoMeta: (projectId: string) => req<VideoMeta>(`/api/projects/${projectId}/video-meta`),
   mediaUrl: (projectId: string, rel: string) =>

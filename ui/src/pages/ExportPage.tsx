@@ -51,8 +51,12 @@ import {
   type Segment,
 } from "@/lib/api"
 import { pickMergedVideoPath } from "@/lib/desktop"
-import { buildSharedScenesClient } from "@/lib/scenes"
-import { useProjects } from "@/state/project"
+import {
+  buildSharedScenesClient,
+  segmentPreviewRange,
+  segmentStillTime,
+} from "@/lib/scenes"
+import { markAuthoritativeWrite, useProjects } from "@/state/project"
 import { useMenuAction } from "@/state/menu-actions"
 import { friendlyError, sanitizeStage } from "@/lib/plainCopy"
 import { cn } from "@/lib/utils"
@@ -146,6 +150,53 @@ export function ExportPage() {
     queueSeeded.current = false
     seenQueueJobs.current = new Set()
   }, [active?.id])
+
+  // Full-cast still + hover-clip prefetch (GPU when available).
+  useEffect(() => {
+    const project = active
+    if (!project?.id || project.status !== "ready") return
+    const segs = project.segments ?? []
+    if (!segs.length) return
+
+    let cancelled = false
+    const times = [
+      ...new Set(segs.map((s) => Number(segmentStillTime(s).toFixed(3)))),
+    ]
+    const ranges = segs.map((s) => {
+      const p = segmentPreviewRange(s)
+      return [p.startSec, p.endSec] as [number, number]
+    })
+    const urls = times.map((t) => api.sceneFrameUrl(project.id, t))
+
+    const warmBrowser = () => {
+      for (const src of urls) {
+        if (cancelled) return
+        const img = new Image()
+        img.decoding = "async"
+        img.src = src
+      }
+    }
+
+    void (async () => {
+      try {
+        await Promise.all([
+          api.prefetchSceneFrames(project.id, times),
+          api.prefetchHoverClips(project.id, ranges),
+        ])
+      } catch {
+        /* tiles self-warm on view/hover */
+      }
+      if (cancelled) return
+      warmBrowser()
+      window.setTimeout(() => {
+        if (!cancelled) warmBrowser()
+      }, 4000)
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [active?.id, active?.status, active?.segments?.length])
 
   useEffect(() => {
     if (!active?.id) return
@@ -451,6 +502,8 @@ export function ExportPage() {
         end_sec: segment.end_sec,
         excluded,
       })
+      // Empty excluded_segments after re-include must win over poll merge.
+      markAuthoritativeWrite()
       await refreshActive()
     } catch (e) {
       const msg = friendlyError(e)
@@ -474,6 +527,7 @@ export function ExportPage() {
           excluded: false,
         })
       }
+      markAuthoritativeWrite()
       await refreshActive()
       toast.success("All scenes restored")
     } catch (e) {

@@ -884,14 +884,23 @@ def audio_encode_args(
     *,
     container: str,
     mode: ExportMode = "quality",
+    duration_sec: float | None = None,
 ) -> list[str]:
-    """Copy when possible; otherwise AAC (avoid FLAC/PCM size blow-up on archive)."""
+    """
+    Audio args for segment extract.
+
+    Quality/lossless always re-encode AAC. Stream-copy after ``-ss`` seek leaves
+    AAC short of the re-encoded video by ~1–2s (silent tail before the next cut).
+    """
     del container  # container only mattered for old lossless PCM/FLAC paths
+    if mode in {"quality", "lossless"}:
+        # Match output ``-t`` so dialogue rides to the picture cut.
+        af = "aresample=async=1:first_pts=0"
+        if duration_sec is not None and duration_sec > 0:
+            af = f"{af},apad=whole_dur={float(duration_sec):.3f}"
+        return ["-c:a", "aac", "-b:a", "320k", "-af", af]
     if profile.acodec in _SAFE_AUDIO_COPY:
         return ["-c:a", "copy"]
-    # quality + archive: transparent-enough AAC, not giant PCM/FLAC
-    if mode in {"quality", "lossless"}:
-        return ["-c:a", "aac", "-b:a", "320k"]
     return ["-c:a", "aac", "-b:a", "320k"]
 
 

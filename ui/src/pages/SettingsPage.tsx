@@ -769,7 +769,7 @@ function QualitySection({
       >
         <SettingRow
           label="Cut style"
-          hint="Auto suits most footage. Precise locks hard cuts to the exact frame. Soft fades helps with dissolves."
+          hint="Frame delta (HSV adaptive) is the default — hard cuts, no AI. Precise uses TransNet for dissolves. Auto tries Precise then falls back."
           changed={changed.has("scene_cut_detector")}
           onReset={() => resetField("scene_cut_detector")}
         >
@@ -780,22 +780,22 @@ function QualitySection({
               patch({ scene_cut_detector: v as AppSettings["scene_cut_detector"] })
             }
             options={[
-              { value: "auto", label: "Auto (recommended)" },
+              { value: "adaptive", label: "Frame delta (recommended)" },
+              { value: "auto", label: "Auto (AI then fallback)" },
               {
                 value: "transnet",
                 label: draft.scene_cut_capabilities?.transnet
-                  ? "Precise"
-                  : "Precise · needs scene tool",
+                  ? "Precise (AI)"
+                  : "Precise (AI) · needs scene tool",
               },
-              { value: "adaptive", label: "Soft fades" },
             ]}
           />
         </SettingRow>
 
         {advanced ? (
           <SettingRow
-            label="Soft fade sensitivity"
-            hint="Lower finds more dissolves, and more false cuts with it."
+            label="Frame delta sensitivity"
+            hint="Higher finds more hard cuts (and more false ones on fast motion)."
             htmlFor="cut-adaptive"
             changed={changed.has("scene_cut_adaptive_threshold")}
             onReset={() => resetField("scene_cut_adaptive_threshold")}

@@ -33,15 +33,28 @@ def _shot_bounds(shots: list, index: int) -> tuple[float, float] | None:
     return None
 
 
-def _shot_of_segment(shot_starts: list[float], seg) -> int:
-    """Index of the shot a segment plate sits on; -1 when it matches none."""
-    target = float(seg.start_sec)
-    best, best_d = -1, 0.06
-    for i, s in enumerate(shot_starts):
-        d = abs(s - target)
-        if d < best_d:
-            best, best_d = i, d
-    return best
+def _shots_of_segment(shot_starts: list[float], shot_ends: list[float], seg) -> list[int]:
+    """
+    Every shot index a segment plate covers.
+
+    Merged plates span several consecutive shots when a character stays on
+    screen across cuts; seeding only the first shot would shrink the clip
+    back to one shot in shot/conversation modes.
+    """
+    import bisect
+
+    a = float(seg.start_sec)
+    b = float(seg.end_sec)
+    eps = 0.06
+    lo = bisect.bisect_left(shot_starts, a - eps)
+    hi = bisect.bisect_left(shot_starts, b)
+    idxs = list(range(lo, hi))
+    # Shot holding the plate start (face windows / manual ranges mid-shot).
+    j = bisect.bisect_right(shot_starts, a) - 1
+    if j >= 0 and j not in idxs and shot_ends[j] > a + eps:
+        idxs.append(j)
+    idxs.sort()
+    return idxs
 
 
 def _cast_by_shot(shots: list, segments: list) -> list[set[int]]:
@@ -223,8 +236,15 @@ def expand_segments(
         )
 
     shot_starts = [float(sh.start_sec) for sh in shots]
+    shot_ends = [float(sh.end_sec) for sh in shots]
     dropped = {int(i) for i in (excluded_shot_indices or set())}
-    seeds = {i for i in (_shot_of_segment(shot_starts, s) for s in segments) if i >= 0}
+    seeds: set[int] = set()
+    for s in segments:
+        seeds.update(
+            i
+            for i in _shots_of_segment(shot_starts, shot_ends, s)
+            if 0 <= i < len(shots)
+        )
     seeds |= {i for i in (extra_shot_indices or set()) if 0 <= i < len(shots)}
     # An excluded shot must not anchor a clip; it can still be swept up as
     # context for a neighbour, which subtract_shots then carves back out.
@@ -241,10 +261,12 @@ def expand_segments(
     # time rather than letting it drift to the middle of a widened range.
     face_time: dict[int, float] = {}
     for s in segments:
-        idx = _shot_of_segment(shot_starts, s)
         ft = getattr(s, "face_time_sec", None)
-        if idx >= 0 and ft is not None and idx not in face_time:
-            face_time[idx] = float(ft)
+        if ft is None:
+            continue
+        for idx in _shots_of_segment(shot_starts, shot_ends, s):
+            if 0 <= idx < len(shots) and idx not in face_time:
+                face_time[idx] = float(ft)
 
     ranges: list[tuple[int, int, int]] = []  # (lo, hi, seed)
     for seed in sorted(seeds):

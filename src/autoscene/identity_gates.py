@@ -254,17 +254,36 @@ def build_tracklets(
         open_tracks = still_open
 
         best_track = -1
-        best_dist = float("inf")
+        best_score = -1.0
         for t_idx, last in open_tracks:
             if ts[i] - ts[last] <= 1e-6:
                 continue  # same frame: must be a different face
             ratio = max(side[i], side[last]) / max(1.0, min(side[i], side[last]))
             if ratio > cfg.track_size_ratio_max:
                 continue
+            # IoU link first (robust to fast motion), center distance as the
+            # fallback for zooms / re-detections where boxes stop overlapping.
+            ix1 = max(bb[i, 0], bb[last, 0])
+            iy1 = max(bb[i, 1], bb[last, 1])
+            ix2 = min(bb[i, 2], bb[last, 2])
+            iy2 = min(bb[i, 3], bb[last, 3])
+            inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+            area_i = max(0.0, bb[i, 2] - bb[i, 0]) * max(0.0, bb[i, 3] - bb[i, 1])
+            area_l = max(0.0, bb[last, 2] - bb[last, 0]) * max(
+                0.0, bb[last, 3] - bb[last, 1]
+            )
+            union = area_i + area_l - inter
+            iou = inter / union if union > 1e-6 else 0.0
             dist = float(np.hypot(cx[i] - cx[last], cy[i] - cy[last]))
             radius = cfg.track_center_dist_frac * max(side[i], side[last])
-            if dist <= radius and dist < best_dist:
-                best_dist = dist
+            if iou >= 0.25:
+                score = 1.0 + iou
+            elif dist <= radius:
+                score = 1.0 - dist / max(radius, 1e-6)
+            else:
+                continue
+            if score > best_score:
+                best_score = score
                 best_track = t_idx
         if best_track >= 0:
             tracks[best_track].append(i)

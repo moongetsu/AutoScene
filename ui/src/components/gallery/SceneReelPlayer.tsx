@@ -45,12 +45,19 @@ export function SceneReelPlayer({
   const [activeKey, setActiveKey] = useState<string | null>(null)
   const [loop, setLoop] = useState(false)
   const [loadHint, setLoadHint] = useState<string | null>(null)
+  /** Bump when proxy becomes ready so <video> reloads after warm encode. */
+  const [videoGen, setVideoGen] = useState(0)
+  /** Hold off attaching src until Chromium-safe proxy exists (HEVC sources). */
+  const [playable, setPlayable] = useState(false)
   const { fps } = useVideoFps(projectId)
 
-  /** Cache-bust only on project change — URL stays stable across polls. */
+  /** Cache-bust on project change and when proxy flips ready. */
   const videoSrc = useMemo(
-    () => appendQuery(api.videoUrl(projectId), { v: projectId }),
-    [projectId],
+    () =>
+      playable
+        ? appendQuery(api.videoUrl(projectId), { v: `${projectId}-${videoGen}` })
+        : null,
+    [projectId, videoGen, playable],
   )
 
   // Reset to the first clip when the project or the cuts actually change.
@@ -58,29 +65,58 @@ export function SceneReelPlayer({
     setActiveKey(ordered[0] ? segmentKey(ordered[0]) : null)
   }, [projectId, ordered])
 
-  // One-time proxy/transcode warm-up hint.
+  // Warm + poll proxy status. Do not await full encode (4K HEVC can take minutes).
   useEffect(() => {
     let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let warmed = false
+    let waiting = false
+    setPlayable(false)
     setLoadHint("Loading video…")
-    void (async () => {
+
+    const tick = async () => {
       try {
         const st = await api.videoProxyStatus(projectId)
         if (cancelled) return
-        if (!st.native_ok && !st.proxy_ready) {
-          setLoadHint(
-            st.needs_transcode
-              ? "Preparing video preview (one-time)…"
-              : "Preparing video preview…",
-          )
-        } else {
+        if (st.native_ok || st.proxy_ready) {
           setLoadHint(null)
+          setPlayable(true)
+          if (waiting) setVideoGen((g) => g + 1)
+          return
         }
+        waiting = true
+        if (st.build_error) {
+          setLoadHint("Video preview failed to prepare")
+          setPlayable(false)
+          return
+        }
+        setLoadHint(
+          st.building || st.needs_transcode
+            ? "Preparing video preview (one-time)…"
+            : "Preparing video preview…",
+        )
+        if (!warmed) {
+          warmed = true
+          // 202 Accepted — encode runs in a background thread on the API.
+          void fetch(appendQuery(api.videoUrl(projectId), { warm: "1" })).catch(
+            () => {},
+          )
+        }
+        timer = setTimeout(() => {
+          void tick()
+        }, 2000)
       } catch {
-        if (!cancelled) setLoadHint(null)
+        if (!cancelled) {
+          setLoadHint(null)
+          // Last resort: let <video> hit /video itself.
+          setPlayable(true)
+        }
       }
-    })()
+    }
+    void tick()
     return () => {
       cancelled = true
+      if (timer) clearTimeout(timer)
     }
   }, [projectId])
 

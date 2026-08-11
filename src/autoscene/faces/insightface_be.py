@@ -286,6 +286,7 @@ class InsightFaceBackend:
             norm = np.linalg.norm(emb)
             if norm > 0:
                 emb = emb / norm
+            kps = getattr(face, "kps", None)
             out.append(
                 FaceDetection.with_thumb(
                     timestamp_sec=timestamp_sec,
@@ -293,6 +294,7 @@ class InsightFaceBackend:
                     embedding=emb,
                     det_score=float(getattr(face, "det_score", 1.0)),
                     frame_bgr=frame_bgr,
+                    kps=kps,
                 )
             )
         return out

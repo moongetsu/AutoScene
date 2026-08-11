@@ -9,6 +9,8 @@ from __future__ import annotations
 import logging
 import subprocess
 import threading
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import cv2
@@ -23,7 +25,17 @@ _FRAME_DIR = "scene_frames_v4"
 _FACE_DIR = "face_crops_v4"
 _locks: dict[str, threading.Lock] = {}
 _locks_guard = threading.Lock()
-_extract_sem = threading.Semaphore(4)
+# Parallel extracts — proxy H.264 + CUDA decode handle more concurrency.
+_extract_sem = threading.Semaphore(8)
+
+# Hot JPEG bytes in RAM (path → bytes). Evict LRU past budget.
+_ram_guard = threading.Lock()
+_ram_jpegs: OrderedDict[str, bytes] = OrderedDict()
+_RAM_BUDGET = 512 * 1024 * 1024  # 512 MiB
+_ram_bytes = 0
+
+_prefetch_guard = threading.Lock()
+_prefetch_running: set[str] = set()
 
 
 def _lock_for(key: str) -> threading.Lock:
@@ -47,10 +59,57 @@ def face_crop_cache_path(
     return cache_dir / _FACE_DIR / f"p{int(person_id)}_{ms:08d}.jpg"
 
 
+def ram_get_jpeg(path: Path) -> bytes | None:
+    key = str(path.resolve())
+    with _ram_guard:
+        data = _ram_jpegs.get(key)
+        if data is None:
+            return None
+        _ram_jpegs.move_to_end(key)
+        return data
+
+
+def ram_put_jpeg(path: Path, data: bytes) -> None:
+    if not data or len(data) < 200:
+        return
+    key = str(path.resolve())
+    global _ram_bytes
+    with _ram_guard:
+        old = _ram_jpegs.pop(key, None)
+        if old is not None:
+            _ram_bytes -= len(old)
+        _ram_jpegs[key] = data
+        _ram_bytes += len(data)
+        while _ram_bytes > _RAM_BUDGET and _ram_jpegs:
+            _, evicted = _ram_jpegs.popitem(last=False)
+            _ram_bytes -= len(evicted)
+
+
+def read_scene_frame_bytes(path: Path) -> bytes:
+    """Disk → RAM promote for hot Export tiles."""
+    hit = ram_get_jpeg(path)
+    if hit is not None:
+        return hit
+    data = path.read_bytes()
+    ram_put_jpeg(path, data)
+    return data
+
+
+def _hw_input_args() -> list[str]:
+    try:
+        from autoscene.ffmpeg_encode import hwaccel_input_args
+
+        return list(hwaccel_input_args(zero_copy=False))
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def _run_extract(ffmpeg: str, src: Path, t: float, out: Path) -> bool:
-    """Fast input seek first; accurate fallback if needed."""
-    attempts = [
-        # Fast: keyframe seek before open (OK for proxy H.264 tiles)
+    """Fast input seek first; accurate / GPU-decode fallbacks if needed."""
+    vf = "scale='min(640,iw)':-2,eq=brightness=0.06:contrast=1.12"
+    hw = _hw_input_args()
+    attempts: list[list[str]] = [
+        # Fast: keyframe seek before open (best on H.264 proxy)
         [
             ffmpeg,
             "-hide_banner",
@@ -66,29 +125,54 @@ def _run_extract(ffmpeg: str, src: Path, t: float, out: Path) -> bool:
             "-q:v",
             "3",
             "-vf",
-            "scale='min(640,iw)':-2,eq=brightness=0.06:contrast=1.12",
-            str(out),
-        ],
-        # Accurate: decode then seek
-        [
-            ffmpeg,
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-y",
-            "-i",
-            str(src),
-            "-ss",
-            f"{t:.3f}",
-            "-frames:v",
-            "1",
-            "-q:v",
-            "3",
-            "-vf",
-            "scale='min(640,iw)':-2,eq=brightness=0.06:contrast=1.12",
+            vf,
             str(out),
         ],
     ]
+    if hw:
+        # GPU decode + accurate seek (helps HEVC Main10 source before proxy ready)
+        attempts.append(
+            [
+                ffmpeg,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                *hw,
+                "-ss",
+                f"{t:.3f}",
+                "-i",
+                str(src),
+                "-frames:v",
+                "1",
+                "-q:v",
+                "3",
+                "-vf",
+                vf,
+                str(out),
+            ]
+        )
+    attempts.append(
+        # Accurate CPU: decode then seek
+        [
+            ffmpeg,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            str(src),
+            "-ss",
+            f"{t:.3f}",
+            "-frames:v",
+            "1",
+            "-q:v",
+            "3",
+            "-vf",
+            vf,
+            str(out),
+        ]
+    )
     last_err = ""
     for cmd in attempts:
         try:
@@ -103,6 +187,10 @@ def _run_extract(ffmpeg: str, src: Path, t: float, out: Path) -> bool:
             timeout=45,
         )
         if proc.returncode == 0 and out.is_file() and out.stat().st_size > 200:
+            try:
+                ram_put_jpeg(out, out.read_bytes())
+            except OSError:
+                pass
             return True
         last_err = (proc.stderr or "")[-300:].strip()
     if last_err:
@@ -172,11 +260,19 @@ def ensure_face_crop_frame(
     out = face_crop_cache_path(cache_dir, person_id, matched_t)
     out.parent.mkdir(parents=True, exist_ok=True)
     if out.is_file() and out.stat().st_size > 200:
+        try:
+            ram_put_jpeg(out, out.read_bytes())
+        except OSError:
+            pass
         return out
 
     lock = _lock_for(str(out.resolve()))
     with lock:
         if out.is_file() and out.stat().st_size > 200:
+            try:
+                ram_put_jpeg(out, out.read_bytes())
+            except OSError:
+                pass
             return out
 
         from autoscene.faces.thumb import render_hq_avatar
@@ -211,6 +307,10 @@ def ensure_face_crop_frame(
             [int(cv2.IMWRITE_JPEG_QUALITY), 90],
         )
         if ok and out.is_file() and out.stat().st_size > 200:
+            try:
+                ram_put_jpeg(out, out.read_bytes())
+            except OSError:
+                pass
             return out
         return None
 
@@ -251,11 +351,19 @@ def ensure_scene_frame(
     out.parent.mkdir(parents=True, exist_ok=True)
 
     if out.is_file() and out.stat().st_size > 200:
+        try:
+            ram_put_jpeg(out, out.read_bytes())
+        except OSError:
+            pass
         return out
 
     lock = _lock_for(str(out.resolve()))
     with lock:
         if out.is_file() and out.stat().st_size > 200:
+            try:
+                ram_put_jpeg(out, out.read_bytes())
+            except OSError:
+                pass
             return out
 
         candidates: list[Path] = []
@@ -285,3 +393,113 @@ def ensure_scene_frame(
                         pass
 
         raise RuntimeError(f"Could not extract frame at {t:.3f}s")
+
+
+def prefetch_scene_frames(
+    video_path: Path,
+    cache_dir: Path,
+    times_sec: list[float],
+    *,
+    prefer_proxy: bool = True,
+    max_workers: int = 6,
+) -> dict[str, int]:
+    """
+    Extract missing Export stills in parallel (GPU decode when available).
+    Idempotent; skips times already on disk / in RAM.
+    """
+    uniq: list[float] = []
+    seen: set[int] = set()
+    for raw in times_sec:
+        t = max(0.0, float(raw))
+        ms = int(round(t * 1000))
+        if ms in seen:
+            continue
+        seen.add(ms)
+        uniq.append(t)
+
+    ready = 0
+    todo: list[float] = []
+    for t in uniq:
+        out = frame_cache_path(cache_dir, t)
+        if ram_get_jpeg(out) is not None or (
+            out.is_file() and out.stat().st_size > 200
+        ):
+            if out.is_file():
+                try:
+                    ram_put_jpeg(out, out.read_bytes())
+                except OSError:
+                    pass
+            ready += 1
+        else:
+            todo.append(t)
+
+    if not todo:
+        return {"total": len(uniq), "ready": ready, "queued": 0, "built": 0}
+
+    built = 0
+    errors = 0
+
+    def _one(t: float) -> bool:
+        try:
+            ensure_scene_frame(
+                video_path, cache_dir, t, prefer_proxy=prefer_proxy, person_id=None
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001
+            log.warning("prefetch frame fail t=%.3f: %s", t, exc)
+            return False
+
+    workers = max(1, min(int(max_workers), len(todo)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for ok in pool.map(_one, todo):
+            if ok:
+                built += 1
+            else:
+                errors += 1
+
+    return {
+        "total": len(uniq),
+        "ready": ready + built,
+        "queued": len(todo),
+        "built": built,
+        "errors": errors,
+    }
+
+
+def start_prefetch_scene_frames(
+    video_path: Path,
+    cache_dir: Path,
+    times_sec: list[float],
+    *,
+    prefer_proxy: bool = True,
+) -> dict[str, object]:
+    """Kick a background prefetch once per project cache dir."""
+    key = str(cache_dir.resolve())
+    with _prefetch_guard:
+        if key in _prefetch_running:
+            return {"started": False, "building": True, "reason": "already_running"}
+        _prefetch_running.add(key)
+
+    def _run() -> None:
+        try:
+            stats = prefetch_scene_frames(
+                video_path,
+                cache_dir,
+                times_sec,
+                prefer_proxy=prefer_proxy,
+            )
+            log.info(
+                "scene frame prefetch done dir=%s total=%s ready=%s built=%s",
+                cache_dir.name,
+                stats.get("total"),
+                stats.get("ready"),
+                stats.get("built"),
+            )
+        finally:
+            with _prefetch_guard:
+                _prefetch_running.discard(key)
+
+    threading.Thread(
+        target=_run, daemon=True, name=f"scene-frame-prefetch-{cache_dir.name}"
+    ).start()
+    return {"started": True, "building": True, "count": len(times_sec)}

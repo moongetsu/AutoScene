@@ -10,7 +10,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
+import asyncio
+
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -376,6 +378,10 @@ class UpdateSettingsBody(BaseModel):
     face_top_n: int | None = None
     default_backend: str | None = None
     default_model: str | None = None
+    scene_cut_detector: str | None = None
+    scene_cut_adaptive_threshold: float | None = None
+    scene_cut_transnet_threshold: float | None = None
+    decode_backend: str | None = None
 
 
 @app.get("/api/settings")
@@ -760,7 +766,9 @@ async def teach_cast_endpoint(
             raise HTTPException(400, "Invalid person_id") from exc
 
     try:
-        project, matches = teach_cast(
+        # Face backend is sync/GPU — keep the event loop free for status/export.
+        project, matches = await asyncio.to_thread(
+            teach_cast,
             store,
             project,
             images=images,
@@ -1085,14 +1093,15 @@ def _clips_payload(project, person_id: int) -> dict[str, Any]:
 
     # Shots holding a detection of this character that the pack does not
     # currently ship — the "you're missing this" hint the timeline renders.
+    # Overlap match: merged plates span several consecutive shots, so a
+    # start-only match would hide every shot after the first.
     detected_shots: set[int] = set()
     for seg in project.segments:
         if int(seg.person_id) != int(person_id):
             continue
         for i, s in enumerate(shot_starts):
-            if abs(s - float(seg.start_sec)) <= 0.06:
+            if seg.start_sec - 0.06 <= s < seg.end_sec:
                 detected_shots.add(i)
-                break
 
     return {
         "person_id": int(person_id),
@@ -1395,14 +1404,24 @@ def export_queue_cancel(project_id: str) -> dict[str, Any]:
     return {**result, "queue": export_queue_status(project_id)}
 
 
-@app.get("/api/projects/{project_id}/video")
-def project_video(project_id: str) -> FileResponse:
+@app.get("/api/projects/{project_id}/video", response_model=None)
+def project_video(
+    project_id: str,
+    warm: str | None = Query(None),
+) -> Response:
     """
     Browser-playable video for Gallery reel / Import preview.
     MKV/MOV etc. are remuxed once to projects/<id>/browser_proxy.mp4 (Chromium
     cannot play most .mkv sources: "no supported sources").
+
+    Encode runs in a background thread so teach/status stay responsive.
+    ``?warm=1`` kicks the build and returns 202 immediately when not ready.
     """
-    from autoscene.video_proxy import ensure_browser_playable
+    from autoscene.video_proxy import (
+        ProxyNotReady,
+        request_browser_proxy,
+        try_browser_playable,
+    )
 
     try:
         project = store.load(project_id)
@@ -1411,10 +1430,42 @@ def project_video(project_id: str) -> FileResponse:
     video = Path(project.video_path)
     if not video.exists():
         raise HTTPException(404, "Video missing")
+    cache = store._dir(project_id)
+    warm_flag = (warm or "").strip().lower() in {"1", "true", "yes"}
+
     try:
-        playable = ensure_browser_playable(video, store._dir(project_id))
+        playable = try_browser_playable(video, cache)
+        if playable is None:
+            info = request_browser_proxy(video, cache)
+            if warm_flag:
+                return JSONResponse(
+                    {
+                        "ok": True,
+                        "building": bool(info.get("building")),
+                        "proxy_ready": bool(info.get("proxy_ready")),
+                        "build_error": info.get("build_error"),
+                    },
+                    status_code=202 if not info.get("proxy_ready") else 200,
+                )
+            # Non-warm: still non-blocking — client should poll video-proxy-status.
+            raise ProxyNotReady(
+                building=bool(info.get("building")),
+                error=str(info["build_error"]) if info.get("build_error") else None,
+            )
     except FileNotFoundError as exc:
         raise HTTPException(404, "Video missing") from exc
+    except ProxyNotReady as exc:
+        return JSONResponse(
+            {
+                "ok": False,
+                "building": exc.building,
+                "proxy_ready": False,
+                "build_error": exc.error,
+                "detail": str(exc),
+            },
+            status_code=503,
+            headers={"Retry-After": "2"},
+        )
     except RuntimeError as exc:
         raise HTTPException(500, str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
@@ -1449,18 +1500,23 @@ def project_video_proxy_status(project_id: str) -> dict[str, Any]:
     return proxy_status(video, store._dir(project_id))
 
 
-@app.get("/api/projects/{project_id}/scene-frame")
+@app.get("/api/projects/{project_id}/scene-frame", response_model=None)
 def project_scene_frame(
     project_id: str,
     t: float = 0.0,
     person_id: int | None = None,
-) -> FileResponse:
+) -> Response:
     """JPEG still for Export scene tiles.
 
     When ``person_id`` is set and detection geometry exists, returns a
     focus-person face crop so reverse-shot plates never mislabel the tile.
+    Serves from RAM cache when hot.
     """
-    from autoscene.scene_frame import ensure_scene_frame
+    from autoscene.scene_frame import (
+        ensure_scene_frame,
+        ram_get_jpeg,
+        read_scene_frame_bytes,
+    )
 
     try:
         project = store.load(project_id)
@@ -1483,13 +1539,130 @@ def project_scene_frame(
     except Exception as exc:  # noqa: BLE001
         log.exception("scene frame failed project=%s t=%s", project_id, t)
         raise HTTPException(500, f"Could not extract scene frame: {exc}") from exc
-    return FileResponse(
-        path,
+
+    data = ram_get_jpeg(path)
+    if data is None:
+        try:
+            data = read_scene_frame_bytes(path)
+        except OSError:
+            return FileResponse(
+                path,
+                media_type="image/jpeg",
+                filename=path.name,
+                content_disposition_type="inline",
+                headers={"Cache-Control": "private, max-age=86400"},
+            )
+    return Response(
+        content=data,
         media_type="image/jpeg",
-        filename=path.name,
+        headers={
+            "Cache-Control": "private, max-age=86400",
+            "Content-Disposition": f'inline; filename="{path.name}"',
+        },
+    )
+
+
+class PrefetchSceneFramesBody(BaseModel):
+    times_sec: list[float] = Field(default_factory=list)
+
+
+class PrefetchHoverClipsBody(BaseModel):
+    ranges: list[list[float]] = Field(default_factory=list)
+
+
+@app.post("/api/projects/{project_id}/scene-frames/prefetch")
+def project_scene_frames_prefetch(
+    project_id: str,
+    body: PrefetchSceneFramesBody,
+) -> dict[str, Any]:
+    """Background-extract Export stills for all cast scenes (GPU when available)."""
+    from autoscene.scene_frame import start_prefetch_scene_frames
+
+    try:
+        project = store.load(project_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "Project not found") from exc
+    video = Path(project.video_path)
+    if not video.exists():
+        raise HTTPException(404, "Video missing")
+    times = [float(t) for t in (body.times_sec or []) if t is not None]
+    if len(times) > 5000:
+        raise HTTPException(400, "Too many frame times (max 5000)")
+    info = start_prefetch_scene_frames(video, store._dir(project_id), times)
+    return {"ok": True, **info}
+
+
+@app.get("/api/projects/{project_id}/scene-hover", response_model=None)
+def project_scene_hover(
+    project_id: str,
+    start: float = 0.0,
+    end: float = 1.0,
+    warm: str | None = Query(None),
+) -> Response:
+    """Short H.264 clip for Export tile hover (independent of full-film proxy)."""
+    from autoscene.hover_clip import request_hover_clip, try_hover_clip
+
+    try:
+        project = store.load(project_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "Project not found") from exc
+    video = Path(project.video_path)
+    if not video.exists():
+        raise HTTPException(404, "Video missing")
+    cache = store._dir(project_id)
+    warm_flag = (warm or "").strip().lower() in {"1", "true", "yes"}
+
+    playable = try_hover_clip(cache, start, end)
+    if playable is None:
+        info = request_hover_clip(video, cache, start, end)
+        if info.get("ready"):
+            playable = try_hover_clip(cache, start, end)
+    if playable is None:
+        payload = {
+            "ok": bool(warm_flag),
+            "building": True,
+            "ready": False,
+            "detail": "Hover clip not ready",
+        }
+        return JSONResponse(
+            payload,
+            status_code=202 if warm_flag else 503,
+            headers={"Retry-After": "1"},
+        )
+
+    return FileResponse(
+        playable,
+        media_type="video/mp4",
+        filename=playable.name,
         content_disposition_type="inline",
         headers={"Cache-Control": "private, max-age=86400"},
     )
+
+
+@app.post("/api/projects/{project_id}/scene-hovers/prefetch")
+def project_scene_hovers_prefetch(
+    project_id: str,
+    body: PrefetchHoverClipsBody,
+) -> dict[str, Any]:
+    """Kick background builds for many Export hover clips."""
+    from autoscene.hover_clip import prefetch_hover_clips
+
+    try:
+        project = store.load(project_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "Project not found") from exc
+    video = Path(project.video_path)
+    if not video.exists():
+        raise HTTPException(404, "Video missing")
+    ranges: list[tuple[float, float]] = []
+    for row in body.ranges or []:
+        if not row or len(row) < 2:
+            continue
+        ranges.append((float(row[0]), float(row[1])))
+    if len(ranges) > 2000:
+        raise HTTPException(400, "Too many hover ranges (max 2000)")
+    info = prefetch_hover_clips(video, store._dir(project_id), ranges)
+    return {"ok": True, **info}
 
 
 _video_probe_cache: dict[tuple[str, int, int], dict[str, Any]] = {}
@@ -1668,7 +1841,12 @@ def _scan_job(project_id: str) -> None:
     pause.clear()
     try:
         # Lazy imports inside try so failures mark project error (not silent freeze).
-        from autoscene.pipeline import ScanCancelled, run_scan, run_scene_cuts_phase
+        from autoscene.pipeline import (
+            PROG_FACE_LO,
+            ScanCancelled,
+            run_scan,
+            run_scene_cuts_phase,
+        )
 
         if store.is_deleted(project_id):
             log.info("Scan aborted; project already deleted project=%s", project_id)
@@ -1690,7 +1868,8 @@ def _scan_job(project_id: str) -> None:
 
         project = store.load(project_id)
         project.status = "scanning"
-        project.progress = 0.0
+        # Keep overall progress continuous (cuts end ~15%; faces start ~16%).
+        project.progress = max(float(project.progress or 0.0), PROG_FACE_LO)
         project.stage = "Starting face scan…"
         project.progress_phase = "probe"
         store.save(project)

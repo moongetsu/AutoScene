@@ -37,30 +37,33 @@ DECODE_BACKENDS = frozenset({"opencv", "ffmpeg"})
 # Canonical identity flow (research-locked, 2026 OSS practice):
 #   detect (RetinaFace / EfficientDet) → quality gates → embed (ArcFace / OML)
 #   → strict assign/merge with reject-to-noise (see identity_gates).
-# Live + CGI: InsightFace buffalo_l (RetinaFace-10GF + WebFace600K R50 ArcFace).
+# Live + CGI: InsightFace antelopev2 (SCRFD-10GF + Glint360K R100 ArcFace) —
+# the strongest recognition model in the InsightFace zoo; buffalo_l stays as
+# the lighter alternative. Landmark pose weighting keeps profile crops from
+# dragging centroids (faces/base.pose_weight_from_kps).
 # 2D cel: AnimeCV (EfficientDet + OML). DeepFace = lab A/B only, never default.
 # Identity gate tables live in identity_gates.GATE_PRESETS; stylized presets
 # run tighter because embedding space compresses across characters.
 CONTENT_PRESETS: dict[str, dict[str, Any]] = {
     "live_action": {
         "label": "Live-action",
-        "blurb": "RetinaFace + ArcFace (buffalo_l). Precision-biased merge.",
+        "blurb": "SCRFD + ArcFace R100 (antelopev2). Precision-biased merge.",
         "cluster_merge_sim": 0.58,
         "cluster_min_size": 8,
         "min_face_size": 40,
         "det_size": 1280,
         "default_backend": "insightface",
-        "default_model": "buffalo_l",
+        "default_model": "antelopev2",
     },
     "animation": {
         "label": "3D / stylized",
-        "blurb": "CGI faces. Same buffalo_l stack; stricter merge than live.",
+        "blurb": "CGI faces. Same antelopev2 stack; stricter merge than live.",
         "cluster_merge_sim": 0.62,
         "cluster_min_size": 6,
         "min_face_size": 40,
         "det_size": 1280,
         "default_backend": "insightface",
-        "default_model": "buffalo_l",
+        "default_model": "antelopev2",
     },
     "anime": {
         "label": "Anime / cartoon",
@@ -123,8 +126,8 @@ class Settings(BaseSettings):
     face_select_mode: str = "all"
     face_relative_pct: float = 40.0
     face_top_n: int = 2
-    # Scene / shot cuts: adaptive | transnet | auto
-    scene_cut_detector: str = "auto"
+    # Scene / shot cuts: adaptive (HSV math, default) | transnet | auto
+    scene_cut_detector: str = "adaptive"
     scene_cut_adaptive_threshold: float = 3.0
     scene_cut_transnet_threshold: float = 0.5
 
@@ -318,7 +321,8 @@ class Settings(BaseSettings):
             "scene_cut_adaptive_threshold": self.scene_cut_adaptive_threshold,
             "scene_cut_transnet_threshold": self.scene_cut_transnet_threshold,
             "scene_cut_capabilities": {
-                "adaptive": _transnet_vault_ready(),  # soft TransNet on CUDA
+                # AdaptiveDetector is core (scenedetect); TransNet needs the vault pack.
+                "adaptive": True,
                 "transnet": _transnet_vault_ready(),
                 "modes": ["adaptive", "transnet", "auto"],
                 "device": "cuda",
@@ -340,11 +344,9 @@ def _transnet_vault_ready() -> bool:
 settings = Settings()
 settings.ensure_dirs()
 settings.load_runtime_overrides()
-# Re-apply named preset so model/backend defaults migrate (e.g. antelopev2 → buffalo_l).
+# Re-apply named preset so model/backend defaults migrate to the current
+# quality defaults (e.g. buffalo_l → antelopev2). Custom configs keep theirs.
 if settings.content_preset in CONTENT_PRESET_KEYS:
     settings.apply_runtime({"content_preset": settings.content_preset}, persist=True)
 else:
     settings._sync_content_preset_label()
-    if not settings.content_preset and settings.default_model == "antelopev2":
-        settings.default_model = "buffalo_l"
-        settings.save_runtime_overrides()

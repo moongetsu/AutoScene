@@ -1,11 +1,8 @@
 """Shot / transition boundary detection for character scene packs.
 
-Preferred: TransNetV2 on GPU (CUDA, or MPS on Apple Silicon), then hard-cut
-photometric snap (±12 frames) so instant cuts land on the true frame peak
-(TransNet alone is often early/late).
-Fallback: PySceneDetect ContentDetector on CPU when TransNetV2 is unavailable —
-the `transnet` extra pulls torch, which is not installed by default.
-App path: api._scan_job → run_scene_cuts_phase → detect_shot_spans → detect_cuts_transnet.
+Default: PySceneDetect AdaptiveDetector (HSV frame-delta vs rolling average).
+Optional: TransNetV2 on GPU + photometric snap for dissolve-heavy footage.
+App path: api._scan_job → run_scene_cuts_phase → detect_shot_spans.
 """
 
 from __future__ import annotations
@@ -66,8 +63,8 @@ def require_torch_device() -> str:
         import torch
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError(
-            "Scene tools are not installed. Open Settings → Packs, install required packs, "
-            "then restart AutoScene."
+            f"Scene detection requires PyTorch ({exc}). Open Settings → Packs, "
+            "install the 'PyTorch (CUDA)' pack, then restart AutoScene."
         ) from exc
 
     if torch.cuda.is_available():
@@ -232,12 +229,207 @@ def transition_boundary_indices(probs: list[float], threshold: float) -> list[in
     return cuts
 
 
+def merge_cut_windows(cut_times: list[float], pad_sec: float) -> list[tuple[float, float]]:
+    """Sorted, merged [t-pad, t+pad] windows around candidate cuts."""
+    windows: list[list[float]] = []
+    for t in sorted(float(x) for x in cut_times):
+        a, b = t - pad_sec, t + pad_sec
+        if windows and a <= windows[-1][1]:
+            windows[-1][1] = max(windows[-1][1], b)
+        else:
+            windows.append([max(0.0, a), b])
+    return [(a, b) for a, b in windows]
+
+
+def parse_scene_score_lines(text: str) -> list[tuple[float, float]]:
+    """
+    (pts_time, change score) rows from `metadata=mode=print` output.
+
+    Two layouts are supported:
+    - ffmpeg < 8: ``frame:123 pts:2952 pts_time:1.23 ... lavfi.scene_score=0.8342``
+      (single line).
+    - ffmpeg >= 8: ``frame:0 pts:57856 pts_time:4.52`` followed by
+      ``lavfi.scd.score=0.142`` on its own line.
+    """
+    import re
+
+    out: list[tuple[float, float]] = []
+    pts_pat = re.compile(r"pts_time:([-+0-9.eE]+)")
+    score_pat = re.compile(r"lavfi\.(?:scene_score|scd\.score)=([-+0-9.eE]+)")
+    cur_pts: float | None = None
+    for line in text.splitlines():
+        mpts = pts_pat.search(line)
+        if mpts:
+            try:
+                cur_pts = float(mpts.group(1))
+            except ValueError:
+                cur_pts = None
+        ms = score_pat.search(line)
+        if ms and cur_pts is not None:
+            try:
+                out.append((cur_pts, float(ms.group(1))))
+            except ValueError:
+                pass
+    return out
+
+
+def pick_cut_peaks(
+    cut_times: list[float],
+    scores: list[tuple[float, float]],
+    *,
+    pad_sec: float,
+    min_score: float = 0.35,
+) -> list[float]:
+    """
+    Move each candidate cut onto the strongest frame-delta peak near it.
+
+    scores: (pts_time, scene_score) over the whole file (already restricted to
+    windows around the candidates). A score at frame k measures the k vs k-1
+    delta, so the peak frame is exactly the first frame of the new shot —
+    the same convention detect_cuts_transnet emits. Candidates with no clear
+    peak nearby (dissolves, whip pans) keep their TransNet time.
+    """
+    if not scores:
+        return list(cut_times)
+    pts = [p for p, _s in scores]
+    vals = [s for _p, s in scores]
+    import bisect
+
+    out: list[float] = []
+    for t in cut_times:
+        t = float(t)
+        lo = bisect.bisect_left(pts, t - pad_sec)
+        hi = bisect.bisect_right(pts, t + pad_sec)
+        if hi - lo < 2:
+            out.append(t)
+            continue
+        best_i = lo
+        second = -1.0
+        for i in range(lo, hi):
+            if vals[i] > vals[best_i]:
+                second = max(second, vals[best_i])
+                best_i = i
+            elif vals[i] > second:
+                second = vals[i]
+        best = vals[best_i]
+        sharp = best >= float(min_score) and (
+            second < 0 or best >= second * 1.3 or best - second >= 0.15
+        )
+        out.append(pts[best_i] if sharp else t)
+    return out
+
+
+def refine_cuts_at_source(
+    video_path: Path,
+    cut_times: list[float],
+    *,
+    pad_sec: float = 0.45,
+    min_score: float = 0.35,
+    width: int = 320,
+) -> list[float]:
+    """
+    Frame-perfect cut refine on the SOURCE timeline.
+
+    TransNet runs on a 48x27 @24fps resample, so its cut seconds are only as
+    good as that grid. This pass decodes only the small windows around each
+    candidate (input seek via -ss/-t with -copyts so pts_time stays on the
+    source timeline), computes ffmpeg's per-frame change score via the
+    `scdet` filter (ffmpeg >= 8; `scene` on older builds), and snaps the cut
+    onto the exact source frame whose score peaks.
+
+    Degrades cleanly: any ffmpeg/parse trouble returns the input cuts.
+    """
+    cuts = [float(t) for t in cut_times]
+    if not cuts:
+        return cuts
+
+    from autoscene.export import ensure_ffmpeg
+
+    ffmpeg = ensure_ffmpeg()
+    windows = merge_cut_windows(cuts, pad_sec)
+
+    all_scores: list[tuple[float, float]] = []
+    # Chunk so giant cut lists never brush the process command-line limit.
+    chunk = 350
+    for start in range(0, len(windows), chunk):
+        part = windows[start : start + chunk]
+        first = part[0][0]
+        last_end = part[-1][1]
+        dur = max(0.1, last_end - first) + 0.3
+        cmd = [
+            ffmpeg,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            # Input seek: decode ONLY this chunk's range, not the whole file.
+            # -copyts keeps original pts_time so scores stay on the source
+            # timeline (input seeking alone resets timestamps to zero).
+            "-ss",
+            f"{first:.6f}",
+            "-t",
+            f"{dur:.6f}",
+            "-copyts",
+            "-i",
+            str(video_path),
+            "-vf",
+            # scdet = ffmpeg 8's scene-change filter (the old `scene` filter
+            # was removed there). threshold=0 so every frame gets a score.
+            f"scale={int(width)}:-2,scdet=threshold=0,metadata=mode=print:file=-",
+            "-an",
+            "-f",
+            "null",
+            "-",
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if proc.returncode != 0:
+            err = (proc.stderr or "")[-300:]
+            log.warning("source cut refine chunk failed: %s", err)
+            return cuts
+        all_scores.extend(parse_scene_score_lines(proc.stdout or ""))
+
+    if not all_scores:
+        return cuts
+
+    all_scores.sort(key=lambda row: row[0])
+    refined = pick_cut_peaks(cuts, all_scores, pad_sec=pad_sec, min_score=min_score)
+    moved = sum(1 for a, b in zip(cuts, refined) if abs(a - b) > 1e-3)
+    log.info(
+        "source-res cut refine cuts=%s moved=%s pad=%.2fs min_score=%.2f video=%s",
+        len(cuts),
+        moved,
+        pad_sec,
+        min_score,
+        Path(video_path).name,
+    )
+    return refined
+
+
+
+
+
 def _assert_model_on_device(model: Any, device: str) -> None:
-    p = next(model.parameters())
-    if p.device.type != device:
-        raise RuntimeError("Scene pack is not on graphics hardware.")
-    if str(getattr(model, "device", "")).startswith("cpu") and device != "cpu":
-        raise RuntimeError("Scene pack is not on graphics hardware.")
+    """
+    Sanity-check that the model's parameters landed on the requested device.
+
+    After ``model.to(dev)`` a silent no-op (e.g. CUDA init failed and torch
+    fell back to CPU) would run the whole pass on CPU without anyone noticing.
+    Log so the trace tells the real story; do not raise — the scan should still
+    complete on CPU rather than dead-end the import.
+    """
+    import torch
+
+    want = str(torch.device(device))
+    try:
+        got = str(next(model.parameters()).device)
+    except StopIteration:
+        return
+    if got != want:
+        log.warning(
+            "TransNetV2 device mismatch: requested=%s got=%s — running on %s",
+            want,
+            got,
+            got,
+        )
 
 
 # Back-compat alias
@@ -522,6 +714,13 @@ def detect_cuts_transnet(
     cuts = [i / max(fps, 1e-6) for i in snapped_idx]
     del frames_cpu
 
+    # Frame-perfect pass: snap every candidate onto the true source frame via
+    # ffmpeg scene-delta peaks at native pts (48x27 grid is only an estimate).
+    try:
+        cuts = refine_cuts_at_source(video_path, cuts)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("source-res cut refine failed (%s) — keeping snapped cuts", exc)
+
     if on_progress:
         on_progress(
             {
@@ -550,20 +749,378 @@ def detect_cuts_transnet(
     return cuts
 
 
+def _probe_video_meta(video_path: Path) -> tuple[float, int, int, float]:
+    """Return (fps, width, height, duration_sec) via ffprobe. Best-effort."""
+    fps = 24.0
+    width, height = 1920, 1080
+    duration = 0.0
+    try:
+        probe = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=width,height,r_frame_rate,duration:format=duration",
+                "-of",
+                "json",
+                str(video_path),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+        )
+        if probe.returncode == 0 and probe.stdout:
+            import json
+
+            data = json.loads(probe.stdout)
+            streams = data.get("streams") or []
+            fmt = data.get("format") or {}
+            if streams:
+                st = streams[0]
+                width = int(st.get("width") or width)
+                height = int(st.get("height") or height)
+                rate = str(st.get("r_frame_rate") or "").strip()
+                if "/" in rate:
+                    a, b = rate.split("/", 1)
+                    fps = float(a) / max(float(b), 1e-6)
+                elif rate:
+                    fps = float(rate)
+                try:
+                    duration = float(st.get("duration") or 0.0)
+                except (TypeError, ValueError):
+                    duration = 0.0
+            if duration <= 0:
+                try:
+                    duration = float(fmt.get("duration") or 0.0)
+                except (TypeError, ValueError):
+                    duration = 0.0
+    except Exception as exc:  # noqa: BLE001
+        log.debug("ffprobe meta fallback: %s", exc)
+    return float(fps), max(2, width), max(2, height), max(0.0, duration)
+
+
+def _even_downscale(width: int, height: int, max_w: int = 480) -> tuple[int, int]:
+    """Even WxH for ffmpeg scale; keep aspect, cap width."""
+    w = max(2, int(width))
+    h = max(2, int(height))
+    if w > max_w:
+        h = max(2, int(round(h * (max_w / w))))
+        w = max_w
+    w -= w % 2
+    h -= h % 2
+    return max(2, w), max(2, h)
+
+
+def _make_scenedetect_detector(
+    *,
+    use_adaptive: bool,
+    threshold: float,
+    adaptive_threshold: float,
+) -> Any:
+    from scenedetect.detectors import AdaptiveDetector, ContentDetector
+
+    if use_adaptive:
+        return AdaptiveDetector(adaptive_threshold=float(adaptive_threshold))
+    return ContentDetector(threshold=float(threshold))
+
+
+def _detect_cuts_ffmpeg_pipe(
+    video_path: Path,
+    *,
+    threshold: float = 27.0,
+    use_adaptive: bool = False,
+    adaptive_threshold: float = 3.0,
+    on_progress: CutProgressCb | None = None,
+    use_hwaccel: bool = True,
+) -> list[float]:
+    """
+    Stream downscaled BGR frames from ffmpeg into AdaptiveDetector/ContentDetector.
+
+    Hardware decode (CUDA / VideoToolbox) when available — detector itself stays
+    on CPU (HSV). Avoids loading 4K into OpenCV for the adaptive path.
+    """
+    import numpy as np
+    from scenedetect.common import FrameTimecode
+
+    from autoscene.export import ensure_ffmpeg
+    from autoscene.ffmpeg_encode import hwaccel_input_args
+
+    fps, src_w, src_h, duration = _probe_video_meta(video_path)
+    out_w, out_h = _even_downscale(src_w, src_h, max_w=480)
+    frame_bytes = out_w * out_h * 3
+    frames_total = int(duration * fps) if duration > 0 and fps > 0 else 0
+    hw = hwaccel_input_args(zero_copy=False) if use_hwaccel else []
+    if use_hwaccel and not hw:
+        raise RuntimeError("no ffmpeg hwaccel available")
+    hw_joined = " ".join(hw).lower()
+    if "cuda" in hw_joined:
+        device = "cuda"
+        decode_label = "CUDA decode"
+    elif hw:
+        device = "cpu"
+        decode_label = "HW decode"
+    else:
+        device = "cpu"
+        decode_label = "CPU"
+
+    if on_progress:
+        on_progress(
+            {
+                "phase": "extract",
+                "progress": 0.05,
+                "stage": f"Scanning scenes ({decode_label})…",
+                "frames_done": 0,
+                "frames_total": frames_total,
+                "cuts_found": 0,
+                "device": device,
+            }
+        )
+
+    ffmpeg = ensure_ffmpeg()
+    cmd = [
+        ffmpeg,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        *hw,
+        "-i",
+        str(video_path),
+        "-an",
+        "-sn",
+        "-vf",
+        f"scale={out_w}:{out_h}",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "bgr24",
+        "pipe:1",
+    ]
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        bufsize=frame_bytes * 8,
+    )
+    assert proc.stdout is not None
+
+    detector = _make_scenedetect_detector(
+        use_adaptive=use_adaptive,
+        threshold=threshold,
+        adaptive_threshold=adaptive_threshold,
+    )
+    cut_secs: list[float] = []
+    frame_i = 0
+    last_emit = 0.0
+    last_tc: FrameTimecode | None = None
+
+    def _emit(*, force: bool = False, phase: str = "infer") -> None:
+        nonlocal last_emit
+        if on_progress is None:
+            return
+        now = time.monotonic()
+        if not force and now - last_emit < 0.35:
+            return
+        last_emit = now
+        total = frames_total
+        done = frame_i
+        if total > 0:
+            frac = 0.05 + 0.90 * min(1.0, done / total)
+        else:
+            frac = 0.08 + min(0.85, done / 50_000.0)
+        on_progress(
+            {
+                "phase": phase,
+                "progress": float(max(0.05, min(0.95, frac))),
+                "stage": (
+                    f"Scanning scenes · {decode_label} · frame {done}/{total}"
+                    if total > 0
+                    else f"Scanning scenes · {decode_label} · frame {done}"
+                ),
+                "frames_done": int(done),
+                "frames_total": int(total),
+                "cuts_found": len(cut_secs) + 1,
+                "device": device,
+            }
+        )
+
+    try:
+        while True:
+            buf = proc.stdout.read(frame_bytes)
+            if not buf or len(buf) < frame_bytes:
+                break
+            frame = np.frombuffer(buf, dtype=np.uint8).reshape((out_h, out_w, 3))
+            tc = FrameTimecode(timecode=frame_i, fps=fps)
+            last_tc = tc
+            for hit in detector.process_frame(tc, frame):
+                cut_secs.append(float(hit.get_seconds()))
+            frame_i += 1
+            _emit()
+    finally:
+        try:
+            proc.stdout.close()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            err_b = proc.stderr.read() if proc.stderr else b""
+        except Exception:  # noqa: BLE001
+            err_b = b""
+        rc = proc.wait(timeout=120)
+        if frame_i == 0:
+            err = (err_b or b"").decode("utf-8", errors="replace")[-500:]
+            raise RuntimeError(
+                f"ffmpeg scene-scan pipe produced no frames (rc={rc}): {err}"
+            )
+        if rc != 0 and frame_i < max(1, frames_total // 4 if frames_total else 1):
+            err = (err_b or b"").decode("utf-8", errors="replace")[-500:]
+            raise RuntimeError(f"ffmpeg scene-scan pipe failed (rc={rc}): {err}")
+
+    if last_tc is not None:
+        for hit in detector.post_process(last_tc):
+            cut_secs.append(float(hit.get_seconds()))
+
+    # Unique sorted cuts (detector can re-emit near boundaries).
+    cuts = sorted({round(c, 4) for c in cut_secs if c > 0.05})
+    scene_count = len(cuts) + 1
+    if on_progress:
+        on_progress(
+            {
+                "phase": "finalize",
+                "progress": 0.96,
+                "stage": f"Finishing · {scene_count} scenes",
+                "frames_done": frame_i,
+                "frames_total": frames_total or frame_i,
+                "cuts_found": scene_count,
+                "device": device,
+            }
+        )
+    log.info(
+        "scenedetect-pipe cuts=%s scenes=%s frames=%s %sx%s hw=%s adaptive=%s video=%s",
+        len(cuts),
+        scene_count,
+        frame_i,
+        out_w,
+        out_h,
+        bool(hw),
+        use_adaptive,
+        video_path.name,
+    )
+    return cuts
+
+
 def detect_cuts_scenedetect(
     video_path: Path,
     *,
     threshold: float = 27.0,
+    use_adaptive: bool = False,
+    adaptive_threshold: float = 3.0,
     on_progress: CutProgressCb | None = None,
 ) -> list[float]:
     """
-    PySceneDetect ContentDetector — CPU shot boundaries, no torch required.
+    PySceneDetect shot boundaries (no torch).
 
-    Lower recall on dissolves than TransNetV2, but `scenedetect` is already a
-    core dependency, so this works on a stock install where the `transnet`
-    extra (and its torch download) is absent.
+    Prefer ffmpeg hardware decode → downscale → AdaptiveDetector/ContentDetector
+    on CPU. Fall back to OpenCV ``open_video`` if the pipe fails.
+
+    use_adaptive=True runs AdaptiveDetector (survives fast camera motion that
+    fires ContentDetector false cuts). Sensitivity maps to
+    ``AdaptiveDetector(adaptive_threshold=…)``; ContentDetector uses ``threshold``.
+
+    Emits live ``frames_done`` / ``frames_total`` / ``cuts_found`` via on_progress.
     """
-    from scenedetect import ContentDetector, SceneManager, open_video
+    from autoscene.ffmpeg_encode import hwaccel_input_args
+
+    hw = hwaccel_input_args(zero_copy=False)
+    if hw:
+        try:
+            return _detect_cuts_ffmpeg_pipe(
+                video_path,
+                threshold=threshold,
+                use_adaptive=use_adaptive,
+                adaptive_threshold=adaptive_threshold,
+                on_progress=on_progress,
+                use_hwaccel=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "Hardware-decode scene scan failed (%s); falling back to CPU open_video",
+                exc,
+            )
+
+    import scenedetect.scene_manager as sd_sm
+    from scenedetect import SceneManager, open_video
+
+    class _ProgressBridge:
+        """tqdm-compatible sink → AutoScene cut progress events."""
+
+        def __init__(self, total: int = 0, desc: str = "", **_kwargs: Any) -> None:
+            self.total = max(0, int(total or 0))
+            self.n = 0
+            self.desc = desc or ""
+            self._cuts = 0
+            self._last_emit = 0.0
+            self._emit(force=True)
+
+        def update(self, n: int = 1) -> None:
+            self.n += int(n)
+            if self.total > 0:
+                self.n = min(self.n, self.total)
+            self._emit()
+
+        def set_description(self, desc: str | None = None, refresh: bool = True) -> None:
+            del refresh
+            if desc:
+                self.desc = str(desc)
+                # Description looks like "Detected: 12" (cut count) from PySceneDetect.
+                digits = "".join(ch for ch in self.desc if ch.isdigit())
+                if digits:
+                    try:
+                        # UI "scenes" ≈ cuts + 1 (opening shot before first cut).
+                        self._cuts = int(digits) + 1
+                    except ValueError:
+                        pass
+            self._emit()
+
+        def close(self) -> None:
+            self._emit(force=True)
+
+        def __enter__(self) -> "_ProgressBridge":
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            self.close()
+
+        def _emit(self, *, force: bool = False) -> None:
+            if on_progress is None:
+                return
+            now = time.monotonic()
+            if not force and now - self._last_emit < 0.35:
+                return
+            self._last_emit = now
+            total = self.total
+            done = self.n
+            if total > 0:
+                frac = 0.05 + 0.90 * (done / total)
+            else:
+                frac = 0.08
+            on_progress(
+                {
+                    "phase": "infer",
+                    "progress": float(max(0.05, min(0.95, frac))),
+                    "stage": (
+                        f"Scanning scenes · frame {done}/{total}"
+                        if total > 0
+                        else "Scanning scenes (CPU)…"
+                    ),
+                    "frames_done": int(done),
+                    "frames_total": int(total),
+                    "cuts_found": int(self._cuts),
+                    "device": "cpu",
+                }
+            )
 
     if on_progress:
         on_progress(
@@ -580,29 +1137,51 @@ def detect_cuts_scenedetect(
 
     video = open_video(str(video_path))
     manager = SceneManager()
-    manager.add_detector(ContentDetector(threshold=float(threshold)))
-    manager.detect_scenes(video, show_progress=False)
+    manager.add_detector(
+        _make_scenedetect_detector(
+            use_adaptive=use_adaptive,
+            threshold=threshold,
+            adaptive_threshold=adaptive_threshold,
+        )
+    )
+
+    prev_tqdm = sd_sm.tqdm
+    try:
+        if on_progress is not None:
+            sd_sm.tqdm = _ProgressBridge  # type: ignore[misc, assignment]
+        manager.detect_scenes(video, show_progress=on_progress is not None)
+    finally:
+        sd_sm.tqdm = prev_tqdm
+
     scenes = manager.get_scene_list()
 
     # Scene starts after the first are the cut points.
     cuts = [float(start.get_seconds()) for start, _end in scenes[1:]]
+    scene_count = len(scenes)
 
     if on_progress:
+        # frames_total from video duration when available
+        try:
+            frames_total = int(video.duration.frame_num) if video.duration else 0
+        except Exception:  # noqa: BLE001
+            frames_total = 0
         on_progress(
             {
                 "phase": "finalize",
                 "progress": 0.96,
-                "stage": f"Finishing · {len(cuts)} scenes",
-                "frames_done": 0,
-                "frames_total": 0,
-                "cuts_found": len(cuts),
+                "stage": f"Finishing · {scene_count} scenes",
+                "frames_done": frames_total or 0,
+                "frames_total": frames_total or 0,
+                "cuts_found": scene_count,
                 "device": "cpu",
             }
         )
     log.info(
-        "scenedetect cuts=%s threshold=%.1f video=%s",
+        "scenedetect cuts=%s scenes=%s threshold=%.1f adaptive=%s video=%s",
         len(cuts),
+        scene_count,
         threshold,
+        use_adaptive,
         video_path.name,
     )
     return cuts
@@ -612,50 +1191,65 @@ def detect_shot_spans(
     video_path: Path,
     duration_sec: float,
     *,
-    mode: SceneCutMode = "auto",
+    mode: SceneCutMode = "adaptive",
     adaptive_threshold: float = 3.0,
     transnet_threshold: float = 0.5,
     on_progress: CutProgressCb | None = None,
 ) -> tuple[list[ShotSpan], str]:
     """
-    TransNetV2 propose + hard-cut snap, falling back to PySceneDetect on CPU.
+    Shot boundaries for pack context.
 
-    `adaptive` = softer threshold. The fallback fires when TransNetV2 or a GPU
-    torch device is unavailable, so the scan phase still completes rather than
-    dead-ending the whole import.
+    - ``adaptive`` (default): PySceneDetect AdaptiveDetector — HSV frame-delta
+      vs rolling average. No Torch. Best simple path for hard cuts.
+    - ``transnet``: TransNetV2 + photometric snap (GPU). Fail hard if missing.
+    - ``auto``: try TransNet, else AdaptiveDetector.
     """
-    del adaptive_threshold  # legacy scale, unused by both detectors
     path = Path(video_path)
     if not path.is_file():
         return [ShotSpan(0.0, max(0.01, float(duration_sec)))], "none"
 
     if mode not in ("adaptive", "transnet", "auto"):
-        mode = "auto"
+        mode = "adaptive"
+
+    # ContentDetector/Adaptive scale is unrelated to TransNet's 0-1 probability;
+    # 27.0 is ContentDetector's documented default. Sensitivity knob (1..10,
+    # default 3): higher → more cuts (lower threshold).
+    sens = max(0.5, float(adaptive_threshold))
+    sd_thr = float(max(6.0, min(81.0, 27.0 * 3.0 / sens)))
+
+    def _scenedetect(*, use_adaptive: bool) -> tuple[list[ShotSpan], str]:
+        cuts = detect_cuts_scenedetect(
+            path,
+            threshold=sd_thr,
+            use_adaptive=use_adaptive,
+            adaptive_threshold=sens,
+            on_progress=on_progress,
+        )
+        used = "scenedetect-adaptive" if use_adaptive else "scenedetect"
+        return _shots_from_cuts(cuts, duration_sec), used
+
+    if mode == "adaptive":
+        try:
+            return _scenedetect(use_adaptive=True)
+        except Exception as exc:  # noqa: BLE001
+            log.error("PySceneDetect adaptive cut failed: %s", exc)
+            raise RuntimeError(f"Scene cut detection failed: {exc}") from exc
 
     thr = _transnet_threshold_for_mode(mode, transnet_threshold)
     try:
         cuts = detect_cuts_transnet(path, threshold=thr, on_progress=on_progress)
-        # Always snap-refined; label so project.json / UI show the real pipeline.
-        used = "transnet-snap-soft" if mode == "adaptive" else "transnet-snap"
-        return _shots_from_cuts(cuts, duration_sec), used
+        return _shots_from_cuts(cuts, duration_sec), "transnet-snap"
     except Exception as exc:  # noqa: BLE001
         if mode == "transnet":
-            # Explicit TransNet request — do not silently swap detectors.
             log.error("GPU scene cut failed: %s", exc)
             raise
-        log.warning("TransNetV2 unavailable (%s) — falling back to PySceneDetect", exc)
+        log.warning("TransNetV2 unavailable (%s) — falling back to AdaptiveDetector", exc)
 
-    # ContentDetector's scale is unrelated to TransNet's 0-1 probability;
-    # 27.0 is its documented default, softened in adaptive mode.
-    sd_thr = 21.0 if mode == "adaptive" else 27.0
     try:
-        cuts = detect_cuts_scenedetect(path, threshold=sd_thr, on_progress=on_progress)
+        return _scenedetect(use_adaptive=True)
     except Exception as exc:  # noqa: BLE001
         log.error("PySceneDetect scene cut failed: %s", exc)
         raise RuntimeError(f"Scene cut detection failed: {exc}") from exc
-
-    used = "scenedetect-soft" if mode == "adaptive" else "scenedetect"
-    return _shots_from_cuts(cuts, duration_sec), used
 
 
 def shot_index_for_time(shots: list[ShotSpan], t: float) -> int:

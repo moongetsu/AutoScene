@@ -59,7 +59,6 @@ type IngestTrackerProps = {
 
 const SCAN_STEPS = [
   { id: "cuts", label: "Scenes" },
-  { id: "probe", label: "Check" },
   { id: "model", label: "Prepare" },
   { id: "detect", label: "Find faces" },
   { id: "cluster", label: "Group" },
@@ -69,13 +68,18 @@ const SCAN_STEPS = [
 
 function stepIndex(phase: string | undefined, status?: string): number {
   if (status === "cutting" || phase === "cuts" || phase?.startsWith("cuts")) return 0
+  if (phase === "probe") return 1
   const i = SCAN_STEPS.findIndex((s) => s.id === phase)
   return i >= 0 ? i : status === "scanning" ? 1 : 0
 }
 
-/** True once TransNet is actually scoring frames (not model/extract prep). */
+/** True while cut pass is actively processing frames (AI or AdaptiveDetector). */
 function isCutInferPhase(phase: string | undefined): boolean {
-  return phase === "cuts_infer" || phase === "cuts_finalize"
+  return (
+    phase === "cuts_infer" ||
+    phase === "cuts_finalize" ||
+    phase === "cuts_extract"
+  )
 }
 
 export function IngestTracker({
@@ -164,7 +168,11 @@ export function IngestTracker({
   const activeStep = stepIndex(project?.progress_phase, project?.status)
   const shotCount = project?.shot_count ?? project?.shots?.length ?? 0
   const cutsFound = project?.cuts_found ?? shotCount
-  const cutInfer = isCutInferPhase(project?.progress_phase)
+  const cutLive =
+    cutting &&
+    (isCutInferPhase(project?.progress_phase) ||
+      (project?.frames_total ?? 0) > 0 ||
+      (project?.cuts_found ?? 0) > 0)
   const cutFramesDone = cutting ? (project?.frames_done ?? 0) : framesDone
   const cutFramesTotal = cutting ? (project?.frames_total ?? 0) : framesTotal
 
@@ -328,12 +336,12 @@ export function IngestTracker({
                   <p className="text-sm text-[#F2EDE6]/80">
                     Paused. Resume to continue detecting.
                   </p>
-                ) : cutting && !cutInfer ? (
+                ) : cutting && !cutLive ? (
                   <p className="text-sm text-[#F2EDE6]/80">Finding scene breaks…</p>
                 ) : !cutting ? (
                   <p className="text-sm text-[#F2EDE6]/80">Waiting for first face…</p>
                 ) : null}
-                {cutting && cutInfer ? (
+                {cutting && cutLive ? (
                   <div className="mt-1 flex flex-col items-center gap-2">
                     <p className="font-mono text-2xl tabular-nums tracking-tight text-[#C4A35A]">
                       {cutsFound}
@@ -343,7 +351,7 @@ export function IngestTracker({
                     </p>
                     <p className="font-mono text-[11px] tabular-nums text-[#9A948A]">
                       {cutFramesTotal > 0
-                        ? `${cutFramesDone}/${cutFramesTotal} frames`
+                        ? `Frame ${cutFramesDone}/${cutFramesTotal}`
                         : "…"}
                       {" · "}
                       {Math.round(scanPct)}%
@@ -487,26 +495,32 @@ export function IngestTracker({
                   value={ready ? 100 : scanPct}
                   exact={`${(ready ? 100 : scanPct).toFixed(1)}%`}
                   detail={
-                    scanActive && framesTotal > 0
-                      ? `Progress ${framesApprox ? "~" : ""}${framesDone}/${framesTotal} · ${detectHits} faces`
-                      : scanning
-                        ? sanitizeStage(project?.progress_phase) || "Working"
-                        : paused
-                          ? "paused"
-                          : ready
-                            ? `${project?.people.length ?? 0} cast · ${project?.segments.length ?? 0} scenes`
-                            : "—"
+                    cutting && cutFramesTotal > 0
+                      ? `Frame ${cutFramesDone}/${cutFramesTotal} · ${cutsFound} scenes`
+                      : scanActive && framesTotal > 0
+                        ? `Progress ${framesApprox ? "~" : ""}${framesDone}/${framesTotal} · ${detectHits} faces`
+                        : cutting
+                          ? sanitizeStage(project?.stage) || "Finding scenes"
+                          : scanning
+                            ? sanitizeStage(project?.progress_phase) || "Working"
+                            : paused
+                              ? "paused"
+                              : ready
+                                ? `${project?.people.length ?? 0} cast · ${project?.segments.length ?? 0} scenes`
+                                : "—"
                   }
                   eta={
-                    scanning
-                      ? formatEta(scanEta)
-                      : paused
-                        ? "held"
-                        : ready
-                          ? "done"
-                          : "—"
+                    cutting
+                      ? "…"
+                      : scanning
+                        ? formatEta(scanEta)
+                        : paused
+                          ? "held"
+                          : ready
+                            ? "done"
+                            : "—"
                   }
-                  active={scanning}
+                  active={scanning || cutting}
                 />
               )}
             </div>
@@ -556,9 +570,7 @@ export function IngestTracker({
                 label="Scenes"
                 value={
                   cutting
-                    ? cutInfer
-                      ? String(cutsFound)
-                      : "—"
+                    ? String(cutsFound)
                     : cutsFound > 0 || shotCount > 0
                       ? String(cutsFound > 0 ? cutsFound : shotCount)
                       : "—"
@@ -570,16 +582,18 @@ export function IngestTracker({
                   shotCount > 0
                     ? String(shotCount)
                     : cutting
-                      ? "…"
+                      ? String(cutsFound || "…")
                       : "—"
                 }
               />
               <Meta
                 label="Frames"
                 value={
-                  framesTotal > 0
-                    ? `${framesApprox ? "~" : ""}${framesDone}/${framesTotal}`
-                    : "—"
+                  cutting && cutFramesTotal > 0
+                    ? `${cutFramesDone}/${cutFramesTotal}`
+                    : framesTotal > 0
+                      ? `${framesApprox ? "~" : ""}${framesDone}/${framesTotal}`
+                      : "—"
                 }
               />
               <Meta label="Faces" value={detectHits > 0 ? String(detectHits) : "—"} />

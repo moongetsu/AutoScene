@@ -105,15 +105,17 @@ def resolve_export_mode(
 ) -> ExportMode:
     """
     Map API inputs to a concrete mode.
-    Default when re-encode is required: quality (GPU), not bit-exact lossless.
+
+    Default is quality (GPU re-encode): frame-exact cuts. Stream copy snaps
+    to keyframes — up to seconds off — so copy only ever runs when the user
+    explicitly asks for it.
     """
+    del reencode  # legacy flag; default is frame-exact re-encode either way
     raw = (export_mode or "").strip().lower()
     if raw in {"copy", "quality", "lossless"}:
         mode: ExportMode = raw  # type: ignore[assignment]
-    elif reencode:
-        mode = "quality"
     else:
-        mode = "copy"
+        mode = "quality"
 
     if mode == "copy" and source_needs_reencode(video_path):
         return "quality"
@@ -222,7 +224,12 @@ def _extract_segment_clip(
     if profile is None:
         profile = probe_encode_profile(video_path)
     container = container_of(out) or container
-    a_args = audio_encode_args(profile, container=container, mode=mode)
+    a_args = audio_encode_args(
+        profile,
+        container=container,
+        mode=mode,
+        duration_sec=duration,
+    )
     vf = video_filter_args(profile)
     use_input_seek = mode in {"quality", "lossless"}
     # Zero-copy CUDA→NVENC cannot convert 10-bit→8-bit. Stripping -pix_fmt on

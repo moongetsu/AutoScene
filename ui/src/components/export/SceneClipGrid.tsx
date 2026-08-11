@@ -1,9 +1,8 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo } from "react"
 import { motion } from "motion/react"
 import { EyeOff } from "lucide-react"
 import {
   api,
-  appendQuery,
   formatDuration,
   isSegmentExcluded,
   type Person,
@@ -37,7 +36,7 @@ export function SceneClipGrid({
   disabled,
   onToggle,
 }: SceneClipGridProps) {
-  const [hoverVideoEnabled, setHoverVideoEnabled] = useState(false)
+  void _scenes
   // One pass for the whole grid — coCastForSegment per tile was O(n^2)
   // on every render, and the 1.2s project poll re-renders constantly.
   const coCast = useMemo(
@@ -49,50 +48,16 @@ export function SceneClipGrid({
       ),
     [segments, allSegments, people],
   )
-  const [proxyHint, setProxyHint] = useState<string | null>(null)
 
-  // Warm browser-playable proxy once per project (HEVC sources need this for hover).
+  // Prefetch short per-scene hover clips for the visible character (not full-film proxy).
   useEffect(() => {
-    if (!projectId) {
-      setHoverVideoEnabled(false)
-      setProxyHint(null)
-      return
-    }
-    let cancelled = false
-    setHoverVideoEnabled(false)
-    setProxyHint(null)
-
-    void (async () => {
-      try {
-        const st = await api.videoProxyStatus(projectId)
-        if (cancelled) return
-        if (st.native_ok || st.proxy_ready) {
-          setHoverVideoEnabled(true)
-          setProxyHint(null)
-          return
-        }
-        setProxyHint("Preparing hover preview…")
-        // Triggers ensure_browser_playable on the API (may re-encode once).
-        const res = await fetch(
-          appendQuery(api.videoUrl(projectId), { warm: "1" }),
-          { headers: { Range: "bytes=0-1023" } },
-        )
-        if (cancelled) return
-        if (res.ok || res.status === 206) {
-          setHoverVideoEnabled(true)
-          setProxyHint(null)
-        } else {
-          setProxyHint(null)
-        }
-      } catch {
-        if (!cancelled) setProxyHint(null)
-      }
-    })()
-
-    return () => {
-      cancelled = true
-    }
-  }, [projectId])
+    if (!projectId || !segments.length) return
+    const ranges = segments.map((s) => {
+      const p = segmentPreviewRange(s)
+      return [p.startSec, p.endSec] as [number, number]
+    })
+    void api.prefetchHoverClips(projectId, ranges).catch(() => {})
+  }, [projectId, segments])
 
   if (!segments.length) {
     return (
@@ -103,10 +68,7 @@ export function SceneClipGrid({
   }
 
   return (
-    <div className="space-y-2">
-      {proxyHint ? (
-        <p className="text-[11px] text-[#9A948A]">{proxyHint}</p>
-      ) : null}
+    <div className="relative space-y-2">
       <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
         {segments.map((segment, index) => {
           const excluded = isSegmentExcluded(exclusions, segment)
@@ -152,7 +114,6 @@ export function SceneClipGrid({
                     startSec={preview.startSec}
                     endSec={preview.endSec}
                     faceTimeSec={segment.face_time_sec}
-                    hoverVideoEnabled={hoverVideoEnabled}
                     className={cn(excluded && "opacity-70")}
                   />
                 ) : null}

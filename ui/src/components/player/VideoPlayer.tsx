@@ -23,7 +23,8 @@ export type PlayerSegment = {
 }
 
 export type VideoPlayerProps = {
-  src: string
+  /** Omit / null while proxy warms — never pass "" (React reloads the page). */
+  src?: string | null
   /** Source frame rate. Frame controls hide when absent/zero. */
   fps?: number | null
   durationSec?: number
@@ -365,7 +366,7 @@ export function VideoPlayer({
       >
         <video
           ref={videoRef}
-          src={src}
+          src={src || undefined}
           muted={muted}
           autoPlay={autoPlay}
           playsInline

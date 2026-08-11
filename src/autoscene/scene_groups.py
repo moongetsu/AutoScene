@@ -55,19 +55,22 @@ def cast_by_shot(shots: list, segments: list) -> list[set[int]]:
     """
     Which cast members appear in each shot.
 
-    Segments produced by the shots branch of cluster.build_segments are already
-    aligned to shot plates, so matching on the start time is exact rather than
-    an interval search.
+    Overlap match: merged plates span several consecutive shots when a
+    character stays on screen across cuts, so every covered shot gets the
+    cast member — not just the shot the plate starts on.
     """
     starts = np.asarray([float(s.start_sec) for s in shots], dtype=np.float64)
+    ends = np.asarray([float(s.end_sec) for s in shots], dtype=np.float64)
     out: list[set[int]] = [set() for _ in shots]
     if not len(starts):
         return out
+    eps = 0.05
     for seg in segments:
-        # Nearest shot start; segments and shots share the same boundaries.
-        idx = int(np.argmin(np.abs(starts - float(seg.start_sec))))
-        if abs(starts[idx] - float(seg.start_sec)) <= 0.05:
-            out[idx].add(int(seg.person_id))
+        a = float(seg.start_sec)
+        b = float(seg.end_sec)
+        hit = np.where((starts < b - eps) & (ends > a + eps))[0]
+        for idx in hit.tolist():
+            out[int(idx)].add(int(seg.person_id))
     return out
 
 

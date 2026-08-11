@@ -1,6 +1,6 @@
-import { useCallback, useRef, useState } from "react"
+import { useCallback, useState } from "react"
 import { motion, AnimatePresence } from "motion/react"
-import { HardDrive, Upload } from "lucide-react"
+import { FolderOpen, Upload } from "lucide-react"
 import { Button as AnimatedButton } from "@/components/ui/animated-button"
 import {
   UploadProgressBar,
@@ -12,8 +12,10 @@ type ImportDropzoneProps = {
   busy: boolean
   gpuLabel?: string
   upload: UploadProgressState | null
+  /** Drag-drop / file without a filesystem path → one-time upload write. */
   onFile: (file: File) => void
-  onPickLocalPath?: () => void
+  /** Browse → link existing path (no second copy). */
+  onBrowse: () => void
 }
 
 function SprocketRail({ side, active }: { side: "left" | "right"; active: boolean }) {
@@ -43,9 +45,8 @@ export function ImportDropzone({
   gpuLabel,
   upload,
   onFile,
-  onPickLocalPath,
+  onBrowse,
 }: ImportDropzoneProps) {
-  const inputRef = useRef<HTMLInputElement>(null)
   const [dragging, setDragging] = useState(false)
 
   const handleFile = useCallback(
@@ -129,7 +130,8 @@ export function ImportDropzone({
             </motion.h2>
 
             <p className="mt-4 max-w-md text-[15px] leading-relaxed text-muted-foreground">
-              MP4, MKV, MOV. For large files, use Link local path. Face scan starts after import.
+              MP4, MKV, MOV. Browse links the file path (no second copy). Drag-drop uploads once
+              when a path is unavailable. Face scan starts after import.
             </p>
           </div>
 
@@ -145,20 +147,12 @@ export function ImportDropzone({
                   </span>
                 ))}
               </div>
-              <input
-                ref={inputRef}
-                type="file"
-                accept="video/*"
-                className="hidden"
-                disabled={busy}
-                onChange={(e) => handleFile(e.target.files?.[0] ?? null)}
-              />
               <div className="flex flex-wrap items-center gap-3">
                 <AnimatedButton
                   className="min-h-11 gap-2 px-5"
                   size="lg"
                   disabled={busy}
-                  onClick={() => inputRef.current?.click()}
+                  onClick={onBrowse}
                 >
                   {busy ? (
                     <>
@@ -167,23 +161,11 @@ export function ImportDropzone({
                     </>
                   ) : (
                     <>
-                      <Upload className="size-4" />
+                      <FolderOpen className="size-4" />
                       Browse
                     </>
                   )}
                 </AnimatedButton>
-                {onPickLocalPath ? (
-                  <AnimatedButton
-                    className="min-h-11 gap-2 px-5"
-                    size="lg"
-                    variant="outline"
-                    disabled={busy}
-                    onClick={onPickLocalPath}
-                  >
-                    <HardDrive className="size-4" />
-                    Link local path
-                  </AnimatedButton>
-                ) : null}
               </div>
               {gpuLabel ? (
                 <p className="mt-4 text-xs text-muted-foreground/80">{gpuLabel}</p>

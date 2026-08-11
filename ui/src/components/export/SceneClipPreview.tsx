@@ -1,7 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { api, appendQuery, FPS_FALLBACK } from "@/lib/api"
-import { useVideoClock } from "@/components/player/useVideoClock"
-import { useVideoFps } from "@/components/player/useVideoFps"
+import { useEffect, useRef, useState } from "react"
+import { api, appendQuery } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
 type SceneClipPreviewProps = {
@@ -12,14 +10,12 @@ type SceneClipPreviewProps = {
   faceTimeSec?: number | null
   /** Unused for Export stills — full plate only (face crops are gallery/import). */
   personId?: number | null
-  /** False while HEVC→H.264 proxy still building — hover stays on still. */
-  hoverVideoEnabled?: boolean
   className?: string
 }
 
 /**
- * Export tile: JPEG still (lazy) + optional hover loop on browser-playable video.
- * Must not sit inside a <button> — nested <video> breaks hover/play.
+ * Export tile: JPEG still + hover loop of a short per-scene H.264 clip.
+ * Does not wait on the full-film browser_proxy (that can take many minutes).
  */
 export function SceneClipPreview({
   projectId,
@@ -27,7 +23,6 @@ export function SceneClipPreview({
   endSec,
   faceTimeSec,
   personId: _personId,
-  hoverVideoEnabled = true,
   className,
 }: SceneClipPreviewProps) {
   void _personId
@@ -38,10 +33,10 @@ export function SceneClipPreview({
   const [imgReady, setImgReady] = useState(false)
   const [imgFailed, setImgFailed] = useState(false)
   const [hovering, setHovering] = useState(false)
+  const [clipReady, setClipReady] = useState(false)
   const [videoReady, setVideoReady] = useState(false)
+  const [clipGen, setClipGen] = useState(0)
 
-  // Prefer a frame where the focus person's face was actually detected so a
-  // tile never shows the opposing shot plate.
   const stillAt =
     faceTimeSec != null
       ? Math.min(Math.max(faceTimeSec, startSec), Math.max(startSec, endSec - 0.04))
@@ -49,37 +44,13 @@ export function SceneClipPreview({
           0,
           startSec + Math.min(0.85, Math.max(0.2, (endSec - startSec) * 0.4)),
         )
-  const endAt = Math.max(stillAt + 0.1, endSec - 0.04)
-  const videoSrc = appendQuery(api.videoUrl(projectId), { v: projectId })
 
-  // Loop the clip with the shared frame-accurate clock instead of the old
-  // `timeupdate >= endAt` check, which fires ~4x/sec and so overran the cut
-  // by up to a quarter second on every lap.
-  const { fps } = useVideoFps(projectId)
-  const hoverActive = hovering && hoverVideoEnabled
-  const loopRange = useMemo(
-    () => ({ startSec: stillAt, endSec: endAt }),
-    [stillAt, endAt],
+  const hoverSrc = appendQuery(
+    api.sceneHoverUrl(projectId, startSec, endSec),
+    { v: String(clipGen) },
   )
-  const clock = useVideoClock({
-    videoRef,
-    fps: fps ?? FPS_FALLBACK,
-    activeRange: hoverActive ? loopRange : null,
-    onRangeEnd: useCallback(() => {
-      const v = videoRef.current
-      if (!v || !hoverRef.current) return
-      try {
-        v.currentTime = stillAt
-      } catch {
-        /* ignore */
-      }
-    }, [stillAt]),
-    attachToken: hoverActive,
-  })
-  void clock
-  // Full-frame plate only. Face crops stay on gallery cast + import live preview.
   const frameSrc = appendQuery(api.sceneFrameUrl(projectId, stillAt), {
-    v: "5",
+    v: "6",
   })
 
   useEffect(() => {
@@ -92,7 +63,7 @@ export function SceneClipPreview({
           io.disconnect()
         }
       },
-      { rootMargin: "160px 0px", threshold: 0.01 },
+      { rootMargin: "800px 0px", threshold: 0.01 },
     )
     io.observe(el)
     return () => io.disconnect()
@@ -103,22 +74,57 @@ export function SceneClipPreview({
     setImgFailed(false)
   }, [frameSrc])
 
+  // Warm / poll short hover clip (independent of full-film proxy).
   useEffect(() => {
-    if (!hovering || !hoverVideoEnabled) {
+    if (!inView && !hovering) return
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+
+    const tick = async () => {
+      try {
+        const res = await fetch(
+          appendQuery(api.sceneHoverUrl(projectId, startSec, endSec), {
+            warm: "1",
+          }),
+        )
+        if (cancelled) return
+        if (res.status === 200) {
+          setClipReady(true)
+          setClipGen((g) => g + 1)
+          return
+        }
+        // 202 while building — poll again.
+        timer = setTimeout(() => {
+          void tick()
+        }, 900)
+      } catch {
+        if (!cancelled) {
+          timer = setTimeout(() => {
+            void tick()
+          }, 1500)
+        }
+      }
+    }
+    void tick()
+    return () => {
+      cancelled = true
+      if (timer) clearTimeout(timer)
+    }
+  }, [projectId, startSec, endSec, inView, hovering])
+
+  useEffect(() => {
+    if (!hovering || !clipReady) {
       hoverRef.current = false
-      setVideoReady(false)
       videoRef.current?.pause()
       return
     }
-
     const v = videoRef.current
     if (!v) return
     hoverRef.current = true
-
     const kick = () => {
       if (!hoverRef.current) return
       try {
-        v.currentTime = stillAt
+        v.currentTime = 0
       } catch {
         /* ignore */
       }
@@ -132,7 +138,6 @@ export function SceneClipPreview({
           setVideoReady(false)
         })
     }
-
     if (v.readyState >= 2) kick()
     else {
       const onReady = () => kick()
@@ -143,9 +148,9 @@ export function SceneClipPreview({
         v.removeEventListener("canplay", onReady)
       }
     }
-  }, [hovering, hoverVideoEnabled, stillAt])
+  }, [hovering, clipReady, hoverSrc])
 
-  const showVideo = hovering && hoverVideoEnabled && videoReady
+  const showVideo = hovering && clipReady && videoReady
 
   return (
     <div
@@ -167,42 +172,33 @@ export function SceneClipPreview({
           src={frameSrc}
           alt=""
           draggable={false}
-          loading="lazy"
           decoding="async"
           onLoad={() => setImgReady(true)}
           onError={() => setImgFailed(true)}
           className={cn(
-            "absolute inset-0 z-[1] size-full object-cover transition-opacity duration-200",
+            "absolute inset-0 z-[1] size-full object-cover transition-opacity duration-150",
             imgReady && !showVideo ? "opacity-100" : "opacity-0",
           )}
         />
       ) : null}
 
-      {hovering && hoverVideoEnabled ? (
+      {clipReady ? (
         <video
           ref={videoRef}
-          src={videoSrc}
+          src={hoverSrc}
           muted
           playsInline
-          preload="metadata"
+          loop
+          preload="auto"
           disablePictureInPicture
           className={cn(
             "absolute inset-0 z-[2] size-full object-cover",
             showVideo ? "opacity-100" : "opacity-0",
           )}
+          onPlaying={() => setVideoReady(true)}
           onLoadedData={() => {
-            const v = videoRef.current
-            if (!v || !hoverRef.current) return
-            try {
-              v.currentTime = stillAt
-            } catch {
-              /* ignore */
-            }
-          }}
-          onSeeked={() => {
             if (hoverRef.current) setVideoReady(true)
           }}
-          onPlaying={() => setVideoReady(true)}
         />
       ) : null}
 

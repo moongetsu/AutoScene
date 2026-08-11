@@ -147,7 +147,7 @@ export function ImportPage() {
         await api.scan(project.id)
         await refreshProjects()
         await refreshActive()
-        toast.success("Local path linked — scan running")
+        toast.success("Video linked — scan running")
       } catch (e) {
         const msg = friendlyError(e)
         setError(msg)
@@ -485,7 +485,7 @@ export function ImportPage() {
         description={
           monitorWall
             ? "Scan in progress. You can pause, resume, or stop anytime."
-            : "Upload a video or load an existing project. Link local path for large files."
+            : "Browse a video or load an existing project. Drag-drop uploads once when needed."
         }
         className="border-border/40"
         actions={
@@ -533,7 +533,7 @@ export function ImportPage() {
                 gpuLabel={gpuLabel}
                 upload={upload}
                 onFile={(f) => void onFile(f)}
-                onPickLocalPath={() => void onPickLocalPath()}
+                onBrowse={() => void onPickLocalPath()}
               />
               {error ? (
                 <motion.div

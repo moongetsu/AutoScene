@@ -239,6 +239,40 @@ def _normalize_rows(X: np.ndarray) -> np.ndarray:
     return X / norms
 
 
+def weighted_centroid(rows: np.ndarray, weights: np.ndarray | None = None) -> np.ndarray:
+    """
+    Unit centroid, optionally weighted.
+
+    Weights let frontal, high-confidence detections dominate the identity
+    template so a few profile / blurred crops cannot drag a centroid toward
+    noise. Degenerate weight vectors fall back to the plain mean.
+    """
+    rows = np.asarray(rows, dtype=np.float64)
+    if rows.ndim != 2 or rows.shape[0] == 0:
+        return rows.mean(axis=0) if rows.size else np.zeros(0)
+    if weights is not None:
+        w = np.asarray(weights, dtype=np.float64).reshape(-1)
+        w = np.clip(w, 0.0, None)
+        if w.shape[0] == rows.shape[0] and w.sum() > 1e-9:
+            c = (rows * w[:, None]).sum(axis=0) / float(w.sum())
+            n = float(np.linalg.norm(c))
+            return c / n if n > 0 else c
+    c = rows.mean(axis=0)
+    n = float(np.linalg.norm(c))
+    return c / n if n > 0 else c
+
+
+def detection_identity_weights(detections: list, indices: list[int]) -> np.ndarray:
+    """det_score * pose_weight per detection — frontal sharp faces lead."""
+    out = []
+    for i in indices:
+        d = detections[i]
+        score = max(0.05, float(getattr(d, "det_score", 1.0)))
+        pose = float(getattr(d, "pose_weight", 1.0))
+        out.append(score * max(0.05, pose))
+    return np.asarray(out, dtype=np.float64)
+
+
 def merge_labels_by_centroid_sim(
     labels: np.ndarray,
     X: np.ndarray,
@@ -447,10 +481,7 @@ def cluster_faces(
         idxs = [i for i, lb in enumerate(labels) if lb == label]
         subset = [detections[i] for i in idxs]
         emb = X[idxs]
-        centroid = emb.mean(axis=0)
-        n = np.linalg.norm(centroid)
-        if n > 0:
-            centroid = centroid / n
+        centroid = weighted_centroid(emb, detection_identity_weights(detections, idxs))
         times = sorted(d.timestamp_sec for d in subset)
         # rough screen time: unique sampled seconds
         unique_t = sorted(set(round(t, 2) for t in times))
@@ -599,21 +630,41 @@ def build_segments(
             for t in times:
                 idx = shot_index_for_time(shot_list, t)
                 buckets.setdefault(idx, []).append(t)
+
+            runs: list[tuple[int, list[float]]] = []
             for idx, hits in sorted(buckets.items()):
                 if idx < 0 or idx >= len(shot_list):
                     continue
                 # Gate: single-frame evidence cannot create a clip.
                 if len(hits) < max(1, min_hits_per_shot):
                     continue
-                sh = shot_list[idx]
-                start = float(sh.start_sec)
-                end = float(sh.end_sec)
+                runs.append((idx, hits))
+
+            # A character visible across consecutive shots is ONE continuous
+            # appearance: ship it as an unbroken timeline span with no cut
+            # inside. A shot with no evidence of them still breaks the run,
+            # so real scene changes keep their cuts.
+            merged_runs: list[list[tuple[int, list[float]]]] = []
+            for run in runs:
+                if merged_runs and run[0] == merged_runs[-1][-1][0] + 1:
+                    merged_runs[-1].append(run)
+                else:
+                    merged_runs.append([run])
+
+            for run in merged_runs:
+                start = float(shot_list[run[0][0]].start_sec)
+                end = float(shot_list[run[-1][0]].end_sec)
                 if end - start < 0.12:
                     continue
-                # Face presence inside the shot (WITH / thumb honesty).
+                all_hits: list[float] = []
+                for _idx, hits in run:
+                    all_hits.extend(hits)
+                if not all_hits:
+                    continue
+                # Face presence inside the span (WITH / thumb honesty).
                 pad = 0.12
-                face_s = max(start, float(min(hits)) - pad)
-                face_e = min(end, max(float(max(hits)) + pad, face_s + 0.2))
+                face_s = max(start, float(min(all_hits)) - pad)
+                face_e = min(end, max(float(max(all_hits)) + pad, face_s + 0.2))
                 if face_e < face_s:
                     face_s, face_e = face_e, face_s
                 segments.append(
@@ -623,7 +674,7 @@ def build_segments(
                         end,
                         preview_start_sec=float(face_s),
                         preview_end_sec=float(face_e),
-                        face_time_sec=_median_time(hits, start, end),
+                        face_time_sec=_median_time(all_hits, start, end),
                     )
                 )
         segments.sort(key=lambda s: (s.person_id, s.start_sec))
