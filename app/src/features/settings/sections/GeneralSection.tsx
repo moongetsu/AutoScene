@@ -1,28 +1,77 @@
 import { FolderOpen } from "lucide-react"
 import { toast } from "sonner"
+import type { AppSettings } from "@/bindings"
 import { Button } from "@/components/ui/button"
-import { useAppInfo } from "@/lib/queries"
+import { Select } from "@/components/ui/select"
 import { commands, errorMessage } from "@/lib/ipc"
+import { pickFolder } from "@/lib/media"
+import { qk, queryClient, useAppInfo, usePresets, useSettings } from "@/lib/queries"
 import { PathText, SettingRow, SettingsGroup } from "../primitives"
 
 function reveal(path: string) {
   commands.revealPath(path).catch((e) => toast.error("Couldn't open folder", { description: errorMessage(e) }))
 }
 
+async function save(next: AppSettings) {
+  try {
+    const s = await commands.settingsUpdate(next)
+    queryClient.setQueryData(qk.settings, s)
+    void queryClient.invalidateQueries({ queryKey: qk.appInfo })
+    void queryClient.invalidateQueries({ queryKey: ["exportDir"] })
+  } catch (e) {
+    toast.error("Couldn't save the setting", { description: errorMessage(e) })
+  }
+}
+
 export function GeneralSection() {
   const { data: info } = useAppInfo()
+  const { data: settings } = useSettings()
+  const { data: presets } = usePresets()
+
+  const changeLibrary = async () => {
+    if (!settings) return
+    const dir = await pickFolder("Choose the library folder")
+    if (dir) await save({ ...settings, libraryRoot: dir })
+  }
+
   return (
     <>
       <SettingsGroup title="Storage" description="Where AutoScene keeps projects, models and logs.">
-        <SettingRow label="Library location" description={info && <PathText path={info.libraryRoot} />}>
-          <Button size="sm" variant="ghost" disabled={!info} onClick={() => info && reveal(info.libraryRoot)}>
+        <SettingRow
+          label="Library location"
+          description={
+            settings && (
+              <>
+                <PathText path={settings.libraryRoot} />
+                <span className="mt-1 block text-fg-3">New projects and default exports go here. Existing projects stay where they are.</span>
+              </>
+            )
+          }
+        >
+          <Button size="sm" variant="ghost" disabled={!settings} onClick={() => settings && reveal(settings.libraryRoot)}>
             <FolderOpen /> Reveal
+          </Button>
+          <Button size="sm" disabled={!settings} onClick={() => void changeLibrary()}>
+            Change…
           </Button>
         </SettingRow>
         <SettingRow label="App data" description={info && <PathText path={info.dataDir} />}>
           <Button size="sm" variant="ghost" disabled={!info} onClick={() => info && reveal(info.dataDir)}>
             <FolderOpen /> Reveal
           </Button>
+        </SettingRow>
+      </SettingsGroup>
+
+      <SettingsGroup title="Export" description="Defaults for new exports. You can change them per export.">
+        <SettingRow label="Format" description={presets?.find((p) => p.id === settings?.exportPresetId)?.description}>
+          <Select
+            aria-label="Default export format"
+            className="w-[260px]"
+            value={settings?.exportPresetId}
+            disabled={!settings}
+            onChange={(id) => settings && void save({ ...settings, exportPresetId: id })}
+            options={(presets ?? []).map((p) => ({ value: p.id, label: p.name }))}
+          />
         </SettingRow>
       </SettingsGroup>
     </>

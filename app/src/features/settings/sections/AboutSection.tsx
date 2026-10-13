@@ -2,7 +2,7 @@ import { FileText } from "lucide-react"
 import { AutoSceneMark } from "@/components/brand/AutoSceneMark"
 import { Button } from "@/components/ui/button"
 import { useAppActions } from "@/lib/actions"
-import { useAppInfo } from "@/lib/queries"
+import { useAppInfo, useMediaTools } from "@/lib/queries"
 import { SettingRow, SettingsGroup } from "../primitives"
 
 const PLATFORM_LABEL = { windows: "Windows", macos: "macOS", linux: "Linux" } as const
@@ -18,6 +18,7 @@ const LICENSES: { name: string; license: string; url: string }[] = [
 
 export function AboutSection() {
   const { data: info } = useAppInfo()
+  const { data: tools } = useMediaTools()
   const a = useAppActions()
   return (
     <>
@@ -39,6 +40,25 @@ export function AboutSection() {
           <FileText /> Open logs
         </Button>
       </div>
+
+      <SettingsGroup title="Media engine" description="Decoding, indexing and encoding run on FFmpeg.">
+        <SettingRow
+          label={tools?.ready ? `FFmpeg ${tools.version}` : "FFmpeg"}
+          description={
+            tools ? (
+              tools.ready ? (
+                <span data-selectable className="font-mono">{tools.path}</span>
+              ) : (
+                <span className="text-danger">{tools.error}</span>
+              )
+            ) : (
+              "Checking…"
+            )
+          }
+        >
+          <span className="text-xs text-fg-3">LGPL / GPL</span>
+        </SettingRow>
+      </SettingsGroup>
 
       <SettingsGroup title="Open-source licenses" description="AutoScene is built on these projects.">
         {LICENSES.map((l) => (

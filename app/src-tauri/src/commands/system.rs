@@ -1,14 +1,15 @@
 use std::path::PathBuf;
 
-use as_api::{AppInfo, Platform};
+use as_api::{AppInfo, MediaToolsStatus, Platform};
 use as_core::AppPaths;
-use tauri::AppHandle;
+use tauri::{AppHandle, State};
 
 use crate::error::{AppError, AppResult, ErrorCode};
+use crate::state::{AppState, blocking};
 
 #[tauri::command]
 #[specta::specta]
-pub fn app_info(app: AppHandle) -> AppInfo {
+pub fn app_info(app: AppHandle, state: State<'_, AppState>) -> AppInfo {
     let paths = AppPaths::resolve();
     AppInfo {
         version: app.package_info().version.to_string(),
@@ -16,8 +17,21 @@ pub fn app_info(app: AppHandle) -> AppInfo {
         arch: std::env::consts::ARCH.to_string(),
         data_dir: paths.data.display().to_string(),
         logs_dir: paths.logs().display().to_string(),
-        library_root: AppPaths::default_library_root().display().to_string(),
+        library_root: state
+            .library
+            .library_root()
+            .unwrap_or_else(|_| AppPaths::default_library_root())
+            .display()
+            .to_string(),
     }
+}
+
+/// The media engine (ffmpeg) found on this machine — Settings → About.
+#[tauri::command]
+#[specta::specta]
+pub async fn media_tools(state: State<'_, AppState>) -> AppResult<MediaToolsStatus> {
+    let state = state.inner().clone();
+    blocking(move || Ok(state.tools_status())).await
 }
 
 /// Show a file or folder in Explorer / Finder.

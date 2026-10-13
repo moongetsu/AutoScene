@@ -1,3 +1,4 @@
+import type * as React from "react"
 import { Link, useMatches } from "@tanstack/react-router"
 import { Activity, ChevronRight, Search } from "lucide-react"
 import { AutoSceneMark } from "@/components/brand/AutoSceneMark"
@@ -7,19 +8,21 @@ import { useAppActions } from "@/lib/actions"
 import { isMac, isTauri, isWindows } from "@/lib/platform"
 import { shortcutKeys } from "@/lib/shortcuts"
 import { cn } from "@/lib/utils"
+import { useActiveCount } from "@/state/activity"
 import { useUi } from "@/state/ui"
 import { WindowControls } from "./WindowControls"
 
-export type Crumb = { label: string; to?: string }
+export type Crumb = { id: string; label: React.ReactNode; to?: string }
 
-/** Route-provided breadcrumbs: each route may set `staticData.crumb`. */
+/** Route-provided breadcrumbs: each route may set `staticData.crumb` (and `crumbTo`). */
 function useCrumbs(): Crumb[] {
   const matches = useMatches()
   return matches.flatMap((m) => {
-    const c = (m.staticData as { crumb?: string | ((p: Record<string, string>) => string) }).crumb
-    if (!c) return []
-    const label = typeof c === "function" ? c(m.params as Record<string, string>) : c
-    return [{ label, to: m.pathname }]
+    const { crumb, crumbTo } = m.staticData
+    if (crumb == null) return []
+    const params = m.params as Record<string, string>
+    const label = typeof crumb === "function" ? crumb(params) : crumb
+    return [{ id: m.id, label, to: crumbTo ? crumbTo(params) : m.pathname }]
   })
 }
 
@@ -27,6 +30,7 @@ export function TitleBar() {
   const actions = useAppActions()
   const crumbs = useCrumbs()
   const activityOpen = useUi((s) => s.activityOpen)
+  const active = useActiveCount()
   // macOS overlay title bar: leave room for the traffic lights.
   const macInset = isMac && isTauri
 
@@ -35,7 +39,14 @@ export function TitleBar() {
       data-tauri-drag-region
       className="relative z-30 flex h-[var(--titlebar-h)] shrink-0 items-center border-b border-hairline bg-canvas"
     >
-      <div data-tauri-drag-region className={cn("flex min-w-0 flex-1 items-center gap-2.5", macInset ? "pl-[84px]" : "pl-3")}>
+      {/* Never runs under the centred search field. */}
+      <div
+        data-tauri-drag-region
+        className={cn(
+          "flex min-w-0 flex-1 items-center gap-2.5 md:max-w-[calc(50%-min(190px,16vw)-12px)]",
+          macInset ? "pl-[84px]" : "pl-3",
+        )}
+      >
         <Link to="/" className="flex shrink-0 items-center gap-2 rounded-sm" aria-label="AutoScene library">
           <AutoSceneMark className="size-[22px]" />
           <span className="text-sm font-semibold tracking-tight text-fg-1">AutoScene</span>
@@ -43,7 +54,7 @@ export function TitleBar() {
         {crumbs.length > 0 && (
           <nav aria-label="Breadcrumb" data-tauri-drag-region className="flex min-w-0 items-center gap-1 text-sm">
             {crumbs.map((c, i) => (
-              <span key={`${c.label}-${i}`} data-tauri-drag-region className="flex min-w-0 items-center gap-1">
+              <span key={c.id} data-tauri-drag-region className="flex min-w-0 items-center gap-1">
                 <ChevronRight className="size-3.5 shrink-0 text-fg-disabled" />
                 {c.to && i < crumbs.length - 1 ? (
                   <Link to={c.to} className="truncate rounded-xs px-1 text-fg-3 transition-colors hover:text-fg-1">
@@ -80,7 +91,12 @@ export function TitleBar() {
             )}
           >
             <Activity className="size-4" />
-            <span className="sr-only">Activity</span>
+            {active > 0 && (
+              <span className="timecode absolute -top-0.5 -right-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-accent px-1 text-[9px] leading-none font-semibold text-on-accent">
+                {active}
+              </span>
+            )}
+            <span className="sr-only">Activity{active > 0 ? ` (${active} running)` : ""}</span>
           </button>
         </Tooltip>
         {isWindows && isTauri ? <WindowControls /> : <span className="w-2" />}

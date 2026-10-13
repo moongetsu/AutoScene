@@ -18,6 +18,9 @@ as-api = { path = "crates/as-api" }
 as-testkit = { path = "crates/as-testkit" }
 as-media = { path = "crates/as-media" }
 as-export = { path = "crates/as-export" }
+as-db = { path = "crates/as-db" }
+as-jobs = { path = "crates/as-jobs" }
+as-project = { path = "crates/as-project" }
 
 # shared third-party
 anyhow = "1"
@@ -34,6 +37,9 @@ zstd = "0.14"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util", "fs"] }
 specta = { version = "=2.0.0-rc.25", features = ["derive", "serde_json", "uuid"] }
 dirs = "7"
+# rusqlite_migration 2.6 (rusqlite 0.40) needs rustc 1.95; stay on the pair that builds with 1.94.
+rusqlite = { version = "0.39", features = ["bundled"] }
+rusqlite_migration = "~2.5"
 
 [profile.dev]
 # Media/vision code is unusable unoptimised; keep debug info but optimise deps.

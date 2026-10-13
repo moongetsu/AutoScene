@@ -1,0 +1,23 @@
+[package]
+name = "as-project"
+description = "AutoScene library and projects: import with episode parsing, ingest (probe, index, posters, proxies), clip exports"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+as-core.workspace = true
+as-api.workspace = true
+as-db.workspace = true
+as-media.workspace = true
+as-export.workspace = true
+parking_lot.workspace = true
+regex = "1"
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+as-testkit.workspace = true
+tempfile = "3"

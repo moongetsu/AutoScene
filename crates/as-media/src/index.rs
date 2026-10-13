@@ -8,6 +8,7 @@
 //! so the result is exactly the frame grid that exports will cut on.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use as_core::{CancelToken, FrameIndex, Rational};
 
@@ -22,7 +23,10 @@ pub fn build_frame_index(
     mut progress: impl FnMut(f64),
 ) -> MediaResult<FrameIndex> {
     std::fs::create_dir_all(work_dir)?;
-    let stats = work_dir.join(format!("index-{}.txt", std::process::id()));
+    // Unique per call: several media are indexed in parallel from one process.
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let stats = work_dir.join(format!("index-{}-{n}.txt", std::process::id()));
     let duration = info.duration_sec.unwrap_or(0.0).max(0.001);
 
     let attempt = |hw: bool, progress: &mut dyn FnMut(f64)| -> MediaResult<()> {

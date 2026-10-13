@@ -5,7 +5,8 @@
 //!   (immune to float rounding), on absolute timestamps (`-copyts`);
 //! - audio: `atrim` to `[t(s), t(e))`, then padded/cut to the exact sample
 //!   count, so A/V length always matches;
-//! - `-fps_mode passthrough` forbids frame duplication/dropping;
+//! - `-fps_mode passthrough` forbids frame duplication/dropping, and VFR
+//!   sources keep their own time base so every frame keeps its timing;
 //! - the encoder logs each frame's *original decoder timestamp* via
 //!   `-stats_enc_pre {ptsi}`, and we check it equals `pts[s..e)` exactly.
 //!
@@ -253,6 +254,7 @@ pub fn export_clip(
         // No `-frames:v`: it ends the mux as soon as video is done and clips the
         // interleaved audio tail. `trim` bounds the frames; `verify` proves it.
         a.extend(["-fps_mode".into(), "passthrough".into()]);
+        a.extend(as_media::proxy::timing_args(index));
         a.extend(enc.args.iter().cloned());
         a.extend(color_args(info, tonemap));
         match audio.map(|(_, c)| c) {

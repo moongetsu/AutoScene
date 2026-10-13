@@ -48,18 +48,30 @@ pub fn build_proxy(
     }
     let tmp = out.with_extension("part.mp4");
     let caps = tools.caps();
-    let mut args: Vec<String> = vec!["-v".into(), "error".into(), "-y".into()];
+    // Absolute timestamps in, then video and audio shifted by the same exact
+    // frame-0 time: the proxy starts at 0 with frame f at `t(f) - t(0)` and
+    // A/V sync intact. (Letting ffmpeg shift by the container start instead
+    // can leave frames on half-frame boundaries that collide when rounded.)
+    let mut args: Vec<String> = vec!["-v".into(), "error".into(), "-y".into(), "-copyts".into()];
     if let Some(d) = &caps.decode {
         // Decode on the GPU but download: the display filters run on the CPU.
         args.extend(["-hwaccel".into(), d.hwaccel.clone()]);
     }
-    args.extend(["-i".into(), src.display().to_string(), "-map".into(), format!("0:{}", info.video.index)]);
-    if let Some(a) = audio_ordinal {
-        args.extend(["-map".into(), format!("0:a:{a}")]);
-    }
-    let mut chain = display_chain(info, Some(PROXY_HEIGHT), true);
+    args.extend(["-i".into(), src.display().to_string()]);
+    let t0 = index.t0();
+    let mut chain = vec!["setpts=PTS-STARTPTS".to_string()];
+    chain.extend(display_chain(info, Some(PROXY_HEIGHT), true));
     chain.push("format=yuv420p".into());
-    args.extend(["-vf".into(), chain.join(","), "-fps_mode".into(), "passthrough".into()]);
+    let mut graph = format!("[0:{}]{}[v]", info.video.index, chain.join(","));
+    if let Some(a) = audio_ordinal {
+        graph += &format!(";[0:a:{a}]atrim=start={t0:.9},asetpts=PTS-{t0:.9}/TB[a]");
+    }
+    args.extend(["-filter_complex".into(), graph, "-map".into(), "[v]".into()]);
+    if audio_ordinal.is_some() {
+        args.extend(["-map".into(), "[a]".into()]);
+    }
+    args.extend(["-fps_mode".into(), "passthrough".into()]);
+    args.extend(timing_args(index));
 
     // Short GOP, no B-frames: every seek decodes at most 11 frames.
     match caps.hw_encoder(CodecFamily::H264).filter(|e| e.name == "h264_nvenc") {
@@ -88,6 +100,15 @@ pub fn build_proxy(
     }
     std::fs::rename(&tmp, out)?;
     Ok(ProxyResult { t0 })
+}
+
+/// Encoder time base for frame-preserving encodes. ffmpeg defaults to
+/// `1/framerate`, which snaps true variable-rate timestamps onto the nominal
+/// grid (and then nudges collisions apart); keep the source's own time base
+/// for those. Constant-rate sources keep `1/framerate`, which gives editors
+/// the clean, jitter-free timing they expect.
+pub fn timing_args(index: &FrameIndex) -> Vec<String> {
+    if index.is_vfr() { vec!["-enc_time_base:v".into(), "filter".into()] } else { vec![] }
 }
 
 /// Presentation time of the first video frame as players see it (edit lists applied).

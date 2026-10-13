@@ -258,24 +258,24 @@ impl FrameIndex {
     }
 
     /// Frame displayed at absolute time `t` (seconds): the last frame whose
-    /// timestamp is `<= t` (plus a 1/4-frame tolerance for float noise).
+    /// timestamp is `<= t`, or the next one when `t` is within a quarter of a
+    /// frame of its start (float noise, timescale rounding).
     pub fn frame_at(&self, t: f64) -> FrameIdx {
         let n = self.len();
         if t <= self.t(0) {
             return 0;
         }
-        let tol = 0.25 * self.frame_dur(0);
-        let target = t + tol;
+        let ticks = t * self.tb.den as f64 / self.tb.num as f64;
         match &self.pts {
             PtsStore::Cfr { first, step, .. } => {
-                let ticks = target * self.tb.den as f64 / self.tb.num as f64;
-                let f = ((ticks - *first as f64) / *step as f64).floor();
+                let f = ((ticks - *first as f64) / *step as f64 + 0.25).floor();
                 (f.max(0.0) as u32).min(n - 1)
             }
             PtsStore::Explicit(v) => {
-                let ticks = (target * self.tb.den as f64 / self.tb.num as f64) as i64;
-                let i = v.partition_point(|&p| p <= ticks);
-                (i.saturating_sub(1) as u32).min(n - 1)
+                let i = v.partition_point(|&p| (p as f64) <= ticks).saturating_sub(1);
+                let next = i + 1;
+                let near_next = next < v.len() && (v[next] as f64 - ticks) < 0.25 * (v[next] - v[i]) as f64;
+                (if near_next { next } else { i }) as u32
             }
         }
     }
@@ -479,6 +479,12 @@ mod tests {
         for (f, &p) in pts.iter().enumerate() {
             assert_eq!(back.pts(f as u32), p);
             assert_eq!(back.frame_at(p as f64 / 1000.0), f as u32);
+            // Mid-frame and just-before-start times, in every rate segment.
+            let f = f as u32;
+            assert_eq!(back.frame_at(0.5 * (back.t(f) + back.t(f + 1))), f);
+            if f > 0 {
+                assert_eq!(back.frame_at(back.t(f) - 1e-4), f, "rounded-down timestamp of frame {f}");
+            }
         }
     }
 

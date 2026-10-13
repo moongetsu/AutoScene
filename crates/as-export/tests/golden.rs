@@ -136,6 +136,43 @@ fn software_exports_are_frame_exact_on_every_variant() {
     }
 }
 
+/// Presentation time of every video frame (edit lists applied).
+fn frame_times(tools: &Tools, file: &Path) -> Vec<f64> {
+    let out = tools
+        .ffprobe()
+        .args(["-select_streams", "v:0", "-show_entries", "frame=pts_time", "-of", "csv=p=0"])
+        .arg(file)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).lines().filter_map(|l| l.trim().trim_end_matches(',').parse().ok()).collect()
+}
+
+#[test]
+fn vfr_exports_keep_every_frames_timing() {
+    let Some((tools, _)) = setup() else { return };
+    let work = tempfile::tempdir().unwrap();
+    let fx = load(&tools, "vfr_h264.mkv", work.path());
+    // Spans crossing the 24 → 60 → 30 fps changes.
+    for (s, e) in [(180u32, 260u32), (300, 420)] {
+        let range = FrameRange::new(s, e);
+        for p in [preset("prores-hq"), software_h264()] {
+            check(&tools, &fx, range, &p, work.path());
+            let out = work.path().join(format!("vfr_h264_mkv_{}_{s}_{e}.{}", p.id, p.container.ext()));
+            let got = frame_times(&tools, &out);
+            assert_eq!(got.len() as u32, range.len());
+            for (i, t) in got.iter().enumerate() {
+                let want = fx.index.t(s + i as u32) - fx.index.t(s);
+                assert!(
+                    (t - got[0] - want).abs() < 1.5e-3,
+                    "{} frame {}: at {t:.4}, want {want:.4}",
+                    p.id,
+                    s + i as u32
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn hardware_and_dnxhr_exports_are_frame_exact() {
     let Some((tools, truth)) = setup() else { return };

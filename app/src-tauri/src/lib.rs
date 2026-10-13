@@ -1,18 +1,25 @@
 //! AutoScene desktop shell.
 //!
-//! Owns the window, typed IPC (tauri-specta → `app/src/bindings.ts`), logging
-//! and updates. Media analysis runs in the separate `autoscene-engine`
-//! process (added in M2) so a GPU/driver crash can never take the UI down.
+//! Owns the window, typed IPC (tauri-specta → `app/src/bindings.ts`), the
+//! library, background jobs (indexing, previews, exports), logging and
+//! updates. Media analysis runs in the separate `autoscene-engine` process
+//! (added in M2) so a GPU/driver crash can never take the UI down.
 
 mod commands;
 mod error;
 mod events;
 #[cfg(target_os = "macos")]
 mod mac_menu;
+mod state;
 mod updater;
+mod work;
+
+use std::time::Duration;
 
 use as_core::AppPaths;
+use as_project::Library;
 use tauri::Manager;
+use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use tauri_plugin_log::{RotationStrategy, Target, TargetKind};
 use tauri_specta::{collect_commands, collect_events};
 
@@ -26,11 +33,43 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             commands::system::app_info,
             commands::system::reveal_path,
             commands::system::open_logs_dir,
+            commands::system::media_tools,
+            commands::library::projects_list,
+            commands::library::project_get,
+            commands::library::project_create,
+            commands::library::project_rename,
+            commands::library::project_delete,
+            commands::library::import_scan,
+            commands::library::settings_get,
+            commands::library::settings_update,
+            commands::media::media_list,
+            commands::media::media_get,
+            commands::media::media_add,
+            commands::media::media_remove,
+            commands::media::media_retry,
+            commands::media::media_prepare_preview,
+            commands::media::media_set_audio,
+            commands::media::media_frame_map,
+            commands::export::export_presets,
+            commands::export::export_default_dir,
+            commands::export::export_start,
+            commands::export::exports_list,
+            commands::jobs::jobs_list,
+            commands::jobs::job_cancel,
+            commands::jobs::jobs_clear_finished,
             updater::update_check,
             updater::update_install,
             updater::update_relaunch,
         ])
-        .events(collect_events![events::MenuAction, updater::UpdateProgress])
+        .events(collect_events![
+            events::MenuAction,
+            events::JobChanged,
+            events::JobProgressEvent,
+            events::LibraryChanged,
+            events::MediaChanged,
+            events::ExportChanged,
+            updater::UpdateProgress,
+        ])
 }
 
 pub const BINDINGS_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../src/bindings.ts");
@@ -89,8 +128,42 @@ pub fn run() {
         .setup(move |app| {
             specta.mount_events(app);
             log::info!("AutoScene {} starting; data dir {}", app.package_info().version, paths.data.display());
+            let library = match Library::open(&paths) {
+                Ok(l) => l,
+                Err(e) => {
+                    log::error!("opening the library failed: {e}");
+                    app.dialog()
+                        .message(format!(
+                            "AutoScene couldn't open its library.
+
+{e}"
+                        ))
+                        .title("AutoScene")
+                        .kind(MessageDialogKind::Error)
+                        .blocking_show();
+                    std::process::exit(1);
+                }
+            };
+            let handle = app.handle().clone();
+            app.manage(state::AppState::new(&handle, library));
+            // Resume interrupted indexing and previews; locate ffmpeg and probe
+            // the hardware off the UI thread so the first job starts warm.
+            std::thread::spawn(move || {
+                work::recover_all(&handle);
+                if let Ok(tools) = handle.state::<state::AppState>().tools() {
+                    let _ = tools.caps();
+                }
+            });
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running AutoScene");
+        .build(tauri::generate_context!())
+        .expect("error while building AutoScene")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event
+                && let Some(state) = app.try_state::<state::AppState>()
+            {
+                // Never leave ffmpeg processes running after the window closes.
+                state.jobs.shutdown(Duration::from_secs(3));
+            }
+        });
 }

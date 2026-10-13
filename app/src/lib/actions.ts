@@ -1,6 +1,7 @@
 import { useEffect, useMemo } from "react"
 import { useNavigate } from "@tanstack/react-router"
 import { toast } from "sonner"
+import { useNewProject } from "@/state/new-project"
 import { useUi } from "@/state/ui"
 import { useUpdates } from "@/state/updates"
 import { commands, errorMessage, events } from "./ipc"
@@ -16,6 +17,9 @@ export function useAppActions() {
       toggleActivity: () => useUi.getState().setActivityOpen(!useUi.getState().activityOpen),
       toggleSidebar: () => useUi.getState().toggleSidebar(),
       goLibrary: () => void navigate({ to: "/" }),
+      newProject: () => useNewProject.getState().show(),
+      goProject: (pid: string, page: "episodes" | "exports" = "episodes") =>
+        void navigate({ to: page === "episodes" ? "/p/$pid/episodes" : "/p/$pid/exports", params: { pid } }),
       goSettings: (section: SettingsSection = "general") =>
         void navigate({ to: "/settings/$section", params: { section } }),
       checkUpdates: () => void useUpdates.getState().check(true),
@@ -24,6 +28,9 @@ export function useAppActions() {
     [navigate],
   )
 }
+
+/** DOM event asking the current screen to open its export dialog (macOS menu ⌘E). */
+export const EXPORT_REQUEST = "autoscene:export"
 
 export const SETTINGS_SECTIONS = ["general", "shortcuts", "updates", "about"] as const
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number]
@@ -39,6 +46,7 @@ export function useGlobalBindings() {
       sidebar: a.toggleSidebar,
       settings: () => a.goSettings(),
       library: a.goLibrary,
+      newProject: a.newProject,
     }
     // On macOS desktop the native menu owns accelerators and emits menu events instead.
     if (isMac && isTauri) return
@@ -59,6 +67,9 @@ export function useGlobalBindings() {
       "app:settings": () => a.goSettings(),
       "view:command-palette": a.openPalette,
       "view:library": a.goLibrary,
+      "file:new-project": a.newProject,
+      // The native ⌘E accelerator swallows the keystroke; the player listens for this instead.
+      "file:export": () => window.dispatchEvent(new CustomEvent(EXPORT_REQUEST)),
       "view:activity": a.toggleActivity,
       "view:toggle-sidebar": a.toggleSidebar,
     }

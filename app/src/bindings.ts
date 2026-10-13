@@ -12,6 +12,56 @@ export const commands = {
 	revealPath: (path: string) => __TAURI_INVOKE<null>("reveal_path", { path }),
 	/**  Open the logs folder (Settings → About, Help menu on Windows). */
 	openLogsDir: () => __TAURI_INVOKE<null>("open_logs_dir"),
+	/**  The media engine (ffmpeg) found on this machine — Settings → About. */
+	mediaTools: () => __TAURI_INVOKE<MediaToolsStatus>("media_tools"),
+	projectsList: () => __TAURI_INVOKE<ProjectSummary[]>("projects_list"),
+	projectGet: (projectId: ProjectId) => __TAURI_INVOKE<ProjectSummary>("project_get", { projectId }),
+	/**  Create a project from video files and start indexing them. */
+	projectCreate: (req: NewProject) => __TAURI_INVOKE<ProjectSummary>("project_create", { req }),
+	projectRename: (projectId: ProjectId, title: string) => __TAURI_INVOKE<ProjectSummary>("project_rename", { projectId, title }),
+	/**
+	 *  Remove a project. `delete_files` also deletes its `.autoscene` folder
+	 *  (never the source videos or exported clips).
+	 */
+	projectDelete: (projectId: ProjectId, deleteFiles: boolean) => __TAURI_INVOKE<null>("project_delete", { projectId, deleteFiles }),
+	/**
+	 *  Expand dropped/picked files and folders into videos with parsed episode
+	 *  numbers, in episode order. With `project_id`, marks files already in it.
+	 */
+	importScan: (paths: string[], kind: ProjectKind, projectId: string | null) => __TAURI_INVOKE<ImportCandidate[]>("import_scan", { paths, kind, projectId }),
+	settingsGet: () => __TAURI_INVOKE<AppSettings>("settings_get"),
+	settingsUpdate: (settings: AppSettings) => __TAURI_INVOKE<AppSettings>("settings_update", { settings }),
+	mediaList: (projectId: ProjectId) => __TAURI_INVOKE<MediaItem[]>("media_list", { projectId }),
+	mediaGet: (projectId: ProjectId, mediaId: MediaId) => __TAURI_INVOKE<MediaItem>("media_get", { projectId, mediaId }),
+	/**  Add videos to a project and start indexing them. Returns how many were new. */
+	mediaAdd: (projectId: ProjectId, files: string[]) => __TAURI_INVOKE<number>("media_add", { projectId, files }),
+	mediaRemove: (projectId: ProjectId, mediaId: MediaId) => __TAURI_INVOKE<null>("media_remove", { projectId, mediaId }),
+	/**  Index a media again (after a failure, or once a missing file is back). */
+	mediaRetry: (projectId: ProjectId, mediaId: MediaId) => __TAURI_INVOKE<null>("media_retry", { projectId, mediaId }),
+	/**  Build (or rebuild) the preview of a media that needs one. */
+	mediaPreparePreview: (projectId: ProjectId, mediaId: MediaId) => __TAURI_INVOKE<null>("media_prepare_preview", { projectId, mediaId }),
+	/**  Choose the audio track for playback and export (`None` = the file's default). */
+	mediaSetAudio: (projectId: ProjectId, mediaId: MediaId, ordinal: number | null) => __TAURI_INVOKE<MediaItem>("media_set_audio", { projectId, mediaId, ordinal }),
+	/**
+	 *  Everything the player needs to show frame `f` exactly. Grants the webview
+	 *  access to the file it should play.
+	 */
+	mediaFrameMap: (projectId: ProjectId, mediaId: MediaId) => __TAURI_INVOKE<FrameMap>("media_frame_map", { projectId, mediaId }),
+	exportPresets: () => __TAURI_INVOKE<ExportPreset[]>("export_presets"),
+	/**  Folder exports of this project go to unless the user picks another. */
+	exportDefaultDir: (projectId: ProjectId) => __TAURI_INVOKE<string>("export_default_dir", { projectId }),
+	/**
+	 *  Validate, record and queue an export. Progress arrives as `job:*` events,
+	 *  results as `export:changed`.
+	 */
+	exportStart: (projectId: ProjectId, req: ExportRequest) => __TAURI_INVOKE<ExportSummary>("export_start", { projectId, req }),
+	/**  Newest first. */
+	exportsList: (projectId: ProjectId) => __TAURI_INVOKE<ExportSummary[]>("exports_list", { projectId }),
+	/**  Newest first. Live updates arrive as `job:changed` / `job:progress`. */
+	jobsList: () => __TAURI_INVOKE<JobInfo[]>("jobs_list"),
+	jobCancel: (jobId: JobId) => __TAURI_INVOKE<void>("job_cancel", { jobId }),
+	/**  Forget finished jobs. */
+	jobsClearFinished: () => __TAURI_INVOKE<void>("jobs_clear_finished"),
 	/**
 	 *  Ask the configured feed whether a newer build exists. Errors are surfaced
 	 *  so a manual check can say *why* it failed; the launch check stays quiet.
@@ -31,6 +81,11 @@ export const commands = {
 
 /** Events */
 export const events = {
+	exportChanged: makeEvent<ExportChanged>("export:changed"),
+	jobChanged: makeEvent<JobChanged>("job:changed"),
+	jobProgress: makeEvent<JobProgressEvent>("job:progress"),
+	libraryChanged: makeEvent<LibraryChanged>("library:changed"),
+	mediaChanged: makeEvent<MediaChanged>("media:changed"),
 	menuAction: makeEvent<MenuAction>("menu:action"),
 	updateProgress: makeEvent<UpdateProgress>("update:progress"),
 };
@@ -59,12 +114,342 @@ export type AppInfo = {
 	libraryRoot: string,
 };
 
-export type ErrorCode = "not_found" | "io" | "update";
+/**  User preferences stored in `library.db`. */
+export type AppSettings = {
+	/**  Folder that holds `<Title>.autoscene` project folders. */
+	libraryRoot: string,
+	/**  Preset preselected in the export dialog. */
+	exportPresetId: string,
+};
+
+export type AudioCodec = { codec: "none" } | 
+/**  24-bit PCM (MOV only) — what NLEs prefer. */
+{ codec: "pcm24" } | { codec: "aac"; kbps: number };
+
+export type AudioStream = {
+	index: number,
+	/**  Position among audio streams (`0:a:N`). */
+	ordinal: number,
+	codec: string,
+	channels: number,
+	channelLayout: string | null,
+	sampleRate: number,
+	language: string | null,
+	title: string | null,
+	default: boolean,
+};
+
+export type ClipRequest = {
+	mediaId: MediaId,
+	/**  First frame (inclusive). */
+	start: number,
+	/**  End frame (exclusive). */
+	end: number,
+	/**  Output file name without extension; generated when empty. */
+	name: string | null,
+};
+
+export type Container = "mov" | "mp4";
+
+export type ContentKind = 
+/**  Live-action footage (faces). */
+"live" | 
+/**  Anime / animation (heads, character art). */
+"anime" | "mixed";
+
+export type DnxProfile = 
+/**  8-bit 4:2:2. */
+"hq" | 
+/**  10-bit 4:2:2. */
+"hqx";
+
+export type EncoderPref = 
+/**  Hardware encoder when available, else software. */
+"auto" | "software";
+
+export type ErrorCode = "not_found" | 
+/**  The request itself is wrong (bad range, empty name…); `message` says why. */
+"invalid" | 
+/**  Exists but isn't usable yet (still indexing, preview being prepared). */
+"not_ready" | "cancelled" | 
+/**  ffmpeg is missing or failed. */
+"media" | "io" | "update" | "internal";
+
+/**  An export was created, progressed to another clip, or finished. */
+export type ExportChanged = {
+	projectId: ProjectId,
+	exportId: ExportId,
+};
+
+export type ExportId = string;
+
+export type ExportItem = {
+	id: number,
+	mediaId: MediaId,
+	start: number,
+	end: number,
+	name: string,
+	status: ExportStatus,
+	path: string | null,
+	/**  Every frame was checked against the source frame grid. */
+	verified: boolean,
+	encoder: string | null,
+	bytes: number | null,
+	error: string | null,
+};
+
+export type ExportPreset = {
+	id: string,
+	name: string,
+	description: string,
+	container: Container,
+	video: VideoCodec,
+	audio: AudioCodec,
+	/**  Cap output height (keeps aspect). `None` = source resolution. */
+	maxHeight: number | null,
+	hdr: HdrMode,
+	builtin: boolean,
+};
+
+export type ExportRequest = {
+	presetId: string,
+	/**  Destination folder; the project's default export folder when `None`. */
+	outDir: string | null,
+	clips: ClipRequest[],
+};
+
+export type ExportStatus = "queued" | "running" | "done" | "failed" | "cancelled";
+
+export type ExportSummary = {
+	id: ExportId,
+	projectId: ProjectId,
+	createdAt: number,
+	preset: ExportPreset,
+	outDir: string,
+	status: ExportStatus,
+	items: ExportItem[],
+};
+
+/**
+ *  Everything the player needs to map `<video>` time to source frames.
+ * 
+ *  `player_time(f) = offset + rel(f)` where `rel(f) = f * step` for
+ *  constant-rate media, or `times[f]` otherwise (`times` has `frames + 1`
+ *  entries; the last is the end of the final frame).
+ */
+export type FrameMap = {
+	mediaId: MediaId,
+	/**  File to play (the source itself, or its proxy). */
+	src: string,
+	isProxy: boolean,
+	frames: number,
+	fps: Rational,
+	/**  Timecodes use SMPTE drop-frame counting (29.97 / 59.94). */
+	dropFrame: boolean,
+	offset: number | null,
+	step: number | null,
+	times: (number | null)[] | null,
+};
+
+/**  Keyframe spacing for long-GOP codecs. Editors scrub short GOPs far better. */
+export type Gop = 
+/**  About one keyframe per second, no B-frames — smooth scrubbing in NLEs. */
+"editing" | 
+/**  Every frame a keyframe (largest files, perfect for Twixtor/AE). */
+"all_intra" | 
+/**  Encoder defaults (smallest files). */
+"delivery";
+
+export type HdrKind = "none" | "pq" | "hlg" | "dolby_vision";
+
+export type HdrMode = 
+/**  Keep HDR when the codec can carry it, otherwise tone map to SDR. */
+"auto" | 
+/**  Always tone map to SDR BT.709 (for SDR-only edits). */
+"tone_map";
+
+/**  A video found by `import_scan`, with its parsed episode number. */
+export type ImportCandidate = {
+	path: string,
+	fileName: string,
+	season: number | null,
+	episode: number | null,
+	/**  `S01E03`, `E12`, or empty when no number was recognised. */
+	label: string,
+	sizeBytes: number | null,
+	/**  Already part of the project (only when scanning into an existing one). */
+	duplicate: boolean,
+};
+
+/**  A job was queued, started or finished. */
+export type JobChanged = JobInfo;
+
+export type JobId = string;
+
+export type JobInfo = {
+	id: JobId,
+	kind: JobKind,
+	title: string,
+	subtitle: string | null,
+	projectId: ProjectId | null,
+	mediaId: MediaId | null,
+	exportId: ExportId | null,
+	state: JobState,
+	/**  0..1, `None` while indeterminate. */
+	progress: number | null,
+	stage: string | null,
+	etaMs: number | null,
+	error: string | null,
+	createdAt: number,
+	finishedAt: number | null,
+};
+
+export type JobKind = "ingest" | "proxy" | "export";
+
+/**  Throttled progress for a running job (≤ 4 Hz per job). */
+export type JobProgress = {
+	id: JobId,
+	progress: number | null,
+	stage: string | null,
+	etaMs: number | null,
+};
+
+/**  Throttled progress of a running job. */
+export type JobProgressEvent = JobProgress;
+
+export type JobState = "queued" | "running" | "done" | "failed" | "cancelled";
+
+/**  The project list or a project's summary changed. */
+export type LibraryChanged = {
+	projectId: ProjectId | null,
+};
+
+/**  Media of a project changed (added, indexed, preview ready, removed). */
+export type MediaChanged = {
+	projectId: ProjectId,
+	/**  `None` when several media changed at once. */
+	mediaId: MediaId | null,
+};
+
+export type MediaId = string;
+
+export type MediaInfo = {
+	/**  ffprobe `format_name`, e.g. `mov,mp4,m4a,3gp,3g2,mj2` or `matroska,webm`. */
+	container: string,
+	durationSec: number | null,
+	startSec: number | null,
+	sizeBytes: number | null,
+	bitRate: number | null,
+	video: VideoStream,
+	audio: AudioStream[],
+	subtitles: SubtitleStream[],
+};
+
+export type MediaItem = {
+	id: MediaId,
+	path: string,
+	fileName: string,
+	season: number | null,
+	episode: number | null,
+	/**  `S01E03` / `E12` / empty. */
+	label: string,
+	/**  Order within the project (episode order). */
+	position: number,
+	sizeBytes: number | null,
+	status: MediaStatus,
+	error: string | null,
+	info: MediaInfo | null,
+	/**  Decoded frame count (from the frame index). */
+	frames: number | null,
+	durationSec: number | null,
+	/**  Nominal frame rate used for timecodes. */
+	fps: Rational | null,
+	vfr: boolean,
+	interlaced: boolean,
+	/**  Audio stream ordinal used for playback and export (`None` = default track). */
+	audioOrdinal: number | null,
+	proxy: ProxyState,
+	poster: string | null,
+	addedAt: number,
+};
+
+export type MediaStatus = 
+/**  Waiting for its ingest job. */
+"queued" | 
+/**  Probing and building the frame index. */
+"indexing" | "ready" | "failed" | 
+/**  The source file is gone or unreadable (moved drive, renamed). */
+"missing";
+
+/**  The media engine as found on this machine (Settings → About / Hardware). */
+export type MediaToolsStatus = {
+	ready: boolean,
+	version: string | null,
+	path: string | null,
+	error: string | null,
+};
 
 /**  A native menu item was chosen (macOS). Payload is the item id, e.g. `view:cast`. */
 export type MenuAction = string;
 
+export type NewProject = {
+	title: string,
+	kind: ProjectKind,
+	content: ContentKind,
+	/**  Video files (folders are expanded by `import_scan` beforehand). */
+	files: string[],
+};
+
 export type Platform = "windows" | "macos" | "linux";
+
+export type ProResProfile = "proxy" | "lt" | "standard" | "hq" | "p4444";
+
+export type ProjectId = string;
+
+export type ProjectKind = "series" | "movie";
+
+export type ProjectSummary = {
+	id: ProjectId,
+	title: string,
+	kind: ProjectKind,
+	content: ContentKind,
+	/**  The `<Title>.autoscene` folder. */
+	dir: string,
+	/**  Unix milliseconds. */
+	createdAt: number,
+	updatedAt: number,
+	mediaCount: number,
+	readyCount: number,
+	durationSec: number | null,
+	/**  Poster image of the first episode, once indexed. */
+	poster: string | null,
+};
+
+/**
+ *  Playback proxy state. Sources the webview plays frame-accurately as-is
+ *  never get one.
+ */
+export type ProxyState = 
+/**  Not decided yet (media not indexed). */
+"unknown" | "not_needed" | "pending" | "building" | "ready" | "failed";
+
+/**  Exact rational number (time bases, frame rates). Always reduced, `den > 0`. */
+export type Rational = {
+	num: number,
+	den: number,
+};
+
+export type SubtitleStream = {
+	index: number,
+	ordinal: number,
+	codec: string,
+	language: string | null,
+	title: string | null,
+	default: boolean,
+	forced: boolean,
+	/**  Text subtitles (SRT/ASS/…) can feed dialogue search; bitmap ones can't. */
+	textBased: boolean,
+};
 
 /**
  *  Download progress. `downloaded == 0 && total == None` after the download
@@ -89,6 +474,35 @@ export type UpdateStatus = {
 	date: string | null,
 	/**  True when the answer came from the local override, not a real feed. */
 	simulated: boolean,
+};
+
+export type VideoCodec = { codec: "prores"; profile: ProResProfile } | { codec: "dnxhr"; profile: DnxProfile } | 
+/**  `quality`: 0 (lossless-ish) … 51 (worst), CRF-like. 16 is visually lossless. */
+{ codec: "h264"; quality: number; gop: Gop; encoder: EncoderPref } | { codec: "hevc"; quality: number; gop: Gop; encoder: EncoderPref; ten_bit: boolean };
+
+export type VideoStream = {
+	/**  Absolute stream index in the container. */
+	index: number,
+	codec: string,
+	profile: string | null,
+	pixFmt: string,
+	bitDepth: number,
+	width: number,
+	height: number,
+	/**  Sample aspect ratio (1/1 for square pixels). */
+	sar: Rational,
+	rFrameRate: Rational,
+	avgFrameRate: Rational | null,
+	timeBase: Rational,
+	colorPrimaries: string | null,
+	colorTransfer: string | null,
+	colorSpace: string | null,
+	colorRange: string | null,
+	/**  `progressive`, `tt`, `bb`, `tb`, `bt` or unknown. */
+	fieldOrder: string | null,
+	/**  Display rotation in degrees (0, 90, 180, 270). */
+	rotation: number,
+	hdr: HdrKind,
 };
 
 /* Tauri Specta runtime */
