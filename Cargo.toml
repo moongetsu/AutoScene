@@ -2,6 +2,7 @@
 resolver = "3"
 members = ["crates/*", "app/src-tauri", "xtask"]
 default-members = ["crates/*", "app/src-tauri"]
+exclude = ["vendor"]
 
 [workspace.package]
 version = "0.2.0-dev"
@@ -48,3 +49,7 @@ opt-level = 3
 lto = "thin"
 codegen-units = 4
 strip = "debuginfo"
+
+# tauri-specta only supports Tauri 2 upstream; this copy is ported to Tauri 3 (see vendor/tauri-specta/AUTOSCENE.md).
+[patch.crates-io]
+tauri-specta = { path = "vendor/tauri-specta" }

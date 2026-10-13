@@ -25,8 +25,8 @@ use tauri_specta::{collect_commands, collect_events};
 
 /// Single source of truth for the IPC surface. Also used by the
 /// `export-bindings` bin so CI can fail when bindings.ts is stale.
-pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
-    tauri_specta::Builder::<tauri::Wry>::new()
+pub fn specta_builder() -> tauri_specta::Builder<tauri::DynRuntime> {
+    tauri_specta::Builder::<tauri::DynRuntime>::new()
         .error_handling(tauri_specta::ErrorHandlingMode::Throw)
         .dangerously_cast_bigints_to_number()
         .commands(collect_commands![
@@ -74,7 +74,7 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
 
 pub const BINDINGS_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../src/bindings.ts");
 
-pub fn export_bindings(builder: &tauri_specta::Builder<tauri::Wry>) {
+pub fn export_bindings(builder: &tauri_specta::Builder<tauri::DynRuntime>) {
     builder
         .export(specta_typescript::Typescript::default().header("// @ts-nocheck\n/* eslint-disable */"), BINDINGS_PATH)
         .expect("failed to export TypeScript bindings");
@@ -105,6 +105,7 @@ pub fn run() {
 
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default()
+        .runtime(tauri_runtime_wry::Wry::default())
         // Must be first: a second launch just focuses the running window.
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             if let Some(w) = app.get_webview_window("main") {
