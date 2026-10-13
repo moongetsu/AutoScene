@@ -1,0 +1,85 @@
+/*
+ * Cinema Graphite — AutoScene design tokens.
+ *
+ * Rules (see docs/DESIGN.md):
+ *  - Neutral graphite surfaces only; no tinted greys.
+ *  - Logo gold (#C4A35A) is the ONLY accent. Danger red is semantic, never decorative.
+ *  - Depth comes from surface steps + hairlines, not glow. Glass is reserved for
+ *    floating layers (popovers, palette, drawer).
+ */
+:root {
+  color-scheme: dark;
+
+  /* Surfaces, darkest → lightest */
+  --bg-inset: #0a0a0c;
+  --bg-canvas: #0d0d0f;
+  --bg-panel: #141417;
+  --bg-raised: #1a1a1e;
+  --bg-overlay: #202025;
+  --bg-hover: rgb(255 255 255 / 0.045);
+  --bg-active: rgb(255 255 255 / 0.075);
+  --bg-selected: rgb(196 163 90 / 0.12);
+
+  /* Lines */
+  --line-hairline: rgb(255 255 255 / 0.075);
+  --line-soft: rgb(255 255 255 / 0.1);
+  --line-strong: rgb(255 255 255 / 0.15);
+  --line-focus: rgb(196 163 90 / 0.6);
+
+  /* Text */
+  --fg-1: #ededef;
+  --fg-2: #a3a3ab;
+  --fg-3: #707078;
+  --fg-disabled: #4b4b52;
+  --fg-on-accent: #16130c;
+
+  /* Accent — the logo gold */
+  --accent: #c4a35a;
+  --accent-hover: #d1b26d;
+  --accent-press: #ad8e48;
+  --accent-subtle: rgb(196 163 90 / 0.14);
+  --accent-line: rgb(196 163 90 / 0.35);
+
+  /* Semantic */
+  --danger: #d2564b;
+  --danger-subtle: rgb(210 86 75 / 0.14);
+
+  /* Glass (floating layers only) */
+  --glass-bg: rgb(24 24 28 / 0.78);
+  --glass-border: rgb(255 255 255 / 0.1);
+  --glass-blur: 24px;
+
+  /* Elevation */
+  --shadow-1: inset 0 1px 0 rgb(255 255 255 / 0.035), 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow-2: inset 0 1px 0 rgb(255 255 255 / 0.04), 0 8px 24px rgb(0 0 0 / 0.45);
+  --shadow-3: inset 0 1px 0 rgb(255 255 255 / 0.05), 0 24px 64px rgb(0 0 0 / 0.6);
+
+  /* Shape */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+
+  /* Type */
+  --font-sans: "Geist Variable", ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+  --font-mono: "Geist Mono Variable", ui-monospace, "Cascadia Mono", Menlo, monospace;
+
+  /* Motion */
+  --dur-fast: 120ms;
+  --dur-med: 180ms;
+  --dur-slow: 260ms;
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+
+  /* Chrome metrics */
+  --titlebar-h: 40px;
+  --sidebar-w: 232px;
+  --sidebar-w-collapsed: 56px;
+
+  /* Timeline lanes */
+  --tl-shot-a: #1d1d22;
+  --tl-shot-b: #25252b;
+  --tl-transition: rgb(196 163 90 / 0.35);
+  --tl-presence: rgb(237 237 239 / 0.55);
+}
