@@ -39,17 +39,18 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    run_ffmpeg_counting(tools, args, cancel, on_progress, None).map(|_| ())
+    run_ffmpeg_counting(tools, args, cancel, on_progress, &[]).map(|_| ())
 }
 
-/// [`run_ffmpeg`], also counting the stderr lines that contain `pattern`
-/// anywhere in the run (not just in the tail kept for errors).
+/// [`run_ffmpeg`], also counting the stderr lines that contain any of
+/// `patterns` (lowercase; matched case-insensitively) anywhere in the run,
+/// not just in the tail kept for errors.
 pub fn run_ffmpeg_counting<I, S>(
     tools: &Tools,
     args: I,
     cancel: &CancelToken,
     mut on_progress: impl FnMut(&FfProgress),
-    pattern: Option<&'static str>,
+    patterns: &'static [&'static str],
 ) -> MediaResult<usize>
 where
     I: IntoIterator<Item = S>,
@@ -87,7 +88,7 @@ where
         while reader.read_until(b'\n', &mut line).is_ok_and(|n| n > 0) {
             let text = String::from_utf8_lossy(&line).trim_end().to_string();
             line.clear();
-            if pattern.is_some_and(|p| text.contains(p)) {
+            if !patterns.is_empty() && patterns.iter().any(|p| text.to_lowercase().contains(p)) {
                 matches += 1;
             }
             if tail.len() == TAIL_LINES {

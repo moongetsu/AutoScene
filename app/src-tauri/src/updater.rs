@@ -198,7 +198,12 @@ pub async fn update_install(app: AppHandle) -> AppResult<()> {
             },
         )
         .await
-        .map_err(update_err)
+        .map_err(|e| {
+            // On Windows our jobs were stopped just before the installer was
+            // to start; it didn't, so the app keeps running and needs them.
+            crate::state::resume_work(&app);
+            update_err(e)
+        })
 }
 
 /// Restart into the freshly installed build. A no-op under the simulate

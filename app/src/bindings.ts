@@ -10,6 +10,11 @@ export const commands = {
 	appInfo: () => __TAURI_INVOKE<AppInfo>("app_info"),
 	/**  Show a file or folder in Explorer / Finder. */
 	revealPath: (path: string) => __TAURI_INVOKE<null>("reveal_path", { path }),
+	/**
+	 *  Put text on the clipboard. Natively, so it also works from the macOS
+	 *  menu, where the webview's clipboard API refuses (no user gesture).
+	 */
+	clipboardWrite: (text: string) => __TAURI_INVOKE<null>("clipboard_write", { text }),
 	/**  Open the logs folder (Settings → About, Help menu on Windows). */
 	openLogsDir: () => __TAURI_INVOKE<null>("open_logs_dir"),
 	/**  The media engine (ffmpeg) found on this machine — Settings → About. */

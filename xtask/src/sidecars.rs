@@ -50,19 +50,27 @@ const ARCHIVES: &[Archive] = &[
 #[cfg(not(any(windows, target_os = "macos")))]
 const ARCHIVES: &[Archive] = &[];
 
+/// Written into the folder last; lists the archive hashes it was built from.
+const STAMP: &str = ".autoscene-sidecars";
+
 pub fn fetch(dest: &Path) -> Result<()> {
     if ARCHIVES.is_empty() {
         bail!("no pinned ffmpeg build for this platform; install ffmpeg 7+ and put it on PATH");
     }
     let exe = if cfg!(windows) { ".exe" } else { "" };
-    if dest.join(format!("ffmpeg{exe}")).is_file() && dest.join(format!("ffprobe{exe}")).is_file() {
-        println!("{} already has ffmpeg and ffprobe", dest.display());
+    // Up to date only when the folder was completed from exactly these archives.
+    let want: String = ARCHIVES.iter().map(|a| format!("{}\n", a.sha256)).collect();
+    if fs::read_to_string(dest.join(STAMP)).is_ok_and(|s| s == want) {
+        println!("{} already has the pinned ffmpeg build", dest.display());
         return Ok(());
     }
+    // Everything is assembled and checked in a staging folder first and only
+    // then swapped in, so an interrupted run never leaves a folder that looks
+    // complete (ffmpeg present, a DLL missing) for the next run or a release.
     let work = dest.with_extension("download");
     let _ = fs::remove_dir_all(&work);
-    fs::create_dir_all(&work)?;
-    fs::create_dir_all(dest)?;
+    let staging = work.join("staging");
+    fs::create_dir_all(&staging)?;
     for (i, a) in ARCHIVES.iter().enumerate() {
         let zip = work.join(format!("part{i}.zip"));
         println!("downloading {}", a.url);
@@ -85,24 +93,36 @@ pub fn fetch(dest: &Path) -> Result<()> {
             let name = p.file_name().unwrap_or_default().to_string_lossy().into_owned();
             // Executables and the libraries they load; ffplay isn't needed.
             if p.is_file() && !name.starts_with("ffplay") {
-                fs::copy(&p, dest.join(&name))?;
+                fs::copy(&p, staging.join(&name))?;
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
-                    fs::set_permissions(dest.join(&name), fs::Permissions::from_mode(0o755))?;
+                    fs::set_permissions(staging.join(&name), fs::Permissions::from_mode(0o755))?;
                 }
             }
         }
     }
-    fs::remove_dir_all(&work).ok();
     for tool in ["ffmpeg", "ffprobe"] {
-        let p: PathBuf = dest.join(format!("{tool}{exe}"));
+        let p: PathBuf = staging.join(format!("{tool}{exe}"));
         if !p.is_file() {
             bail!("{} is missing after extraction", p.display());
         }
+        // Starting each tool proves its libraries are all there.
+        let out = Command::new(&p).arg("-version").output().with_context(|| format!("running {}", p.display()))?;
+        if !out.status.success() {
+            bail!("{} doesn't start: {}", p.display(), String::from_utf8_lossy(&out.stderr));
+        }
+        if tool == "ffmpeg" {
+            println!("{}", String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or_default());
+        }
     }
-    let out = Command::new(dest.join(format!("ffmpeg{exe}"))).arg("-version").output()?;
-    println!("{}", String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or_default());
+    fs::write(staging.join(STAMP), &want)?;
+    if dest.exists() {
+        fs::remove_dir_all(dest)
+            .with_context(|| format!("replacing {} (is the app or a test still using it?)", dest.display()))?;
+    }
+    fs::rename(&staging, dest)?;
+    fs::remove_dir_all(&work).ok();
     println!("sidecars ready in {}", dest.display());
     Ok(())
 }

@@ -45,6 +45,15 @@ pub fn reveal_path(path: String) -> AppResult<()> {
     tauri_plugin_opener::reveal_item_in_dir(&p).map_err(|e| AppError::new(ErrorCode::Io, e.to_string()))
 }
 
+/// Put text on the clipboard. Natively, so it also works from the macOS
+/// menu, where the webview's clipboard API refuses (no user gesture).
+#[tauri::command]
+#[specta::specta]
+pub fn clipboard_write(app: AppHandle, text: String) -> AppResult<()> {
+    use tauri_plugin_clipboard_manager::ClipboardExt;
+    app.clipboard().write_text(text).map_err(|e| AppError::new(ErrorCode::Internal, e.to_string()))
+}
+
 /// Open the logs folder (Settings → About, Help menu on Windows).
 #[tauri::command]
 #[specta::specta]

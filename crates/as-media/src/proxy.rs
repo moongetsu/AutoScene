@@ -17,6 +17,13 @@ use crate::{CodecFamily, MediaError, MediaInfo, MediaResult, Source, Tools, run_
 /// under a gigabyte.
 const PROXY_HEIGHT: u32 = 540;
 
+/// aresample options that keep audio on its timestamps: wherever the source
+/// has no samples (a late start, a lost codec frame) silence is inserted
+/// instead of pulling later sound forward. The 5 ms threshold is below any
+/// audio codec frame (AAC 21 ms, AC-3 32 ms, Opus ≥ 10 ms in practice) and
+/// above millisecond timestamp rounding (Matroska).
+pub const AUDIO_GAP_FILL: &str = "async=1:min_hard_comp=0.005";
+
 /// Can the webview play the source file as-is with frame-accurate mapping?
 pub fn playable_direct(info: &MediaInfo, index: &FrameIndex) -> bool {
     let mp4 = info.container.split(',').any(|c| matches!(c, "mp4" | "mov"));
@@ -69,7 +76,8 @@ pub fn build_proxy(
     chain.push("format=yuv420p".into());
     let mut graph = format!("[0:{}]{}[v]", info.video.index, chain.join(","));
     if let Some(a) = audio_ordinal {
-        graph += &format!(";[0:a:{a}]atrim=start={t0:.9},asetpts=PTS-{t0:.9}/TB[a]");
+        graph +=
+            &format!(";[0:a:{a}]atrim=start={t0:.9},asetpts=PTS-{t0:.9}/TB,aresample={AUDIO_GAP_FILL}:first_pts=0[a]");
     }
     args.extend(["-filter_complex".into(), graph, "-map".into(), "[v]".into()]);
     if audio_ordinal.is_some() {

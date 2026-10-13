@@ -80,6 +80,14 @@ pub fn shutdown_work(app: &AppHandle) {
     }
 }
 
+/// The process didn't go away after [`shutdown_work`] after all (the update
+/// installer failed to start): bring background work back.
+pub fn resume_work(app: &AppHandle) {
+    if let Some(state) = app.try_state::<AppState>() {
+        state.jobs.resume();
+    }
+}
+
 /// Let the webview load a file through the asset protocol (players, posters).
 /// Scope grows per file at runtime; nothing on disk is reachable by default.
 pub fn allow_asset(app: &AppHandle, path: &Path) {

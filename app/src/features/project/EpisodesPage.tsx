@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useMemo, useState } from "react"
 import { useNavigate, useParams } from "@tanstack/react-router"
 import { FilePlus2, FolderOpen, FolderPlus, MoreHorizontal, Play, RotateCcw, Trash2 } from "lucide-react"
 import { toast } from "sonner"
@@ -17,7 +17,18 @@ import { Page, PageHeader } from "@/components/ui/page"
 import { Select } from "@/components/ui/select"
 import { formatBytes, formatDuration } from "@/lib/format"
 import { commands, errorMessage } from "@/lib/ipc"
-import { assetUrl, audioLabel, audioOption, codecLabel, currentAudio, formatFlags, pickFolder, pickVideoFiles, releaseTitle } from "@/lib/media"
+import {
+  assetUrl,
+  audioLabel,
+  audioOption,
+  codecLabel,
+  currentAudio,
+  fileStem,
+  formatFlags,
+  pickFolder,
+  pickVideoFiles,
+  releaseTitle,
+} from "@/lib/media"
 import { useMediaList, useProject } from "@/lib/queries"
 import { formatFps } from "@/lib/timecode"
 import { cn } from "@/lib/utils"
@@ -30,6 +41,11 @@ export function EpisodesPage() {
   const { data: project } = useProject(pid)
   const { data: media, isPending } = useMediaList(pid)
   const navigate = useNavigate()
+  const nameCounts = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const m of media ?? []) counts.set(releaseTitle(m.fileName), (counts.get(releaseTitle(m.fileName)) ?? 0) + 1)
+    return counts
+  }, [media])
 
   const add = async (paths: string[]) => {
     if (!paths.length) return
@@ -104,6 +120,7 @@ export function EpisodesPage() {
                       <EpisodeRow
                         key={m.id}
                         media={m}
+                        ambiguous={(nameCounts.get(releaseTitle(m.fileName)) ?? 0) > 1}
                         projectId={pid}
                         onOpen={() => void navigate({ to: "/p/$pid/timeline/$mid", params: { pid, mid: m.id } })}
                       />
@@ -117,7 +134,18 @@ export function EpisodesPage() {
   )
 }
 
-function EpisodeRow({ media: m, projectId, onOpen }: { media: MediaItem; projectId: string; onOpen: () => void }) {
+function EpisodeRow({
+  media: m,
+  ambiguous,
+  projectId,
+  onOpen,
+}: {
+  media: MediaItem
+  /** Another row has the same clean name: show the file name too. */
+  ambiguous: boolean
+  projectId: string
+  onOpen: () => void
+}) {
   const [posterFailed, setPosterFailed] = useState(false)
   const v = m.info?.video
   const ready = m.status === "ready"
@@ -170,6 +198,7 @@ function EpisodeRow({ media: m, projectId, onOpen }: { media: MediaItem; project
           {releaseTitle(m.fileName)}
         </div>
         <div className="timecode truncate text-2xs text-fg-3" title={m.fileName}>
+          {ambiguous && <>{fileStem(m.fileName)} · </>}
           {formatBytes(m.sizeBytes ?? 0)}
           {m.durationSec ? <span className="@4xl:hidden"> · {formatDuration(m.durationSec)}</span> : null}
         </div>

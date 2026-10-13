@@ -16,7 +16,13 @@ pub const TONEMAP_SDR: &str =
 pub fn display_chain(info: &MediaInfo, height: Option<u32>, tonemap: bool) -> Vec<String> {
     let mut f = Vec::new();
     if info.is_interlaced() {
-        f.push("bwdif=mode=send_frame".to_string());
+        // Field order from the stream or idet; frames of unflagged sources
+        // don't carry it, and bwdif would otherwise assume top field first.
+        let parity = match info.video.field_order.as_deref() {
+            Some("bb" | "tb") => "bff",
+            _ => "tff",
+        };
+        f.push(format!("bwdif=mode=send_frame:parity={parity}"));
     }
     if tonemap && info.video.hdr != HdrKind::None {
         f.push(TONEMAP_SDR.to_string());

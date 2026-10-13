@@ -229,9 +229,10 @@ pub fn export_clip(
         let samples = ((index.t(e) - index.t(s)) * AUDIO_RATE as f64).round() as u64;
         // `first_pts=0` + `async` make aresample insert silence wherever the
         // source has no samples (late start, dropouts) instead of pulling
-        // later sound forward.
+        // later sound forward (see `as_media::proxy::AUDIO_GAP_FILL`).
         graph += &format!(
-            ";[0:a:{ord}]atrim=start={ts:.9}:end={te:.9},asetpts=PTS-{ts:.9}/TB,aresample={AUDIO_RATE}:async=1:first_pts=0,apad=whole_len={samples},atrim=end_sample={samples}{downmix}[a]",
+            ";[0:a:{ord}]atrim=start={ts:.9}:end={te:.9},asetpts=PTS-{ts:.9}/TB,aresample={AUDIO_RATE}:{fill}:first_pts=0,apad=whole_len={samples},atrim=end_sample={samples}{downmix}[a]",
+            fill = as_media::proxy::AUDIO_GAP_FILL,
             ts = index.t(s),
             te = index.t(e),
             // Standard ITU matrix: centre and surrounds at -3 dB, LFE dropped.
@@ -245,11 +246,14 @@ pub fn export_clip(
 
     let ext = preset.container.ext();
     let out = with_suffix(&job.out_stem, &format!(".{ext}"));
-    let part = with_suffix(&job.out_stem, &format!(".part.{ext}"));
-    if let Some(dir) = out.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let stats = with_suffix(&job.out_stem, ".stats.txt");
+    // Work files live in a hidden folder next to the clips, so no clip name
+    // (not even "X.part") can collide with another clip's unfinished file.
+    let out_dir = out.parent().map(Path::to_path_buf).unwrap_or_default();
+    let work = out_dir.join(PARTIAL_DIR);
+    std::fs::create_dir_all(&work)?;
+    let stem_name = job.out_stem.file_name().map(PathBuf::from).unwrap_or_default();
+    let part = with_suffix(&work.join(&stem_name), &format!(".{ext}"));
+    let stats = with_suffix(&work.join(&stem_name), ".stats.txt");
 
     let build = |preroll: Option<f64>| -> Vec<String> {
         let mut a: Vec<String> = ["-v", "error", "-y", "-copyts"].map(String::from).to_vec();
@@ -299,6 +303,10 @@ pub fn export_clip(
         a
     };
 
+    // Best effort: other exports may still be using the folder.
+    let tidy = || {
+        let _ = std::fs::remove_dir(&work);
+    };
     let mut last_err = String::new();
     for preroll in [Some(3.0), Some(10.0), None] {
         let _ = std::fs::remove_file(&stats);
@@ -306,11 +314,13 @@ pub fn export_clip(
             .inspect_err(|_| {
                 let _ = std::fs::remove_file(&part);
                 let _ = std::fs::remove_file(&stats);
+                tidy();
             })?;
         match verify(&stats, index, *range) {
             Ok(()) => {
                 let _ = std::fs::remove_file(&stats);
                 std::fs::rename(&part, &out)?;
+                tidy();
                 let bytes = std::fs::metadata(&out).map(|m| m.len() as f64).unwrap_or(0.0);
                 return Ok(ClipOutcome {
                     path: out.display().to_string(),
@@ -329,10 +339,14 @@ pub fn export_clip(
     // Keep the best effort but say so: the UI marks it "unverified".
     let _ = std::fs::remove_file(&stats);
     std::fs::rename(&part, &out)?;
+    tidy();
     tracing::error!(clip = %out.display(), reason = %last_err, "clip could not be verified");
     let bytes = std::fs::metadata(&out).map(|m| m.len() as f64).unwrap_or(0.0);
     Ok(ClipOutcome { path: out.display().to_string(), frames: n, verified: false, encoder: enc.encoder, bytes })
 }
+
+/// Hidden folder (inside the export folder) for unfinished clips.
+pub const PARTIAL_DIR: &str = ".autoscene-partial";
 
 /// `stem` + `suffix` as a path. Unlike `with_extension`, never cuts a stem
 /// at its own dots ("Mr. Robot" + ".mov", not "Mr.mov").
@@ -345,8 +359,12 @@ fn with_suffix(stem: &Path, suffix: &str) -> PathBuf {
 /// Every encoded frame must be source frame `s + i`, in order. Frames whose
 /// decoder timestamp was missing or out of order got a repaired slot in the
 /// index (one tick after the previous frame, see `as_media::index`); those are
-/// checked by position instead of by value.
+/// checked by position instead of by value. A one-tick step only marks a
+/// repair when a frame normally lasts several ticks: in 1/fps time bases
+/// (AVI) every step is one tick, and guessing would wave through a missing
+/// frame followed by a duplicate.
 fn verify(stats: &Path, index: &FrameIndex, range: FrameRange) -> Result<(), String> {
+    let ticks_per_frame = index.tb.den as f64 / (index.tb.num as f64 * index.nominal_fps.to_f64().max(1e-6));
     let text = std::fs::read_to_string(stats).map_err(|e| format!("no stats: {e}"))?;
     let got: Vec<Option<i64>> = text.lines().filter(|l| !l.trim().is_empty()).map(|l| l.trim().parse().ok()).collect();
     if got.len() != range.len() as usize {
@@ -356,7 +374,7 @@ fn verify(stats: &Path, index: &FrameIndex, range: FrameRange) -> Result<(), Str
     for (i, &p) in got.iter().enumerate() {
         let f = range.start + i as u32;
         let want = index.pts(f);
-        let repaired_slot = f > 0 && want == index.pts(f - 1) + 1;
+        let repaired_slot = ticks_per_frame >= 2.0 && f > 0 && want == index.pts(f - 1) + 1;
         match p {
             Some(p) if p == want => {}
             Some(p) if repaired_slot && prev_raw.is_some_and(|prev| p <= prev) => {}

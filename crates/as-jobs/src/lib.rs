@@ -10,7 +10,7 @@
 //! project's database on open. The persistent queue and the engine
 //! supervisor arrive with the analysis engine in M2.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::time::Duration;
@@ -98,6 +98,8 @@ struct State {
     shutting_down: bool,
     /// Last revision handed out; bumped under the lock on every change.
     rev: u64,
+    /// Worker threads alive per class (they exit during a shutdown).
+    live: HashMap<Class, usize>,
 }
 
 impl State {
@@ -111,6 +113,7 @@ struct Inner {
     state: Mutex<State>,
     wake: Condvar,
     listener: Box<Listener>,
+    limits: Vec<(Class, usize)>,
 }
 
 /// Finished jobs kept for the Activity drawer.
@@ -125,18 +128,41 @@ pub struct JobRunner {
 impl JobRunner {
     /// Start workers: `limits` gives the number of concurrent jobs per class.
     pub fn new(limits: &[(Class, usize)], listener: impl Fn(JobEvent) + Send + Sync + 'static) -> Self {
-        let inner =
-            Arc::new(Inner { state: Mutex::new(State::default()), wake: Condvar::new(), listener: Box::new(listener) });
-        for &(class, n) in limits {
-            for i in 0..n.max(1) {
-                let inner = inner.clone();
-                std::thread::Builder::new()
-                    .name(format!("jobs-{class:?}-{i}").to_lowercase())
-                    .spawn(move || worker(&inner, class))
-                    .expect("spawn job worker");
-            }
-        }
+        let inner = Arc::new(Inner {
+            state: Mutex::new(State::default()),
+            wake: Condvar::new(),
+            listener: Box::new(listener),
+            limits: limits.iter().map(|&(c, n)| (c, n.max(1))).collect(),
+        });
+        spawn_missing_workers(&inner, &mut inner.state.lock());
         Self { inner }
+    }
+
+    /// Undo a [`shutdown`](Self::shutdown) whose exit didn't happen (an
+    /// update installer that failed to start): restart the workers that
+    /// exited and close out queued jobs whose work was dropped.
+    pub fn resume(&self) {
+        let mut changed = Vec::new();
+        {
+            let mut st = self.inner.state.lock();
+            if !st.shutting_down {
+                return;
+            }
+            st.shutting_down = false;
+            let mut rev = st.rev;
+            for e in st.jobs.iter_mut().filter(|e| e.info.state == JobState::Queued && e.work.is_none()) {
+                rev += 1;
+                e.info.state = JobState::Cancelled;
+                e.info.finished_at = Some(now_ms());
+                e.info.rev = rev;
+                changed.push(e.info.clone());
+            }
+            st.rev = rev;
+            spawn_missing_workers(&self.inner, &mut st);
+        }
+        for info in changed {
+            (self.inner.listener)(JobEvent::Changed(info));
+        }
     }
 
     /// Queue `work`. Returns immediately.
@@ -249,6 +275,22 @@ impl JobRunner {
     }
 }
 
+/// Bring every class back to its worker limit. Workers still finishing a job
+/// during a shutdown count as alive, so a resume never exceeds the limit.
+fn spawn_missing_workers(inner: &Arc<Inner>, st: &mut State) {
+    for &(class, n) in &inner.limits {
+        let live = st.live.entry(class).or_insert(0);
+        for i in *live..n {
+            let inner = inner.clone();
+            std::thread::Builder::new()
+                .name(format!("jobs-{class:?}-{i}").to_lowercase())
+                .spawn(move || worker(&inner, class))
+                .expect("spawn job worker");
+        }
+        *live = (*live).max(n);
+    }
+}
+
 fn worker(inner: &Arc<Inner>, class: Class) {
     loop {
         // Claim the oldest queued job of our class.
@@ -256,6 +298,7 @@ fn worker(inner: &Arc<Inner>, class: Class) {
             let mut st = inner.state.lock();
             loop {
                 if st.shutting_down {
+                    *st.live.entry(class).or_insert(1) -= 1;
                     return;
                 }
                 let rev = st.rev + 1;
@@ -423,6 +466,30 @@ mod tests {
         assert_eq!(finished(&rx, queued).state, JobState::Cancelled);
         r.cancel(running);
         assert_eq!(finished(&rx, running).state, JobState::Cancelled, "cancel wins over the error it causes");
+    }
+
+    #[test]
+    fn resume_after_shutdown_runs_new_work() {
+        let (r, rx) = runner(&[(Class::Media, 2)]);
+        let blocker = r.submit(spec("long", Class::Media), |ctx| {
+            while !ctx.cancel.is_cancelled() {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(JobError::Cancelled)
+        });
+        while r.jobs().iter().all(|j| j.state != JobState::Running) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        r.submit(spec("never ran", Class::Media), |_| Ok(()));
+        r.shutdown(Duration::from_secs(2));
+        r.resume();
+        let after = r.submit(spec("after", Class::Media), |_| Ok(()));
+        assert_eq!(finished(&rx, after).state, JobState::Done, "work runs again after resume");
+        let jobs = r.jobs();
+        assert!(jobs.iter().all(|j| j.state.is_finished()), "no job left looking queued: {jobs:?}");
+        assert!(jobs.iter().any(|j| j.id == blocker && j.state == JobState::Cancelled));
+        // Workers came back up to the limit, not beyond it.
+        assert_eq!(r.inner.state.lock().live[&Class::Media], 2);
     }
 
     #[test]

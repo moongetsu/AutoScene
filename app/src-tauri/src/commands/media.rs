@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use as_api::{FrameMap, JobKind, MediaItem, MediaStatus, ProxyState};
+use as_api::{FrameMap, JobKind, JobState, MediaItem, MediaStatus, ProxyState};
 use as_core::{MediaId, ProjectId};
 use tauri::{AppHandle, State};
 
@@ -146,6 +146,10 @@ pub async fn media_set_audio(
     .await?;
     if needs_proxy {
         work::queue_proxy(&app, &project, media_id);
+    } else {
+        // The new track plays straight from the file: a preview still being
+        // built for the old one is pointless.
+        state.jobs.cancel_where(|j| j.kind == JobKind::Proxy && j.media_id == Some(media_id));
     }
     crate::events::emit_media_changed(&app, project_id, Some(media_id));
     Ok(m)
@@ -170,7 +174,14 @@ pub async fn media_frame_map(
     })
     .await?;
     let (project, map, pending) = result;
-    if pending && !state.jobs.is_active(|j| j.kind == JobKind::Proxy && j.media_id == Some(media_id)) {
+    // Build a missing preview on demand — unless someone stopped the last
+    // build: then the player offers "Prepare preview" instead of restarting
+    // it on every refresh.
+    let jobs = state.jobs.jobs();
+    let proxy_jobs = || jobs.iter().filter(|j| j.kind == JobKind::Proxy && j.media_id == Some(media_id));
+    let running = proxy_jobs().any(|j| !j.state.is_finished());
+    let stopped = proxy_jobs().max_by_key(|j| (j.created_at, j.rev)).is_some_and(|j| j.state == JobState::Cancelled);
+    if pending && !running && !stopped {
         work::queue_proxy(&app, &project, media_id);
     }
     let map = map?;

@@ -370,6 +370,10 @@ function scan(paths: string[], kind: ProjectKind): ImportCandidate[] {
 const handlers: Record<string, Handler> = {
   app_info: () => appInfo,
   reveal_path: () => null,
+  clipboard_write: ({ text }) => {
+    void navigator.clipboard?.writeText(String(text)).catch(() => {})
+    return null
+  },
   open_logs_dir: () => null,
   media_tools: () => ({ ready: true, version: "8.0.1-full_build-www.gyan.dev", path: String.raw`C:\ffmpeg\bin\ffmpeg.exe`, error: null }),
   settings_get: () => settings,

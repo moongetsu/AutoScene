@@ -398,3 +398,55 @@ fn interlaced_sources_are_deinterlaced() {
         assert!(combed * 20 < progressive, "{file}: export still combed ({combed} vs {progressive} progressive)");
     }
 }
+
+/// A lost audio frame (64 ms of nothing in the middle of the stream) must
+/// not pull the rest of the sound forward — in exports and in previews.
+#[test]
+fn audio_dropouts_keep_sync() {
+    let Some((tools, _)) = setup() else { return };
+    let work = tempfile::tempdir().unwrap();
+    let src = work.path().join("dropout.mkv");
+    // Silence, then a tone from 2.0 s; the frames between 1.0 and 1.064 s are
+    // gone but every other frame keeps its timestamp (PCM keeps frames as they are).
+    let status = tools
+        .ffmpeg()
+        .args(["-v", "error", "-f", "lavfi", "-i", "testsrc2=s=320x180:r=24:d=4", "-f", "lavfi"])
+        .args(["-i", "sine=f=1000:r=48000:d=4:samples_per_frame=1024"])
+        .args(["-af", "aselect='not(between(t,1.0,1.06))',volume=enable='lt(t,2)':volume=0"])
+        .args(["-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-c:a", "pcm_s16le"])
+        .arg(&src)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let info = probe(&tools, &src).unwrap();
+    let index = build_frame_index(&tools, &src, &info, work.path(), &CancelToken::new(), |_| {}).unwrap();
+    let onset = |pcm: &[i16]| pcm.iter().position(|v| v.unsigned_abs() > 2000).unwrap() as f64 / 48_000.0;
+
+    // Clip [0.5 s, 3.0 s): the tone must start 1.5 s in.
+    let job = ClipJob {
+        src: Source { path: &src, info: &info, index: &index },
+        range: FrameRange::new(12, 72),
+        audio_ordinal: None,
+        preset: &preset("prores-hq"),
+        out_stem: work.path().join("dropout_clip"),
+        title: None,
+    };
+    let out = export_clip(&tools, &job, &CancelToken::new(), |_| {}).unwrap();
+    assert!(out.verified);
+    let at = onset(&audio_pcm(&tools, Path::new(&out.path)));
+    assert!((at - 1.5).abs() < 0.006, "export: tone starts at {at:.4} s, want 1.5 s");
+
+    // The preview plays the same sound at the same moment.
+    let proxy_out = work.path().join("dropout_proxy.mp4");
+    let r = as_media::proxy::build_proxy(
+        &tools,
+        Source { path: &src, info: &info, index: &index },
+        Some(0),
+        &proxy_out,
+        &CancelToken::new(),
+        |_| {},
+    )
+    .unwrap();
+    let at = onset(&audio_pcm(&tools, &proxy_out));
+    assert!((at - (2.0 + r.t0)).abs() < 0.006, "preview: tone starts at {at:.4} s, want {:.4} s", 2.0 + r.t0);
+}

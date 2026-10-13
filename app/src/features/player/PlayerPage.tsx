@@ -219,7 +219,10 @@ function ReadyPlayer({ pid, media: m, map }: { pid: string; media: MediaItem; ma
     const reveal = () => void commands.revealPath(m.path).catch((e) => toast.error(errorMessage(e)))
     const copy = () => {
       const text = hasMarks ? `${tc(start)} - ${tc(end - 1)}` : tc(frame)
-      void navigator.clipboard.writeText(text).then(() => toast("Copied timecode", { description: text }))
+      commands
+        .clipboardWrite(text)
+        .then(() => toast("Copied timecode", { description: text }))
+        .catch((e) => toast.error("Couldn't copy the timecode", { description: errorMessage(e) }))
     }
     window.addEventListener(REVEAL_REQUEST, reveal)
     window.addEventListener(COPY_TIMECODES_REQUEST, copy)
@@ -228,6 +231,29 @@ function ReadyPlayer({ pid, media: m, map }: { pid: string; media: MediaItem; ma
       window.removeEventListener(COPY_TIMECODES_REQUEST, copy)
     }
   })
+
+  // While the player is open, clicked buttons don't take focus: otherwise
+  // Space would press the last clicked button again (WebView2 even marks it
+  // :focus-visible on the first key) instead of play/pause. Menus, lists and
+  // dialogs keep normal focus handling; Tab still reaches every button.
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      const b = e.target instanceof Element ? e.target.closest("button") : null
+      if (b && !b.closest("[role=dialog], [role=menu], [role=listbox], [role=combobox], [aria-haspopup]")) {
+        e.preventDefault()
+      }
+    }
+    window.addEventListener("mousedown", onDown, true)
+    return () => window.removeEventListener("mousedown", onDown, true)
+  }, [])
+
+  // Select the go-to field once when it opens, not on every re-render
+  // (that would wipe what is being typed).
+  useEffect(() => {
+    if (!gotoOpen) return
+    gotoRef.current?.focus()
+    gotoRef.current?.select()
+  }, [gotoOpen])
 
   useEffect(() => {
     const v = videoRef.current
@@ -241,7 +267,8 @@ function ReadyPlayer({ pid, media: m, map }: { pid: string; media: MediaItem; ma
     const onKey = (e: KeyboardEvent) => {
       const t = e.target instanceof Element ? e.target : null
       if (exportOpen || t?.closest("input, textarea, select, [role=dialog], [role=menu], [role=listbox]")) return
-      // A focused button or link answers Space and Enter itself.
+      // A button or link reached with Tab answers Space and Enter itself
+      // (clicked ones don't keep focus, see below).
       if ((e.key === " " || e.key === "Enter") && t?.closest("button, a, [role=button]")) return
       const mod = modKey === "⌘" ? e.metaKey : e.ctrlKey
       const k = e.key.toLowerCase()
@@ -294,7 +321,8 @@ function ReadyPlayer({ pid, media: m, map }: { pid: string; media: MediaItem; ma
           />
         </div>
 
-        <div className="shrink-0 border-t border-hairline bg-panel px-4 pt-2 pb-3">
+        {/* Secondary readouts fold away as the player column narrows. */}
+        <div className="@container shrink-0 border-t border-hairline bg-panel px-4 pt-2 pb-3">
           <Scrubber
             clock={clock}
             frame={frame}
@@ -304,15 +332,11 @@ function ReadyPlayer({ pid, media: m, map }: { pid: string; media: MediaItem; ma
             onScrubStart={pause}
             formatFrame={tc}
           />
-          <div className="mt-1 grid grid-cols-[1fr_auto_1fr] items-center gap-4">
-            <div className="flex items-baseline gap-3">
+          <div className="mt-1 grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-4">
+            <div className="flex min-w-0 items-baseline gap-3">
               {gotoOpen ? (
                 <input
-                  ref={(el) => {
-                    gotoRef.current = el
-                    el?.focus()
-                    el?.select()
-                  }}
+                  ref={gotoRef}
                   aria-label="Go to timecode or frame"
                   defaultValue={tc(frame)}
                   spellCheck={false}
@@ -345,7 +369,7 @@ function ReadyPlayer({ pid, media: m, map }: { pid: string; media: MediaItem; ma
                   </button>
                 </Tooltip>
               )}
-              <span className="timecode text-xs text-fg-3">
+              <span className="timecode hidden text-xs whitespace-nowrap text-fg-3 @xl:inline">
                 {frame} / {last}
               </span>
             </div>
@@ -372,9 +396,10 @@ function ReadyPlayer({ pid, media: m, map }: { pid: string; media: MediaItem; ma
                 <SkipForward />
               </TransportButton>
             </div>
-            <div className="flex items-center justify-end gap-2">
-              <span className="timecode text-xs text-fg-3">{tc(last)}</span>
-              <span className="timecode text-xs text-fg-3">· {formatFps(fps)} fps</span>
+            <div className="flex min-w-0 items-center justify-end gap-2">
+              <span className="timecode hidden text-xs whitespace-nowrap text-fg-3 @3xl:inline">
+                {tc(last)} · {formatFps(fps)} fps
+              </span>
               <div className="ml-2 flex items-center gap-1">
                 <Tooltip label={muted ? "Unmute" : "Mute"} shortcut={["M"]}>
                   <button
@@ -393,7 +418,7 @@ function ReadyPlayer({ pid, media: m, map }: { pid: string; media: MediaItem; ma
                   value={muted ? 0 : volume}
                   aria-label="Volume"
                   onChange={(e) => setVolume(Number(e.currentTarget.value))}
-                  className="h-1 w-20 cursor-pointer accent-[var(--fg-1)]"
+                  className="hidden h-1 w-20 cursor-pointer accent-[var(--fg-1)] @2xl:block"
                 />
               </div>
             </div>

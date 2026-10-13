@@ -30,6 +30,7 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::DynRuntime> {
         .commands(collect_commands![
             commands::system::app_info,
             commands::system::reveal_path,
+            commands::system::clipboard_write,
             commands::system::open_logs_dir,
             commands::system::media_tools,
             commands::library::projects_list,
@@ -114,6 +115,7 @@ pub fn run() {
         .plugin(log_plugin)
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(specta.invoke_handler());

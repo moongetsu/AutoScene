@@ -336,12 +336,16 @@ impl Project {
         }
     }
 
+    /// Delete finished preview files of `id` except `keep`. Unfinished
+    /// `.part` files may belong to a build that is still running; the next
+    /// project open removes leftovers (`clean_proxies`).
     fn remove_proxies(&self, id: MediaId, keep: Option<&Path>) {
         let prefix = format!("{id}-");
         let Ok(entries) = std::fs::read_dir(self.proxies_dir()) else { return };
         for e in entries.filter_map(Result::ok) {
             let p = e.path();
-            if e.file_name().to_string_lossy().starts_with(&prefix) && Some(p.as_path()) != keep {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.starts_with(&prefix) && !name.ends_with(".part.mp4") && Some(p.as_path()) != keep {
                 let _ = std::fs::remove_file(p);
             }
         }
@@ -368,7 +372,11 @@ impl Project {
             ProxyState::Failed => {
                 return Err(ProjectError::NotReady("The preview couldn't be prepared for this file.".into()));
             }
-            _ => return Err(ProjectError::NotReady("Preparing preview…".into())),
+            _ => {
+                return Err(ProjectError::NotReady(
+                    "This format needs a preview copy for frame-accurate playback.".into(),
+                ));
+            }
         };
         let n = index.len();
         let t0 = index.t0();
@@ -413,7 +421,8 @@ impl Project {
             .filter(|e| e.out_dir == out_str && e.preset.container == preset.container)
             .flat_map(|e| e.items)
             .filter(|i| matches!(i.status, ExportStatus::Queued | ExportStatus::Running))
-            .map(|i| i.name)
+            // Compared case-insensitively, like Windows and macOS file names.
+            .map(|i| i.name.to_lowercase())
             .collect();
         let mut items = Vec::with_capacity(req.clips.len());
         for c in &req.clips {
@@ -431,8 +440,10 @@ impl Project {
                 Some(n) => safe_component(n, " ", 120),
                 None => default_clip_name(&title, &m, &index, c.start),
             };
-            let name = unique_name(&base, |n| used.contains(n) || out_dir.join(format!("{n}.{ext}")).exists());
-            used.insert(name.clone());
+            // Windows and macOS file names ignore case.
+            let name =
+                unique_name(&base, |n| used.contains(&n.to_lowercase()) || out_dir.join(format!("{n}.{ext}")).exists());
+            used.insert(name.to_lowercase());
             items.push(NewExportItem {
                 media_id: c.media_id,
                 start: c.start,

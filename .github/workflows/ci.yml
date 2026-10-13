@@ -29,8 +29,11 @@ jobs:
         shell: bash
         run: |
           cargo xtask fetch-sidecars
-          echo "$PWD/app/src-tauri/ffmpeg" >> "$GITHUB_PATH"
-          echo "AUTOSCENE_FFMPEG_DIR=$PWD/app/src-tauri/ffmpeg" >> "$GITHUB_ENV"
+          # Later steps run in pwsh on Windows: hand them a native path, not Git Bash's /d/a/….
+          dir="$PWD/app/src-tauri/ffmpeg"
+          if command -v cygpath >/dev/null; then dir="$(cygpath -w "$dir")"; fi
+          echo "$dir" >> "$GITHUB_PATH"
+          echo "AUTOSCENE_FFMPEG_DIR=$dir" >> "$GITHUB_ENV"
       - name: Frontend dist placeholder
         shell: bash
         run: mkdir -p app/dist
