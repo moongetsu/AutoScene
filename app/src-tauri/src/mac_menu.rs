@@ -2,7 +2,8 @@
 //!
 //! Windows/Linux keep the custom frameless chrome (`TitleBar.tsx`) and no
 //! menu. Items that need app state emit [`MenuAction`] with their id; the
-//! webview dispatches it (see `app/src/lib/menu.ts`). Predefined items
+//! webview dispatches it (see `useGlobalBindings` in `app/src/lib/actions.ts`,
+//! which has a handler for every id below). Predefined items
 //! (copy/paste/quit/…) are handled by AppKit and never produce an event.
 
 use tauri::menu::{
@@ -53,7 +54,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .item(&item(app, "file:new-project", "New Project…", Some("CmdOrCtrl+N"))?)
         .item(&item(app, "file:add-media", "Add Episodes…", Some("CmdOrCtrl+O"))?)
         .separator()
-        .item(&item(app, "file:export", "Export Pack…", Some("CmdOrCtrl+E"))?)
+        .item(&item(app, "file:export", "Export Clip…", Some("CmdOrCtrl+E"))?)
         .separator()
         .item(&item(app, "file:reveal", "Reveal in Finder", Some("Shift+CmdOrCtrl+R"))?)
         .build()?;
@@ -74,11 +75,8 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .item(&item(app, "view:command-palette", "Command Palette…", Some("CmdOrCtrl+K"))?)
         .separator()
         .item(&item(app, "view:library", "Library", Some("CmdOrCtrl+1"))?)
-        .item(&item(app, "view:overview", "Overview", Some("CmdOrCtrl+2"))?)
-        .item(&item(app, "view:cast", "Cast", Some("CmdOrCtrl+3"))?)
-        .item(&item(app, "view:packs", "Packs", Some("CmdOrCtrl+4"))?)
-        .item(&item(app, "view:timeline", "Timeline", Some("CmdOrCtrl+5"))?)
-        .item(&item(app, "view:exports", "Exports", Some("CmdOrCtrl+6"))?)
+        .item(&item(app, "view:episodes", "Episodes", Some("CmdOrCtrl+2"))?)
+        .item(&item(app, "view:exports", "Exports", Some("CmdOrCtrl+3"))?)
         .separator()
         .item(&item(app, "view:activity", "Activity", Some("CmdOrCtrl+J"))?)
         .item(&item(app, "view:toggle-sidebar", "Toggle Sidebar", Some("CmdOrCtrl+B"))?)

@@ -5,14 +5,11 @@ use std::path::Path;
 use std::process::Stdio;
 
 use as_core::CancelToken;
-use as_media::{Source, Tools, build_frame_index, poster, probe, proxy};
+use as_media::{Source, Tools, build_frame_index, idet, poster, probe, proxy};
 use as_testkit::{Truth, barcode, fixtures_dir, load_truth};
 
 fn setup() -> Option<(Tools, Truth)> {
-    let Some(truth) = load_truth() else {
-        eprintln!("fixtures missing — run `cargo xtask fixtures`; skipping");
-        return None;
-    };
+    let truth = load_truth()?;
     Some((Tools::locate(None).expect("ffmpeg on PATH"), truth))
 }
 
@@ -107,13 +104,40 @@ fn frame_index_matches_truth_for_every_variant() {
 fn decoded_frames_carry_their_own_index() {
     // Decoder order == index order == barcode order, for awkward variants.
     let Some((tools, truth)) = setup() else { return };
-    for file in ["cfr23976_h264.mp4", "offset725_h264.mp4", "transport_h264.ts", "vfr_h264.mkv", "hevc10_hdr.mkv"] {
+    for file in [
+        "cfr23976_h264.mp4",
+        "offset725_h264.mp4",
+        "transport_h264.ts",
+        "vfr_h264.mkv",
+        "hevc10_hdr.mkv",
+        "interlaced_h264.ts",
+        "interlaced_xvid.avi",
+    ] {
         let codes = barcodes(&tools, &fixtures_dir().join(file));
         assert_eq!(codes.len() as u32, truth.frame_count, "{file}");
         for (i, c) in codes.iter().enumerate() {
             let c = c.unwrap_or_else(|| panic!("{file}: no barcode on frame {i}"));
             assert_eq!(c.frame as usize, i, "{file}: frame {i}");
             assert_eq!(c.id, truth.element_at(i as u32).unwrap().id, "{file}: element id at {i}");
+        }
+    }
+}
+
+#[test]
+fn interlacing_is_found_with_or_without_a_flag() {
+    let Some((tools, truth)) = setup() else { return };
+    assert!(truth.variants.iter().filter(|v| v.interlaced).count() >= 2, "stale fixtures: no interlaced variants");
+    for v in &truth.variants {
+        let path = fixtures_dir().join(&v.file);
+        let info = probe(&tools, &path).unwrap();
+        // Content analysis alone must get every variant right, flagged or not.
+        let found = idet::detect_field_order(&tools, &path, &info).unwrap();
+        assert_eq!(found, v.interlaced.then_some("tt"), "{}: idet", v.file);
+        // What the container says: the TS is flagged, the AVI says nothing.
+        match v.file.as_str() {
+            "interlaced_h264.ts" => assert!(info.is_interlaced(), "{}: flagged top field first", v.file),
+            "interlaced_xvid.avi" => assert_eq!(info.video.field_order, None, "{}: unflagged", v.file),
+            _ => assert!(!info.is_interlaced(), "{}: progressive", v.file),
         }
     }
 }

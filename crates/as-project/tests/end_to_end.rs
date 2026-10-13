@@ -66,16 +66,14 @@ fn player_time(map: &FrameMap, f: u32) -> f64 {
 
 #[test]
 fn import_preview_and_export_three_episodes() {
-    let Some(truth) = load_truth() else {
-        eprintln!("fixtures missing — run `cargo xtask fixtures`; skipping");
-        return;
-    };
+    let Some(truth) = load_truth() else { return };
     let tools = Tools::locate(None).expect("ffmpeg on PATH");
     let tmp = tempfile::tempdir().unwrap();
     let lib = Library::open(&AppPaths::at(tmp.path().join("data"))).unwrap();
     lib.update_settings(&AppSettings {
         library_root: tmp.path().join("Library").display().to_string(),
         export_preset_id: "prores-hq".into(),
+        audio_language: "eng".into(),
     })
     .unwrap();
 
@@ -98,7 +96,7 @@ fn import_preview_and_export_three_episodes() {
     let (p, t, c) = (&project, &tools, &cancel);
     let ingested: Vec<_> = std::thread::scope(|s| {
         let handles: Vec<_> =
-            added.iter().map(|&id| s.spawn(move || p.ingest(t, id, c, &|_, _| {}).unwrap())).collect();
+            added.iter().map(|&id| s.spawn(move || p.ingest(t, id, "eng", c, &|_, _| {}).unwrap())).collect();
         handles.into_iter().map(|h| h.join().unwrap()).collect()
     });
     let mut pending = Vec::new();
@@ -154,8 +152,10 @@ fn import_preview_and_export_three_episodes() {
         let req = ExportRequest { preset_id: preset.id.clone(), out_dir: None, clips: clips.clone() };
         let ex = project.create_export(&req, preset, &out_dir).unwrap();
         assert_eq!(ex.status, ExportStatus::Queued);
-        let ex = project.run_export(&tools, ex.id, &cancel, &|_, _| {}).unwrap();
+        let updates = std::cell::Cell::new(0);
+        let ex = project.run_export(&tools, ex.id, &cancel, &|_, _| {}, &|| updates.set(updates.get() + 1)).unwrap();
         assert_eq!(ex.status, ExportStatus::Done);
+        assert_eq!(updates.get(), 2 * ranges.len(), "every clip reports its start and its end");
         for (item, (s, e)) in ex.items.iter().zip(ranges) {
             assert!(item.verified, "{}: not verified", item.name);
             let path = item.path.as_deref().unwrap();
@@ -191,6 +191,7 @@ fn bad_ranges_and_missing_files_are_refused() {
     lib.update_settings(&AppSettings {
         library_root: tmp.path().join("Library").display().to_string(),
         export_preset_id: "prores-hq".into(),
+        audio_language: "eng".into(),
     })
     .unwrap();
     // A copy we can delete to simulate a disconnected drive.
@@ -205,7 +206,7 @@ fn bad_ranges_and_missing_files_are_refused() {
         })
         .unwrap();
     let id = added[0];
-    let m = project.ingest(&tools, id, &CancelToken::new(), &|_, _| {}).unwrap();
+    let m = project.ingest(&tools, id, "eng", &CancelToken::new(), &|_, _| {}).unwrap();
     assert_eq!(m.label, "E01");
     let preset = builtin_presets().remove(0);
     let req = |s, e| ExportRequest {
@@ -220,6 +221,6 @@ fn bad_ranges_and_missing_files_are_refused() {
     std::fs::remove_file(&copy).unwrap();
     assert_eq!(project.media(id).unwrap().status, MediaStatus::Missing);
     assert!(project.create_export(&req(0, 10), preset, &out).is_err(), "missing source");
-    let err = project.ingest(&tools, id, &CancelToken::new(), &|_, _| {}).unwrap_err();
+    let err = project.ingest(&tools, id, "eng", &CancelToken::new(), &|_, _| {}).unwrap_err();
     assert!(err.to_string().contains("can't be found"), "{err}");
 }

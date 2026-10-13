@@ -16,7 +16,7 @@ type ContentProps = Omit<React.ComponentProps<typeof D.Content>, "title"> & {
 export function DialogContent({ title, description, hideClose, className, children, ...props }: ContentProps) {
   return (
     <D.Portal>
-      <D.Overlay className="fixed inset-0 z-50 bg-black/55 data-[state=open]:animate-fade-in" />
+      <D.Overlay className="fixed inset-0 z-50 bg-scrim data-[state=open]:animate-fade-in" />
       <D.Content
         className={cn(
           "glass fixed top-1/2 left-1/2 z-50 w-[min(520px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2 rounded-xl p-5",

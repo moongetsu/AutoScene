@@ -29,7 +29,8 @@
   /* Text */
   --fg-1: #ededef;
   --fg-2: #a3a3ab;
-  --fg-3: #707078;
+  /* 4.5:1 on panel, raised and overlay surfaces (WCAG AA for 11-12px text) */
+  --fg-3: #88888f;
   --fg-disabled: #4b4b52;
   --fg-on-accent: #16130c;
 
@@ -43,6 +44,16 @@
   /* Semantic */
   --danger: #d2564b;
   --danger-subtle: rgb(210 86 75 / 0.14);
+
+  /* Scrims, and content drawn over pictures */
+  --scrim: rgb(0 0 0 / 0.55);
+  --scrim-soft: rgb(0 0 0 / 0.35);
+  --scrim-media: rgb(0 0 0 / 0.45);
+  --fg-on-media: rgb(255 255 255 / 0.9);
+
+  /* Platform chrome: the Windows caption close button (Fluent spec), not an accent */
+  --win-close: #c42b1c;
+  --fg-on-win-close: #ffffff;
 
   /* Glass (floating layers only) */
   --glass-bg: rgb(24 24 28 / 0.78);

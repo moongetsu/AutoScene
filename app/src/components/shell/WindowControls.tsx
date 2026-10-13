@@ -40,7 +40,7 @@ export function WindowControls() {
         )}
       </button>
       {/* Windows' own close-hover red: a platform convention, not a brand accent. */}
-      <button aria-label="Close" className={cn(base, "hover:bg-[#c42b1c] hover:text-white")} onClick={() => void win().close()}>
+      <button aria-label="Close" className={cn(base, "hover:bg-win-close hover:text-on-win-close")} onClick={() => void win().close()}>
         <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden>
           <path d="M0 0l10 10M10 0L0 10" stroke="currentColor" strokeWidth="1" />
         </svg>

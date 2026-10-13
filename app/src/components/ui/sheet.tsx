@@ -14,7 +14,7 @@ type SheetContentProps = Omit<React.ComponentProps<typeof D.Content>, "title"> &
 export function SheetContent({ title, actions, className, children, ...props }: SheetContentProps) {
   return (
     <D.Portal>
-      <D.Overlay className="fixed inset-0 top-[var(--titlebar-h)] z-40 bg-black/35 data-[state=open]:animate-fade-in" />
+      <D.Overlay className="fixed inset-0 top-[var(--titlebar-h)] z-40 bg-scrim-soft data-[state=open]:animate-fade-in" />
       <D.Content
         className={cn(
           "glass fixed top-[calc(var(--titlebar-h)+8px)] right-2 bottom-2 z-40 flex w-[min(400px,calc(100vw-16px))] flex-col rounded-xl",

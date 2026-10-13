@@ -13,7 +13,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build",
+    "tauri:build": "cargo xtask fetch-sidecars && tauri build --config src-tauri/tauri.release.conf.json",
     "bindings": "cargo run -p autoscene-app --bin export-bindings"
   },
   "dependencies": {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { FrameClock } from "./frame-clock"
-import { formatFps, timecode } from "./timecode"
+import { formatFps, parseTimecode, timecode } from "./timecode"
 
 describe("timecode", () => {
   it("matches the Rust implementation", () => {
@@ -56,5 +56,36 @@ describe("FrameClock", () => {
       expect(c.frameAt(times[f])).toBe(f)
     }
     expect(c.duration(50)).toBeCloseTo(1 / 60)
+  })
+})
+
+describe("parseTimecode", () => {
+  const ntsc = { num: 30000, den: 1001 }
+  const film = { num: 24000, den: 1001 }
+
+  it("inverts timecode() exactly, drop-frame included", () => {
+    for (const fps of [film, ntsc, { num: 60000, den: 1001 }, { num: 25, den: 1 }]) {
+      for (const df of [false, true]) {
+        for (const f of [0, 1, 2, 1799, 1800, 1801, 17981, 17982, 107892, 123456]) {
+          expect(parseTimecode(timecode(f, fps, df), fps, df)).toBe(f)
+        }
+      }
+    }
+  })
+
+  it("accepts frame numbers, jumps and short timecodes", () => {
+    expect(parseTimecode("17099", film, false)).toBe(17099)
+    expect(parseTimecode("+48", film, false, 100)).toBe(148)
+    expect(parseTimecode("-12", film, false, 100)).toBe(88)
+    expect(parseTimecode("01:00", film, false)).toBe(24)
+    expect(parseTimecode("1:02:03", film, false)).toBe((62 * 24 + 3))
+    expect(parseTimecode("00:11:52:11", film, false)).toBe(17099)
+  })
+
+  it("rejects nonsense", () => {
+    expect(parseTimecode("", film, false)).toBeNull()
+    expect(parseTimecode("abc", film, false)).toBeNull()
+    expect(parseTimecode("00:00:00:24", film, false)).toBeNull()
+    expect(parseTimecode("00:61:00:00", film, false)).toBeNull()
   })
 })

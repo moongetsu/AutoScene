@@ -52,12 +52,16 @@ pub struct AudioStream {
     /// Position among audio streams (`0:a:N`).
     pub ordinal: u32,
     pub codec: String,
+    /// Codec profile when it matters to people, e.g. `DTS-HD MA`.
+    pub profile: Option<String>,
     pub channels: u32,
     pub channel_layout: Option<String>,
     pub sample_rate: u32,
     pub language: Option<String>,
     pub title: Option<String>,
     pub default: bool,
+    /// Director's commentary or audio description, not the programme sound.
+    pub commentary: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -97,11 +101,33 @@ impl MediaInfo {
     pub fn default_audio(&self) -> Option<&AudioStream> {
         self.audio.iter().find(|a| a.default).or(self.audio.first())
     }
+
+    /// The track to use when nobody has chosen one: the first programme
+    /// track in `language` (ISO 639 code or name; empty = no preference),
+    /// else the file's default. Commentary and audio description only win
+    /// when nothing else exists. Files often flag every track "default", so
+    /// the language decides before the flag does.
+    pub fn preferred_audio(&self, language: &str) -> Option<&AudioStream> {
+        let programme: Vec<&AudioStream> = self.audio.iter().filter(|a| !a.commentary).collect();
+        let pool = if programme.is_empty() { self.audio.iter().collect() } else { programme };
+        let in_language: Vec<&AudioStream> = if language.trim().is_empty() {
+            Vec::new()
+        } else {
+            pool.iter()
+                .copied()
+                .filter(|a| a.language.as_deref().is_some_and(|l| crate::lang::same(l, language)))
+                .collect()
+        };
+        let from = if in_language.is_empty() { pool } else { in_language };
+        from.iter().copied().find(|a| a.default).or(from.first().copied())
+    }
 }
 
 pub fn probe(tools: &Tools, path: &Path) -> MediaResult<MediaInfo> {
     let err = |message: String| MediaError::Probe { path: path.display().to_string(), message };
-    let out = tools.ffprobe().args(["-print_format", "json", "-show_format", "-show_streams"]).arg(path).output()?;
+    let out = crate::proc::output(
+        tools.ffprobe().args(["-print_format", "json", "-show_format", "-show_streams"]).arg(path),
+    )?;
     if !out.status.success() {
         let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
         return Err(err(if msg.is_empty() { "unreadable file".into() } else { msg }));
@@ -119,12 +145,13 @@ pub fn probe(tools: &Tools, path: &Path) -> MediaResult<MediaInfo> {
 /// Matroska muxer drops transfer and primaries, and so do many remuxes — but
 /// the decoded frames always do. Without this an HDR10 file reads as SDR.
 fn fill_colour_from_first_frame(tools: &Tools, path: &Path, video: &mut VideoStream) {
-    let out = tools
-        .ffprobe()
-        .args(["-select_streams", &video.index.to_string(), "-read_intervals", "%+#16", "-show_entries"])
-        .args(["frame=color_transfer,color_primaries,color_space,color_range", "-of", "json"])
-        .arg(path)
-        .output();
+    let out = crate::proc::output(
+        tools
+            .ffprobe()
+            .args(["-select_streams", &video.index.to_string(), "-read_intervals", "%+#16", "-show_entries"])
+            .args(["frame=color_transfer,color_primaries,color_space,color_range", "-of", "json"])
+            .arg(path),
+    );
     let Ok(out) = out else { return };
     let Ok(v) = serde_json::from_slice::<Value>(&out.stdout) else { return };
     let Some(frame) = v.get("frames").and_then(Value::as_array).and_then(|f| f.first()) else { return };
@@ -167,15 +194,27 @@ fn disposition(v: &Value, k: &str) -> bool {
 }
 
 fn bit_depth(stream: &Value, pix_fmt: &str) -> u32 {
-    if let Some(b) = num::<u32>(stream, "bits_per_raw_sample") {
+    if let Some(b) = num::<u32>(stream, "bits_per_raw_sample").filter(|&b| b > 0) {
         return b;
     }
-    for (needle, bits) in [("16", 16), ("14", 14), ("12", 12), ("10", 10), ("p010", 10)] {
-        if pix_fmt.contains(needle) {
-            return bits;
-        }
+    pix_fmt_depth(pix_fmt)
+}
+
+/// Bits per component from an ffmpeg pixel format name. Only a number right
+/// before the endianness suffix is a depth (`yuv420p10le`, `gray12be`); the
+/// digits in `yuv410p`, `nv12` or `nv16` are chroma layouts.
+fn pix_fmt_depth(pix_fmt: &str) -> u32 {
+    // Semi-planar high-depth formats: p010, p016, p210, p410, y210, nv20…
+    match pix_fmt.trim_end_matches("le").trim_end_matches("be") {
+        "p010" | "p210" | "p410" | "y210" | "nv20" | "x2rgb10" | "x2bgr10" | "v30x" | "xv30" => return 10,
+        "p012" | "p212" | "p412" | "y212" | "xv36" => return 12,
+        "p016" | "p216" | "p416" | "rgb48" | "bgr48" | "rgba64" | "bgra64" | "ya16" | "y216" => return 16,
+        _ => {}
     }
-    8
+    let Some(stem) = pix_fmt.strip_suffix("le").or_else(|| pix_fmt.strip_suffix("be")) else { return 8 };
+    let digits: String =
+        stem.chars().rev().take_while(char::is_ascii_digit).collect::<Vec<_>>().into_iter().rev().collect();
+    digits.parse::<u32>().ok().filter(|d| (9..=16).contains(d)).unwrap_or(8)
 }
 
 fn rotation(stream: &Value) -> i32 {
@@ -203,6 +242,11 @@ fn transfer_hdr(transfer: Option<&str>) -> HdrKind {
         Some("arib-std-b67") => HdrKind::Hlg,
         _ => HdrKind::None,
     }
+}
+
+fn is_commentary_title(title: &str) -> bool {
+    let t = title.to_lowercase();
+    ["commentary", "kommentar", "audio description", "descriptive", "audiodeskription"].iter().any(|w| t.contains(w))
 }
 
 const TEXT_SUBS: &[&str] = &["subrip", "srt", "ass", "ssa", "mov_text", "webvtt", "text", "microdvd"];
@@ -245,10 +289,14 @@ fn parse(v: &Value) -> Option<MediaInfo> {
                 index: num(st, "index")?,
                 ordinal: i as u32,
                 codec: s(st, "codec_name").unwrap_or_else(|| "unknown".into()),
+                profile: s(st, "profile").filter(|p| p != "LC"),
                 channels: num(st, "channels").unwrap_or(2),
                 channel_layout: s(st, "channel_layout"),
                 sample_rate: num(st, "sample_rate").unwrap_or(48_000),
                 language: tag(st, "language").filter(|l| l != "und"),
+                commentary: disposition(st, "comment")
+                    || disposition(st, "visual_impaired")
+                    || tag(st, "title").is_some_and(|t| is_commentary_title(&t)),
                 title: tag(st, "title"),
                 default: disposition(st, "default"),
             })
@@ -304,10 +352,59 @@ mod tests {
     }
 
     #[test]
+    fn bit_depth_from_pixel_formats() {
+        for (fmt, bits) in [
+            ("yuv420p", 8),
+            ("yuv410p", 8),
+            ("nv12", 8),
+            ("nv16", 8),
+            ("yuv420p10le", 10),
+            ("yuv422p12be", 12),
+            ("gray16le", 16),
+            ("p010le", 10),
+            ("p016le", 16),
+            ("rgb48le", 16),
+            ("gbrp10le", 10),
+        ] {
+            assert_eq!(pix_fmt_depth(fmt), bits, "{fmt}");
+        }
+    }
+
+    #[test]
     fn hdr_from_stream_tags() {
         assert_eq!(parse(&stream(Some("smpte2084"))).unwrap().video.hdr, HdrKind::Pq);
         assert_eq!(parse(&stream(Some("arib-std-b67"))).unwrap().video.hdr, HdrKind::Hlg);
         assert_eq!(parse(&stream(Some("unknown"))).unwrap().video.color_transfer, None);
+    }
+
+    fn audio(ordinal: u32, lang: Option<&str>, default: bool, title: Option<&str>) -> Value {
+        let mut a = json!({ "index": ordinal + 1, "codec_type": "audio", "codec_name": "ac3", "channels": 2,
+                            "disposition": { "default": i32::from(default) }, "tags": {} });
+        if let Some(l) = lang {
+            a["tags"]["language"] = json!(l);
+        }
+        if let Some(t) = title {
+            a["tags"]["title"] = json!(t);
+        }
+        a
+    }
+
+    #[test]
+    fn preferred_audio_follows_language_then_default_flag() {
+        let mut v = stream(None);
+        let streams = v["streams"].as_array_mut().unwrap();
+        // Breaking Bad REMUX: both tracks flagged default, Hindi first.
+        streams.push(audio(0, Some("hin"), true, Some("Org TV-DL Hindi DD 2.0Ch")));
+        streams.push(audio(1, Some("eng"), true, Some("DTS-HD MA 5.1")));
+        streams.push(audio(2, Some("eng"), false, Some("Commentary with Vince Gilligan")));
+        let info = parse(&v).unwrap();
+        assert!(info.audio[2].commentary);
+        assert_eq!(info.preferred_audio("eng").unwrap().ordinal, 1);
+        assert_eq!(info.preferred_audio("English").unwrap().ordinal, 1);
+        assert_eq!(info.preferred_audio("hi").unwrap().ordinal, 0);
+        // No preference or no match: the file's default.
+        assert_eq!(info.preferred_audio("").unwrap().ordinal, 0);
+        assert_eq!(info.preferred_audio("jpn").unwrap().ordinal, 0);
     }
 
     #[test]

@@ -20,10 +20,23 @@ pub fn fixtures_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/out"))
 }
 
-/// Load `truth.json` if fixtures have been generated; `None` lets tests skip
-/// gracefully on machines that haven't run `cargo xtask fixtures`.
+/// Load `truth.json`. `None` (the test skips) only when fixtures were never
+/// generated on this machine and `AUTOSCENE_REQUIRE_FIXTURES` is unset; CI
+/// sets it, so a missing truth can never make tests pass silently. A truth
+/// file that exists but doesn't parse always fails.
 pub fn load_truth() -> Option<Truth> {
     let p = fixtures_dir().join("truth.json");
-    let raw = std::fs::read_to_string(p).ok()?;
-    serde_json::from_str(&raw).ok()
+    let required = std::env::var_os("AUTOSCENE_REQUIRE_FIXTURES").is_some_and(|v| v != "0");
+    let raw = match std::fs::read_to_string(&p) {
+        Ok(raw) => raw,
+        Err(e) if !required && e.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("fixtures missing; run `cargo xtask fixtures` (skipping)");
+            return None;
+        }
+        Err(e) => panic!("{}: {e} (run `cargo xtask fixtures`)", p.display()),
+    };
+    match serde_json::from_str(&raw) {
+        Ok(t) => Some(t),
+        Err(e) => panic!("{} is stale or corrupt ({e}); run `cargo xtask fixtures`", p.display()),
+    }
 }

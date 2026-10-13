@@ -1,12 +1,12 @@
 //! Frame-exact export, proven with barcodes. Needs `cargo xtask fixtures`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use as_core::{CancelToken, FrameIndex, FrameRange};
 use as_export::preset::{EncoderPref, Gop, VideoCodec};
 use as_export::{ClipJob, ExportPreset, builtin_presets, export_clip};
-use as_media::{MediaInfo, Source, Tools, build_frame_index, probe};
+use as_media::{MediaInfo, Source, Tools, build_frame_index, idet, probe};
 use as_testkit::{Truth, barcode, fixtures_dir, load_truth};
 
 struct Fixture {
@@ -16,16 +16,20 @@ struct Fixture {
 }
 
 fn setup() -> Option<(Tools, Truth)> {
-    let Some(truth) = load_truth() else {
-        eprintln!("fixtures missing — run `cargo xtask fixtures`; skipping");
-        return None;
-    };
+    let truth = load_truth()?;
     Some((Tools::locate(None).expect("ffmpeg on PATH"), truth))
 }
 
+/// Probe and index like the app's ingest does (including interlace detection
+/// for files whose container doesn't say).
 fn load(tools: &Tools, file: &'static str, work: &Path) -> Fixture {
     let path = fixtures_dir().join(file);
-    let info = probe(tools, &path).unwrap();
+    let mut info = probe(tools, &path).unwrap();
+    if info.video.field_order.is_none()
+        && let Some(order) = idet::detect_field_order(tools, &path, &info).unwrap()
+    {
+        info.video.field_order = Some(order.into());
+    }
     let index = build_frame_index(tools, &path, &info, work, &CancelToken::new(), |_| {}).unwrap();
     Fixture { file, info, index }
 }
@@ -53,7 +57,12 @@ fn barcodes(tools: &Tools, file: &Path) -> Vec<u32> {
         .as_chunks::<{ 640 * 360 }>()
         .0
         .iter()
-        .map(|f| barcode::read_luma(f, 640, 360, 640).expect("barcode").frame as u32)
+        .enumerate()
+        .map(|(i, f)| {
+            barcode::read_luma(f, 640, 360, 640)
+                .unwrap_or_else(|| panic!("{}: no barcode in output frame {i}", file.display()))
+                .frame as u32
+        })
         .collect()
 }
 
@@ -97,7 +106,8 @@ fn ranges(truth: &Truth) -> Vec<FrameRange> {
     r
 }
 
-fn check(tools: &Tools, fx: &Fixture, range: FrameRange, preset: &ExportPreset, work: &Path) {
+/// Export `range`, prove it with barcodes, return the clip's path.
+fn check(tools: &Tools, fx: &Fixture, range: FrameRange, preset: &ExportPreset, work: &Path) -> PathBuf {
     let src = fixtures_dir().join(fx.file);
     let job = ClipJob {
         src: Source { path: &src, info: &fx.info, index: &fx.index },
@@ -112,6 +122,7 @@ fn check(tools: &Tools, fx: &Fixture, range: FrameRange, preset: &ExportPreset, 
     let codes = barcodes(tools, Path::new(&out.path));
     let want: Vec<u32> = (range.start..range.end).collect();
     assert_eq!(codes, want, "{} {range:?} {}: decoded frames", fx.file, preset.id);
+    PathBuf::from(out.path)
 }
 
 #[test]
@@ -127,6 +138,9 @@ fn software_exports_are_frame_exact_on_every_variant() {
         "hevc10_hdr.mkv",
         "vfr_h264.mkv",
         "two_audio_h264.mkv",
+        "late_audio_h264.mkv",
+        "interlaced_h264.ts",
+        "interlaced_xvid.avi",
         "prores.mov",
     ] {
         let fx = load(&tools, file, work.path());
@@ -224,5 +238,163 @@ fn audio_is_cut_with_the_video() {
             let want = shot.tone_hz.unwrap() as f64;
             assert!((hz - want).abs() / want < 0.12, "{file} shot '{}': tone {hz:.0} Hz, want {want}", shot.label);
         }
+    }
+}
+
+/// Names come from titles and file names; dots in them ("Mr. Robot",
+/// "Blade.Runner.2049") must survive, and two clips must never share a file.
+#[test]
+fn dotted_names_get_their_own_files() {
+    let Some((tools, _)) = setup() else { return };
+    let work = tempfile::tempdir().unwrap();
+    let fx = load(&tools, "cfr24_h264.mp4", work.path());
+    let src = fixtures_dir().join(fx.file);
+    let p = preset("prores-hq");
+    let mut paths = Vec::new();
+    for (stem, s) in [("Mr. Robot S01E01 00-00-00-00", 0u32), ("Mr. Robot S01E01 00-00-01-00", 24), ("shot 1.5", 48)] {
+        let job = ClipJob {
+            src: Source { path: &src, info: &fx.info, index: &fx.index },
+            range: FrameRange::new(s, s + 6),
+            audio_ordinal: None,
+            preset: &p,
+            out_stem: work.path().join(stem),
+            title: None,
+        };
+        let out = export_clip(&tools, &job, &CancelToken::new(), |_| {}).unwrap();
+        assert!(out.verified);
+        assert_eq!(Path::new(&out.path).file_name().unwrap().to_string_lossy(), format!("{stem}.mov"));
+        assert_eq!(barcodes(&tools, Path::new(&out.path)), (s..s + 6).collect::<Vec<_>>(), "{stem}");
+        paths.push(out.path);
+    }
+    paths.dedup();
+    assert_eq!(paths.len(), 3, "every clip has its own file");
+    let leftovers: Vec<_> = std::fs::read_dir(work.path())
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.contains(".part.") || n.ends_with(".stats.txt"))
+        .collect();
+    assert!(leftovers.is_empty(), "temporary files left behind: {leftovers:?}");
+}
+
+/// Audio whose stream starts 0.5 s after the video: silence before it, the
+/// right tone after it, and the A/V length still exact.
+#[test]
+fn late_audio_stays_in_sync() {
+    let Some((tools, truth)) = setup() else { return };
+    let work = tempfile::tempdir().unwrap();
+    let file = "late_audio_h264.mkv";
+    let variant = truth.variant(file).expect("late_audio variant; run `cargo xtask fixtures`");
+    assert!((variant.audio_start_sec - 0.5).abs() < 1e-9);
+    let fx = load(&tools, file, work.path());
+    let src = fixtures_dir().join(file);
+    let first = truth.shots().next().unwrap();
+    let tone = first.tone_hz.unwrap() as f64;
+    for p in [preset("prores-hq"), software_h264()] {
+        // [6, 30) = 0.25..1.25 s: a quarter second of nothing, then the first shot's tone.
+        let range = FrameRange::new(6, 30);
+        let job = ClipJob {
+            src: Source { path: &src, info: &fx.info, index: &fx.index },
+            range,
+            audio_ordinal: None,
+            preset: &p,
+            out_stem: work.path().join(format!("late_{}", p.id)),
+            title: None,
+        };
+        let out = export_clip(&tools, &job, &CancelToken::new(), |_| {}).unwrap();
+        assert!(out.verified);
+        let pcm = audio_pcm(&tools, Path::new(&out.path));
+        let expect = ((fx.index.t(range.end) - fx.index.t(range.start)) * 48_000.0).round() as usize;
+        // AAC adds its own priming; only the PCM export must match to the sample.
+        if p.id == "prores-hq" {
+            assert_eq!(pcm.len(), expect, "{}: audio length", p.id);
+        } else {
+            assert!(pcm.len().abs_diff(expect) < 2048, "{}: audio length {} vs {expect}", p.id, pcm.len());
+        }
+        let peak = |a: &[i16]| a.iter().map(|v| v.unsigned_abs()).max().unwrap_or(0);
+        // 0.00-0.22 s: silence (well before the 0.25 s onset, past AAC ramps).
+        assert!(peak(&pcm[480..10_560]) < 300, "{}: sound before the audio stream starts", p.id);
+        // 0.30-0.50 s: the first shot's tone, in place.
+        let hz = tone_hz(&pcm[14_400..24_000]);
+        assert!((hz - tone).abs() / tone < 0.05, "{}: tone {hz:.0} Hz, want {tone}", p.id);
+        let onset = pcm.iter().position(|v| v.unsigned_abs() > 2000).unwrap() as f64 / 48_000.0;
+        assert!((onset - 0.25).abs() < 0.012, "{}: tone starts at {onset:.4} s, want 0.25 s", p.id);
+    }
+}
+
+/// Phone editors get stereo: a 5.1 source is mixed down, the length stays exact.
+#[test]
+fn mobile_preset_mixes_surround_to_stereo() {
+    let Some((tools, _)) = setup() else { return };
+    let work = tempfile::tempdir().unwrap();
+    let src = work.path().join("surround.mkv");
+    let status = tools
+        .ffmpeg()
+        .args(["-v", "error", "-f", "lavfi", "-i", "testsrc2=s=320x180:r=24:d=2", "-f", "lavfi"])
+        .args([
+            "-i",
+            "sine=f=440:r=48000:d=2",
+            "-filter_complex",
+            "[1:a]pan=5.1|FL=c0|FR=c0|FC=c0|LFE=c0|BL=c0|BR=c0[a]",
+        ])
+        .args(["-map", "0:v", "-map", "[a]", "-c:v", "libx264", "-c:a", "flac"])
+        .arg(&src)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let info = probe(&tools, &src).unwrap();
+    assert_eq!(info.audio[0].channels, 6);
+    let index = build_frame_index(&tools, &src, &info, work.path(), &CancelToken::new(), |_| {}).unwrap();
+    for (id, channels) in [("h264-mobile", 2), ("prores-hq", 6)] {
+        let mut p = preset(id);
+        if let VideoCodec::H264 { quality, gop, .. } = p.video {
+            p.video = VideoCodec::H264 { quality, gop, encoder: EncoderPref::Software };
+        }
+        let job = ClipJob {
+            src: Source { path: &src, info: &info, index: &index },
+            range: FrameRange::new(0, 24),
+            audio_ordinal: None,
+            preset: &p,
+            out_stem: work.path().join(format!("surround_{id}")),
+            title: None,
+        };
+        let out = export_clip(&tools, &job, &CancelToken::new(), |_| {}).unwrap();
+        assert!(out.verified);
+        let out_info = probe(&tools, Path::new(&out.path)).unwrap();
+        assert_eq!(out_info.audio[0].channels, channels, "{id}");
+    }
+}
+
+/// Interlaced sources come out as whole, combing-free frames — one per source
+/// frame, flagged or not — and still on the exact frames asked for.
+#[test]
+fn interlaced_sources_are_deinterlaced() {
+    let Some((tools, _)) = setup() else { return };
+    let work = tempfile::tempdir().unwrap();
+    // idet's verdict over a whole file: (interlaced frames, progressive frames).
+    let fields = |file: &Path| -> (u64, u64) {
+        let out = tools
+            .ffmpeg()
+            .args(["-v", "info", "-nostats", "-i"])
+            .arg(file)
+            .args(["-map", "0:v:0", "-vf", "idet", "-f", "null", "-"])
+            .output()
+            .unwrap();
+        let log = String::from_utf8_lossy(&out.stderr);
+        let line = log.lines().rev().find(|l| l.contains("Multi frame detection")).expect("idet summary").to_string();
+        let count = |key: &str| -> u64 {
+            line.split(key).nth(1).and_then(|r| r.split_whitespace().next()).unwrap().parse().unwrap()
+        };
+        (count("TFF:") + count("BFF:"), count("Progressive:"))
+    };
+    for file in ["interlaced_h264.ts", "interlaced_xvid.avi"] {
+        let fx = load(&tools, file, work.path());
+        assert!(fx.info.is_interlaced(), "{file}: detected as interlaced");
+        let (combed, _) = fields(&fixtures_dir().join(file));
+        assert!(combed > 400, "{file}: the source itself is interlaced ({combed} combed frames)");
+        let range = FrameRange::new(100, 340);
+        let out = check(&tools, &fx, range, &software_h264(), work.path());
+        let (combed, progressive) = fields(&out);
+        assert!(combed * 20 < progressive, "{file}: export still combed ({combed} vs {progressive} progressive)");
     }
 }

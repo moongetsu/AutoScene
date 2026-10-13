@@ -108,7 +108,14 @@ fn update_err(e: impl std::fmt::Display) -> AppError {
 }
 
 fn updater_for(app: &AppHandle, cfg: &LocalConfig) -> AppResult<tauri_plugin_updater::Updater> {
-    let mut builder = app.updater_builder();
+    // On Windows the installer starts and the plugin calls `exit(0)` without
+    // a RunEvent::Exit: stop our jobs first (this replaces the plugin's
+    // default hook, so run its cleanup too).
+    let handle = app.clone();
+    let mut builder = app.updater_builder().on_before_exit(move || {
+        crate::state::shutdown_work(&handle);
+        handle.cleanup_before_exit();
+    });
     if let Some(endpoint) = &cfg.endpoint {
         let url = endpoint.parse().map_err(|e| update_err(format!("Bad endpoint in updates.json: {e}")))?;
         builder = builder.endpoints(vec![url]).map_err(update_err)?;
@@ -196,6 +203,9 @@ pub async fn update_install(app: AppHandle) -> AppResult<()> {
 
 /// Restart into the freshly installed build. A no-op under the simulate
 /// override, where nothing was installed. Returns whether a restart happened.
+///
+/// `request_restart` goes through RunEvent::Exit, where background jobs are
+/// shut down; `restart()` on the main thread would skip it.
 #[tauri::command]
 #[specta::specta]
 pub fn update_relaunch(app: AppHandle) -> bool {
@@ -203,7 +213,8 @@ pub fn update_relaunch(app: AppHandle) -> bool {
         log::info!("Simulated update: skipping relaunch");
         return false;
     }
-    app.restart();
+    app.request_restart();
+    true
 }
 
 fn emit_progress(app: &AppHandle, downloaded: u64, total: Option<u64>) {

@@ -12,18 +12,17 @@ import { qk, queryClient } from "./queries"
  * |------------------|----------------------------------------------------|
  * | job:changed      | activity store; toast when an export finishes      |
  * | job:progress     | activity store (progress only)                     |
- * | library:changed  | projects, project(id)                              |
+ * | library:changed  | projects, project(id), exportDir                   |
  * | media:changed    | media(pid), frameMap(pid, mid), project(pid)       |
  * | export:changed   | exports(pid)                                       |
  */
 export function startEventBridge(): () => void {
   const unlisten: Promise<() => void>[] = []
 
-  void commands.jobsList().then((jobs) => useActivity.getState().replaceAll(jobs))
-
   unlisten.push(
     events.jobChanged.listen(({ payload }) => {
       const prev = useActivity.getState().jobs[payload.id]
+      if (prev && prev.rev > payload.rev) return
       useActivity.getState().upsert(payload)
       if (prev?.state !== payload.state) notifyFinished(payload)
     }),
@@ -31,6 +30,8 @@ export function startEventBridge(): () => void {
     events.libraryChanged.listen(({ payload }) => {
       void queryClient.invalidateQueries({ queryKey: qk.projects })
       if (payload.projectId) void queryClient.invalidateQueries({ queryKey: qk.project(payload.projectId) })
+      // A rename moves the project's default export folder.
+      void queryClient.invalidateQueries({ queryKey: ["exportDir"] })
     }),
     events.mediaChanged.listen(({ payload }) => {
       void queryClient.invalidateQueries({ queryKey: qk.media(payload.projectId) })
@@ -44,6 +45,10 @@ export function startEventBridge(): () => void {
       void queryClient.invalidateQueries({ queryKey: qk.exports(payload.projectId) })
     }),
   )
+  // Snapshot only once the listeners are live, so nothing falls between the two.
+  void Promise.all(unlisten)
+    .then(() => commands.jobsList())
+    .then((jobs) => useActivity.getState().replaceAll(jobs))
 
   return () => unlisten.forEach((p) => void p.then((un) => un()))
 }

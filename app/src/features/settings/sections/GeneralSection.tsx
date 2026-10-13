@@ -4,7 +4,7 @@ import type { AppSettings } from "@/bindings"
 import { Button } from "@/components/ui/button"
 import { Select } from "@/components/ui/select"
 import { commands, errorMessage } from "@/lib/ipc"
-import { pickFolder } from "@/lib/media"
+import { PREFERRED_AUDIO_LANGUAGES, pickFolder } from "@/lib/media"
 import { qk, queryClient, useAppInfo, usePresets, useSettings } from "@/lib/queries"
 import { PathText, SettingRow, SettingsGroup } from "../primitives"
 
@@ -59,6 +59,22 @@ export function GeneralSection() {
           <Button size="sm" variant="ghost" disabled={!info} onClick={() => info && reveal(info.dataDir)}>
             <FolderOpen /> Reveal
           </Button>
+        </SettingRow>
+      </SettingsGroup>
+
+      <SettingsGroup title="Audio" description="Many files carry several soundtracks, and dubs are often marked as the default.">
+        <SettingRow
+          label="Preferred language"
+          description="Chosen automatically when an episode is added. You can switch the track per episode at any time."
+        >
+          <Select
+            aria-label="Preferred audio language"
+            className="w-[260px]"
+            value={settings && (settings.audioLanguage || "default")}
+            disabled={!settings}
+            onChange={(lang) => settings && void save({ ...settings, audioLanguage: lang === "default" ? "" : lang })}
+            options={PREFERRED_AUDIO_LANGUAGES.map((l) => ({ ...l, value: l.value || "default" }))}
+          />
         </SettingRow>
       </SettingsGroup>
 

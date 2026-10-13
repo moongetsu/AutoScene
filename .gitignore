@@ -30,3 +30,6 @@ app/node_modules/
 app/dist/
 app/src-tauri/gen/schemas/
 fixtures/out/
+# `cargo xtask fetch-sidecars`
+app/src-tauri/ffmpeg/
+app/src-tauri/ffmpeg.download/

@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use as_core::{CancelToken, FrameIdx};
+use as_core::{CancelToken, FrameIdx, FrameRange};
 
 use crate::filters::display_chain;
 use crate::{MediaResult, Source, Tools, run_ffmpeg};
@@ -18,10 +18,8 @@ pub fn extract_frame_jpeg(tools: &Tools, src: Source, f: FrameIdx, height: u32, 
         std::fs::create_dir_all(dir)?;
     }
     let seek = (index.t(f) - index.t0() - PREROLL).max(0.0);
-    let mut chain = vec![
-        format!("trim=start={:.9}:end={:.9}", index.cut_before(f), index.cut_after(f + 1)),
-        "setpts=PTS-STARTPTS".into(),
-    ];
+    let (trim_start, trim_end) = index.trim_us(FrameRange::new(f, f + 1));
+    let mut chain = vec![format!("trim=start={trim_start}us:end={trim_end}us"), "setpts=PTS-STARTPTS".into()];
     chain.extend(display_chain(info, Some(height), true));
     let args: Vec<String> = [
         "-v",

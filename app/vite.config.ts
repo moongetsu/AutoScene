@@ -27,7 +27,8 @@ export default defineConfig(({ command }) => ({
     target: "es2023",
     outDir: "dist",
     emptyOutDir: true,
-    sourcemap: true,
+    // Maps only in development: a shipped app doesn't need its sources inside.
+    sourcemap: command === "serve",
   },
   test: {
     environment: "jsdom",

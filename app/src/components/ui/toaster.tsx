@@ -4,8 +4,8 @@ export function Toaster() {
   return (
     <Sonner
       theme="dark"
-      position="bottom-right"
-      offset={16}
+      position="top-right"
+      offset={{ top: 52, right: 16 }}
       gap={8}
       toastOptions={{
         unstyled: true,
@@ -18,7 +18,7 @@ export function Toaster() {
           actionButton: "ml-auto shrink-0 self-center whitespace-nowrap rounded-sm bg-accent px-2 py-1 text-xs font-medium text-on-accent",
           cancelButton: "ml-auto shrink-0 self-center whitespace-nowrap rounded-sm bg-active px-2 py-1 text-xs text-fg-2",
           error: "[&>[data-icon]]:text-danger",
-          success: "[&>[data-icon]]:text-accent",
+          success: "[&>[data-icon]]:text-fg-1",
         },
       }}
     />

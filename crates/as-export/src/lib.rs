@@ -12,11 +12,11 @@ pub type ExportResult<T> = Result<T, ExportError>;
 
 #[derive(Debug, Error)]
 pub enum ExportError {
-    #[error("this ffmpeg build has no {0} encoder")]
+    #[error("This export format isn't available on this computer.")]
     EncoderMissing(String),
-    #[error("invalid range: {0}")]
+    #[error("Those frames are outside the video.")]
     BadRange(String),
-    #[error("invalid preset: {0}")]
+    #[error("This export preset can't be used: {0}.")]
     BadPreset(String),
     #[error(transparent)]
     Media(#[from] as_media::MediaError),

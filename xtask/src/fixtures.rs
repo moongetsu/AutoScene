@@ -1,7 +1,10 @@
 //! Synthetic test media with ground truth.
 //!
 //! 1. Each timeline element (shot, transition, black gap) is rendered to an
-//!    exact-length lossless FFV1/PCM file stamped with its element id.
+//!    exact-length lossless FFV1/PCM file stamped with its element id. Like a
+//!    real edit, a shot's source keeps running through the transitions on
+//!    either side: the outgoing shot continues under a dissolve and the
+//!    incoming shot starts at the transition, so no source restarts mid-cut.
 //! 2. Elements are concatenated losslessly and every frame is stamped with
 //!    its master frame index → `master.mkv` (24 fps, 640×360).
 //! 3. Variants exercise real-world timing problems: 23.976, B-pyramid H.264,
@@ -58,7 +61,7 @@ fn timeline() -> Vec<Spec> {
         shot("testsrc2", src("testsrc2"), "", 48, 220),
         shot("smpte bars", src("smptehdbars"), "", 36, 330),
         shot("mandelbrot", src("mandelbrot"), "", 60, 440),
-        Trans { kind: "dissolve", frames: 12 },
+        Trans { kind: "fade", frames: 12 },
         shot("cellauto", format!("{}:rule=30:random_fill_ratio=0.5", src("cellauto")), "", 48, 550),
         Trans { kind: "fadeblack", frames: 16 },
         shot("life", format!("{}:mold=10:ratio=0.2:life_color=#e8c070:death_color=#203050", src("life")), "", 48, 660),
@@ -136,6 +139,15 @@ fn shot_src(s: &Spec) -> (String, &'static str) {
     }
 }
 
+/// Source frames a shot skips at its start: the incoming half of the
+/// transition before it already showed them.
+fn head(tl: &[Spec], idx: usize) -> u32 {
+    match idx.checked_sub(1).map(|i| &tl[i]) {
+        Some(Spec::Trans { frames, .. }) => *frames,
+        _ => 0,
+    }
+}
+
 fn render_element(ff: &str, dir: &Path, idx: usize, tl: &[Spec]) -> Result<PathBuf> {
     let spec = &tl[idx];
     let id = (idx + 1) as u8;
@@ -153,7 +165,14 @@ fn render_element(ff: &str, dir: &Path, idx: usize, tl: &[Spec]) -> Result<PathB
                 .iter()
                 .map(|f| format!("drawbox=x=0:y=0:w=iw:h=ih:color=white:t=fill:enable='eq(n,{f})',"))
                 .collect::<String>();
-            (format!("[0:v]{extra}{flash}format=yuv420p,{stamp}[v]"), Some(*tone))
+            let h = head(tl, idx);
+            (
+                format!(
+                    "[0:v]{extra}trim=start_frame={h}:end_frame={},setpts=PTS-STARTPTS,{flash}format=yuv420p,{stamp}[v]",
+                    h + n
+                ),
+                Some(*tone),
+            )
         }
         Spec::Black { .. } => {
             cmd.args(["-f", "lavfi", "-i", &format!("color=c=black:s={W}x{H}:r={FPS}")]);
@@ -164,11 +183,14 @@ fn render_element(ff: &str, dir: &Path, idx: usize, tl: &[Spec]) -> Result<PathB
             let (b, eb) = shot_src(&tl[idx + 1]);
             cmd.args(["-f", "lavfi", "-i", &a, "-f", "lavfi", "-i", &b]);
             let d = *frames as f64 / FPS as f64;
+            // The outgoing shot continues where it left off.
+            let a0 = head(tl, idx - 1) + frames_of(&tl[idx - 1]);
             (
                 format!(
-                    "[0:v]{ea}trim=end_frame={frames},setpts=PTS-STARTPTS,format=yuv420p[a];\
+                    "[0:v]{ea}trim=start_frame={a0}:end_frame={},setpts=PTS-STARTPTS,format=yuv420p[a];\
                      [1:v]{eb}trim=end_frame={frames},setpts=PTS-STARTPTS,format=yuv420p[b];\
-                     [a][b]xfade=transition={kind}:duration={d}:offset=0,{stamp}[v]"
+                     [a][b]xfade=transition={kind}:duration={d}:offset=0,format=yuv420p,{stamp}[v]",
+                    a0 + frames
                 ),
                 None,
             )
@@ -192,6 +214,27 @@ fn render_element(ff: &str, dir: &Path, idx: usize, tl: &[Spec]) -> Result<PathB
     ]);
     cmd.arg(&out);
     run(&mut cmd).with_context(|| format!("element {idx}"))?;
+    // The concat demuxer reads every part with the first part's parameters, so
+    // one element in another pixel format (FFmpeg 9's xfade negotiates 4:4:4)
+    // would turn into colour noise in the master.
+    let probe = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=pix_fmt,width,height",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(&out)
+        .output()
+        .context("running ffprobe")?;
+    let got = String::from_utf8_lossy(&probe.stdout).trim().trim_end_matches(',').to_string();
+    if got != format!("{W},{H},yuv420p") {
+        bail!("element {idx} rendered as {got}, expected {W}x{H} yuv420p");
+    }
     Ok(out)
 }
 
@@ -277,6 +320,8 @@ pub fn generate(out_dir: &Path, ff: &str) -> Result<()> {
             start_sec: start,
             frame_times_sec: None,
             audio_tracks: tracks,
+            audio_start_sec: 0.0,
+            interlaced: false,
         })
     };
     let ffv = |extra: &[&str], file: &str| -> Result<()> {
@@ -324,8 +369,9 @@ pub fn generate(out_dir: &Path, ff: &str) -> Result<()> {
                 "libx265",
                 "-preset",
                 "fast",
+                // High quality: the barcode strip must survive noisy dissolves.
                 "-crf",
-                "18",
+                "8",
                 "-pix_fmt",
                 "yuv420p10le",
                 "-x265-params",
@@ -373,6 +419,8 @@ pub fn generate(out_dir: &Path, ff: &str) -> Result<()> {
         start_sec: 0.0,
         frame_times_sec: Some((0..total).map(|n| ticks(n) as f64 / 120.0).collect()),
         audio_tracks: 0,
+        audio_start_sec: 0.0,
+        interlaced: false,
     });
 
     ffv(
@@ -396,6 +444,64 @@ pub fn generate(out_dir: &Path, ff: &str) -> Result<()> {
     )?;
     base(&mut variants, "two_audio_h264.mkv", "H.264 with two audio tracks (eng, jpn)", "h264", "24/1", 0.0, 2);
 
+    // Audio that starts after the video (common in TS/MKV rips): the stream's
+    // first sample is at 0.5 s and carries the master's sound from 0.5 s on,
+    // so it is in sync; exports must put silence before it, not pull it forward.
+    println!("  late_audio_h264.mkv");
+    run(Command::new(ff)
+        .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+        .arg(&master)
+        // atrim keeps absolute timestamps, so the stream simply begins at 0.5 s.
+        .args(["-filter_complex", "[0:a]atrim=start=0.5[a]", "-map", "0:v", "-map", "[a]"])
+        .args(h264)
+        .args(["-c:a", "flac"])
+        .arg(out_dir.join("late_audio_h264.mkv")))?;
+    base(
+        &mut variants,
+        "late_audio_h264.mkv",
+        "H.264 whose audio starts 0.5 s after the video",
+        "h264",
+        "24/1",
+        0.0,
+        1,
+    );
+    if let Some(v) = variants.last_mut() {
+        v.audio_start_sec = 0.5;
+    }
+
+    // Interlaced: the picture pans 6 px per field (the master at 48p, top
+    // field from even frames, bottom from odd), so the two fields of a frame
+    // show different moments, as in a camera recording. The barcode strip
+    // stays put in both fields, so it reads cleanly with or without
+    // deinterlacing, and the frame grid stays the master's.
+    let interlace = "[0:v]fps=48,format=yuv444p,split=2[a][s];\
+                     [a]pad=iw+128:ih:64:0,crop=640:360:x='32+abs(mod(n*6\\,128)-64)':y=0[pan];\
+                     [s]crop=400:40:0:0[strip];\
+                     [pan][strip]overlay=0:0,format=yuv420p,tinterlace=mode=interleave_top,setfield=tff[v]";
+    let fields = ["-filter_complex", interlace, "-map", "[v]", "-map", "0:a"];
+    // Broadcast style: field-coded H.264 that says it is top field first.
+    ffv(
+        &[&fields[..], &h264[..], &["-flags", "+ildct+ilme", "-x264-params", "tff=1"], &aac[..], &["-f", "mpegts"]]
+            .concat(),
+        "interlaced_h264.ts",
+    )?;
+    base(&mut variants, "interlaced_h264.ts", "Interlaced H.264 (TFF) in MPEG-TS", "h264", "24/1", 0.0, 1);
+    // Old capture/rip style: MPEG-4 Part 2 in AVI with no field order at all,
+    // so only content analysis can tell.
+    ffv(&[&fields[..], &["-c:v", "mpeg4", "-q:v", "2", "-c:a", "pcm_s16le"]].concat(), "interlaced_xvid.avi")?;
+    base(
+        &mut variants,
+        "interlaced_xvid.avi",
+        "Interlaced MPEG-4 in AVI, field order unflagged",
+        "mpeg4",
+        "24/1",
+        0.0,
+        1,
+    );
+    for v in variants.iter_mut().rev().take(2) {
+        v.interlaced = true;
+    }
+
     ffv(&["-c:v", "prores_ks", "-profile:v", "3", "-c:a", "pcm_s24le"], "prores.mov")?;
     base(&mut variants, "prores.mov", "ProRes 422 HQ intra", "prores", "24/1", 0.0, 1);
 
@@ -408,6 +514,24 @@ pub fn generate(out_dir: &Path, ff: &str) -> Result<()> {
             bail!("{}: expected first frame at {} s, got {measured}", v.file, v.start_sec);
         }
         v.start_sec = measured;
+    }
+
+    // Posters for the browser mock (`app/src/mocks/backend.ts`), one per show.
+    let posters = out_dir.join("posters");
+    fs::create_dir_all(&posters)?;
+    for (name, frame) in [
+        ("dark-01", 100),
+        ("dark-02", 240),
+        ("frieren-01", 180),
+        ("frieren-02", 370),
+        ("frieren-03", 440),
+        ("br2049", 520),
+    ] {
+        run(Command::new(ff)
+            .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+            .arg(&master)
+            .args(["-vf", &format!("select='eq(n,{frame})'"), "-frames:v", "1", "-q:v", "3"])
+            .arg(posters.join(format!("{name}.jpg"))))?;
     }
 
     // 4. Truth.

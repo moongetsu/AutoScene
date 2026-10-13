@@ -46,13 +46,13 @@ const appInfo: AppInfo = {
   libraryRoot: ROOT,
 }
 
-let settings: AppSettings = { libraryRoot: ROOT, exportPresetId: "prores-hq" }
+let settings: AppSettings = { libraryRoot: ROOT, exportPresetId: "prores-hq", audioLanguage: "eng" }
 
 const presets: ExportPreset[] = [
   preset("prores-hq", "ProRes 422 HQ", "Edit-grade intra codec for After Effects, Premiere, Final Cut and Resolve. Large files.", "mov"),
   preset("dnxhr-hq", "DNxHR HQ", "Edit-grade intra codec, popular with Premiere and Resolve on Windows.", "mov"),
   preset("h264-edit", "H.264 · Editing", "Visually lossless H.264 with a short GOP for smooth scrubbing. Works everywhere.", "mp4"),
-  preset("h264-mobile", "H.264 · Mobile (CapCut, Alight Motion)", "1080p H.264 that imports cleanly into phone editors.", "mp4"),
+  preset("h264-mobile", "H.264 · Mobile (CapCut, Alight Motion)", "1080p H.264 with stereo sound that imports cleanly into phone editors.", "mp4"),
   preset("h264-intra", "H.264 · All-Intra (Twixtor)", "Every frame a keyframe — ideal for Twixtor and frame-by-frame work.", "mp4"),
   preset("hevc10", "HEVC 10-bit (keeps HDR)", "Smaller files that preserve 10-bit colour and HDR.", "mp4"),
 ]
@@ -67,6 +67,7 @@ function preset(id: string, name: string, description: string, container: "mov" 
     audio: container === "mov" ? { codec: "pcm24" } : { codec: "aac", kbps: 320 },
     maxHeight: null,
     hdr: "auto",
+    stereo: id === "h264-mobile",
     builtin: true,
   }
 }
@@ -102,12 +103,14 @@ function info(codec: string, width: number, height: number, audio: [string | nul
       index: i + 1,
       ordinal: i,
       codec: "aac",
+      profile: null,
       channels,
       channelLayout: null,
       sampleRate: 48000,
       language,
       title: null,
       default: i === 0,
+      commentary: false,
     })),
     subtitles: [],
   }
@@ -232,6 +235,8 @@ const summary = ({ media: _m, exports: _e, ...s }: MockProject): ProjectSummary 
 // -- jobs ---------------------------------------------------------------------
 
 const jobs: JobInfo[] = []
+/** Mirrors the backend's job revisions (every change gets a higher one). */
+let rev = 0
 
 function startJob(
   kind: JobKind,
@@ -256,6 +261,7 @@ function startJob(
     error: null,
     createdAt: Date.now(),
     finishedAt: null,
+    rev: ++rev,
   }
   jobs.unshift(job)
   void emit("job:changed", { ...job })
@@ -265,12 +271,14 @@ function startJob(
     const f = Math.min(1, (Date.now() - t0) / ms)
     job.progress = f
     job.etaMs = Math.max(0, ms - (Date.now() - t0))
-    void emit("job:progress", { id: job.id, progress: f, stage: job.stage, etaMs: job.etaMs })
+    job.rev = ++rev
+    void emit("job:progress", { id: job.id, rev: job.rev, progress: f, stage: job.stage, etaMs: job.etaMs })
     if (f >= 1) {
       window.clearInterval(timer)
       job.state = "done"
       job.finishedAt = Date.now()
       job.etaMs = null
+      job.rev = ++rev
       done()
       void emit("job:changed", { ...job })
     }
@@ -434,6 +442,7 @@ const handlers: Record<string, Handler> = {
     const j = jobs.find((x) => x.id === jobId)
     if (j && j.state === "running") {
       j.state = "cancelled"
+      j.rev = ++rev
       j.finishedAt = Date.now()
       void emit("job:changed", { ...j })
     }

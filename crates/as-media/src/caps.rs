@@ -83,10 +83,7 @@ const DECODERS: &[(&str, &str, &str)] = if cfg!(target_os = "macos") {
 impl Caps {
     pub fn detect(tools: &Tools) -> Self {
         let listed = |flag: &str| -> String {
-            tools
-                .ffmpeg()
-                .arg(flag)
-                .output()
+            crate::proc::output(tools.ffmpeg().arg(flag))
                 .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
                 .unwrap_or_default()
         };
@@ -128,20 +125,22 @@ impl Caps {
 }
 
 fn smoke_encode(tools: &Tools, encoder: &str) -> bool {
-    tools
-        .ffmpeg()
-        .args(["-v", "error", "-f", "lavfi", "-i", "color=c=gray:s=320x240:r=24", "-frames:v", "3"])
-        .args(["-pix_fmt", if encoder.contains("videotoolbox") { "nv12" } else { "yuv420p" }])
-        .args(["-c:v", encoder, "-f", "null", "-"])
-        .output()
-        .is_ok_and(|o| o.status.success())
+    crate::proc::output(
+        tools
+            .ffmpeg()
+            .args(["-v", "error", "-f", "lavfi", "-i", "color=c=gray:s=320x240:r=24", "-frames:v", "3"])
+            .args(["-pix_fmt", if encoder.contains("videotoolbox") { "nv12" } else { "yuv420p" }])
+            .args(["-c:v", encoder, "-f", "null", "-"]),
+    )
+    .is_ok_and(|o| o.status.success())
 }
 
 fn smoke_device(tools: &Tools, device: &str) -> bool {
-    tools
-        .ffmpeg()
-        .args(["-v", "error", "-init_hw_device", &format!("{device}=hw"), "-f", "lavfi", "-i", "nullsrc=s=64x64"])
-        .args(["-frames:v", "1", "-f", "null", "-"])
-        .output()
-        .is_ok_and(|o| o.status.success())
+    crate::proc::output(
+        tools
+            .ffmpeg()
+            .args(["-v", "error", "-init_hw_device", &format!("{device}=hw"), "-f", "lavfi", "-i", "nullsrc=s=64x64"])
+            .args(["-frames:v", "1", "-f", "null", "-"]),
+    )
+    .is_ok_and(|o| o.status.success())
 }

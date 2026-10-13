@@ -17,7 +17,7 @@ import { Page, PageHeader } from "@/components/ui/page"
 import { Select } from "@/components/ui/select"
 import { formatBytes, formatDuration } from "@/lib/format"
 import { commands, errorMessage } from "@/lib/ipc"
-import { assetUrl, audioLabel, codecLabel, fileStem, formatFlags, pickFolder, pickVideoFiles } from "@/lib/media"
+import { assetUrl, audioLabel, audioOption, codecLabel, currentAudio, formatFlags, pickFolder, pickVideoFiles, releaseTitle } from "@/lib/media"
 import { useMediaList, useProject } from "@/lib/queries"
 import { formatFps } from "@/lib/timecode"
 import { cn } from "@/lib/utils"
@@ -52,7 +52,7 @@ export function EpisodesPage() {
           project && (
             <>
               {isMovie ? "Movie" : "Series"} · {CONTENT[project.content]} · {media?.length ?? 0}{" "}
-              {isMovie ? "files" : "episodes"}
+              {isMovie ? (media?.length === 1 ? "file" : "files") : media?.length === 1 ? "episode" : "episodes"}
               {total > 0 && <> · {formatDuration(total)}</>}
             </>
           )
@@ -77,17 +77,18 @@ export function EpisodesPage() {
             className="rounded-xl border border-hairline bg-panel"
           />
         ) : (
-          <div className="overflow-hidden rounded-lg border border-hairline bg-panel shadow-1">
+          // Columns fold away as the window narrows; the name and the row menu always stay.
+          <div className="@container overflow-hidden rounded-lg border border-hairline bg-panel shadow-1">
             <table className="w-full table-fixed text-sm">
               <thead>
                 <tr className="border-b border-hairline text-left">
-                  <th className="eyebrow w-[140px] py-2.5 pl-4 font-medium">{isMovie ? "File" : "Episode"}</th>
+                  <th className="eyebrow w-[160px] py-2.5 pl-4 font-medium">{isMovie ? "File" : "Episode"}</th>
                   <th className="eyebrow py-2.5 font-medium">Name</th>
-                  <th className="eyebrow w-[92px] py-2.5 font-medium">Length</th>
-                  <th className="eyebrow w-[230px] py-2.5 font-medium">Format</th>
-                  <th className="eyebrow w-[190px] py-2.5 font-medium">Audio</th>
-                  <th className="eyebrow w-[170px] py-2.5 font-medium">Status</th>
-                  <th className="w-12" />
+                  <th className="eyebrow hidden w-[84px] py-2.5 font-medium @4xl:table-cell">Length</th>
+                  <th className="eyebrow hidden w-[220px] py-2.5 font-medium @5xl:table-cell">Format</th>
+                  <th className="eyebrow w-[176px] py-2.5 font-medium">Audio</th>
+                  <th className="eyebrow w-[150px] py-2.5 font-medium">Status</th>
+                  <th className="w-11" />
                 </tr>
               </thead>
               <tbody>
@@ -121,25 +122,28 @@ function EpisodeRow({ media: m, projectId, onOpen }: { media: MediaItem; project
   const v = m.info?.video
   const ready = m.status === "ready"
   const audio = m.info?.audio ?? []
-  const defaultOrdinal = audio.find((a) => a.default)?.ordinal ?? audio[0]?.ordinal
 
   const setAudio = (value: string) => {
-    const ordinal = Number(value)
     commands
-      .mediaSetAudio(projectId, m.id, ordinal === defaultOrdinal ? null : ordinal)
+      .mediaSetAudio(projectId, m.id, Number(value))
       .catch((e) => toast.error("Couldn't change the audio track", { description: errorMessage(e) }))
   }
 
   return (
     <tr
       onClick={ready ? onOpen : undefined}
+      tabIndex={ready ? 0 : undefined}
+      aria-label={ready ? `Open ${m.label ? `${m.label} ` : ""}${releaseTitle(m.fileName)}` : undefined}
+      onKeyDown={(e) => {
+        if (ready && e.key === "Enter" && e.target === e.currentTarget) onOpen()
+      }}
       className={cn(
-        "group border-b border-hairline transition-colors last:border-0",
+        "group border-b border-hairline transition-colors last:border-0 focus-visible:bg-hover focus-visible:outline-none",
         ready ? "cursor-pointer hover:bg-hover" : "",
       )}
     >
-      <td className="py-2 pl-4">
-        <div className="flex items-center gap-3">
+      <td className="py-2 pr-3 pl-4">
+        <div className="flex min-w-0 items-center gap-3">
           <div className="relative aspect-video w-[72px] shrink-0 overflow-hidden rounded-xs bg-inset">
             {m.poster && !posterFailed && (
               <img
@@ -151,22 +155,29 @@ function EpisodeRow({ media: m, projectId, onOpen }: { media: MediaItem; project
               />
             )}
             {ready && (
-              <span className="absolute inset-0 flex items-center justify-center bg-black/45 opacity-0 transition-opacity group-hover:opacity-100">
-                <Play className="size-4 fill-white text-white" />
+              <span className="absolute inset-0 flex items-center justify-center bg-scrim-media opacity-0 transition-opacity group-hover:opacity-100">
+                <Play className="size-4 fill-on-media text-on-media" />
               </span>
             )}
           </div>
-          <span className={cn("timecode text-xs", m.label ? "text-fg-1" : "text-fg-3")}>{m.label || "—"}</span>
+          <span className={cn("timecode truncate text-xs", m.label ? "text-fg-1" : "text-fg-3")} title={m.label || undefined}>
+            {m.label || "—"}
+          </span>
         </div>
       </td>
       <td className="max-w-0 py-2 pr-4">
         <div className="truncate text-fg-1" title={m.fileName}>
-          {fileStem(m.fileName)}
+          {releaseTitle(m.fileName)}
         </div>
-        <div className="timecode truncate text-2xs text-fg-3">{formatBytes(m.sizeBytes ?? 0)}</div>
+        <div className="timecode truncate text-2xs text-fg-3" title={m.fileName}>
+          {formatBytes(m.sizeBytes ?? 0)}
+          {m.durationSec ? <span className="@4xl:hidden"> · {formatDuration(m.durationSec)}</span> : null}
+        </div>
       </td>
-      <td className="timecode py-2 text-xs text-fg-2">{m.durationSec ? formatDuration(m.durationSec) : "–"}</td>
-      <td className="py-2">
+      <td className="timecode hidden py-2 text-xs text-fg-2 @4xl:table-cell">
+        {m.durationSec ? formatDuration(m.durationSec) : "–"}
+      </td>
+      <td className="hidden py-2 @5xl:table-cell">
         {v ? (
           <div className="flex flex-col gap-1">
             <span className="timecode text-xs text-fg-2">
@@ -190,9 +201,9 @@ function EpisodeRow({ media: m, projectId, onOpen }: { media: MediaItem; project
             size="sm"
             aria-label="Audio track"
             className="w-full"
-            value={String(m.audioOrdinal ?? defaultOrdinal)}
+            value={String(currentAudio(m))}
             onChange={setAudio}
-            options={audio.map((a) => ({ value: String(a.ordinal), label: audioLabel(a) }))}
+            options={audio.map(audioOption)}
           />
         ) : (
           <span className="block truncate text-xs text-fg-3">

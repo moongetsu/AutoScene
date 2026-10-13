@@ -50,7 +50,8 @@ impl Tools {
     }
 
     fn checked(ffmpeg: PathBuf, ffprobe: PathBuf) -> MediaResult<Self> {
-        let out = no_window(Command::new(&ffmpeg)).arg("-version").output().map_err(|_| MediaError::ToolsMissing)?;
+        let out = crate::proc::output(no_window(Command::new(&ffmpeg)).arg("-version"))
+            .map_err(|_| MediaError::ToolsMissing)?;
         let first = String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or_default().to_string();
         // "ffmpeg version 8.0.1-full_build-www.gyan.dev Copyright …" / "ffmpeg version n7.1 …"
         let version = first.split_whitespace().nth(2).unwrap_or("unknown").trim_start_matches('n').to_string();

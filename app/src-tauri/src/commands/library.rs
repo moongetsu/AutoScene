@@ -71,7 +71,7 @@ pub async fn project_delete(
     state.jobs.cancel_where(|j| j.project_id == Some(project_id));
     // Give cancelled ffmpeg runs a moment to release their files.
     let (lib, jobs) = (state.library.clone(), state.jobs.clone());
-    blocking(move || {
+    let result = blocking(move || {
         for _ in 0..50 {
             if !jobs.is_active(|j| j.project_id == Some(project_id)) {
                 break;
@@ -80,9 +80,10 @@ pub async fn project_delete(
         }
         Ok(lib.delete_project(project_id, delete_files)?)
     })
-    .await?;
+    .await;
+    // Even when removing the folder failed half-way, the list may have changed.
     let _ = LibraryChanged { project_id: None }.emit(&app);
-    Ok(())
+    result
 }
 
 /// Expand dropped/picked files and folders into videos with parsed episode

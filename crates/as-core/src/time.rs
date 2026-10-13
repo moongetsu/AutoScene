@@ -5,8 +5,9 @@
 //! container packets, which disagree around edit lists, open-GOP leading
 //! frames and corrupt frames). Shots, tracks, clips and overrides are all
 //! [`FrameRange`]s on that grid. Seconds appear only when talking to ffmpeg or
-//! the `<video>` element, and cut points sit at the **midpoint between two
-//! frames** so float rounding can never move a cut by one frame.
+//! the `<video>` element; cuts are handed to ffmpeg as frames' own
+//! timestamps rounded down to the microsecond ([`FrameIndex::trim_us`]),
+//! which land on the right frame in every time base.
 
 use serde::{Deserialize, Serialize};
 
@@ -192,6 +193,12 @@ impl FrameIndex {
         }
     }
 
+    /// The same timestamps under a different nominal rate (timecode display only).
+    pub fn with_nominal_fps(self, nominal_fps: Rational) -> Self {
+        let vfr = detect_vfr(&self.pts, self.tb, nominal_fps);
+        Self { nominal_fps, vfr, ..self }
+    }
+
     pub fn len(&self) -> u32 {
         match &self.pts {
             PtsStore::Cfr { n, .. } => *n,
@@ -243,18 +250,27 @@ impl FrameIndex {
         self.t(self.len()) - self.t0()
     }
 
-    /// Cut point *before* frame `f`: midway between `f-1` and `f`, or half a
-    /// frame before the first frame. Safe to feed to `trim=start=`.
-    pub fn cut_before(&self, f: FrameIdx) -> f64 {
-        if f == 0 { self.t(0) - 0.5 * self.frame_dur(0) } else { 0.5 * (self.t(f - 1) + self.t(f)) }
-    }
-
-    /// Cut point *after* the last frame of an exclusive-end range `[.., end)`:
-    /// midway between `end-1` and `end`, or half a frame past the final frame.
-    pub fn cut_after(&self, end: FrameIdx) -> f64 {
+    /// ffmpeg `trim` boundaries that keep exactly the frames of `range`, as
+    /// whole microseconds: `trim=start={start}us:end={end}us`.
+    ///
+    /// `trim` keeps frames whose timestamp is at or after `start` and before
+    /// `end`, comparing in whole ticks of the stream's time base after
+    /// converting through microseconds (rounded to nearest). So the
+    /// boundaries are the timestamps of frame `range.start` and of frame
+    /// `range.end` (the first one dropped, or the end of the final frame),
+    /// rounded *down* to the microsecond: that converts back to the frame's
+    /// own tick, or a hair below it, in every time base. Midpoints between
+    /// frames don't survive that conversion: when a frame lasts one tick (AVI
+    /// and other 1/fps time bases) a midpoint is half a tick, and the lost
+    /// sub-microsecond rounds it onto the previous frame.
+    pub fn trim_us(&self, range: FrameRange) -> (i64, i64) {
         let n = self.len();
-        assert!(end >= 1 && end <= n, "cut_after({end}) out of range (len {n})");
-        if end == n { self.t(n - 1) + 0.5 * self.frame_dur(n - 1) } else { 0.5 * (self.t(end - 1) + self.t(end)) }
+        assert!(range.start < range.end && range.end <= n, "trim_us({range:?}) out of range (len {n})");
+        let us = |f: FrameIdx| {
+            let p = self.pts(f) as i128 * self.tb.num as i128 * 1_000_000;
+            p.div_euclid(self.tb.den as i128) as i64
+        };
+        (us(range.start), us(range.end))
     }
 
     /// Frame displayed at absolute time `t` (seconds): the last frame whose
@@ -452,11 +468,48 @@ mod tests {
         assert!((idx.duration() - 100.0 * 1001.0 / 24000.0).abs() < 1e-9);
         for f in 0..100 {
             assert_eq!(idx.frame_at(idx.t(f)), f);
-            // A cut point strictly separates neighbouring frames.
-            if f > 0 {
-                let c = idx.cut_before(f);
-                assert!(idx.t(f - 1) < c && c < idx.t(f));
-                assert_eq!(idx.frame_at(c + 1e-6), f - 1, "cut midpoint maps to previous frame");
+        }
+    }
+
+    /// What ffmpeg's `trim` keeps for `start`/`end` in microseconds: both
+    /// are rescaled to the stream's ticks (rounding to nearest, halves away
+    /// from zero, like `av_rescale_q`), then frames with
+    /// `start <= pts < end` pass.
+    fn trimmed(idx: &FrameIndex, (start, end): (i64, i64)) -> Vec<FrameIdx> {
+        let ticks = |us: i64| {
+            let (n, d) = (us as i128 * idx.tb.den as i128, 1_000_000 * idx.tb.num as i128);
+            let r = (2 * n.abs() + d) / (2 * d);
+            (if n < 0 { -r } else { r }) as i64
+        };
+        let (s, e) = (ticks(start), ticks(end));
+        (0..idx.len()).filter(|&f| (s..e).contains(&idx.pts(f))).collect()
+    }
+
+    #[test]
+    fn trim_bounds_keep_exactly_the_range_in_every_time_base() {
+        let one_tick = |tb: Rational, first: i64| {
+            FrameIndex::from_pts(tb, Rational::new(24, 1), (0..50).map(|i| first + i).collect()).unwrap()
+        };
+        let cases = [
+            // AVI and raw streams: one tick per frame, midpoints are half ticks.
+            one_tick(Rational::new(1, 24), 0),
+            one_tick(Rational::new(1, 24), -3),
+            // MPEG-TS with a start offset, MKV milliseconds, 23.976 in 1/24000.
+            FrameIndex::cfr(Rational::new(1, 90_000), Rational::new(24, 1), 133_500, 50),
+            FrameIndex::from_pts(
+                Rational::new(1, 1000),
+                Rational::new(24, 1),
+                (0..50).map(|i| (i as f64 * 1000.0 / 24.0).round() as i64).collect(),
+            )
+            .unwrap(),
+            FrameIndex::cfr(TB, FPS, 174_000, 50),
+            // Finer than a microsecond, with open-GOP frames before zero.
+            FrameIndex::cfr(Rational::new(1, 10_000_000), Rational::new(24, 1), -834_000, 50),
+        ];
+        for idx in &cases {
+            for (s, e) in [(0, 1), (0, 50), (1, 2), (10, 11), (10, 34), (49, 50), (3, 50)] {
+                let want: Vec<FrameIdx> = (s..e).collect();
+                assert_eq!(trimmed(idx, idx.trim_us(FrameRange::new(s, e))), want, "{:?} [{s}, {e})", idx.tb);
             }
         }
     }
@@ -507,13 +560,6 @@ mod tests {
     #[test]
     fn rejects_non_monotonic() {
         assert!(matches!(FrameIndex::from_pts(TB, FPS, vec![0, 1001, 1001]), Err(CoreError::NonMonotonic(2))));
-    }
-
-    #[test]
-    fn cut_after_end_of_media() {
-        let idx = FrameIndex::cfr(TB, FPS, 0, 10);
-        let c = idx.cut_after(10);
-        assert!(c > idx.t(9) && c < idx.t(10));
     }
 
     #[test]

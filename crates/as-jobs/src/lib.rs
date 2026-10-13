@@ -96,6 +96,15 @@ struct State {
     /// Oldest first.
     jobs: VecDeque<Entry>,
     shutting_down: bool,
+    /// Last revision handed out; bumped under the lock on every change.
+    rev: u64,
+}
+
+impl State {
+    fn next_rev(&mut self) -> u64 {
+        self.rev += 1;
+        self.rev
+    }
 }
 
 struct Inner {
@@ -148,16 +157,20 @@ impl JobRunner {
             error: None,
             created_at: now_ms(),
             finished_at: None,
+            rev: 0,
         };
-        {
+        let info = {
             let mut st = self.inner.state.lock();
+            let mut info = info;
+            info.rev = st.next_rev();
             st.jobs.push_back(Entry {
                 info: info.clone(),
                 class: spec.class,
                 cancel: CancelToken::new(),
                 work: Some(Box::new(work)),
             });
-        }
+            info
+        };
         (self.inner.listener)(JobEvent::Changed(info));
         self.inner.wake.notify_all();
         id
@@ -184,19 +197,29 @@ impl JobRunner {
         let mut changed = Vec::new();
         {
             let mut st = self.inner.state.lock();
+            let mut rev = st.rev;
             for e in st.jobs.iter_mut().filter(|e| !e.info.state.is_finished() && pred(&e.info)) {
                 e.cancel.cancel();
                 if e.info.state == JobState::Queued {
                     e.work = None;
                     e.info.state = JobState::Cancelled;
                     e.info.finished_at = Some(now_ms());
+                    rev += 1;
+                    e.info.rev = rev;
                     changed.push(e.info.clone());
                 }
             }
+            st.rev = rev;
         }
         for info in changed {
             (self.inner.listener)(JobEvent::Changed(info));
         }
+    }
+
+    /// The app is quitting: running work is being cancelled to exit, not
+    /// because someone asked for it.
+    pub fn is_shutting_down(&self) -> bool {
+        self.inner.state.lock().shutting_down
     }
 
     /// Forget finished jobs (Activity → Clear).
@@ -235,13 +258,17 @@ fn worker(inner: &Arc<Inner>, class: Class) {
                 if st.shutting_down {
                     return;
                 }
+                let rev = st.rev + 1;
                 let next = st
                     .jobs
                     .iter_mut()
                     .find(|e| e.class == class && e.info.state == JobState::Queued && e.work.is_some());
                 if let Some(e) = next {
                     e.info.state = JobState::Running;
-                    break (e.info.id, e.work.take().expect("checked"), e.cancel.clone(), e.info.clone());
+                    e.info.rev = rev;
+                    let claimed = (e.info.id, e.work.take().expect("checked"), e.cancel.clone(), e.info.clone());
+                    st.rev = rev;
+                    break claimed;
                 }
                 inner.wake.wait(&mut st);
             }
@@ -254,15 +281,21 @@ fn worker(inner: &Arc<Inner>, class: Class) {
                 let progress = (p.total > 0).then(|| p.done as f64 / p.total as f64);
                 let stage = (!p.stage.is_empty()).then(|| p.stage.clone());
                 let eta_ms = p.eta_ms.map(|e| e as i64);
-                {
+                let rev = {
                     let mut st = inner.state.lock();
-                    if let Some(e) = st.jobs.iter_mut().find(|e| e.info.id == id) {
-                        e.info.progress = progress;
-                        e.info.stage = stage.clone();
-                        e.info.eta_ms = eta_ms;
+                    let rev = st.next_rev();
+                    match st.jobs.iter_mut().find(|e| e.info.id == id) {
+                        Some(e) => {
+                            e.info.progress = progress;
+                            e.info.stage = stage.clone();
+                            e.info.eta_ms = eta_ms;
+                            e.info.rev = rev;
+                            rev
+                        }
+                        None => return,
                     }
-                }
-                (inner.listener)(JobEvent::Progress(JobProgress { id, progress, stage, eta_ms }));
+                };
+                (inner.listener)(JobEvent::Progress(JobProgress { id, rev, progress, stage, eta_ms }));
             })
         };
         let ctx = JobCtx { id, cancel: cancel.clone(), sink };
@@ -278,7 +311,9 @@ fn worker(inner: &Arc<Inner>, class: Class) {
 
         let info = {
             let mut st = inner.state.lock();
+            let rev = st.next_rev();
             let Some(e) = st.jobs.iter_mut().find(|e| e.info.id == id) else { continue };
+            e.info.rev = rev;
             match result {
                 Ok(()) => {
                     e.info.state = JobState::Done;
@@ -388,6 +423,32 @@ mod tests {
         assert_eq!(finished(&rx, queued).state, JobState::Cancelled);
         r.cancel(running);
         assert_eq!(finished(&rx, running).state, JobState::Cancelled, "cancel wins over the error it causes");
+    }
+
+    #[test]
+    fn revisions_order_every_change() {
+        let (r, rx) = runner(&[(Class::Media, 1)]);
+        let id = r.submit(spec("index", Class::Media), |ctx| {
+            ctx.progress("Indexing", 0.5);
+            Ok(())
+        });
+        let mut revs = Vec::new();
+        loop {
+            match rx.recv_timeout(Duration::from_secs(10)).unwrap() {
+                JobEvent::Changed(i) => {
+                    revs.push(i.rev);
+                    if i.id == id && i.state.is_finished() {
+                        break;
+                    }
+                }
+                JobEvent::Progress(p) => revs.push(p.rev),
+            }
+        }
+        let mut sorted = revs.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), revs.len(), "every change has its own revision: {revs:?}");
+        assert_eq!(r.jobs()[0].rev, *sorted.last().unwrap(), "the snapshot carries the latest revision");
     }
 
     #[test]

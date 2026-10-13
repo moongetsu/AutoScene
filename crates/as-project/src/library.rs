@@ -14,6 +14,11 @@ use crate::{ProjectError, ProjectResult};
 const KEY_LIBRARY_ROOT: &str = "library_root";
 const KEY_EXPORT_PRESET: &str = "export_preset_id";
 const DEFAULT_EXPORT_PRESET: &str = "prores-hq";
+const KEY_AUDIO_LANGUAGE: &str = "audio_language";
+/// Most series and films people cut are watched in their original English
+/// track; dubbed tracks are often flagged "default" too, so a language
+/// preference beats the file's flag.
+const DEFAULT_AUDIO_LANGUAGE: &str = "eng";
 /// How deep folder imports look (`Show/Season 1/Disc 2/file.mkv`).
 const SCAN_DEPTH: usize = 4;
 
@@ -35,6 +40,7 @@ impl Library {
         Ok(AppSettings {
             library_root: self.library_root()?.display().to_string(),
             export_preset_id: self.db.setting(KEY_EXPORT_PRESET)?.unwrap_or_else(|| DEFAULT_EXPORT_PRESET.into()),
+            audio_language: self.audio_language()?,
         })
     }
 
@@ -49,7 +55,14 @@ impl Library {
         if as_export::builtin_presets().iter().any(|p| p.id == s.export_preset_id) {
             self.db.set_setting(KEY_EXPORT_PRESET, &s.export_preset_id)?;
         }
+        let language = as_media::lang::canonical(&s.audio_language).unwrap_or_default();
+        self.db.set_setting(KEY_AUDIO_LANGUAGE, &language)?;
         self.settings()
+    }
+
+    /// Audio language chosen automatically for new episodes (`""` = file default).
+    pub fn audio_language(&self) -> ProjectResult<String> {
+        Ok(self.db.setting(KEY_AUDIO_LANGUAGE)?.unwrap_or_else(|| DEFAULT_AUDIO_LANGUAGE.into()))
     }
 
     /// Where new project folders go.
@@ -106,8 +119,13 @@ impl Library {
     }
 
     /// Open (or return the cached) project.
+    ///
+    /// The cache stays locked while opening: `Project::open` closes out stale
+    /// exports and deletes unused preview files, which a second, racing open
+    /// would otherwise do to work the first instance had already started.
     pub fn project(&self, id: ProjectId) -> ProjectResult<Arc<Project>> {
-        if let Some(p) = self.open.lock().get(&id) {
+        let mut open = self.open.lock();
+        if let Some(p) = open.get(&id) {
             return Ok(p.clone());
         }
         let summary = self.summary(id)?;
@@ -119,7 +137,8 @@ impl Library {
             )));
         }
         let project = Arc::new(Project::open(id, dir)?);
-        Ok(self.open.lock().entry(id).or_insert(project).clone())
+        open.insert(id, project.clone());
+        Ok(project)
     }
 
     pub fn rename_project(&self, id: ProjectId, title: &str) -> ProjectResult<ProjectSummary> {
@@ -308,8 +327,10 @@ mod tests {
         lib.update_settings(&AppSettings {
             library_root: dir.path().join("Library").display().to_string(),
             export_preset_id: "h264-edit".into(),
+            audio_language: "German".into(),
         })
         .unwrap();
+        assert_eq!(lib.audio_language().unwrap(), "deu", "stored as an ISO 639-2 code");
         (dir, lib)
     }
 
@@ -379,7 +400,11 @@ mod tests {
     #[test]
     fn rejects_relative_library_roots() {
         let (_dir, lib) = lib();
-        let bad = AppSettings { library_root: "relative/path".into(), export_preset_id: "h264-edit".into() };
+        let bad = AppSettings {
+            library_root: "relative/path".into(),
+            export_preset_id: "h264-edit".into(),
+            audio_language: "eng".into(),
+        };
         assert!(matches!(lib.update_settings(&bad), Err(ProjectError::Invalid(_))));
         assert_eq!(lib.settings().unwrap().export_preset_id, "h264-edit");
     }

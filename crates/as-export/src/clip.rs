@@ -1,10 +1,13 @@
 //! Frame-exact clip rendering.
 //!
 //! For clip `[s, e)` on a media's frame grid:
-//! - video: `trim` between the **midpoints** around the first and last frames
-//!   (immune to float rounding), on absolute timestamps (`-copyts`);
-//! - audio: `atrim` to `[t(s), t(e))`, then padded/cut to the exact sample
-//!   count, so A/V length always matches;
+//! - video: `trim` from frame `s`'s own timestamp to frame `e`'s, on absolute
+//!   timestamps (`-copyts`), in microseconds that round back onto exactly
+//!   those frames in any time base (see `FrameIndex::trim_us`);
+//! - audio: `atrim` to `[t(s), t(e))` and re-timed against `t(s)` itself —
+//!   not against the first sample that happens to exist — so a stream that
+//!   starts late or has gaps gets silence where it has no sound and stays in
+//!   sync; then padded/cut to the exact sample count, so A/V length matches;
 //! - `-fps_mode passthrough` forbids frame duplication/dropping, and VFR
 //!   sources keep their own time base so every frame keeps its timing;
 //! - the encoder logs each frame's *original decoder timestamp* via
@@ -37,6 +40,7 @@ pub struct ClipJob<'a> {
     pub audio_ordinal: Option<u32>,
     pub preset: &'a ExportPreset,
     /// Output path *without* extension; the preset's container decides it.
+    /// Dots in the name are kept ("Mr. Robot" stays "Mr. Robot.mov").
     pub out_stem: PathBuf,
     pub title: Option<String>,
 }
@@ -201,7 +205,7 @@ pub fn export_clip(
         return Err(ExportError::BadRange(format!("{range:?} outside 0..{}", index.len())));
     }
     if preset.container == Container::Mp4 && preset.audio == AudioCodec::Pcm24 {
-        return Err(ExportError::BadPreset("PCM audio needs a MOV container".into()));
+        return Err(ExportError::BadPreset("uncompressed audio needs a MOV file".into()));
     }
     let n = range.len();
     let (s, e) = (range.start, range.end);
@@ -211,10 +215,8 @@ pub fn export_clip(
     let hdr_in = info.video.hdr != HdrKind::None;
     let tonemap = hdr_in && (preset.hdr == HdrMode::ToneMap || !preset.video.supports_hdr());
 
-    let mut vchain = vec![
-        format!("trim=start={:.9}:end={:.9}", index.cut_before(s), index.cut_after(e)),
-        "setpts=PTS-STARTPTS".to_string(),
-    ];
+    let (trim_start, trim_end) = index.trim_us(*range);
+    let mut vchain = vec![format!("trim=start={trim_start}us:end={trim_end}us"), "setpts=PTS-STARTPTS".to_string()];
     vchain.extend(display_chain(info, preset.max_height, tonemap));
     vchain.push(format!("format={}", enc.pix_fmt));
     let mut graph = format!("[0:{}]{}[v]", info.video.index, vchain.join(","));
@@ -225,20 +227,29 @@ pub fn export_clip(
     };
     if let Some((ord, _)) = audio {
         let samples = ((index.t(e) - index.t(s)) * AUDIO_RATE as f64).round() as u64;
+        // `first_pts=0` + `async` make aresample insert silence wherever the
+        // source has no samples (late start, dropouts) instead of pulling
+        // later sound forward.
         graph += &format!(
-            ";[0:a:{ord}]atrim=start={:.9}:end={:.9},asetpts=PTS-STARTPTS,aresample={AUDIO_RATE},apad=whole_len={samples},atrim=end_sample={samples}[a]",
-            index.t(s),
-            index.t(e)
+            ";[0:a:{ord}]atrim=start={ts:.9}:end={te:.9},asetpts=PTS-{ts:.9}/TB,aresample={AUDIO_RATE}:async=1:first_pts=0,apad=whole_len={samples},atrim=end_sample={samples}{downmix}[a]",
+            ts = index.t(s),
+            te = index.t(e),
+            // Standard ITU matrix: centre and surrounds at -3 dB, LFE dropped.
+            downmix = if preset.stereo { ",aformat=channel_layouts=stereo" } else { "" },
         );
     }
+    let audio_language = audio
+        .and_then(|(ord, _)| info.audio.iter().find(|a| a.ordinal == ord))
+        .and_then(|a| a.language.as_deref())
+        .and_then(as_media::lang::canonical);
 
     let ext = preset.container.ext();
-    let out = job.out_stem.with_extension(ext);
-    let part = job.out_stem.with_extension(format!("part.{ext}"));
+    let out = with_suffix(&job.out_stem, &format!(".{ext}"));
+    let part = with_suffix(&job.out_stem, &format!(".part.{ext}"));
     if let Some(dir) = out.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let stats = job.out_stem.with_extension("stats.txt");
+    let stats = with_suffix(&job.out_stem, ".stats.txt");
 
     let build = |preroll: Option<f64>| -> Vec<String> {
         let mut a: Vec<String> = ["-v", "error", "-y", "-copyts"].map(String::from).to_vec();
@@ -265,6 +276,9 @@ pub fn export_clip(
             _ => {}
         }
         a.extend(["-map_metadata", "-1", "-map_chapters", "-1"].map(String::from));
+        if let Some(lang) = &audio_language {
+            a.extend(["-metadata:s:a:0".into(), format!("language={lang}")]);
+        }
         if preset.container == Container::Mov {
             a.extend(["-timecode".into(), source_timecode(index, s), "-movflags".into(), "+write_colr".into()]);
         } else {
@@ -320,17 +334,38 @@ pub fn export_clip(
     Ok(ClipOutcome { path: out.display().to_string(), frames: n, verified: false, encoder: enc.encoder, bytes })
 }
 
-/// Every encoded frame must be source frame `s + i`, in order.
+/// `stem` + `suffix` as a path. Unlike `with_extension`, never cuts a stem
+/// at its own dots ("Mr. Robot" + ".mov", not "Mr.mov").
+fn with_suffix(stem: &Path, suffix: &str) -> PathBuf {
+    let mut s = stem.as_os_str().to_owned();
+    s.push(suffix);
+    PathBuf::from(s)
+}
+
+/// Every encoded frame must be source frame `s + i`, in order. Frames whose
+/// decoder timestamp was missing or out of order got a repaired slot in the
+/// index (one tick after the previous frame, see `as_media::index`); those are
+/// checked by position instead of by value.
 fn verify(stats: &Path, index: &FrameIndex, range: FrameRange) -> Result<(), String> {
     let text = std::fs::read_to_string(stats).map_err(|e| format!("no stats: {e}"))?;
-    let got: Vec<i64> = text.lines().filter_map(|l| l.trim().parse().ok()).collect();
+    let got: Vec<Option<i64>> = text.lines().filter(|l| !l.trim().is_empty()).map(|l| l.trim().parse().ok()).collect();
     if got.len() != range.len() as usize {
         return Err(format!("{} frames encoded, expected {}", got.len(), range.len()));
     }
+    let mut prev_raw: Option<i64> = None;
     for (i, &p) in got.iter().enumerate() {
-        let want = index.pts(range.start + i as u32);
-        if p != want {
-            return Err(format!("frame {i}: source pts {p}, expected {want}"));
+        let f = range.start + i as u32;
+        let want = index.pts(f);
+        let repaired_slot = f > 0 && want == index.pts(f - 1) + 1;
+        match p {
+            Some(p) if p == want => {}
+            Some(p) if repaired_slot && prev_raw.is_some_and(|prev| p <= prev) => {}
+            None if repaired_slot => {}
+            Some(p) => return Err(format!("frame {i}: source pts {p}, expected {want}")),
+            None => return Err(format!("frame {i}: no source pts, expected {want}")),
+        }
+        if p.is_some() {
+            prev_raw = p;
         }
     }
     Ok(())

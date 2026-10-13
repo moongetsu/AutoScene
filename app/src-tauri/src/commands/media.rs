@@ -162,7 +162,18 @@ pub async fn media_frame_map(
     media_id: MediaId,
 ) -> AppResult<FrameMap> {
     let lib = state.library.clone();
-    let map = blocking(move || Ok(lib.project(project_id)?.frame_map(media_id)?)).await?;
+    let result = blocking(move || {
+        let p = lib.project(project_id)?;
+        let map = p.frame_map(media_id);
+        let pending = matches!(p.media(media_id).map(|m| m.proxy), Ok(ProxyState::Pending));
+        Ok((p, map, pending))
+    })
+    .await?;
+    let (project, map, pending) = result;
+    if pending && !state.jobs.is_active(|j| j.kind == JobKind::Proxy && j.media_id == Some(media_id)) {
+        work::queue_proxy(&app, &project, media_id);
+    }
+    let map = map?;
     allow_asset(&app, Path::new(&map.src));
     Ok(map)
 }

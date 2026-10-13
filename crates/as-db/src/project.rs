@@ -14,8 +14,9 @@ use rusqlite_migration::{M, Migrations};
 use crate::{Db, DbError, DbResult, enum_from_sql, enum_to_sql, json_from_sql, json_to_sql};
 
 /// Append-only: never edit a released migration, add a new one.
-const STEPS: &[M<'static>] = &[M::up(
-    "CREATE TABLE meta (
+const STEPS: &[M<'static>] = &[
+    M::up(
+        "CREATE TABLE meta (
         key   TEXT PRIMARY KEY,
         value TEXT NOT NULL
     ) STRICT;
@@ -75,7 +76,10 @@ const STEPS: &[M<'static>] = &[M::up(
         error       TEXT
     ) STRICT;
     CREATE INDEX export_items_by_export ON export_items(export_id);",
-)];
+    ),
+    // The audio track is part of the export plan, frozen when it's queued.
+    M::up("ALTER TABLE export_items ADD COLUMN audio_ordinal INTEGER;"),
+];
 const MIGRATIONS: Migrations<'static> = Migrations::from_slice(STEPS);
 
 pub struct ProjectDb(Db);
@@ -104,6 +108,8 @@ pub struct IngestRecord {
     pub proxy: ProxyState,
     pub poster: Option<String>,
     pub index_blob: Vec<u8>,
+    /// Audio track for playback and export (`None` = the file has no audio).
+    pub audio_ordinal: Option<u32>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -120,6 +126,8 @@ pub struct NewExportItem {
     pub start: FrameIdx,
     pub end: FrameIdx,
     pub name: String,
+    /// Audio track at the time of export (`None` = no audio / file default).
+    pub audio_ordinal: Option<u32>,
 }
 
 const MEDIA_COLS: &str = "id, path, file_name, size_bytes, season, episode, status, error, info, frames, duration_sec, \
@@ -291,7 +299,8 @@ impl ProjectDb {
         self.0.write(|tx| {
             tx.execute(
                 "UPDATE media SET status = 'ready', error = NULL, info = ?2, frames = ?3, duration_sec = ?4,
-                        fps_num = ?5, fps_den = ?6, vfr = ?7, interlaced = ?8, proxy = ?9, poster = ?10
+                        fps_num = ?5, fps_den = ?6, vfr = ?7, interlaced = ?8, proxy = ?9, poster = ?10,
+                        audio_ordinal = ?11
                  WHERE id = ?1",
                 params![
                     id.to_string(),
@@ -304,6 +313,7 @@ impl ProjectDb {
                     rec.interlaced,
                     enum_to_sql(rec.proxy),
                     rec.poster,
+                    rec.audio_ordinal,
                 ],
             )?;
             tx.execute(
@@ -386,11 +396,18 @@ impl ProjectDb {
                 params![id.to_string(), now_ms(), json_to_sql(preset), out_dir],
             )?;
             let mut st = tx.prepare(
-                "INSERT INTO export_items (export_id, media_id, start_frame, end_frame, name, status)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'queued')",
+                "INSERT INTO export_items (export_id, media_id, start_frame, end_frame, name, status, audio_ordinal)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'queued', ?6)",
             )?;
             for it in items {
-                st.execute(params![id.to_string(), it.media_id.to_string(), it.start, it.end, it.name])?;
+                st.execute(params![
+                    id.to_string(),
+                    it.media_id.to_string(),
+                    it.start,
+                    it.end,
+                    it.name,
+                    it.audio_ordinal
+                ])?;
             }
             Ok(())
         })
@@ -401,6 +418,12 @@ impl ProjectDb {
             tx.execute("UPDATE exports SET status = ?2 WHERE id = ?1", params![id.to_string(), enum_to_sql(status)])?;
             Ok(())
         })
+    }
+
+    /// Audio track frozen into an export item when it was queued.
+    pub fn export_item_audio(&self, item_id: i64) -> DbResult<Option<u32>> {
+        self.0
+            .read(|c| Ok(c.query_row("SELECT audio_ordinal FROM export_items WHERE id = ?1", [item_id], |r| r.get(0))?))
     }
 
     pub fn update_export_item(
@@ -549,12 +572,14 @@ mod tests {
                 index: 1,
                 ordinal: 0,
                 codec: "aac".into(),
+                profile: None,
                 channels: 2,
                 channel_layout: None,
                 sample_rate: 48000,
                 language: Some("jpn".into()),
                 title: None,
                 default: true,
+                commentary: false,
             }],
             subtitles: vec![],
         }
@@ -587,6 +612,7 @@ mod tests {
             proxy: ProxyState::Pending,
             poster: Some("/thumbs/e1.jpg".into()),
             index_blob: vec![1, 2, 3],
+            audio_ordinal: Some(0),
         };
         db.record_ingest(e1.id, &rec).unwrap();
         let m = db.media(e1.id).unwrap().unwrap();
@@ -594,6 +620,7 @@ mod tests {
         assert_eq!(m.frames, Some(240));
         assert_eq!(m.fps, Some(Rational::new(24000, 1001)));
         assert_eq!(m.info.unwrap().audio[0].language.as_deref(), Some("jpn"));
+        assert_eq!(m.audio_ordinal, Some(0), "ingest records the chosen track");
         assert_eq!(db.frame_index_blob(e1.id).unwrap(), Some(vec![1, 2, 3]));
         assert_eq!(db.pending_proxies().unwrap(), vec![e1.id]);
 
@@ -623,14 +650,15 @@ mod tests {
         let preset = as_export::builtin_presets().remove(0);
         let eid = ExportId::new();
         let items = [
-            NewExportItem { media_id: m.id, start: 10, end: 34, name: "a_1".into() },
-            NewExportItem { media_id: m.id, start: 50, end: 60, name: "a_2".into() },
+            NewExportItem { media_id: m.id, start: 10, end: 34, name: "a_1".into(), audio_ordinal: Some(1) },
+            NewExportItem { media_id: m.id, start: 50, end: 60, name: "a_2".into(), audio_ordinal: None },
         ];
         db.insert_export(eid, &preset, "/out", &items).unwrap();
         let pid = ProjectId::new();
         let ex = db.export(pid, eid).unwrap().unwrap();
         assert_eq!(ex.items.len(), 2);
         assert_eq!(ex.preset, preset);
+        assert_eq!(db.export_item_audio(ex.items[0].id).unwrap(), Some(1), "audio track is frozen per item");
         assert_eq!(ex.status, ExportStatus::Queued);
 
         let outcome = ClipOutcome {
@@ -658,8 +686,13 @@ mod tests {
         db.add_media(std::slice::from_ref(&m)).unwrap();
         let eid = ExportId::new();
         let preset = as_export::builtin_presets().remove(0);
-        db.insert_export(eid, &preset, "/out", &[NewExportItem { media_id: m.id, start: 0, end: 5, name: "x".into() }])
-            .unwrap();
+        db.insert_export(
+            eid,
+            &preset,
+            "/out",
+            &[NewExportItem { media_id: m.id, start: 0, end: 5, name: "x".into(), audio_ordinal: None }],
+        )
+        .unwrap();
         db.close_stale_exports().unwrap();
         let ex = db.export(ProjectId::new(), eid).unwrap().unwrap();
         assert_eq!(ex.status, ExportStatus::Cancelled);

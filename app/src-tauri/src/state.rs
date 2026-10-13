@@ -35,7 +35,14 @@ impl AppState {
                 JobEvent::Progress(p) => JobProgressEvent(p).emit(&handle),
             };
         });
-        let bundled_ffmpeg = app.path().resource_dir().ok().map(|d| d.join("ffmpeg"));
+        // Release builds ship ffmpeg as a resource; dev builds use the same
+        // pinned build when `cargo xtask fetch-sidecars` has fetched it.
+        let bundled_ffmpeg =
+            app.path().resource_dir().ok().map(|d| d.join("ffmpeg")).filter(|d| d.is_dir()).or_else(|| {
+                cfg!(debug_assertions)
+                    .then(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ffmpeg"))
+                    .filter(|d| d.is_dir())
+            });
         Self { library: Arc::new(library), jobs, tools: Arc::new(OnceLock::new()), bundled_ffmpeg }
     }
 
@@ -62,6 +69,14 @@ impl AppState {
             },
             Err(e) => MediaToolsStatus { ready: false, version: None, path: None, error: Some(e.message) },
         }
+    }
+}
+
+/// Stop all background work before the process goes away (quit, restart,
+/// update install), so no ffmpeg is left running or writing a file.
+pub fn shutdown_work(app: &AppHandle) {
+    if let Some(state) = app.try_state::<AppState>() {
+        state.jobs.shutdown(std::time::Duration::from_secs(3));
     }
 }
 

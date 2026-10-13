@@ -45,6 +45,13 @@ pub struct Variant {
     /// Per-frame presentation time (relative to the first frame) for VFR variants.
     pub frame_times_sec: Option<Vec<f64>>,
     pub audio_tracks: u32,
+    /// Time of the first audio sample when it isn't the video's start.
+    #[serde(default)]
+    pub audio_start_sec: f64,
+    /// Interlaced content (motion between the two fields of a frame), whether
+    /// or not the file says so.
+    #[serde(default)]
+    pub interlaced: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

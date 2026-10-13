@@ -132,6 +132,9 @@ pub struct ExportPreset {
     /// Cap output height (keeps aspect). `None` = source resolution.
     pub max_height: Option<u32>,
     pub hdr: HdrMode,
+    /// Mix surround sound down to stereo (phone editors don't handle 5.1).
+    #[serde(default)]
+    pub stereo: bool,
     pub builtin: bool,
 }
 
@@ -147,6 +150,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
             audio: AudioCodec::Pcm24,
             max_height: None,
             hdr: HdrMode::Auto,
+            stereo: false,
             builtin: true,
         },
         ExportPreset {
@@ -158,6 +162,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
             audio: AudioCodec::Pcm24,
             max_height: None,
             hdr: HdrMode::ToneMap,
+            stereo: false,
             builtin: true,
         },
         ExportPreset {
@@ -169,17 +174,19 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
             audio: AudioCodec::Aac { kbps: 320 },
             max_height: None,
             hdr: HdrMode::ToneMap,
+            stereo: false,
             builtin: true,
         },
         ExportPreset {
             id: "h264-mobile".into(),
             name: "H.264 · Mobile (CapCut, Alight Motion)".into(),
-            description: "1080p H.264 that imports cleanly into phone editors.".into(),
+            description: "1080p H.264 with stereo sound that imports cleanly into phone editors.".into(),
             container: Container::Mp4,
             video: VideoCodec::H264 { quality: 18, gop: Gop::Editing, encoder: EncoderPref::Auto },
             audio: AudioCodec::Aac { kbps: 256 },
             max_height: Some(1080),
             hdr: HdrMode::ToneMap,
+            stereo: true,
             builtin: true,
         },
         ExportPreset {
@@ -191,6 +198,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
             audio: AudioCodec::Aac { kbps: 320 },
             max_height: None,
             hdr: HdrMode::ToneMap,
+            stereo: false,
             builtin: true,
         },
         ExportPreset {
@@ -202,6 +210,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
             audio: AudioCodec::Aac { kbps: 320 },
             max_height: None,
             hdr: HdrMode::Auto,
+            stereo: false,
             builtin: true,
         },
     ]

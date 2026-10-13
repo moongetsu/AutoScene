@@ -2,8 +2,11 @@
 //!
 //! - `fixtures [--out DIR] [--ffmpeg PATH]` — render synthetic test media with
 //!   frame barcodes and a truth JSON (see `fixtures.rs`).
+//! - `fetch-sidecars [--out DIR]` — download the pinned, checksum-verified
+//!   ffmpeg/ffprobe build the app bundles (see `sidecars.rs`).
 
 mod fixtures;
+mod sidecars;
 
 use std::path::PathBuf;
 
@@ -19,8 +22,15 @@ fn main() -> Result<()> {
             let ffmpeg = flag(&rest, "--ffmpeg").unwrap_or_else(|| "ffmpeg".into());
             fixtures::generate(&out, &ffmpeg).context("generating fixtures")
         }
+        "fetch-sidecars" => {
+            let out = flag(&rest, "--out")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| workspace_root().join("app/src-tauri/ffmpeg"));
+            sidecars::fetch(&out).context("fetching ffmpeg")
+        }
         "" | "help" | "--help" => {
             println!("cargo xtask fixtures [--out DIR] [--ffmpeg PATH]");
+            println!("cargo xtask fetch-sidecars [--out DIR]");
             Ok(())
         }
         other => bail!("unknown task '{other}' (try `cargo xtask help`)"),

@@ -26,6 +26,9 @@ pub struct Project {
     pub dir: PathBuf,
     db: ProjectDb,
     indexes: Mutex<HashMap<MediaId, Arc<FrameIndex>>>,
+    /// Latest proxy build per media. A replaced build that finishes (or
+    /// fails) late must not overwrite the state of the one that replaced it.
+    proxy_builds: Mutex<HashMap<MediaId, u64>>,
 }
 
 impl Project {
@@ -43,17 +46,19 @@ impl Project {
         ] {
             db.set_meta(k, &v)?;
         }
-        let p = Self { id: s.id, dir, db, indexes: Mutex::new(HashMap::new()) };
+        let p =
+            Self { id: s.id, dir, db, indexes: Mutex::new(HashMap::new()), proxy_builds: Mutex::new(HashMap::new()) };
         p.ensure_dirs()?;
         Ok(p)
     }
 
     pub(crate) fn open(id: ProjectId, dir: PathBuf) -> ProjectResult<Self> {
         let db = ProjectDb::open(&dir.join(PROJECT_DB))?;
-        let p = Self { id, dir, db, indexes: Mutex::new(HashMap::new()) };
+        let p = Self { id, dir, db, indexes: Mutex::new(HashMap::new()), proxy_builds: Mutex::new(HashMap::new()) };
         p.ensure_dirs()?;
         // Exports can't resume mid-way (M1): close them out.
         p.db.close_stale_exports()?;
+        p.clean_proxies();
         Ok(p)
     }
 
@@ -157,20 +162,25 @@ impl Project {
         Ok((m, info, index))
     }
 
-    /// Probe, detect interlacing, build the frame index and poster, and decide
-    /// whether a playback proxy is needed. Marks the media `ready` (or
-    /// `failed` with a readable reason).
+    /// Probe, detect interlacing, build the frame index and poster, pick the
+    /// audio track (an earlier choice stays; otherwise the first track in
+    /// `audio_language`, else the file's default) and decide whether a
+    /// playback proxy is needed. Marks the media `ready` (or `failed` with a
+    /// readable reason).
     pub fn ingest(
         &self,
         tools: &Tools,
         id: MediaId,
+        audio_language: &str,
         cancel: &CancelToken,
         progress: Progress,
     ) -> ProjectResult<MediaItem> {
-        let result = self.ingest_inner(tools, id, cancel, progress);
+        let result = self.ingest_inner(tools, id, audio_language, cancel, progress);
         match &result {
             Ok(_) => {}
-            Err(ProjectError::Cancelled) => self.set_media_failed(id, "Indexing was cancelled.")?,
+            // Back in the queue: a quit resumes it on the next launch. The app
+            // marks it cancelled when a person stopped it.
+            Err(ProjectError::Cancelled) => self.set_media_queued(id)?,
             Err(e) => self.set_media_failed(id, &e.to_string())?,
         }
         result
@@ -180,6 +190,7 @@ impl Project {
         &self,
         tools: &Tools,
         id: MediaId,
+        audio_language: &str,
         cancel: &CancelToken,
         progress: Progress,
     ) -> ProjectResult<MediaItem> {
@@ -214,9 +225,14 @@ impl Project {
             }
         };
 
+        let audio_ordinal = m
+            .audio_ordinal
+            .filter(|o| info.audio.iter().any(|a| a.ordinal == *o))
+            .or_else(|| info.preferred_audio(audio_language).map(|a| a.ordinal));
         let proxy =
-            if plays_direct(&info, &index, m.audio_ordinal) { ProxyState::NotNeeded } else { ProxyState::Pending };
+            if plays_direct(&info, &index, audio_ordinal) { ProxyState::NotNeeded } else { ProxyState::Pending };
         let rec = IngestRecord {
+            audio_ordinal,
             frames: index.len(),
             duration_sec: index.duration(),
             fps: index.nominal_fps,
@@ -247,8 +263,9 @@ impl Project {
         }
         let (_, info, index) = self.ready_source(id)?;
         if plays_direct(&info, &index, ordinal) {
+            // The old preview may still be on screen; `frame_map` removes it
+            // once the player has moved to the source.
             self.db.set_proxy(id, ProxyState::NotNeeded, None, None)?;
-            self.remove_proxies(id, None);
             Ok(false)
         } else {
             self.db.set_proxy(id, ProxyState::Pending, None, None)?;
@@ -267,12 +284,17 @@ impl Project {
         let (m, info, index) = self.ready_source(id)?;
         let audio = m.audio_ordinal.or_else(|| info.default_audio().map(|a| a.ordinal));
         let out = self.proxies_dir().join(format!("{id}-a{}.mp4", audio.map_or("x".into(), |a| a.to_string())));
+        static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let generation = GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.proxy_builds.lock().insert(id, generation);
+        let latest = || self.proxy_builds.lock().get(&id) == Some(&generation);
         self.db.set_proxy(id, ProxyState::Building, None, None)?;
         let path = PathBuf::from(&m.path);
         let src = Source { path: &path, info: &info, index: &index };
         let result = proxy::build_proxy(tools, src, audio, &out, cancel, |p| progress("Preparing preview", p));
-        // The audio track may have changed while we worked; a newer build owns the state then.
-        let superseded = self.media(id)?.audio_ordinal != m.audio_ordinal;
+        // The audio track may have changed, or a newer build started, while we
+        // worked; the newer state wins then.
+        let superseded = !latest() || self.media(id)?.audio_ordinal != m.audio_ordinal;
         match result {
             Ok(_) if superseded => {
                 let _ = std::fs::remove_file(&out);
@@ -294,6 +316,26 @@ impl Project {
         }
     }
 
+    /// Remove proxy files nothing points at: half-written `.part` files and
+    /// previews for an audio track that is no longer selected.
+    fn clean_proxies(&self) {
+        let Ok(media) = self.db.media_list() else { return };
+        let Ok(entries) = std::fs::read_dir(self.proxies_dir()) else { return };
+        let mut current = HashSet::new();
+        for m in &media {
+            if let Ok(Some((p, _))) = self.db.proxy(m.id) {
+                current.insert(PathBuf::from(p));
+            }
+        }
+        for e in entries.filter_map(Result::ok) {
+            let p = e.path();
+            if !current.contains(&p) {
+                tracing::debug!(file = %p.display(), "removing unused preview file");
+                let _ = std::fs::remove_file(p);
+            }
+        }
+    }
+
     fn remove_proxies(&self, id: MediaId, keep: Option<&Path>) {
         let prefix = format!("{id}-");
         let Ok(entries) = std::fs::read_dir(self.proxies_dir()) else { return };
@@ -309,12 +351,17 @@ impl Project {
     pub fn frame_map(&self, id: MediaId) -> ProjectResult<FrameMap> {
         let (m, _, index) = self.ready_source(id)?;
         let (src, is_proxy, offset) = match m.proxy {
-            ProxyState::NotNeeded => (m.path.clone(), false, index.t0()),
+            ProxyState::NotNeeded => {
+                // A preview from an earlier audio choice is no longer needed.
+                self.remove_proxies(id, None);
+                (m.path.clone(), false, index.t0())
+            }
             ProxyState::Ready => {
                 let (p, t0) = self.db.proxy(id)?.ok_or_else(|| ProjectError::NotReady("Preparing preview…".into()))?;
                 if !Path::new(&p).is_file() {
+                    // The app queues a rebuild for media left `pending`.
                     self.db.set_proxy(id, ProxyState::Pending, None, None)?;
-                    return Err(ProjectError::NotReady("The preview file is missing and will be rebuilt.".into()));
+                    return Err(ProjectError::NotReady("The preview file is missing. Preparing it again…".into()));
                 }
                 (p, true, t0)
             }
@@ -386,7 +433,13 @@ impl Project {
             };
             let name = unique_name(&base, |n| used.contains(n) || out_dir.join(format!("{n}.{ext}")).exists());
             used.insert(name.clone());
-            items.push(NewExportItem { media_id: c.media_id, start: c.start, end: c.end, name });
+            items.push(NewExportItem {
+                media_id: c.media_id,
+                start: c.start,
+                end: c.end,
+                name,
+                audio_ordinal: m.audio_ordinal,
+            });
         }
         std::fs::create_dir_all(out_dir)
             .map_err(|e| ProjectError::Invalid(format!("Can't write to {}: {e}", out_dir.display())))?;
@@ -412,13 +465,15 @@ impl Project {
     }
 
     /// Render every clip of an export. A failing clip doesn't stop the others;
-    /// cancelling marks the remaining clips cancelled.
+    /// cancelling marks the remaining clips cancelled. `changed` runs whenever
+    /// a clip starts or finishes, so the UI can follow along.
     pub fn run_export(
         &self,
         tools: &Tools,
         id: ExportId,
         cancel: &CancelToken,
         progress: Progress,
+        changed: &dyn Fn(),
     ) -> ProjectResult<ExportSummary> {
         let ex = self.export(id)?;
         self.db.set_export_status(id, ExportStatus::Running)?;
@@ -432,13 +487,14 @@ impl Project {
             let stage =
                 if ex.items.len() > 1 { format!("Clip {} of {}", i + 1, ex.items.len()) } else { "Rendering".into() };
             self.db.update_export_item(item.id, ExportStatus::Running, None, None)?;
+            changed();
             let result = (|| -> ProjectResult<as_api::ClipOutcome> {
                 let (m, info, index) = self.ready_source(item.media_id)?;
                 let path = PathBuf::from(&m.path);
                 let job = ClipJob {
                     src: Source { path: &path, info: &info, index: &index },
                     range: FrameRange::new(item.start, item.end),
-                    audio_ordinal: m.audio_ordinal,
+                    audio_ordinal: self.db.export_item_audio(item.id)?,
                     preset: &ex.preset,
                     out_stem: out_dir.join(&item.name),
                     title: Some(item.name.clone()),
@@ -450,10 +506,11 @@ impl Project {
                 Err(ProjectError::Cancelled) => break,
                 Err(e) => {
                     failed = true;
-                    tracing::warn!(clip = %item.name, error = %e, "clip export failed");
+                    tracing::warn!(clip = %item.name, error = %e, detail = %e.detail(), "clip export failed");
                     self.db.update_export_item(item.id, ExportStatus::Failed, None, Some(&e.to_string()))?;
                 }
             }
+            changed();
         }
         if cancel.is_cancelled() {
             for item in self

@@ -42,7 +42,7 @@ export function DropZone() {
   if (!over) return null
   return (
     <div className="pointer-events-none fixed inset-0 top-[var(--titlebar-h)] z-[60] p-3">
-      <div className="flex size-full flex-col items-center justify-center rounded-xl border-2 border-dashed border-accent-line bg-black/55 animate-fade-in">
+      <div className="flex size-full flex-col items-center justify-center rounded-xl border-2 border-dashed border-accent-line bg-scrim animate-fade-in">
         <FolderInput className="size-8 text-accent" />
         <p className="mt-3 text-lg font-semibold text-fg-1">{pid ? "Add to this project" : "Create a project"}</p>
         <p className="mt-1 text-sm text-fg-2">Drop a season folder or video files</p>

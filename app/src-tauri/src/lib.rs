@@ -14,8 +14,6 @@ mod state;
 mod updater;
 mod work;
 
-use std::time::Duration;
-
 use as_core::AppPaths;
 use as_project::Library;
 use tauri::Manager;
@@ -160,11 +158,9 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building AutoScene")
         .run(|app, event| {
-            if let tauri::RunEvent::Exit = event
-                && let Some(state) = app.try_state::<state::AppState>()
-            {
+            if let tauri::RunEvent::Exit = event {
                 // Never leave ffmpeg processes running after the window closes.
-                state.jobs.shutdown(Duration::from_secs(3));
+                state::shutdown_work(app);
             }
         });
 }

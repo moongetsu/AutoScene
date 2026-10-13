@@ -75,6 +75,9 @@ export const commands = {
 	/**
 	 *  Restart into the freshly installed build. A no-op under the simulate
 	 *  override, where nothing was installed. Returns whether a restart happened.
+	 * 
+	 *  `request_restart` goes through RunEvent::Exit, where background jobs are
+	 *  shut down; `restart()` on the main thread would skip it.
 	 */
 	updateRelaunch: () => __TAURI_INVOKE<boolean>("update_relaunch"),
 };
@@ -120,6 +123,11 @@ export type AppSettings = {
 	libraryRoot: string,
 	/**  Preset preselected in the export dialog. */
 	exportPresetId: string,
+	/**
+	 *  Audio language picked automatically for new episodes (ISO 639-2 code,
+	 *  e.g. `eng`); empty = use each file's default track.
+	 */
+	audioLanguage?: string,
 };
 
 export type AudioCodec = { codec: "none" } | 
@@ -131,12 +139,16 @@ export type AudioStream = {
 	/**  Position among audio streams (`0:a:N`). */
 	ordinal: number,
 	codec: string,
+	/**  Codec profile when it matters to people, e.g. `DTS-HD MA`. */
+	profile: string | null,
 	channels: number,
 	channelLayout: string | null,
 	sampleRate: number,
 	language: string | null,
 	title: string | null,
 	default: boolean,
+	/**  Director's commentary or audio description, not the programme sound. */
+	commentary: boolean,
 };
 
 export type ClipRequest = {
@@ -208,6 +220,8 @@ export type ExportPreset = {
 	/**  Cap output height (keeps aspect). `None` = source resolution. */
 	maxHeight: number | null,
 	hdr: HdrMode,
+	/**  Mix surround sound down to stereo (phone editors don't handle 5.1). */
+	stereo?: boolean,
 	builtin: boolean,
 };
 
@@ -302,6 +316,11 @@ export type JobInfo = {
 	error: string | null,
 	createdAt: number,
 	finishedAt: number | null,
+	/**
+	 *  Increases with every change to any job. Events can arrive out of
+	 *  order; the UI keeps the copy with the highest revision.
+	 */
+	rev: number,
 };
 
 export type JobKind = "ingest" | "proxy" | "export";
@@ -309,6 +328,8 @@ export type JobKind = "ingest" | "proxy" | "export";
 /**  Throttled progress for a running job (≤ 4 Hz per job). */
 export type JobProgress = {
 	id: JobId,
+	/**  Revision of the job this progress belongs to (see [`JobInfo::rev`]). */
+	rev: number,
 	progress: number | null,
 	stage: string | null,
 	etaMs: number | null,

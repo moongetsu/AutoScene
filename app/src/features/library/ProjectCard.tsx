@@ -56,8 +56,8 @@ export function ProjectCard({
             </div>
           )}
           {/* Legibility for the meta line without tinting the footage. */}
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-black/55 to-transparent" />
-          <span className="timecode absolute right-2 bottom-1.5 text-2xs text-white/85">
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-scrim to-transparent" />
+          <span className="timecode absolute right-2 bottom-1.5 text-2xs text-on-media">
             {p.durationSec ? formatDuration(p.durationSec) : ""}
           </span>
         </div>
@@ -87,7 +87,7 @@ export function ProjectCard({
         <DropdownMenuTrigger
           aria-label={`${p.title} options`}
           className={cn(
-            "glass absolute top-2 right-2 flex size-7 items-center justify-center rounded-md text-fg-2 opacity-0 transition-opacity",
+            "absolute top-2 right-2 flex size-7 items-center justify-center rounded-md border border-soft bg-overlay text-fg-2 opacity-0 shadow-1 transition-opacity",
             "group-hover:opacity-100 hover:text-fg-1 focus-visible:opacity-100 data-[state=open]:opacity-100",
           )}
         >

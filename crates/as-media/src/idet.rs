@@ -13,13 +13,14 @@ const SAMPLE_FRAMES: u32 = 600;
 /// Field order (`tt` / `bb`) if the content is interlaced, `None` if it is progressive.
 pub fn detect_field_order(tools: &Tools, path: &Path, info: &MediaInfo) -> MediaResult<Option<&'static str>> {
     let mid = info.duration_sec.unwrap_or(0.0) * 0.5;
-    let out = tools
-        .ffmpeg()
-        .args(["-v", "info", "-nostats", "-ss", &format!("{mid:.3}"), "-i"])
-        .arg(path)
-        .args(["-map", &format!("0:{}", info.video.index), "-vf", "idet", "-frames:v", &SAMPLE_FRAMES.to_string()])
-        .args(["-an", "-f", "null", "-"])
-        .output()?;
+    let out = crate::proc::output(
+        tools
+            .ffmpeg()
+            .args(["-v", "info", "-nostats", "-ss", &format!("{mid:.3}"), "-i"])
+            .arg(path)
+            .args(["-map", &format!("0:{}", info.video.index), "-vf", "idet", "-frames:v", &SAMPLE_FRAMES.to_string()])
+            .args(["-an", "-f", "null", "-"]),
+    )?;
     Ok(verdict(&String::from_utf8_lossy(&out.stderr)))
 }
 

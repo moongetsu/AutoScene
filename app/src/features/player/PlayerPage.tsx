@@ -1,5 +1,5 @@
 import type * as React from "react"
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { Link, useParams } from "@tanstack/react-router"
 import {
   ChevronLeft,
@@ -14,6 +14,9 @@ import {
   SkipForward,
   StepBack,
   StepForward,
+  Volume1,
+  Volume2,
+  VolumeX,
   X,
 } from "lucide-react"
 import { toast } from "sonner"
@@ -25,16 +28,18 @@ import { Progress } from "@/components/ui/progress"
 import { Select } from "@/components/ui/select"
 import { Tooltip } from "@/components/ui/tooltip"
 import { ExportDialog, type ExportClip } from "@/features/export/ExportDialog"
-import { EXPORT_REQUEST } from "@/lib/actions"
+import { COPY_TIMECODES_REQUEST, EXPORT_REQUEST, REVEAL_REQUEST } from "@/lib/actions"
 import { FrameClock } from "@/lib/frame-clock"
 import { formatPercent } from "@/lib/format"
 import { commands, errorMessage, isAppError } from "@/lib/ipc"
-import { assetUrl, audioLabel, codecLabel, fileStem, formatFlags, mediaTitle } from "@/lib/media"
+import { assetUrl, audioOption, codecLabel, currentAudio, fileStem, formatFlags, mediaTitle, releaseTitle } from "@/lib/media"
 import { modKey } from "@/lib/platform"
 import { useFrameMap, useMediaList, useProject } from "@/lib/queries"
-import { formatFps, timecode } from "@/lib/timecode"
+import { formatFps, parseTimecode, timecode } from "@/lib/timecode"
 import { cn } from "@/lib/utils"
 import { useMediaJob } from "@/state/activity"
+import { NO_MARKS, useMarks } from "@/state/marks"
+import { usePlayback } from "@/state/playback"
 import { Scrubber } from "./Scrubber"
 import { usePlayer } from "./use-player"
 
@@ -65,7 +70,9 @@ export function PlayerPage() {
           <EpisodeNav pid={pid} target={next} dir="next" />
           <div className="ml-1 flex min-w-0 items-baseline gap-2">
             {m?.label && <span className="timecode text-sm text-fg-1">{m.label}</span>}
-            <span className="truncate text-sm text-fg-2">{m ? fileStem(m.fileName) : ""}</span>
+            <span className="truncate text-sm text-fg-2" title={m?.fileName}>
+              {m ? releaseTitle(m.fileName) : ""}
+            </span>
           </div>
           {map.data?.isProxy && (
             <Tooltip label="Playing a preview copy; exports always cut from the original file.">
@@ -134,7 +141,7 @@ function NotReady({ pid, media: m, error }: { pid: string; media?: MediaItem; er
   return (
     <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-inset">
       {m?.poster && <img src={assetUrl(m.poster)} alt="" className="absolute inset-0 size-full object-contain opacity-25 blur-[2px]" />}
-      <div className="glass relative flex w-[min(420px,90%)] flex-col items-center rounded-xl px-6 py-6 text-center">
+      <div className="relative flex w-[min(420px,90%)] flex-col items-center rounded-xl border border-hairline bg-raised px-6 py-6 text-center shadow-2">
         {job ? <Loader2 className="size-5 animate-spin text-fg-2" /> : null}
         <h2 className="mt-2 text-md font-semibold text-fg-1">{title}</h2>
         {body && <p className="mt-1 text-sm break-words text-fg-2">{body}</p>}
@@ -165,27 +172,23 @@ function NotReady({ pid, media: m, error }: { pid: string; media?: MediaItem; er
 function ReadyPlayer({ pid, media: m, map }: { pid: string; media: MediaItem; map: FrameMap }) {
   const clock = useMemo(() => new FrameClock(map), [map])
   const { videoRef, frame, playing, seek, step, toggle, pause } = usePlayer(clock)
-  const [inFrame, setIn] = useState<number | null>(null)
-  const [outFrame, setOut] = useState<number | null>(null)
+  const marks = useMarks((s) => s.byMedia[m.id] ?? NO_MARKS)
+  const setMarks = useMarks((s) => s.set)
+  const inFrame = marks.in
+  const outFrame = marks.out
   const [exportOpen, setExportOpen] = useState(false)
+  const gotoRef = useRef<HTMLInputElement | null>(null)
+  const [gotoOpen, setGotoOpen] = useState(false)
+  const { volume, muted, setVolume, toggleMute } = usePlayback()
   const { data: project } = useProject(pid)
   const fps = map.fps
   const tc = (f: number) => timecode(f, fps, map.dropFrame)
   const last = clock.frames - 1
   const oneSecond = Math.max(1, Math.round(fps.num / fps.den))
 
-  const markIn = (f = frame) => {
-    setIn(f)
-    if (outFrame != null && outFrame < f) setOut(null)
-  }
-  const markOut = (f = frame) => {
-    setOut(f)
-    if (inFrame != null && inFrame > f) setIn(null)
-  }
-  const clear = () => {
-    setIn(null)
-    setOut(null)
-  }
+  const markIn = (f = frame) => setMarks(m.id, { in: f, ...(outFrame != null && outFrame < f ? { out: null } : {}) })
+  const markOut = (f = frame) => setMarks(m.id, { out: f, ...(inFrame != null && inFrame > f ? { in: null } : {}) })
+  const clear = () => setMarks(m.id, { in: null, out: null })
   const hasMarks = inFrame != null || outFrame != null
   const start = inFrame ?? 0
   const end = (outFrame ?? last) + 1
@@ -211,11 +214,35 @@ function ReadyPlayer({ pid, media: m, map }: { pid: string; media: MediaItem; ma
     return () => window.removeEventListener(EXPORT_REQUEST, onRequest)
   }, [canExport, pause])
 
+  // macOS menu: File → Reveal, Edit → Copy Timecodes.
+  useEffect(() => {
+    const reveal = () => void commands.revealPath(m.path).catch((e) => toast.error(errorMessage(e)))
+    const copy = () => {
+      const text = hasMarks ? `${tc(start)} - ${tc(end - 1)}` : tc(frame)
+      void navigator.clipboard.writeText(text).then(() => toast("Copied timecode", { description: text }))
+    }
+    window.addEventListener(REVEAL_REQUEST, reveal)
+    window.addEventListener(COPY_TIMECODES_REQUEST, copy)
+    return () => {
+      window.removeEventListener(REVEAL_REQUEST, reveal)
+      window.removeEventListener(COPY_TIMECODES_REQUEST, copy)
+    }
+  })
+
+  useEffect(() => {
+    const v = videoRef.current
+    if (!v) return
+    v.volume = volume
+    v.muted = muted
+  }, [videoRef, volume, muted])
+
   // Keyboard: the player owns these keys while it's on screen.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target instanceof Element ? e.target : null
       if (exportOpen || t?.closest("input, textarea, select, [role=dialog], [role=menu], [role=listbox]")) return
+      // A focused button or link answers Space and Enter itself.
+      if ((e.key === " " || e.key === "Enter") && t?.closest("button, a, [role=button]")) return
       const mod = modKey === "⌘" ? e.metaKey : e.ctrlKey
       const k = e.key.toLowerCase()
       let handled = true
@@ -224,6 +251,9 @@ function ReadyPlayer({ pid, media: m, map }: { pid: string; media: MediaItem; ma
           pause()
           setExportOpen(true)
         }
+      } else if (mod && k === "g") {
+        pause()
+        setGotoOpen(true)
       } else if (mod) handled = false
       else if (k === " " || k === "k") toggle()
       else if (e.key === "ArrowLeft") step(e.shiftKey ? -oneSecond : -1)
@@ -238,6 +268,7 @@ function ReadyPlayer({ pid, media: m, map }: { pid: string; media: MediaItem; ma
       else if (k === "i") markIn()
       else if (k === "o") markOut()
       else if (k === "x" && e.altKey) clear()
+      else if (k === "m") toggleMute()
       else handled = false
       if (handled) e.preventDefault()
     }
@@ -246,7 +277,6 @@ function ReadyPlayer({ pid, media: m, map }: { pid: string; media: MediaItem; ma
   })
 
   const audio = m.info?.audio ?? []
-  const defaultOrdinal = audio.find((a) => a.default)?.ordinal ?? audio[0]?.ordinal
 
   return (
     <div className="flex min-h-0 flex-1">
@@ -276,7 +306,45 @@ function ReadyPlayer({ pid, media: m, map }: { pid: string; media: MediaItem; ma
           />
           <div className="mt-1 grid grid-cols-[1fr_auto_1fr] items-center gap-4">
             <div className="flex items-baseline gap-3">
-              <span className="timecode text-xl text-fg-1">{tc(frame)}</span>
+              {gotoOpen ? (
+                <input
+                  ref={(el) => {
+                    gotoRef.current = el
+                    el?.focus()
+                    el?.select()
+                  }}
+                  aria-label="Go to timecode or frame"
+                  defaultValue={tc(frame)}
+                  spellCheck={false}
+                  className="timecode h-8 w-[150px] rounded-md border border-accent-line bg-inset px-2 text-xl text-fg-1 outline-none"
+                  onBlur={() => setGotoOpen(false)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") setGotoOpen(false)
+                    if (e.key !== "Enter") return
+                    const f = parseTimecode(e.currentTarget.value, fps, map.dropFrame, frame)
+                    if (f == null) {
+                      toast.error("That isn't a timecode or frame number", {
+                        description: "Try 00:12:03:05, a frame like 17099, or +48 to jump ahead.",
+                      })
+                      return
+                    }
+                    seek(f)
+                    setGotoOpen(false)
+                  }}
+                />
+              ) : (
+                <Tooltip label="Go to timecode or frame" shortcut={[modKey, "G"]}>
+                  <button
+                    onClick={() => {
+                      pause()
+                      setGotoOpen(true)
+                    }}
+                    className="timecode -mx-1 rounded-sm px-1 text-xl text-fg-1 hover:bg-hover"
+                  >
+                    {tc(frame)}
+                  </button>
+                </Tooltip>
+              )}
               <span className="timecode text-xs text-fg-3">
                 {frame} / {last}
               </span>
@@ -292,7 +360,7 @@ function ReadyPlayer({ pid, media: m, map }: { pid: string; media: MediaItem; ma
                 <button
                   onClick={toggle}
                   aria-label={playing ? "Pause" : "Play"}
-                  className="mx-1 flex size-10 items-center justify-center rounded-full bg-fg-1 text-canvas shadow-1 transition-transform active:scale-95 [&_svg]:size-4"
+                  className="mx-1 flex size-10 items-center justify-center rounded-full bg-fg-1 text-canvas shadow-1 transition-colors hover:bg-fg-2 [&_svg]:size-4"
                 >
                   {playing ? <Pause className="fill-current" /> : <Play className="translate-x-px fill-current" />}
                 </button>
@@ -307,6 +375,27 @@ function ReadyPlayer({ pid, media: m, map }: { pid: string; media: MediaItem; ma
             <div className="flex items-center justify-end gap-2">
               <span className="timecode text-xs text-fg-3">{tc(last)}</span>
               <span className="timecode text-xs text-fg-3">· {formatFps(fps)} fps</span>
+              <div className="ml-2 flex items-center gap-1">
+                <Tooltip label={muted ? "Unmute" : "Mute"} shortcut={["M"]}>
+                  <button
+                    onClick={toggleMute}
+                    aria-label={muted ? "Unmute" : "Mute"}
+                    className="flex size-8 items-center justify-center rounded-md text-fg-2 transition-colors hover:bg-hover hover:text-fg-1 [&_svg]:size-4"
+                  >
+                    {muted || volume === 0 ? <VolumeX /> : volume < 0.5 ? <Volume1 /> : <Volume2 />}
+                  </button>
+                </Tooltip>
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={muted ? 0 : volume}
+                  aria-label="Volume"
+                  onChange={(e) => setVolume(Number(e.currentTarget.value))}
+                  className="h-1 w-20 cursor-pointer accent-[var(--fg-1)]"
+                />
+              </div>
             </div>
           </div>
         </div>
@@ -344,14 +433,15 @@ function ReadyPlayer({ pid, media: m, map }: { pid: string; media: MediaItem; ma
             }}
           >
             <Scissors /> Export clip
-            <Kbd keys={[modKey, "E"]} className="ml-auto opacity-70 [&_kbd]:border-black/20 [&_kbd]:bg-black/10 [&_kbd]:text-on-accent" />
+            <Kbd keys={[modKey, "E"]} className="ml-auto opacity-70 [&_kbd]:border-on-accent/20 [&_kbd]:bg-on-accent/10 [&_kbd]:text-on-accent" />
           </Button>
           {!hasMarks && <p className="mt-2 text-center text-2xs text-fg-3">Mark an in or out point to export.</p>}
         </section>
 
         <section className="border-b border-hairline p-4">
           <h2 className="eyebrow mb-3">Source</h2>
-          <p data-selectable className="text-sm break-all text-fg-1">
+          <p className="text-sm text-fg-1">{releaseTitle(m.fileName)}</p>
+          <p data-selectable className="mt-0.5 text-2xs [overflow-wrap:anywhere] text-fg-3">
             {m.fileName}
           </p>
           {m.info && (
@@ -374,13 +464,13 @@ function ReadyPlayer({ pid, media: m, map }: { pid: string; media: MediaItem; ma
                 size="sm"
                 aria-label="Audio track"
                 className="w-full"
-                value={String(m.audioOrdinal ?? defaultOrdinal)}
+                value={String(currentAudio(m))}
                 onChange={(v) =>
                   void commands
-                    .mediaSetAudio(pid, m.id, Number(v) === defaultOrdinal ? null : Number(v))
+                    .mediaSetAudio(pid, m.id, Number(v))
                     .catch((e) => toast.error("Couldn't change the audio track", { description: errorMessage(e) }))
                 }
-                options={audio.map((a) => ({ value: String(a.ordinal), label: audioLabel(a) }))}
+                options={audio.map(audioOption)}
               />
             </div>
           )}
@@ -398,6 +488,8 @@ function ReadyPlayer({ pid, media: m, map }: { pid: string; media: MediaItem; ma
               ["Step one second", ["Shift", "←"]],
               ["Mark in / out", ["I", "O"]],
               ["Go to in / out", ["Shift", "I"]],
+              ["Go to timecode", [modKey, "G"]],
+              ["Mute", ["M"]],
             ].map(([label, keys]) => (
               <li key={label as string} className="flex items-center justify-between">
                 <span>{label}</span>

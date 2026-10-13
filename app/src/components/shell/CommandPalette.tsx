@@ -74,7 +74,7 @@ export function CommandPalette() {
   return (
     <D.Root open={open} onOpenChange={setOpen}>
       <D.Portal>
-        <D.Overlay className="fixed inset-0 z-50 bg-black/45 data-[state=open]:animate-fade-in" />
+        <D.Overlay className="fixed inset-0 z-50 bg-scrim-soft data-[state=open]:animate-fade-in" />
         <D.Content
           className="glass fixed top-[14vh] left-1/2 z-50 w-[min(600px,calc(100vw-32px))] -translate-x-1/2 overflow-hidden rounded-xl focus:outline-none data-[state=open]:animate-pop-in"
           aria-describedby={undefined}

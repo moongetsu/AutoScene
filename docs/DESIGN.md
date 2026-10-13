@@ -24,7 +24,10 @@ hex values or Tailwind palette colours (`amber-500`, `zinc-800`…) in component
 | Raised controls | `--bg-raised` | `#1A1A1E` |
 | Overlays (menus) | `--bg-overlay` | `#202025` |
 | Hairline borders | `--line-hairline` | white 7.5% |
-| Primary / secondary / tertiary text | `--fg-1/2/3` | `#EDEDEF` / `#A3A3AB` / `#707078` |
+| Primary / secondary / tertiary text | `--fg-1/2/3` | `#EDEDEF` / `#A3A3AB` / `#88888F` (≥ 4.5:1 on every surface) |
+| Scrims behind dialogs, sheets, drop targets | `--scrim`, `--scrim-soft` | black 55% / 35% |
+| Over pictures (thumbnails, posters) | `--scrim-media`, `--fg-on-media` | black 45% / white 90% |
+| Windows caption close button (platform chrome) | `--win-close` | `#C42B1C` |
 | **Accent (only one)** | `--accent` | `#C4A35A` (logo gold) |
 | Destructive / errors only | `--danger` | `#D2564B` |
 

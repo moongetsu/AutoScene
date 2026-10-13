@@ -100,7 +100,7 @@ function Welcome({ onCreate }: { onCreate: () => void }) {
       <ol className="relative grid grid-cols-1 gap-px border-t border-hairline bg-hairline md:grid-cols-3">
         {STEPS.map((s, i) => (
           <li key={s.title} className="flex gap-3.5 bg-panel px-6 py-5">
-            <div className="flex size-8 shrink-0 items-center justify-center rounded-md border border-hairline bg-raised text-accent [&_svg]:size-4">
+            <div className="flex size-8 shrink-0 items-center justify-center rounded-md border border-hairline bg-raised text-fg-2 [&_svg]:size-4">
               {s.icon}
             </div>
             <div>

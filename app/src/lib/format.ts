@@ -18,7 +18,8 @@ export function formatDuration(sec: number): string {
   return h > 0 ? `${h}:${mm}:${String(r).padStart(2, "0")}` : `${mm}:${String(r).padStart(2, "0")}`
 }
 
-const dateFmt = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })
+// The interface is English; dates follow it ("13 Oct, 22:13") instead of mixing languages.
+const dateFmt = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })
 
 /** Unix ms → "13 Oct, 19:42". */
 export function formatDateTime(ms: number): string {

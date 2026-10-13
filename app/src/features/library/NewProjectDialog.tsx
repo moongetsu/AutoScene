@@ -20,7 +20,7 @@ export function NewProjectDialog() {
   const seed = useNewProject((s) => s.seed)
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      {open && <NewProjectForm key={seed.join("|")} seed={seed} onDone={() => setOpen(false)} />}
+      {open && <NewProjectForm seed={seed} onDone={() => setOpen(false)} />}
     </Dialog>
   )
 }
@@ -32,7 +32,10 @@ function NewProjectForm({ seed, onDone }: { seed: string[]; onDone: () => void }
   const [kind, setKind] = useState<ProjectKind>("series")
   const kindTouched = useRef(false)
   const [content, setContent] = useState<ContentKind>("live")
-  const [sources, setSources] = useState<string[]>(seed)
+  // Dropped files (`seed`, which grows when more are dropped on the open
+  // dialog) plus picked ones; nothing typed is lost when more arrive.
+  const [picked, setPicked] = useState<string[]>([])
+  const sources = useMemo(() => [...new Set([...seed, ...picked])], [seed, picked])
   const [scan, setScan] = useState<{ key: string; found: ImportCandidate[] }>({ key: "", found: [] })
   const [removed, setRemoved] = useState<Set<string>>(new Set())
   const [creating, setCreating] = useState(false)
@@ -72,7 +75,7 @@ function NewProjectForm({ seed, onDone }: { seed: string[]; onDone: () => void }
 
   const chosen = useMemo(() => candidates.filter((c) => !removed.has(c.path)), [candidates, removed])
   const totalBytes = chosen.reduce((n, c) => n + (c.sizeBytes ?? 0), 0)
-  const addSources = (paths: string[]) => paths.length && setSources((s) => [...new Set([...s, ...paths])])
+  const addSources = (paths: string[]) => paths.length && setPicked((s) => [...new Set([...s, ...paths])])
 
   const create = async () => {
     setCreating(true)

@@ -3,12 +3,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::{CoreError, CoreResult};
 
-/// Cheap, cloneable cancellation flag. Children cancel with their parent but
-/// can also be cancelled on their own (e.g. one export item inside a batch).
+/// Cheap, cloneable cancellation flag. Children cancel with any of their
+/// ancestors but can also be cancelled on their own (e.g. one export item
+/// inside a batch).
 #[derive(Clone, Debug, Default)]
 pub struct CancelToken {
     own: Arc<AtomicBool>,
-    parent: Option<Arc<AtomicBool>>,
+    ancestors: Arc<[Arc<AtomicBool>]>,
 }
 
 impl CancelToken {
@@ -17,7 +18,8 @@ impl CancelToken {
     }
 
     pub fn child(&self) -> Self {
-        Self { own: Arc::new(AtomicBool::new(false)), parent: Some(self.own.clone()) }
+        let ancestors: Vec<_> = self.ancestors.iter().cloned().chain([self.own.clone()]).collect();
+        Self { own: Arc::new(AtomicBool::new(false)), ancestors: ancestors.into() }
     }
 
     pub fn cancel(&self) {
@@ -25,7 +27,7 @@ impl CancelToken {
     }
 
     pub fn is_cancelled(&self) -> bool {
-        self.own.load(Ordering::Acquire) || self.parent.as_ref().is_some_and(|p| p.load(Ordering::Acquire))
+        self.own.load(Ordering::Acquire) || self.ancestors.iter().any(|p| p.load(Ordering::Acquire))
     }
 
     /// `?`-friendly check for long loops.
@@ -46,6 +48,14 @@ mod tests {
         p.cancel();
         assert!(c.is_cancelled());
         assert!(c.check().is_err());
+    }
+
+    #[test]
+    fn grandchild_follows_the_root() {
+        let root = CancelToken::new();
+        let grandchild = root.child().child();
+        root.cancel();
+        assert!(grandchild.is_cancelled());
     }
 
     #[test]

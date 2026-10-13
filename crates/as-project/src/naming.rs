@@ -9,8 +9,10 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 /// Containers worth offering for import.
-pub const VIDEO_EXTENSIONS: &[&str] =
-    &["mp4", "m4v", "mov", "mkv", "webm", "avi", "wmv", "ts", "m2ts", "mts", "mpg", "mpeg", "vob", "flv", "ogv", "3gp"];
+pub const VIDEO_EXTENSIONS: &[&str] = &[
+    "mp4", "m4v", "mov", "mkv", "webm", "avi", "wmv", "ts", "m2ts", "mts", "mpg", "mpeg", "vob", "flv", "ogv", "3gp",
+    "mxf",
+];
 
 pub fn is_video(path: &Path) -> bool {
     path.extension()
@@ -128,8 +130,20 @@ pub fn safe_component(s: &str, sep: &str, max_chars: usize) -> String {
     }
     // Windows refuses names ending in a dot or space, and reserved device names.
     let out = out.trim_end_matches(['.', ' ']).to_string();
-    let reserved = ["CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "LPT1", "LPT2", "LPT3"];
-    if out.is_empty() || reserved.iter().any(|r| r.eq_ignore_ascii_case(&out)) { format!("_{out}") } else { out }
+    if out.is_empty() || is_reserved_device(&out) { format!("_{out}") } else { out }
+}
+
+/// CON, PRN, AUX, NUL, COM0-9, LPT0-9 (and the superscript-digit forms
+/// Windows also reserves) can't be file names, whatever the extension.
+fn is_reserved_device(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    if ["CON", "PRN", "AUX", "NUL"].contains(&upper.as_str()) {
+        return true;
+    }
+    let mut chars = upper.chars();
+    let prefix: String = chars.by_ref().take(3).collect();
+    let rest: Vec<char> = chars.collect();
+    (prefix == "COM" || prefix == "LPT") && rest.len() == 1 && (rest[0].is_ascii_digit() || "¹²³".contains(rest[0]))
 }
 
 #[cfg(test)]

@@ -18,21 +18,33 @@ type ActivityState = {
 
 export const isFinished = (j: JobInfo) => j.state === "done" || j.state === "failed" || j.state === "cancelled"
 
+/**
+ * Events and the initial snapshot can arrive in any order, so every write
+ * keeps whichever copy of a job has the higher `rev` (see `JobInfo.rev`).
+ */
 export const useActivity = create<ActivityState>((set) => ({
   jobs: {},
   order: [],
   replaceAll: (list) =>
-    set({ jobs: Object.fromEntries(list.map((j) => [j.id, j])), order: list.map((j) => j.id) }),
+    set((s) => {
+      const jobs: Record<JobId, JobInfo> = { ...s.jobs }
+      for (const j of list) if (!jobs[j.id] || jobs[j.id].rev <= j.rev) jobs[j.id] = j
+      const order = Object.values(jobs)
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .map((j) => j.id)
+      return { jobs, order }
+    }),
   upsert: (job) =>
-    set((s) => ({
-      jobs: { ...s.jobs, [job.id]: job },
-      order: s.jobs[job.id] ? s.order : [job.id, ...s.order],
-    })),
+    set((s) => {
+      const prev = s.jobs[job.id]
+      if (prev && prev.rev > job.rev) return s
+      return { jobs: { ...s.jobs, [job.id]: job }, order: prev ? s.order : [job.id, ...s.order] }
+    }),
   progress: (p) =>
     set((s) => {
       const j = s.jobs[p.id]
-      if (!j || isFinished(j)) return s
-      return { jobs: { ...s.jobs, [p.id]: { ...j, progress: p.progress, stage: p.stage, etaMs: p.etaMs } } }
+      if (!j || isFinished(j) || j.rev > p.rev) return s
+      return { jobs: { ...s.jobs, [p.id]: { ...j, progress: p.progress, stage: p.stage, etaMs: p.etaMs, rev: p.rev } } }
     }),
   clearFinished: () =>
     set((s) => {

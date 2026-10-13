@@ -42,3 +42,32 @@ export function timecode(f: number, fps: Fps, dropFrame: boolean): string {
   const p = (v: number) => String(v).padStart(2, "0")
   return `${p(hh)}:${p(mm)}:${p(ss)}${df ? ";" : ":"}${p(ff)}`
 }
+
+/**
+ * Frame for what someone typed into the "go to" field:
+ * - a timecode, right-aligned (`1:02:03:04`, `02:03:04` = mm:ss:ff, `;` or `.` also work),
+ * - a plain frame number (`17099`),
+ * - a relative jump in frames (`+48`, `-12`).
+ * Drop-frame labels are converted back exactly (the inverse of `timecode`).
+ * Returns `null` for anything else.
+ */
+export function parseTimecode(text: string, fps: Fps, dropFrame: boolean, current = 0): number | null {
+  const t = text.trim()
+  if (/^[+-]\d+$/.test(t)) return current + Number(t)
+  if (/^\d+$/.test(t)) return Number(t)
+  if (!/^\d{1,2}([:;.]\d{1,2}){1,3}$/.test(t)) return null
+  const parts = t.split(/[:;.]/).map(Number)
+  while (parts.length < 4) parts.unshift(0)
+  const [hh, mm, ss, ff] = parts
+  const base = Math.max(1, Math.round(fpsValue(fps)))
+  if (mm > 59 || ss > 59 || ff >= base) return null
+  let n = ((hh * 60 + mm) * 60 + ss) * base + ff
+  if (dropFrame && isDropFrameRate(fps)) {
+    const drop = base / 15
+    const minutes = hh * 60 + mm
+    // Labels 00 and 01 (00-03 at 59.94) don't exist in minutes not divisible by ten.
+    if (mm % 10 !== 0 && ss === 0 && ff < drop) n += drop - ff
+    n -= drop * (minutes - Math.floor(minutes / 10))
+  }
+  return n
+}

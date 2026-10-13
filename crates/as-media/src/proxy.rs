@@ -1,7 +1,7 @@
 //! Playback proxies for the in-app player.
 //!
 //! The webview plays H.264/AAC in MP4 reliably everywhere. Anything else
-//! (MKV, HEVC, 10-bit, HDR, interlaced, odd start offsets) gets a 720p proxy
+//! (MKV, HEVC, 10-bit, HDR, interlaced, odd start offsets) gets a 540p proxy
 //! with a short GOP and no B-frames so scrubbing and frame stepping are
 //! instant. Proxies keep every frame (passthrough timing), so player time maps
 //! back to source frames through the frame index plus a measured offset.
@@ -13,7 +13,9 @@ use as_core::{CancelToken, FrameIndex};
 use crate::filters::display_chain;
 use crate::{CodecFamily, MediaError, MediaInfo, MediaResult, Source, Tools, run_ffmpeg};
 
-const PROXY_HEIGHT: u32 = 720;
+/// Enough to judge framing and expressions; a 45-minute episode stays well
+/// under a gigabyte.
+const PROXY_HEIGHT: u32 = 540;
 
 /// Can the webview play the source file as-is with frame-accurate mapping?
 pub fn playable_direct(info: &MediaInfo, index: &FrameIndex) -> bool {
@@ -46,7 +48,10 @@ pub fn build_proxy(
     if let Some(dir) = out.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let tmp = out.with_extension("part.mp4");
+    // Unique per build: a replaced build's ffmpeg may still be exiting.
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = out.with_extension(format!("{}-{n}.part.mp4", std::process::id()));
     let caps = tools.caps();
     // Absolute timestamps in, then video and audio shifted by the same exact
     // frame-0 time: the proxy starts at 0 with frame f at `t(f) - t(0)` and
@@ -76,21 +81,29 @@ pub fn build_proxy(
     // Short GOP, no B-frames: every seek decodes at most 11 frames.
     match caps.hw_encoder(CodecFamily::H264).filter(|e| e.name == "h264_nvenc") {
         Some(_) => args.extend(
-            ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", "23", "-b:v", "0", "-g", "12", "-bf", "0"]
+            ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", "26", "-b:v", "0", "-g", "12", "-bf", "0"]
                 .map(String::from),
         ),
         None => args.extend(
-            ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-g", "12", "-bf", "0", "-tune", "fastdecode"]
+            ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-g", "12", "-bf", "0", "-tune", "fastdecode"]
                 .map(String::from),
         ),
     }
-    if audio_ordinal.is_some() {
+    if let Some(a) = audio_ordinal {
         args.extend(["-c:a", "aac", "-b:a", "128k", "-ac", "2"].map(String::from));
+        let lang = info.audio.iter().find(|s| s.ordinal == a).and_then(|s| s.language.as_deref());
+        if let Some(lang) = lang.and_then(crate::lang::canonical) {
+            args.extend(["-metadata:s:a:0".into(), format!("language={lang}")]);
+        }
     }
+    // Chapters would become an extra data track; the player needs none of it.
+    args.extend(["-map_chapters", "-1", "-map_metadata", "-1"].map(String::from));
     args.extend(["-movflags".into(), "+faststart".into(), tmp.display().to_string()]);
 
     let duration = index.duration().max(0.001);
-    run_ffmpeg(tools, &args, cancel, |p| progress((p.out_time / duration).clamp(0.0, 1.0)))?;
+    run_ffmpeg(tools, &args, cancel, |p| progress((p.out_time / duration).clamp(0.0, 1.0))).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })?;
 
     let t0 = first_video_pts(tools, &tmp)?;
     let frames = count_frames(tools, &tmp)?;
@@ -113,31 +126,29 @@ pub fn timing_args(index: &FrameIndex) -> Vec<String> {
 
 /// Presentation time of the first video frame as players see it (edit lists applied).
 pub fn first_video_pts(tools: &Tools, file: &Path) -> MediaResult<f64> {
-    let out = tools
-        .ffprobe()
-        .args([
-            "-select_streams",
-            "v:0",
-            "-read_intervals",
-            "%+#1",
-            "-show_entries",
-            "frame=pts_time",
-            "-of",
-            "csv=p=0",
-        ])
-        .arg(file)
-        .output()?;
+    let mut cmd = tools.ffprobe();
+    cmd.args([
+        "-select_streams",
+        "v:0",
+        "-read_intervals",
+        "%+#1",
+        "-show_entries",
+        "frame=pts_time",
+        "-of",
+        "csv=p=0",
+    ])
+    .arg(file);
+    let out = crate::proc::output(&mut cmd)?;
     first_csv_field(&String::from_utf8_lossy(&out.stdout))
         .and_then(|f| f.parse().ok())
         .ok_or_else(|| MediaError::Verify(format!("no frames in {}", file.display())))
 }
 
 fn count_frames(tools: &Tools, file: &Path) -> MediaResult<u64> {
-    let out = tools
-        .ffprobe()
-        .args(["-select_streams", "v:0", "-count_packets", "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0"])
-        .arg(file)
-        .output()?;
+    let mut cmd = tools.ffprobe();
+    cmd.args(["-select_streams", "v:0", "-count_packets", "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0"])
+        .arg(file);
+    let out = crate::proc::output(&mut cmd)?;
     first_csv_field(&String::from_utf8_lossy(&out.stdout))
         .and_then(|f| f.parse().ok())
         .ok_or_else(|| MediaError::Verify(format!("could not count frames in {}", file.display())))

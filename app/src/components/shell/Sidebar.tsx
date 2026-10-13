@@ -64,7 +64,7 @@ export function Sidebar() {
   return (
     <aside
       className={cn(
-        "flex shrink-0 flex-col border-r border-hairline bg-panel transition-[width] duration-[var(--dur-slow)] ease-out",
+        "flex shrink-0 flex-col border-r border-hairline bg-panel",
         collapsed ? "w-[var(--sidebar-w-collapsed)]" : "w-[var(--sidebar-w)]",
       )}
     >

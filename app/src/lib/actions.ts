@@ -5,6 +5,7 @@ import { useNewProject } from "@/state/new-project"
 import { useUi } from "@/state/ui"
 import { useUpdates } from "@/state/updates"
 import { commands, errorMessage, events } from "./ipc"
+import { pickVideoFiles } from "./media"
 import { isMac, isTauri } from "./platform"
 import { matchShortcut, type ShortcutId } from "./shortcuts"
 
@@ -22,7 +23,7 @@ export function useAppActions() {
         void navigate({ to: page === "episodes" ? "/p/$pid/episodes" : "/p/$pid/exports", params: { pid } }),
       goSettings: (section: SettingsSection = "general") =>
         void navigate({ to: "/settings/$section", params: { section } }),
-      checkUpdates: () => void useUpdates.getState().check(true),
+      checkUpdates: () => void useUpdates.getState().check(true, true),
       openLogs: () => commands.openLogsDir().catch((e) => toast.error("Couldn't open logs", { description: errorMessage(e) })),
     }),
     [navigate],
@@ -31,6 +32,16 @@ export function useAppActions() {
 
 /** DOM event asking the current screen to open its export dialog (macOS menu ⌘E). */
 export const EXPORT_REQUEST = "autoscene:export"
+/** macOS menu File → Reveal in Finder: the player reveals its source file. */
+export const REVEAL_REQUEST = "autoscene:reveal"
+/** macOS menu Edit → Copy Timecodes: the player copies its in/out (or current) timecode. */
+export const COPY_TIMECODES_REQUEST = "autoscene:copy-timecodes"
+
+/** The project the current route is about, if any. */
+function currentProjectId(): string | undefined {
+  const m = window.location.hash.match(/#\/p\/([^/]+)/) ?? window.location.pathname.match(/^\/p\/([^/]+)/)
+  return m?.[1]
+}
 
 export const SETTINGS_SECTIONS = ["general", "shortcuts", "updates", "about"] as const
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number]
@@ -72,6 +83,27 @@ export function useGlobalBindings() {
       "file:export": () => window.dispatchEvent(new CustomEvent(EXPORT_REQUEST)),
       "view:activity": a.toggleActivity,
       "view:toggle-sidebar": a.toggleSidebar,
+      "file:reveal": () => window.dispatchEvent(new CustomEvent(REVEAL_REQUEST)),
+      "edit:copy-timecodes": () => window.dispatchEvent(new CustomEvent(COPY_TIMECODES_REQUEST)),
+      "file:add-media": () => {
+        const pid = currentProjectId()
+        if (!pid) return a.newProject()
+        void pickVideoFiles().then((files) => {
+          if (!files.length) return
+          commands
+            .mediaAdd(pid, files)
+            .then((n) => toast(n === 0 ? "Nothing new to add" : `Added ${n} ${n === 1 ? "file" : "files"}`))
+            .catch((e) => toast.error("Couldn't add files", { description: errorMessage(e) }))
+        })
+      },
+      "view:episodes": () => {
+        const pid = currentProjectId()
+        if (pid) a.goProject(pid, "episodes")
+      },
+      "view:exports": () => {
+        const pid = currentProjectId()
+        if (pid) a.goProject(pid, "exports")
+      },
     }
     const p = events.menuAction.listen(({ payload }) => byId[payload]?.())
     return () => void p.then((un) => un())

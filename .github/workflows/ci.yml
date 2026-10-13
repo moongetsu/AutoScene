@@ -23,12 +23,14 @@ jobs:
       - name: Rust toolchain
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
-      - name: Install FFmpeg (macOS)
-        if: runner.os == 'macOS'
-        run: brew install ffmpeg
-      - name: Install FFmpeg (Windows)
-        if: runner.os == 'Windows'
-        run: choco install ffmpeg -y --no-progress
+      # The exact, checksum-pinned ffmpeg the app ships with (Homebrew's lacks
+      # zimg, which HDR tone mapping needs).
+      - name: FFmpeg
+        shell: bash
+        run: |
+          cargo xtask fetch-sidecars
+          echo "$PWD/app/src-tauri/ffmpeg" >> "$GITHUB_PATH"
+          echo "AUTOSCENE_FFMPEG_DIR=$PWD/app/src-tauri/ffmpeg" >> "$GITHUB_ENV"
       - name: Frontend dist placeholder
         shell: bash
         run: mkdir -p app/dist
@@ -37,6 +39,8 @@ jobs:
       - name: Generate fixtures
         run: cargo xtask fixtures
       - run: cargo test --workspace
+        env:
+          AUTOSCENE_REQUIRE_FIXTURES: "1"
       - name: Bindings are up to date
         shell: bash
         run: |

@@ -87,7 +87,15 @@ function JobRow({ job: j }: { job: JobInfo }) {
   return (
     <li
       onClick={open}
-      className={cn("group flex gap-3 px-4 py-2.5 transition-colors", canOpen && "cursor-pointer hover:bg-hover")}
+      tabIndex={canOpen ? 0 : undefined}
+      role={canOpen ? "link" : undefined}
+      onKeyDown={(e) => {
+        if (canOpen && e.key === "Enter" && e.target === e.currentTarget) open()
+      }}
+      className={cn(
+        "group flex gap-3 px-4 py-2.5 transition-colors focus-visible:bg-hover focus-visible:outline-none",
+        canOpen && "cursor-pointer hover:bg-hover",
+      )}
     >
       <span
         className={cn(

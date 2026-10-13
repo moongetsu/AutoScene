@@ -1,3 +1,4 @@
+import { toast } from "sonner"
 import { create } from "zustand"
 import { commands, errorMessage, events, type UpdateStatus } from "@/lib/ipc"
 
@@ -11,8 +12,12 @@ type UpdatesState = {
   error: string | null
   dialogOpen: boolean
   lastChecked: number | null
-  /** `manual` checks always surface the result; launch checks respect snooze/skip. */
-  check: (manual: boolean) => Promise<void>
+  /**
+   * `manual` checks always surface the result; launch checks respect snooze/skip.
+   * `announce` also toasts "up to date" / failures, for checks started where
+   * no settings page shows the answer (palette, menu).
+   */
+  check: (manual: boolean, announce?: boolean) => Promise<void>
   install: () => Promise<void>
   relaunch: () => Promise<void>
   remindLater: () => void
@@ -40,7 +45,7 @@ export const useUpdates = create<UpdatesState>((set, get) => ({
   dialogOpen: false,
   lastChecked: null,
 
-  async check(manual) {
+  async check(manual, announce = false) {
     const busy = ["checking", "downloading", "installing"].includes(get().phase)
     if (busy) return
     set({ phase: "checking", error: null })
@@ -53,9 +58,12 @@ export const useUpdates = create<UpdatesState>((set, get) => ({
         lastChecked: Date.now(),
         dialogOpen: available && (manual || !suppressed(status.version)),
       })
+      // A manual check from the palette or menu has no settings page to show its answer.
+      if (announce && !available) toast("AutoScene is up to date", { description: `Version ${status.currentVersion}` })
     } catch (e) {
       // Launch checks fail quietly (offline is normal); manual ones explain.
       set({ phase: manual ? "error" : "idle", error: errorMessage(e), lastChecked: Date.now() })
+      if (announce) toast.error("Couldn't check for updates", { description: errorMessage(e) })
     }
   },
 

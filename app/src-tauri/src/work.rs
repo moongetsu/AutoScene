@@ -18,7 +18,10 @@ use crate::state::AppState;
 fn job_error(e: ProjectError) -> JobError {
     match e {
         ProjectError::Cancelled => JobError::Cancelled,
-        e => JobError::Failed(e.to_string()),
+        e => {
+            log::warn!("{}", e.detail());
+            JobError::Failed(e.to_string())
+        }
     }
 }
 
@@ -59,7 +62,11 @@ pub fn queue_ingest(app: &AppHandle, project: &Arc<Project>, media_id: MediaId) 
     state.jobs.submit(spec, move |ctx| {
         let state = app2.state::<AppState>();
         let tools = state.tools().map_err(|e| JobError::Failed(e.message))?;
-        let result = project.ingest(&tools, media_id, &ctx.cancel, &|stage, p| ctx.progress(stage, p));
+        let language = state.library.audio_language().unwrap_or_default();
+        let result = project.ingest(&tools, media_id, &language, &ctx.cancel, &|stage, p| ctx.progress(stage, p));
+        if matches!(result, Err(ProjectError::Cancelled)) && !state.jobs.is_shutting_down() {
+            let _ = project.set_media_failed(media_id, "Indexing was cancelled.");
+        }
         media_changed(&app2, &project, Some(media_id));
         library_changed(&app2, &project);
         let m = result.map_err(job_error)?;
@@ -126,7 +133,7 @@ pub fn queue_export(app: &AppHandle, project: &Arc<Project>, export_id: ExportId
             }
         };
         notify();
-        let result = project.run_export(&tools, export_id, &ctx.cancel, &|stage, p| ctx.progress(stage, p));
+        let result = project.run_export(&tools, export_id, &ctx.cancel, &|stage, p| ctx.progress(stage, p), &notify);
         notify();
         let summary = result.map_err(job_error)?;
         let failed = summary.items.iter().filter(|i| i.error.is_some()).count();

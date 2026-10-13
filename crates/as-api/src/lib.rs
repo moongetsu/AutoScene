@@ -60,6 +60,10 @@ pub struct AppSettings {
     pub library_root: String,
     /// Preset preselected in the export dialog.
     pub export_preset_id: String,
+    /// Audio language picked automatically for new episodes (ISO 639-2 code,
+    /// e.g. `eng`); empty = use each file's default track.
+    #[serde(default)]
+    pub audio_language: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -319,6 +323,9 @@ pub struct JobInfo {
     pub error: Option<String>,
     pub created_at: i64,
     pub finished_at: Option<i64>,
+    /// Increases with every change to any job. Events can arrive out of
+    /// order; the UI keeps the copy with the highest revision.
+    pub rev: u64,
 }
 
 /// Throttled progress for a running job (≤ 4 Hz per job).
@@ -326,6 +333,8 @@ pub struct JobInfo {
 #[serde(rename_all = "camelCase")]
 pub struct JobProgress {
     pub id: JobId,
+    /// Revision of the job this progress belongs to (see [`JobInfo::rev`]).
+    pub rev: u64,
     pub progress: Option<f64>,
     pub stage: Option<String>,
     pub eta_ms: Option<i64>,

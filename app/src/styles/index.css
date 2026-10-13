@@ -33,6 +33,13 @@
   --color-danger: var(--danger);
   --color-danger-subtle: var(--danger-subtle);
 
+  --color-scrim: var(--scrim);
+  --color-scrim-soft: var(--scrim-soft);
+  --color-scrim-media: var(--scrim-media);
+  --color-on-media: var(--fg-on-media);
+  --color-win-close: var(--win-close);
+  --color-on-win-close: var(--fg-on-win-close);
+
   --font-sans: var(--font-sans);
   --font-mono: var(--font-mono);
 
@@ -83,10 +90,10 @@
 
 @keyframes indeterminate {
   from {
-    left: -35%;
+    transform: translateX(-100%);
   }
   to {
-    left: 100%;
+    transform: translateX(300%);
   }
 }
 

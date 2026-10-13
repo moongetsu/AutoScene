@@ -43,13 +43,13 @@ export function Scrubber({
     <div
       ref={ref}
       role="slider"
-      tabIndex={-1}
+      tabIndex={0}
       aria-label="Playhead"
       aria-valuemin={0}
       aria-valuemax={last}
       aria-valuenow={frame}
       aria-valuetext={formatFrame(frame)}
-      className="relative h-7 cursor-pointer touch-none select-none"
+      className="relative h-7 cursor-pointer touch-none rounded-sm select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-subtle"
       onPointerDown={(e) => {
         e.currentTarget.setPointerCapture(e.pointerId)
         setDragging(true)

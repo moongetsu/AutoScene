@@ -54,7 +54,11 @@ export function TitleBar() {
         {crumbs.length > 0 && (
           <nav aria-label="Breadcrumb" data-tauri-drag-region className="flex min-w-0 items-center gap-1 text-sm">
             {crumbs.map((c, i) => (
-              <span key={c.id} data-tauri-drag-region className="flex min-w-0 items-center gap-1">
+              <span
+                key={c.id}
+                data-tauri-drag-region
+                className={cn("flex min-w-0 items-center gap-1", i < crumbs.length - 1 ? "max-w-[240px] shrink-0" : "flex-1")}
+              >
                 <ChevronRight className="size-3.5 shrink-0 text-fg-disabled" />
                 {c.to && i < crumbs.length - 1 ? (
                   <Link to={c.to} className="truncate rounded-xs px-1 text-fg-3 transition-colors hover:text-fg-1">
@@ -92,7 +96,7 @@ export function TitleBar() {
           >
             <Activity className="size-4" />
             {active > 0 && (
-              <span className="timecode absolute -top-0.5 -right-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-accent px-1 text-[9px] leading-none font-semibold text-on-accent">
+              <span className="timecode absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-accent px-1 text-2xs leading-none font-semibold text-on-accent">
                 {active}
               </span>
             )}
