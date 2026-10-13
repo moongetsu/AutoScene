@@ -76,11 +76,11 @@ pub fn build_proxy(
     // Short GOP, no B-frames: every seek decodes at most 11 frames.
     match caps.hw_encoder(CodecFamily::H264).filter(|e| e.name == "h264_nvenc") {
         Some(_) => args.extend(
-            ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", "26", "-b:v", "0", "-g", "12", "-bf", "0"]
+            ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", "23", "-b:v", "0", "-g", "12", "-bf", "0"]
                 .map(String::from),
         ),
         None => args.extend(
-            ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-g", "12", "-bf", "0", "-tune", "fastdecode"]
+            ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-g", "12", "-bf", "0", "-tune", "fastdecode"]
                 .map(String::from),
         ),
     }
@@ -127,10 +127,8 @@ pub fn first_video_pts(tools: &Tools, file: &Path) -> MediaResult<f64> {
         ])
         .arg(file)
         .output()?;
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .next()
-        .and_then(|l| l.trim().trim_end_matches(',').parse().ok())
+    first_csv_field(&String::from_utf8_lossy(&out.stdout))
+        .and_then(|f| f.parse().ok())
         .ok_or_else(|| MediaError::Verify(format!("no frames in {}", file.display())))
 }
 
@@ -140,8 +138,52 @@ fn count_frames(tools: &Tools, file: &Path) -> MediaResult<u64> {
         .args(["-select_streams", "v:0", "-count_packets", "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0"])
         .arg(file)
         .output()?;
-    String::from_utf8_lossy(&out.stdout)
-        .trim()
-        .parse()
-        .map_err(|_| MediaError::Verify(format!("could not count frames in {}", file.display())))
+    first_csv_field(&String::from_utf8_lossy(&out.stdout))
+        .and_then(|f| f.parse().ok())
+        .ok_or_else(|| MediaError::Verify(format!("could not count frames in {}", file.display())))
+}
+
+/// First value of ffprobe `-of csv=p=0` output. FFmpeg 9 ends rows with a
+/// trailing separator (`586,`), older versions don't.
+fn first_csv_field(out: &str) -> Option<&str> {
+    out.lines().next()?.split(',').map(str::trim).next().filter(|f| !f.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::first_csv_field;
+
+    #[test]
+    fn csv_fields_with_and_without_trailing_separator() {
+        assert_eq!(
+            first_csv_field(
+                "586
+"
+            ),
+            Some("586")
+        );
+        assert_eq!(
+            first_csv_field(
+                "586,
+"
+            ),
+            Some("586")
+        );
+        assert_eq!(
+            first_csv_field(
+                "0.041016,
+0.08,
+"
+            ),
+            Some("0.041016")
+        );
+        assert_eq!(first_csv_field(""), None);
+        assert_eq!(
+            first_csv_field(
+                ",
+"
+            ),
+            None
+        );
+    }
 }

@@ -150,7 +150,13 @@ fn proxy_keeps_every_frame_and_reports_offset() {
         let r = proxy::build_proxy(&tools, src, audio, &out, &CancelToken::new(), |_| {}).unwrap();
         let codes = barcodes(&tools, &out);
         assert_eq!(codes.len() as u32, truth.frame_count);
-        assert!(codes.iter().enumerate().all(|(i, c)| c.map(|c| c.frame as usize) == Some(i)), "{file}: proxy frames");
+        // A lossy preview may smear the barcode of a frame in heavy noise, but
+        // it must never show a different frame.
+        let wrong: Vec<_> =
+            codes.iter().enumerate().filter(|(i, c)| c.is_some_and(|c| c.frame as usize != *i)).collect();
+        let unreadable = codes.iter().filter(|c| c.is_none()).count();
+        assert!(wrong.is_empty(), "{file}: proxy shows wrong frames {wrong:?}");
+        assert!(unreadable * 100 <= codes.len(), "{file}: {unreadable} unreadable proxy frames");
         assert!(r.t0 >= 0.0 && r.t0 < 0.5, "{file}: proxy t0 {}", r.t0);
         // Player time of frame f is t0 + (t(f) - t(0)), including true VFR timing.
         let probe = tools

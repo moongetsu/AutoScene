@@ -107,7 +107,38 @@ pub fn probe(tools: &Tools, path: &Path) -> MediaResult<MediaInfo> {
         return Err(err(if msg.is_empty() { "unreadable file".into() } else { msg }));
     }
     let v: Value = serde_json::from_slice(&out.stdout).map_err(|e| err(e.to_string()))?;
-    parse(&v).ok_or_else(|| MediaError::NoVideo(path.display().to_string()))
+    let mut info = parse(&v).ok_or_else(|| MediaError::NoVideo(path.display().to_string()))?;
+    let vs = &info.video;
+    if vs.color_transfer.is_none() || vs.color_primaries.is_none() || vs.color_space.is_none() {
+        fill_colour_from_first_frame(tools, path, &mut info.video);
+    }
+    Ok(info)
+}
+
+/// Containers don't always carry the colour description — FFmpeg 9's
+/// Matroska muxer drops transfer and primaries, and so do many remuxes — but
+/// the decoded frames always do. Without this an HDR10 file reads as SDR.
+fn fill_colour_from_first_frame(tools: &Tools, path: &Path, video: &mut VideoStream) {
+    let out = tools
+        .ffprobe()
+        .args(["-select_streams", &video.index.to_string(), "-read_intervals", "%+#16", "-show_entries"])
+        .args(["frame=color_transfer,color_primaries,color_space,color_range", "-of", "json"])
+        .arg(path)
+        .output();
+    let Ok(out) = out else { return };
+    let Ok(v) = serde_json::from_slice::<Value>(&out.stdout) else { return };
+    let Some(frame) = v.get("frames").and_then(Value::as_array).and_then(|f| f.first()) else { return };
+    apply_frame_colour(video, frame);
+}
+
+fn apply_frame_colour(video: &mut VideoStream, frame: &Value) {
+    video.color_transfer = video.color_transfer.take().or_else(|| s(frame, "color_transfer"));
+    video.color_primaries = video.color_primaries.take().or_else(|| s(frame, "color_primaries"));
+    video.color_space = video.color_space.take().or_else(|| s(frame, "color_space"));
+    video.color_range = video.color_range.take().or_else(|| s(frame, "color_range"));
+    if video.hdr == HdrKind::None {
+        video.hdr = transfer_hdr(video.color_transfer.as_deref());
+    }
 }
 
 fn s(v: &Value, k: &str) -> Option<String> {
@@ -163,7 +194,11 @@ fn hdr(stream: &Value) -> HdrKind {
     if dovi {
         return HdrKind::DolbyVision;
     }
-    match s(stream, "color_transfer").as_deref() {
+    transfer_hdr(s(stream, "color_transfer").as_deref())
+}
+
+fn transfer_hdr(transfer: Option<&str>) -> HdrKind {
+    match transfer {
         Some("smpte2084") => HdrKind::Pq,
         Some("arib-std-b67") => HdrKind::Hlg,
         _ => HdrKind::None,
@@ -249,4 +284,41 @@ fn parse(v: &Value) -> Option<MediaInfo> {
         audio,
         subtitles,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn stream(transfer: Option<&str>) -> Value {
+        let mut st = json!({
+            "index": 0, "codec_type": "video", "codec_name": "hevc", "pix_fmt": "yuv420p10le",
+            "width": 3840, "height": 2160, "r_frame_rate": "24000/1001", "time_base": "1/1000",
+            "color_space": "bt2020nc"
+        });
+        if let Some(t) = transfer {
+            st["color_transfer"] = json!(t);
+        }
+        json!({ "format": { "format_name": "matroska,webm" }, "streams": [st] })
+    }
+
+    #[test]
+    fn hdr_from_stream_tags() {
+        assert_eq!(parse(&stream(Some("smpte2084"))).unwrap().video.hdr, HdrKind::Pq);
+        assert_eq!(parse(&stream(Some("arib-std-b67"))).unwrap().video.hdr, HdrKind::Hlg);
+        assert_eq!(parse(&stream(Some("unknown"))).unwrap().video.color_transfer, None);
+    }
+
+    #[test]
+    fn missing_container_colour_comes_from_the_first_frame() {
+        let mut info = parse(&stream(None)).unwrap();
+        assert_eq!(info.video.hdr, HdrKind::None);
+        let frame = json!({ "color_transfer": "smpte2084", "color_primaries": "bt2020", "color_space": "bt709" });
+        apply_frame_colour(&mut info.video, &frame);
+        assert_eq!(info.video.hdr, HdrKind::Pq);
+        assert_eq!(info.video.color_primaries.as_deref(), Some("bt2020"));
+        // Container values win where present.
+        assert_eq!(info.video.color_space.as_deref(), Some("bt2020nc"));
+    }
 }
