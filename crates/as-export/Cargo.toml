@@ -1,0 +1,20 @@
+[package]
+name = "as-export"
+description = "AutoScene export: frame-exact clip rendering with self-verification, presets"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+as-core.workspace = true
+as-media.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+specta.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+as-testkit.workspace = true
+tempfile = "3"

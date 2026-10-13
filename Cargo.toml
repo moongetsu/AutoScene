@@ -16,6 +16,8 @@ authors = ["tcmmi"]
 as-core = { path = "crates/as-core" }
 as-api = { path = "crates/as-api" }
 as-testkit = { path = "crates/as-testkit" }
+as-media = { path = "crates/as-media" }
+as-export = { path = "crates/as-export" }
 
 # shared third-party
 anyhow = "1"

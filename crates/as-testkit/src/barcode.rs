@@ -1,6 +1,6 @@
 //! Barcode layout (in master pixels, 640×360) and reader.
 //!
-//! A black strip at the top-left holds 24 cells. Cell `i` is white when bit
+//! A black strip (8 px margin) at the top-left holds 24 cells. Cell `i` is white when bit
 //! `i` is set: bits 0–15 are the frame index (LSB first), bits 16–23 the
 //! element id. Cells are drawn 12×12 inside a 16 px grid so compression
 //! artefacts never bleed between neighbours.
@@ -10,14 +10,14 @@ pub const MASTER_H: u32 = 360;
 
 pub const CELL: u32 = 16;
 pub const INSET: u32 = 2;
-pub const X0: u32 = 8;
-pub const Y0: u32 = 8;
+pub const X0: u32 = 12;
+pub const Y0: u32 = 12;
 pub const FRAME_BITS: u32 = 16;
 pub const ID_BITS: u32 = 8;
 pub const CELLS: u32 = FRAME_BITS + ID_BITS;
 
 /// Background strip `(x, y, w, h)`.
-pub const STRIP: (u32, u32, u32, u32) = (X0 - 4, Y0 - 4, CELLS * CELL + 8, CELL + 8);
+pub const STRIP: (u32, u32, u32, u32) = (X0 - 8, Y0 - 8, CELLS * CELL + 16, CELL + 16);
 
 /// Drawn rectangle of cell `i`: `(x, y, w, h)`.
 pub fn cell_rect(i: u32) -> (u32, u32, u32, u32) {
@@ -52,8 +52,8 @@ pub fn read_luma(plane: &[u8], width: u32, height: u32, stride: usize) -> Option
         if n == 0 { 0 } else { sum / n }
     };
 
-    // Sanity: the strip just left of the first cell must be dark.
-    if sample(X0 - 2, Y0 + CELL / 2) > 60 {
+    // Sanity: the strip margin left of the first cell must be dark.
+    if sample(X0 - 4, Y0 + CELL / 2) > 80 {
         return None;
     }
     let mut bits = 0u32;

@@ -145,6 +145,8 @@ pub struct FrameIndex {
     pts: PtsStore,
     /// Duration of the final frame, in `tb` units.
     last_dur: i64,
+    /// Timestamps stray from the nominal frame grid (true variable frame rate).
+    vfr: bool,
 }
 
 impl FrameIndex {
@@ -174,13 +176,20 @@ impl FrameIndex {
         } else {
             PtsStore::Cfr { first: pts[0], step: fallback_dur, n }
         };
-        Ok(Self { tb, nominal_fps, pts: store, last_dur })
+        let vfr = detect_vfr(&store, tb, nominal_fps);
+        Ok(Self { tb, nominal_fps, pts: store, last_dur, vfr })
     }
 
     /// Synthetic constant-rate index (tests, fixtures).
     pub fn cfr(tb: Rational, fps: Rational, first: i64, n: u32) -> Self {
         let step = ((tb.den as i128 * fps.den as i128) / (tb.num as i128 * fps.num as i128)) as i64;
-        Self { tb, nominal_fps: fps, pts: PtsStore::Cfr { first, step: step.max(1), n }, last_dur: step.max(1) }
+        Self {
+            tb,
+            nominal_fps: fps,
+            pts: PtsStore::Cfr { first, step: step.max(1), n },
+            last_dur: step.max(1),
+            vfr: false,
+        }
     }
 
     pub fn len(&self) -> u32 {
@@ -194,8 +203,10 @@ impl FrameIndex {
         self.len() == 0
     }
 
+    /// True variable frame rate. A constant-rate stream stored in a coarse
+    /// time base (24 fps in MKV's 1 ms ticks → 41/42 ms steps) is *not* VFR.
     pub fn is_vfr(&self) -> bool {
-        matches!(self.pts, PtsStore::Explicit(_))
+        self.vfr
     }
 
     /// Timestamp of frame `f` in `tb` units. `f == len()` gives the end time.
@@ -333,8 +344,17 @@ impl FrameIndex {
             }
             _ => return Err(bad("kind")),
         };
-        Ok(Self { tb, nominal_fps, pts, last_dur })
+        let vfr = detect_vfr(&pts, tb, nominal_fps);
+        Ok(Self { tb, nominal_fps, pts, last_dur, vfr })
     }
+}
+
+/// Does any timestamp sit more than one tick off the ideal nominal-rate grid?
+fn detect_vfr(store: &PtsStore, tb: Rational, fps: Rational) -> bool {
+    let PtsStore::Explicit(v) = store else { return false };
+    let step = (tb.den as f64 * fps.den as f64) / (tb.num as f64 * fps.num as f64);
+    let first = v[0] as f64;
+    v.iter().enumerate().any(|(i, &p)| (p as f64 - (first + i as f64 * step)).abs() > 1.0 + 1e-6)
 }
 
 struct Reader<'a> {
@@ -460,6 +480,15 @@ mod tests {
             assert_eq!(back.pts(f as u32), p);
             assert_eq!(back.frame_at(p as f64 / 1000.0), f as u32);
         }
+    }
+
+    #[test]
+    fn rounded_cfr_is_not_vfr() {
+        // 24 fps stored in 1 ms ticks: steps alternate 41/42.
+        let pts: Vec<i64> = (0..240).map(|i| (i as f64 * 1000.0 / 24.0).round() as i64).collect();
+        let idx = FrameIndex::from_pts(Rational::new(1, 1000), Rational::new(24, 1), pts).unwrap();
+        assert!(!idx.is_vfr());
+        assert!(!FrameIndex::from_bytes(&idx.to_bytes()).unwrap().is_vfr());
     }
 
     #[test]

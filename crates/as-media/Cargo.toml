@@ -1,0 +1,19 @@
+[package]
+name = "as-media"
+description = "AutoScene media layer: ffmpeg tooling, probing, frame indexing, posters, proxies"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+as-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+specta.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+as-testkit.workspace = true
+tempfile = "3"

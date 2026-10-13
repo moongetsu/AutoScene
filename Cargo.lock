@@ -102,6 +102,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "as-export"
+version = "0.2.0-dev"
+dependencies = [
+ "as-core",
+ "as-media",
+ "as-testkit",
+ "serde",
+ "serde_json",
+ "specta",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
+name = "as-media"
+version = "0.2.0-dev"
+dependencies = [
+ "as-core",
+ "as-testkit",
+ "serde",
+ "serde_json",
+ "specta",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
 name = "as-testkit"
 version = "0.2.0-dev"
 dependencies = [
