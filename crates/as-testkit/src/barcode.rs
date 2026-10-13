@@ -49,7 +49,7 @@ pub fn read_luma(plane: &[u8], width: u32, height: u32, stride: usize) -> Option
                 }
             }
         }
-        if n == 0 { 0 } else { sum / n }
+        sum.checked_div(n).unwrap_or(0)
     };
 
     // Sanity: the strip margin left of the first cell must be dark.

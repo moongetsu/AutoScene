@@ -3,6 +3,8 @@ name = "as-api"
 description = "AutoScene UI-facing DTOs and event payloads (exported to TypeScript via specta)"
 version.workspace = true
 edition.workspace = true
+repository.workspace = true
+authors.workspace = true
 rust-version.workspace = true
 license.workspace = true
 

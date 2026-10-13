@@ -6,7 +6,7 @@ default-members = ["crates/*", "app/src-tauri"]
 [workspace.package]
 version = "0.2.0-dev"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.95"
 license = "Proprietary"
 repository = "https://github.com/tcmmi/AutoScene"
 authors = ["tcmmi"]
@@ -23,23 +23,19 @@ as-jobs = { path = "crates/as-jobs" }
 as-project = { path = "crates/as-project" }
 
 # shared third-party
-anyhow = "1"
-thiserror = "2"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-uuid = { version = "1", features = ["v7", "serde"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-tracing-appender = "0.2"
-parking_lot = "0.12"
-bitflags = { version = "2", features = ["serde"] }
-zstd = "0.14"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util", "fs"] }
+anyhow = "1.0.104"
+thiserror = "2.0.21"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+uuid = { version = "1.28", features = ["v7", "serde"] }
+tracing = "0.1.44"
+parking_lot = "0.12.5"
+zstd = "0.14.2"
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util", "fs"] }
 specta = { version = "=2.0.0-rc.25", features = ["derive", "serde_json", "uuid"] }
-dirs = "7"
-# rusqlite_migration 2.6 (rusqlite 0.40) needs rustc 1.95; stay on the pair that builds with 1.94.
-rusqlite = { version = "0.39", features = ["bundled"] }
-rusqlite_migration = "~2.5"
+dirs = "7.0"
+rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite_migration = "2.6"
 
 [profile.dev]
 # Media/vision code is unusable unoptimised; keep debug info but optimise deps.

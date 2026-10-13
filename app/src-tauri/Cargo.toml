@@ -3,6 +3,8 @@ name = "autoscene-app"
 description = "AutoScene desktop app"
 version.workspace = true
 edition.workspace = true
+repository.workspace = true
+authors.workspace = true
 rust-version.workspace = true
 license.workspace = true
 default-run = "autoscene-app"
@@ -20,7 +22,7 @@ name = "export-bindings"
 path = "src/bin/export_bindings.rs"
 
 [build-dependencies]
-tauri-build = { version = "2.6", features = [] }
+tauri-build = { version = "2.7.2", features = [] }
 
 [dependencies]
 as-core.workspace = true
@@ -33,15 +35,15 @@ serde.workspace = true
 serde_json.workspace = true
 specta.workspace = true
 tokio.workspace = true
-log = "0.4"
+log = "0.4.34"
 # Bridge `tracing` events from library crates into tauri-plugin-log.
 tracing = { workspace = true, features = ["log"] }
-tauri = { version = "2.11", features = ["protocol-asset"] }
+tauri = { version = "2.12.3", features = ["protocol-asset"] }
 tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
 specta-typescript = "0.0.12"
-tauri-plugin-log = "2"
-tauri-plugin-opener = "2"
-tauri-plugin-dialog = "2"
-tauri-plugin-updater = "2"
-tauri-plugin-single-instance = "2"
-tauri-plugin-window-state = "2"
+tauri-plugin-log = "2.10.1"
+tauri-plugin-opener = "2.7.1"
+tauri-plugin-dialog = "2.8.2"
+tauri-plugin-updater = "2.13.3"
+tauri-plugin-single-instance = "2.5.3"
+tauri-plugin-window-state = "2.5.0"

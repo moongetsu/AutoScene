@@ -3,6 +3,8 @@ name = "as-jobs"
 description = "AutoScene background jobs: resource-class worker pools, cancellation, throttled progress events"
 version.workspace = true
 edition.workspace = true
+repository.workspace = true
+authors.workspace = true
 rust-version.workspace = true
 license.workspace = true
 

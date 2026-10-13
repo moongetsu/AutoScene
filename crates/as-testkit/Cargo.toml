@@ -3,6 +3,8 @@ name = "as-testkit"
 description = "Test fixtures support: frame barcode layout/reader and fixture truth files"
 version.workspace = true
 edition.workspace = true
+repository.workspace = true
+authors.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
@@ -10,4 +12,3 @@ publish = false
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
-anyhow.workspace = true

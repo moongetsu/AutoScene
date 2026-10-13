@@ -39,7 +39,9 @@ fn frames_with_times(tools: &Tools, file: &Path) -> Vec<(f64, u32)> {
         .unwrap();
     let codes: Vec<u32> = decoded
         .stdout
-        .chunks_exact(640 * 360)
+        .as_chunks::<{ 640 * 360 }>()
+        .0
+        .iter()
         .map(|f| barcode::read_luma(f, 640, 360, 640).expect("barcode").frame as u32)
         .collect();
     assert_eq!(times.len(), codes.len(), "{}: ffprobe and decoder disagree on frame count", file.display());

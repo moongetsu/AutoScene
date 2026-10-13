@@ -26,7 +26,7 @@ fn barcodes(tools: &Tools, file: &Path) -> Vec<Option<barcode::Code>> {
         .stdout(Stdio::piped())
         .output()
         .expect("decode");
-    out.stdout.chunks_exact(640 * 360).map(|f| barcode::read_luma(f, 640, 360, 640)).collect()
+    out.stdout.as_chunks::<{ 640 * 360 }>().0.iter().map(|f| barcode::read_luma(f, 640, 360, 640)).collect()
 }
 
 fn proxy_audio(tools: &Tools, file: &Path) -> Vec<i16> {
@@ -38,7 +38,7 @@ fn proxy_audio(tools: &Tools, file: &Path) -> Vec<i16> {
         .stdout(Stdio::piped())
         .output()
         .expect("decode audio");
-    out.stdout.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect()
+    out.stdout.as_chunks::<2>().0.iter().map(|b| i16::from_le_bytes(*b)).collect()
 }
 
 /// Power of frequency `hz` in `x` (Goertzel).

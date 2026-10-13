@@ -3,6 +3,8 @@ name = "xtask"
 description = "AutoScene dev tasks: fixtures, sidecars, bindings"
 version.workspace = true
 edition.workspace = true
+repository.workspace = true
+authors.workspace = true
 publish = false
 
 [dependencies]

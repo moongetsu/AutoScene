@@ -3,6 +3,8 @@ name = "as-db"
 description = "AutoScene storage: library.db and project.db (SQLite, WAL) with migrations and typed queries"
 version.workspace = true
 edition.workspace = true
+repository.workspace = true
+authors.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
@@ -19,4 +21,4 @@ tracing.workspace = true
 
 [dev-dependencies]
 as-export.workspace = true
-tempfile = "3"
+tempfile = "3.27"

@@ -50,7 +50,9 @@ fn barcodes(tools: &Tools, file: &Path) -> Vec<u32> {
         .output()
         .unwrap();
     out.stdout
-        .chunks_exact(640 * 360)
+        .as_chunks::<{ 640 * 360 }>()
+        .0
+        .iter()
         .map(|f| barcode::read_luma(f, 640, 360, 640).expect("barcode").frame as u32)
         .collect()
 }
@@ -64,7 +66,7 @@ fn audio_pcm(tools: &Tools, file: &Path) -> Vec<i16> {
         .stdout(Stdio::piped())
         .output()
         .unwrap();
-    out.stdout.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect()
+    out.stdout.as_chunks::<2>().0.iter().map(|b| i16::from_le_bytes(*b)).collect()
 }
 
 /// Dominant frequency of a pure tone from its zero-crossing rate.
