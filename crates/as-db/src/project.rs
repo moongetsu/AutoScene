@@ -5,7 +5,7 @@ use std::path::Path;
 
 use as_api::{
     ClipOutcome, ExportItem, ExportPreset, ExportStatus, ExportSummary, MediaInfo, MediaItem, MediaStatus, ProxyState,
-    now_ms,
+    Segment, StageState, now_ms,
 };
 use as_core::{ExportId, FrameIdx, MediaId, ProjectId, Rational};
 use rusqlite::{OptionalExtension, Row, params};
@@ -79,6 +79,29 @@ const STEPS: &[M<'static>] = &[
     ),
     // The audio track is part of the export plan, frozen when it's queued.
     M::up("ALTER TABLE export_items ADD COLUMN audio_ordinal INTEGER;"),
+    // M2: shot detection. Signals are checkpointed per chunk so an analysis
+    // resumes where it stopped; segments are what fusion made of them.
+    M::up(
+        "ALTER TABLE media ADD COLUMN shots TEXT NOT NULL DEFAULT 'pending';
+    ALTER TABLE media ADD COLUMN shots_error TEXT;
+
+    -- as_analysis::signals::encode of frames start.. (one chunk)
+    CREATE TABLE shot_signals (
+        media_id TEXT NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+        start    INTEGER NOT NULL,
+        data     BLOB NOT NULL,
+        PRIMARY KEY (media_id, start)
+    ) STRICT;
+
+    CREATE TABLE segments (
+        media_id TEXT NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+        start    INTEGER NOT NULL,
+        end      INTEGER NOT NULL,
+        kind     TEXT NOT NULL,
+        tiny     INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (media_id, start)
+    ) STRICT;",
+    ),
 ];
 const MIGRATIONS: Migrations<'static> = Migrations::from_slice(STEPS);
 
@@ -131,7 +154,8 @@ pub struct NewExportItem {
 }
 
 const MEDIA_COLS: &str = "id, path, file_name, size_bytes, season, episode, status, error, info, frames, duration_sec, \
-     fps_num, fps_den, vfr, interlaced, audio_ordinal, proxy, poster, added_at";
+     fps_num, fps_den, vfr, interlaced, audio_ordinal, proxy, poster, added_at, shots, shots_error, \
+     CASE WHEN shots = 'ready' THEN (SELECT COUNT(*) FROM segments s WHERE s.media_id = media.id AND s.kind = 'shot') END";
 
 /// Episode order (same as `as_project::naming::episode_cmp`): numbered episodes by
 /// (season, episode), then the rest in the order they were added.
@@ -173,6 +197,9 @@ fn media_row(r: &Row, position: u32) -> DbResult<MediaItem> {
         proxy: enum_from_sql(&r.get::<_, String>(16)?)?,
         poster: r.get(17)?,
         added_at: r.get(18)?,
+        shots: enum_from_sql(&r.get::<_, String>(19)?)?,
+        shots_error: r.get(20)?,
+        shot_count: r.get(21)?,
     })
 }
 
@@ -199,6 +226,13 @@ fn export_item_row(r: &Row) -> DbResult<ExportItem> {
         bytes: r.get::<_, Option<i64>>(9)?.map(|b| b as f64),
         error: r.get(10)?,
     })
+}
+
+fn clear_shots(tx: &rusqlite::Transaction, id: MediaId) -> DbResult<()> {
+    tx.execute("DELETE FROM shot_signals WHERE media_id = ?1", [id.to_string()])?;
+    tx.execute("DELETE FROM segments WHERE media_id = ?1", [id.to_string()])?;
+    tx.execute("UPDATE media SET shots = 'pending', shots_error = NULL WHERE id = ?1", [id.to_string()])?;
+    Ok(())
 }
 
 impl ProjectDb {
@@ -321,6 +355,8 @@ impl ProjectDb {
                  ON CONFLICT(media_id) DO UPDATE SET data = excluded.data",
                 params![id.to_string(), rec.index_blob],
             )?;
+            // A new frame index may number frames differently: analysis starts over.
+            clear_shots(tx, id)?;
             Ok(())
         })
     }
@@ -368,6 +404,82 @@ impl ProjectDb {
             tx.execute("DELETE FROM media WHERE id = ?1", [id.to_string()])?;
             Ok(())
         })
+    }
+
+    // -- shots --------------------------------------------------------------
+
+    pub fn set_shots_state(&self, id: MediaId, state: StageState, error: Option<&str>) -> DbResult<()> {
+        self.0.write(|tx| {
+            tx.execute(
+                "UPDATE media SET shots = ?2, shots_error = ?3 WHERE id = ?1",
+                params![id.to_string(), enum_to_sql(state), error],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Checkpointed signal chunks `(start, data)`, in frame order.
+    pub fn shot_chunks(&self, id: MediaId) -> DbResult<Vec<(FrameIdx, Vec<u8>)>> {
+        self.0.read(|c| {
+            let mut st = c.prepare("SELECT start, data FROM shot_signals WHERE media_id = ?1 ORDER BY start")?;
+            let rows = st.query_map([id.to_string()], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            Ok(rows.collect::<Result<_, _>>()?)
+        })
+    }
+
+    pub fn put_shot_chunk(&self, id: MediaId, start: FrameIdx, data: &[u8]) -> DbResult<()> {
+        self.0.write(|tx| {
+            tx.execute(
+                "INSERT INTO shot_signals (media_id, start, data) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(media_id, start) DO UPDATE SET data = excluded.data",
+                params![id.to_string(), start, data],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Drop checkpoints from `start` on (unreadable or out of order).
+    pub fn drop_shot_chunks_from(&self, id: MediaId, start: FrameIdx) -> DbResult<()> {
+        self.0.write(|tx| {
+            tx.execute("DELETE FROM shot_signals WHERE media_id = ?1 AND start >= ?2", params![id.to_string(), start])?;
+            Ok(())
+        })
+    }
+
+    /// Replace the media's segments and mark its shots ready, atomically.
+    pub fn store_segments(&self, id: MediaId, segments: &[Segment]) -> DbResult<()> {
+        self.0.write(|tx| {
+            tx.execute("DELETE FROM segments WHERE media_id = ?1", [id.to_string()])?;
+            let mut st =
+                tx.prepare("INSERT INTO segments (media_id, start, end, kind, tiny) VALUES (?1, ?2, ?3, ?4, ?5)")?;
+            for seg in segments {
+                st.execute(params![id.to_string(), seg.start, seg.end, enum_to_sql(seg.kind), seg.tiny])?;
+            }
+            tx.execute("UPDATE media SET shots = 'ready', shots_error = NULL WHERE id = ?1", [id.to_string()])?;
+            Ok(())
+        })
+    }
+
+    pub fn segments(&self, id: MediaId) -> DbResult<Vec<Segment>> {
+        self.0.read(|c| {
+            let mut st = c.prepare("SELECT start, end, kind, tiny FROM segments WHERE media_id = ?1 ORDER BY start")?;
+            let mut rows = st.query([id.to_string()])?;
+            let mut out = Vec::new();
+            while let Some(r) = rows.next()? {
+                out.push(Segment {
+                    start: r.get(0)?,
+                    end: r.get(1)?,
+                    kind: enum_from_sql(&r.get::<_, String>(2)?)?,
+                    tiny: r.get(3)?,
+                });
+            }
+            Ok(out)
+        })
+    }
+
+    /// Forget a media's shot analysis (signals and segments).
+    pub fn reset_shots(&self, id: MediaId) -> DbResult<()> {
+        self.0.write(|tx| clear_shots(tx, id))
     }
 
     pub fn stats(&self) -> DbResult<ProjectStats> {
@@ -513,6 +625,18 @@ impl ProjectDb {
         })
     }
 
+    /// Indexed media whose shot analysis hasn't finished (an interrupted run
+    /// counts as pending again), in episode order.
+    pub fn pending_shots(&self) -> DbResult<Vec<MediaId>> {
+        self.0.write(|tx| {
+            tx.execute("UPDATE media SET shots = 'pending' WHERE shots = 'running'", [])?;
+            let mut st = tx
+                .prepare(&format!("SELECT id FROM media WHERE status = 'ready' AND shots = 'pending' {MEDIA_ORDER}"))?;
+            let ids = st.query_map([], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+            ids.iter().map(|s| parse_id(s)).collect()
+        })
+    }
+
     /// Ready media whose proxy still has to be built.
     pub fn pending_proxies(&self) -> DbResult<Vec<MediaId>> {
         self.0.read(|c| {
@@ -640,6 +764,53 @@ mod tests {
 
         db.remove_media(e1.id).unwrap();
         assert!(db.frame_index_blob(e1.id).unwrap().is_none(), "frame index cascades");
+    }
+
+    #[test]
+    fn shot_checkpoints_and_segments() {
+        use as_api::SegmentKind;
+        let db = ProjectDb::memory();
+        let m = new_media("/s/Show - 01.mkv", None, Some(1));
+        db.add_media(std::slice::from_ref(&m)).unwrap();
+        let rec = IngestRecord {
+            info: info(),
+            frames: 240,
+            duration_sec: 10.0,
+            fps: Rational::new(24, 1),
+            vfr: false,
+            interlaced: false,
+            proxy: ProxyState::NotNeeded,
+            poster: None,
+            index_blob: vec![1],
+            audio_ordinal: None,
+        };
+        db.record_ingest(m.id, &rec).unwrap();
+        let item = db.media(m.id).unwrap().unwrap();
+        assert_eq!((item.shots, item.shot_count), (StageState::Pending, None));
+
+        db.set_shots_state(m.id, StageState::Running, None).unwrap();
+        db.put_shot_chunk(m.id, 100, &[2]).unwrap();
+        db.put_shot_chunk(m.id, 0, &[1]).unwrap();
+        db.put_shot_chunk(m.id, 200, &[3]).unwrap();
+        assert_eq!(db.shot_chunks(m.id).unwrap(), vec![(0, vec![1]), (100, vec![2]), (200, vec![3])]);
+        db.drop_shot_chunks_from(m.id, 200).unwrap();
+        assert_eq!(db.shot_chunks(m.id).unwrap().len(), 2);
+
+        let segs = [
+            Segment { start: 0, end: 100, kind: SegmentKind::Shot, tiny: false },
+            Segment { start: 100, end: 112, kind: SegmentKind::Dissolve, tiny: false },
+            Segment { start: 112, end: 114, kind: SegmentKind::Shot, tiny: true },
+            Segment { start: 114, end: 240, kind: SegmentKind::Shot, tiny: false },
+        ];
+        db.store_segments(m.id, &segs).unwrap();
+        assert_eq!(db.segments(m.id).unwrap(), segs);
+        let item = db.media(m.id).unwrap().unwrap();
+        assert_eq!((item.shots, item.shot_count), (StageState::Ready, Some(3)));
+
+        // Re-indexing starts the analysis over.
+        db.record_ingest(m.id, &rec).unwrap();
+        assert!(db.shot_chunks(m.id).unwrap().is_empty() && db.segments(m.id).unwrap().is_empty());
+        assert_eq!(db.media(m.id).unwrap().unwrap().shots, StageState::Pending);
     }
 
     #[test]

@@ -1,18 +1,20 @@
-//! Background work: ingest, playback proxies and exports, queued on
+//! Background work: ingest, playback proxies, analysis and exports, queued on
 //! `as-jobs` workers. Each job reports through `job:*` events and announces
-//! what it changed (`media:changed`, `library:changed`, `export:changed`) so
-//! the UI refetches exactly what moved.
+//! what it changed (`media:changed`, `analysis:changed`, `library:changed`,
+//! `export:changed`) so the UI refetches exactly what moved.
 
 use std::sync::Arc;
 
-use as_api::{JobKind, MediaItem, ProxyState};
+use as_api::{JobKind, MediaItem, ProxyState, StageState};
 use as_core::{ExportId, MediaId};
-use as_jobs::{Class, JobError, JobSpec};
+use as_engine::{EngineError, ShotsEvent};
+use as_jobs::{Class, JobCtx, JobError, JobResult, JobSpec};
+use as_models::ModelError;
 use as_project::{Project, ProjectError};
 use tauri::{AppHandle, Manager};
 use tauri_specta::Event;
 
-use crate::events::{ExportChanged, LibraryChanged};
+use crate::events::{AnalysisChanged, ExportChanged, LibraryChanged};
 use crate::state::AppState;
 
 fn job_error(e: ProjectError) -> JobError {
@@ -76,8 +78,101 @@ pub fn queue_ingest(app: &AppHandle, project: &Arc<Project>, media_id: MediaId) 
         if m.proxy == ProxyState::Pending {
             queue_proxy(&app2, &project, media_id);
         }
+        queue_shots(&app2, &project, media_id);
         Ok(())
     });
+}
+
+/// Find the shots of a media in the analysis engine, resuming from its
+/// checkpoints. Downloads the model first when it is not installed yet.
+pub fn queue_shots(app: &AppHandle, project: &Arc<Project>, media_id: MediaId) {
+    let state = app.state::<AppState>();
+    if state.jobs.is_active(|j| j.kind == JobKind::Analyze && j.media_id == Some(media_id)) {
+        return;
+    }
+    let Ok(m) = project.media(media_id) else { return };
+    let spec = JobSpec {
+        kind: JobKind::Analyze,
+        class: Class::Analysis,
+        title: format!("Finding shots in {}", media_title(&m)),
+        subtitle: project.title().ok(),
+        project_id: Some(project.id),
+        media_id: Some(media_id),
+        export_id: None,
+    };
+    let (app2, project) = (app.clone(), project.clone());
+    state.jobs.submit(spec, move |ctx| {
+        let state = app2.state::<AppState>();
+        let _awake = crate::keep_awake::hold();
+        let result = run_shots(&app2, &state, &project, media_id, ctx);
+        let outcome = match &result {
+            Ok(()) => Ok(()),
+            // Quitting: the run stays `running` and resumes on the next launch.
+            Err(JobError::Cancelled) if state.jobs.is_shutting_down() => Ok(()),
+            Err(JobError::Cancelled) => project.set_shots_state(media_id, StageState::Pending, None),
+            Err(JobError::Failed(msg)) => project.set_shots_state(media_id, StageState::Failed, Some(msg)),
+        };
+        if let Err(e) = outcome {
+            log::warn!("recording the shot analysis state: {e}");
+        }
+        let _ = AnalysisChanged { project_id: project.id, media_id }.emit(&app2);
+        media_changed(&app2, &project, Some(media_id));
+        result
+    });
+}
+
+fn run_shots(app: &AppHandle, state: &AppState, project: &Project, media_id: MediaId, ctx: &JobCtx) -> JobResult {
+    install_model(state, as_models::ids::TRANSNET, ctx)?;
+    project.set_shots_state(media_id, StageState::Running, None).map_err(job_error)?;
+    media_changed(app, project, Some(media_id));
+    let plan = project.shots_plan(media_id).map_err(job_error)?;
+    const STAGE: &str = "Finding shots";
+    if plan.resume < plan.frames {
+        ctx.progress(STAGE, plan.resume as f64 / plan.frames as f64);
+        state
+            .engine
+            .shots(plan.path, plan.info, plan.index, plan.resume, plan.chunk, &ctx.cancel, |e| match e {
+                ShotsEvent::Progress(f) => {
+                    ctx.progress(STAGE, f);
+                    Ok(())
+                }
+                ShotsEvent::Chunk { start, signals } => {
+                    project.store_shot_chunk(media_id, start, &signals).map_err(|e| e.detail())
+                }
+            })
+            .map_err(|e| match e {
+                EngineError::Cancelled => JobError::Cancelled,
+                e => {
+                    log::warn!("shot analysis: {}", e.detail());
+                    JobError::Failed(e.to_string())
+                }
+            })?;
+    }
+    ctx.stage(STAGE);
+    let shots = project.finish_shots(media_id).map_err(job_error)?;
+    log::info!("{shots} shots found (engine on {})", state.engine.device().unwrap_or_default());
+    Ok(())
+}
+
+/// Download an AI model on first use (verified; resumes an interrupted download).
+fn install_model(state: &AppState, id: &str, ctx: &JobCtx) -> JobResult {
+    let installed = state.models.installed(id).map_err(|e| JobError::Failed(e.to_string()))?;
+    if installed.is_some() {
+        return Ok(());
+    }
+    const STAGE: &str = "Downloading AI model";
+    ctx.progress(STAGE, 0.0);
+    state
+        .models
+        .install(id, &ctx.cancel, |done, total| ctx.progress(STAGE, done as f64 / total.max(1) as f64))
+        .map(|_| ())
+        .map_err(|e| match e {
+            ModelError::Cancelled => JobError::Cancelled,
+            e => {
+                log::warn!("{}", e.detail());
+                JobError::Failed(e.to_string())
+            }
+        })
 }
 
 /// Build the playback proxy for a media whose source the webview can't play frame-accurately.
@@ -180,6 +275,17 @@ pub fn recover_all(app: &AppHandle) {
                 }
             }
             Err(e) => log::warn!("recovering '{}': {e}", summary.title),
+        }
+        match project.pending_shots() {
+            Ok(ids) => {
+                if !ids.is_empty() {
+                    log::info!("resuming '{}': {} to analyse", summary.title, ids.len());
+                }
+                for id in ids {
+                    queue_shots(app, &project, id);
+                }
+            }
+            Err(e) => log::warn!("recovering analysis of '{}': {e}", summary.title),
         }
     }
 }

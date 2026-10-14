@@ -14,6 +14,7 @@ as-api.workspace = true
 as-db.workspace = true
 as-media.workspace = true
 as-export.workspace = true
+as-analysis.workspace = true
 parking_lot.workspace = true
 regex = "1.13"
 serde_json.workspace = true

@@ -1,0 +1,13 @@
+[package]
+name = "as-vision"
+description = "AutoScene vision models: TransNetV2 shot boundaries (faces and characters follow)"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+as-infer.workspace = true
+tracing.workspace = true

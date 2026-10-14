@@ -22,6 +22,11 @@ as-export = { path = "crates/as-export" }
 as-db = { path = "crates/as-db" }
 as-jobs = { path = "crates/as-jobs" }
 as-project = { path = "crates/as-project" }
+as-models = { path = "crates/as-models" }
+as-infer = { path = "crates/as-infer" }
+as-vision = { path = "crates/as-vision" }
+as-analysis = { path = "crates/as-analysis" }
+as-engine = { path = "crates/as-engine" }
 
 # shared third-party
 anyhow = "1.0.104"

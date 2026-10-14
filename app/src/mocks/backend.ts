@@ -26,6 +26,7 @@ import type {
   NewProject,
   ProjectKind,
   ProjectSummary,
+  Segment,
   UpdateStatus,
 } from "@/bindings"
 
@@ -36,6 +37,34 @@ const VIDEO = `${FIXTURES}cfr24_h264.mp4`
 const FRAMES = 586
 const FPS = { num: 24, den: 1 }
 const ROOT = String.raw`C:\Users\you\Documents\AutoScene Library`
+
+/** What shot detection makes of the fixture (taken from a real run of the app). */
+const SEGMENTS: Segment[] = (
+  [
+    [0, 48, "shot"],
+    [48, 84, "shot"],
+    [84, 145, "shot"],
+    [145, 157, "dissolve"],
+    [157, 205, "shot"],
+    [205, 207, "fade_out"],
+    [207, 213, "black"],
+    [213, 220, "fade_in"],
+    [220, 268, "shot"],
+    [268, 269, "shot", true],
+    [269, 271, "shot", true],
+    [271, 274, "shot"],
+    [274, 335, "shot"],
+    [335, 346, "dissolve"],
+    [346, 394, "shot"],
+    [394, 406, "black"],
+    [406, 479, "shot"],
+    [479, 480, "fade_out"],
+    [480, 483, "black"],
+    [483, 490, "fade_in"],
+    [490, 586, "shot"],
+  ] as [number, number, Segment["kind"], boolean?][]
+).map(([start, end, kind, tiny]) => ({ start, end, kind, tiny: tiny ?? false }))
+const SHOT_COUNT = SEGMENTS.filter((s) => s.kind === "shot").length
 
 const appInfo: AppInfo = {
   version: "0.2.0-dev",
@@ -150,6 +179,9 @@ function media(
     proxy: ready ? "not_needed" : "unknown",
     poster: ready && poster ? `${FIXTURES}posters/${poster}.jpg` : null,
     addedAt: now,
+    shots: ready ? "ready" : "pending",
+    shotsError: null,
+    shotCount: ready ? SHOT_COUNT : null,
     ...rest,
   }
 }
@@ -289,10 +321,24 @@ function ingest(p: MockProject, m: MediaItem) {
   m.status = "indexing"
   startJob("ingest", `Indexing ${m.label ? `${m.label} · ` : ""}${m.fileName}`, p, 6000, { mediaId: m.id, stage: "Indexing frames" }, () => {
     Object.assign(m, media(m.fileName, [m.season, m.episode], {}), { id: m.id, path: m.path, poster: null })
+    m.shots = "pending"
+    m.shotCount = null
     refresh(p)
     void emit("media:changed", { projectId: p.id, mediaId: m.id })
     void emit("library:changed", { projectId: p.id })
+    analyze(p, m)
   })
+}
+
+function analyze(p: MockProject, m: MediaItem) {
+  m.shots = "running"
+  startJob("analyze", `Finding shots in ${m.label ? `${m.label} · ` : ""}${m.fileName}`, p, 4000, { mediaId: m.id, stage: "Finding shots" }, () => {
+    m.shots = "ready"
+    m.shotCount = SHOT_COUNT
+    void emit("media:changed", { projectId: p.id, mediaId: m.id })
+    void emit("analysis:changed", { projectId: p.id, mediaId: m.id })
+  })
+  void emit("media:changed", { projectId: p.id, mediaId: m.id })
 }
 
 // -- exports ------------------------------------------------------------------
@@ -436,6 +482,12 @@ const handlers: Record<string, Handler> = {
     const m = findMedia(find(projectId), mediaId)
     if (m.status !== "ready") throw { code: "not_ready", message: "Still indexing." }
     return { mediaId: m.id, src: VIDEO, isProxy: m.proxy === "ready", frames: FRAMES, fps: FPS, dropFrame: false, offset: 0, step: 1 / 24, times: null }
+  },
+  media_segments: ({ projectId, mediaId }): Segment[] => (findMedia(find(projectId), mediaId).shots === "ready" ? SEGMENTS : []),
+  media_analyze: ({ projectId, mediaId }) => {
+    const p = find(projectId)
+    analyze(p, findMedia(p, mediaId))
+    return null
   },
   export_presets: () => presets,
   export_default_dir: ({ projectId }) => `${settings.libraryRoot}\\Exports\\${find(projectId).title}`,

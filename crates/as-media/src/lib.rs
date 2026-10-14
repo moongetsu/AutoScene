@@ -4,6 +4,7 @@
 pub mod caps;
 pub mod error;
 pub mod filters;
+pub mod frames;
 pub mod idet;
 pub mod index;
 pub mod lang;

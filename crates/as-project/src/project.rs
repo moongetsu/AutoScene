@@ -148,7 +148,7 @@ impl Project {
         Ok(idx)
     }
 
-    fn ready_source(&self, id: MediaId) -> ProjectResult<(MediaItem, MediaInfo, Arc<FrameIndex>)> {
+    pub(crate) fn ready_source(&self, id: MediaId) -> ProjectResult<(MediaItem, MediaInfo, Arc<FrameIndex>)> {
         let m = self.media(id)?;
         match m.status {
             MediaStatus::Ready => {}

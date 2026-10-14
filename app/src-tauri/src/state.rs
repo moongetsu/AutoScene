@@ -4,8 +4,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use as_api::MediaToolsStatus;
+use as_core::AppPaths;
+use as_engine::{Engine, Launch};
 use as_jobs::{Class, JobEvent, JobRunner};
 use as_media::Tools;
+use as_models::ModelStore;
 use as_project::Library;
 use tauri::{AppHandle, Manager};
 use tauri_specta::Event;
@@ -15,19 +18,23 @@ use crate::events::{JobChanged, JobProgressEvent};
 
 /// Concurrent jobs per resource class. Two decode-heavy jobs keep a GPU busy
 /// without starving the UI's preview; exports run one at a time so encoder
-/// sessions are never oversubscribed.
-const LIMITS: &[(Class, usize)] = &[(Class::Media, 2), (Class::Export, 1)];
+/// sessions are never oversubscribed; the engine analyses one media at a time.
+const LIMITS: &[(Class, usize)] = &[(Class::Media, 2), (Class::Export, 1), (Class::Analysis, 1)];
 
 #[derive(Clone)]
 pub struct AppState {
     pub library: Arc<Library>,
     pub jobs: JobRunner,
+    /// The analysis engine process (started on demand).
+    pub engine: Arc<Engine>,
+    /// AI models, downloaded on first use.
+    pub models: ModelStore,
     tools: Arc<OnceLock<Result<Arc<Tools>, String>>>,
     bundled_ffmpeg: Option<PathBuf>,
 }
 
 impl AppState {
-    pub fn new(app: &AppHandle, library: Library) -> Self {
+    pub fn new(app: &AppHandle, library: Library, paths: &AppPaths) -> Self {
         let handle = app.clone();
         let jobs = JobRunner::new(LIMITS, move |e| {
             let _ = match e {
@@ -43,7 +50,27 @@ impl AppState {
                     .then(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ffmpeg"))
                     .filter(|d| d.is_dir())
             });
-        Self { library: Arc::new(library), jobs, tools: Arc::new(OnceLock::new()), bundled_ffmpeg }
+        // The ONNX Runtime the analysis engine loads, found the same way.
+        let ort_dir = app
+            .path()
+            .resource_dir()
+            .ok()
+            .map(|d| d.join("onnxruntime"))
+            .filter(|d| d.is_dir())
+            .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("onnxruntime"));
+        let models = ModelStore::new(paths.models());
+        let engine_cfg = as_engine::Config {
+            ort_dir,
+            models_dir: paths.models(),
+            ffmpeg_dir: bundled_ffmpeg.clone(),
+            gpu: true,
+            idle_exit: Some(as_engine::IDLE_EXIT),
+        };
+        let program = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("autoscene-app"));
+        let mut args = vec!["--engine".into()];
+        args.extend(as_engine::args(&engine_cfg));
+        let engine = Arc::new(Engine::new(Launch { program, args }));
+        Self { library: Arc::new(library), jobs, engine, models, tools: Arc::new(OnceLock::new()), bundled_ffmpeg }
     }
 
     /// ffmpeg/ffprobe, located once. Hardware capabilities are probed on first
@@ -77,6 +104,7 @@ impl AppState {
 pub fn shutdown_work(app: &AppHandle) {
     if let Some(state) = app.try_state::<AppState>() {
         state.jobs.shutdown(std::time::Duration::from_secs(3));
+        state.engine.shutdown();
     }
 }
 

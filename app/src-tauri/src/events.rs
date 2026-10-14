@@ -49,6 +49,15 @@ pub struct ExportChanged {
     pub export_id: ExportId,
 }
 
+/// Analysis results of a media changed (shots detected or reset).
+#[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
+#[tauri_specta(event_name = "analysis:changed")]
+#[serde(rename_all = "camelCase")]
+pub struct AnalysisChanged {
+    pub project_id: ProjectId,
+    pub media_id: MediaId,
+}
+
 pub fn emit_media_changed(app: &tauri::AppHandle, project_id: ProjectId, media_id: Option<MediaId>) {
     let _ = MediaChanged { project_id, media_id }.emit(app);
 }

@@ -22,6 +22,7 @@ export const qk = {
   project: (id: ProjectId) => ["project", id] as const,
   media: (pid: ProjectId) => ["media", pid] as const,
   frameMap: (pid: ProjectId, mid: MediaId) => ["frameMap", pid, mid] as const,
+  segments: (pid: ProjectId, mid: MediaId) => ["segments", pid, mid] as const,
   exports: (pid: ProjectId) => ["exports", pid] as const,
   exportDir: (pid: ProjectId) => ["exportDir", pid] as const,
 }
@@ -61,6 +62,11 @@ export function useFrameMap(pid: ProjectId, mid: MediaId, enabled: boolean) {
     enabled,
     retry: false,
   })
+}
+
+/** Shots and transitions of a media (empty until detected). */
+export function useSegments(pid: ProjectId, mid: MediaId, enabled: boolean) {
+  return useQuery({ queryKey: qk.segments(pid, mid), queryFn: () => commands.mediaSegments(pid, mid), enabled })
 }
 
 export function useExports(pid: ProjectId) {

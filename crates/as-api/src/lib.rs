@@ -190,6 +190,54 @@ pub struct MediaItem {
     pub proxy: ProxyState,
     pub poster: Option<String>,
     pub added_at: i64,
+    /// Shot detection.
+    pub shots: StageState,
+    pub shots_error: Option<String>,
+    /// Number of shots once detected.
+    pub shot_count: Option<u32>,
+}
+
+/// Progress of one analysis stage of a media.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum StageState {
+    /// Not done yet (waiting for indexing or its job).
+    Pending,
+    Running,
+    Ready,
+    Failed,
+}
+
+// ---------------------------------------------------------------------------
+// Analysis
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum SegmentKind {
+    Shot,
+    /// Cross-dissolve, wipe or another blend between two shots.
+    Dissolve,
+    /// From a shot to black or white.
+    FadeOut,
+    /// From black or white into a shot.
+    FadeIn,
+    /// Black (or, inside a fade, white) frames.
+    Black,
+    /// A brief flash (muzzle flash, lightning, anime impact frame) inside a shot.
+    Flash,
+}
+
+/// Frames `[start, end)` of a media. Segments cover it without gaps; clips
+/// come from `shot` segments, so they never start mid-transition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct Segment {
+    pub start: FrameIdx,
+    pub end: FrameIdx,
+    pub kind: SegmentKind,
+    /// A shot under 3 frames, kept because both cuts around it are clear.
+    pub tiny: bool,
 }
 
 /// Everything the player needs to map `<video>` time to source frames.
@@ -287,6 +335,8 @@ pub enum JobKind {
     Ingest,
     Proxy,
     Export,
+    /// AI analysis of a media (shots; faces from M3).
+    Analyze,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]

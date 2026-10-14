@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react"
 import { useNavigate, useParams } from "@tanstack/react-router"
-import { FilePlus2, FolderOpen, FolderPlus, MoreHorizontal, Play, RotateCcw, Trash2 } from "lucide-react"
+import { FilePlus2, FolderOpen, FolderPlus, MoreHorizontal, Play, RotateCcw, Scissors, Trash2 } from "lucide-react"
 import { toast } from "sonner"
 import type { MediaItem } from "@/bindings"
 import { Badge } from "@/components/ui/badge"
@@ -103,7 +103,7 @@ export function EpisodesPage() {
                   <th className="eyebrow hidden w-[84px] py-2.5 font-medium @4xl:table-cell">Length</th>
                   <th className="eyebrow hidden w-[220px] py-2.5 font-medium @5xl:table-cell">Format</th>
                   <th className="eyebrow w-[176px] py-2.5 font-medium">Audio</th>
-                  <th className="eyebrow w-[150px] py-2.5 font-medium">Status</th>
+                  <th className="eyebrow w-[176px] py-2.5 font-medium">Status</th>
                   <th className="w-11" />
                 </tr>
               </thead>
@@ -261,6 +261,17 @@ function EpisodeRow({
             {(m.status === "failed" || m.status === "missing") && (
               <DropdownMenuItem onSelect={() => void commands.mediaRetry(projectId, m.id)}>
                 <RotateCcw /> Index again
+              </DropdownMenuItem>
+            )}
+            {ready && (
+              <DropdownMenuItem
+                onSelect={() =>
+                  void commands
+                    .mediaAnalyze(projectId, m.id, true)
+                    .catch((e) => toast.error("Couldn't start the analysis", { description: errorMessage(e) }))
+                }
+              >
+                <Scissors /> Find shots again
               </DropdownMenuItem>
             )}
             <DropdownMenuSeparator />

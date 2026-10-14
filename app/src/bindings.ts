@@ -52,6 +52,16 @@ export const commands = {
 	 *  access to the file it should play.
 	 */
 	mediaFrameMap: (projectId: ProjectId, mediaId: MediaId) => __TAURI_INVOKE<FrameMap>("media_frame_map", { projectId, mediaId }),
+	/**
+	 *  Shots, transitions and black/flash frames of a media (empty until its
+	 *  shots are detected).
+	 */
+	mediaSegments: (projectId: ProjectId, mediaId: MediaId) => __TAURI_INVOKE<Segment[]>("media_segments", { projectId, mediaId }),
+	/**
+	 *  Run the analysis of a media (again). `fresh` discards earlier results and
+	 *  checkpoints first; otherwise a stopped or failed run continues.
+	 */
+	mediaAnalyze: (projectId: ProjectId, mediaId: MediaId, fresh: boolean) => __TAURI_INVOKE<null>("media_analyze", { projectId, mediaId, fresh }),
 	exportPresets: () => __TAURI_INVOKE<ExportPreset[]>("export_presets"),
 	/**  Folder exports of this project go to unless the user picks another. */
 	exportDefaultDir: (projectId: ProjectId) => __TAURI_INVOKE<string>("export_default_dir", { projectId }),
@@ -89,6 +99,7 @@ export const commands = {
 
 /** Events */
 export const events = {
+	analysisChanged: makeEvent<AnalysisChanged>("analysis:changed"),
 	exportChanged: makeEvent<ExportChanged>("export:changed"),
 	jobChanged: makeEvent<JobChanged>("job:changed"),
 	jobProgress: makeEvent<JobProgressEvent>("job:progress"),
@@ -99,6 +110,12 @@ export const events = {
 };
 
 /* Types */
+/**  Analysis results of a media changed (shots detected or reset). */
+export type AnalysisChanged = {
+	projectId: ProjectId,
+	mediaId: MediaId,
+};
+
 /**
  *  Error returned by every command. Serialised as `{ code, message }` and
  *  thrown on the TypeScript side, so UI code can branch on `code` and show
@@ -328,7 +345,9 @@ export type JobInfo = {
 	rev: number,
 };
 
-export type JobKind = "ingest" | "proxy" | "export";
+export type JobKind = "ingest" | "proxy" | "export" | 
+/**  AI analysis of a media (shots; faces from M3). */
+"analyze";
 
 /**  Throttled progress for a running job (≤ 4 Hz per job). */
 export type JobProgress = {
@@ -397,6 +416,11 @@ export type MediaItem = {
 	proxy: ProxyState,
 	poster: string | null,
 	addedAt: number,
+	/**  Shot detection. */
+	shots: StageState,
+	shotsError: string | null,
+	/**  Number of shots once detected. */
+	shotCount: number | null,
 };
 
 export type MediaStatus = 
@@ -464,6 +488,35 @@ export type Rational = {
 	num: number,
 	den: number,
 };
+
+/**
+ *  Frames `[start, end)` of a media. Segments cover it without gaps; clips
+ *  come from `shot` segments, so they never start mid-transition.
+ */
+export type Segment = {
+	start: number,
+	end: number,
+	kind: SegmentKind,
+	/**  A shot under 3 frames, kept because both cuts around it are clear. */
+	tiny: boolean,
+};
+
+export type SegmentKind = "shot" | 
+/**  Cross-dissolve, wipe or another blend between two shots. */
+"dissolve" | 
+/**  From a shot to black or white. */
+"fade_out" | 
+/**  From black or white into a shot. */
+"fade_in" | 
+/**  Black (or, inside a fade, white) frames. */
+"black" | 
+/**  A brief flash (muzzle flash, lightning, anime impact frame) inside a shot. */
+"flash";
+
+/**  Progress of one analysis stage of a media. */
+export type StageState = 
+/**  Not done yet (waiting for indexing or its job). */
+"pending" | "running" | "ready" | "failed";
 
 export type SubtitleStream = {
 	index: number,

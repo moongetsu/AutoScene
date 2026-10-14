@@ -6,9 +6,10 @@
 //! one listener, which the app forwards to the UI as `job:*` events — the UI
 //! never polls.
 //!
-//! M1 keeps the queue in memory; interrupted work is recovered from each
-//! project's database on open. The persistent queue and the engine
-//! supervisor arrive with the analysis engine in M2.
+//! The queue itself lives in memory. What needs doing is persisted where it
+//! belongs instead — each project's database records which media still need
+//! indexing, a preview or analysis (with checkpoints) — and the app re-queues
+//! it on launch, so nothing is lost when the app stops or crashes.
 
 use std::collections::{HashMap, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -26,6 +27,8 @@ pub enum Class {
     Media,
     /// Clip rendering (encode-heavy; hardware encoders have session limits).
     Export,
+    /// AI analysis in the engine process (one GPU: one job at a time).
+    Analysis,
 }
 
 /// What to show for a job and what it belongs to.

@@ -1,6 +1,6 @@
 import type * as React from "react"
 import { useNavigate } from "@tanstack/react-router"
-import { Activity, AlertTriangle, Check, CircleSlash, Eye, Film, Scissors, X } from "lucide-react"
+import { Activity, AlertTriangle, Check, CircleSlash, Eye, Film, ScanSearch, Scissors, X } from "lucide-react"
 import type { JobInfo } from "@/bindings"
 import { Button } from "@/components/ui/button"
 import { EmptyState } from "@/components/ui/empty-state"
@@ -17,9 +17,10 @@ const KIND_ICON: Record<JobInfo["kind"], React.ReactNode> = {
   ingest: <Film />,
   proxy: <Eye />,
   export: <Scissors />,
+  analyze: <ScanSearch />,
 }
 
-/** Global view of background work (indexing, previews, exports). */
+/** Global view of background work (indexing, previews, analysis, exports). */
 export function ActivityDrawer() {
   const open = useUi((s) => s.activityOpen)
   const setOpen = useUi((s) => s.setActivityOpen)

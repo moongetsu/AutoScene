@@ -2,9 +2,10 @@
 
 use std::path::Path;
 
-use as_api::{FrameMap, JobKind, JobState, MediaItem, MediaStatus, ProxyState};
+use as_api::{FrameMap, JobKind, JobState, MediaItem, MediaStatus, ProxyState, Segment};
 use as_core::{MediaId, ProjectId};
 use tauri::{AppHandle, State};
+use tauri_specta::Event;
 
 use crate::error::{AppError, AppResult, ErrorCode};
 use crate::state::{AppState, allow_asset, allow_asset_dir, blocking};
@@ -187,4 +188,52 @@ pub async fn media_frame_map(
     let map = map?;
     allow_asset(&app, Path::new(&map.src));
     Ok(map)
+}
+
+/// Shots, transitions and black/flash frames of a media (empty until its
+/// shots are detected).
+#[tauri::command]
+#[specta::specta]
+pub async fn media_segments(
+    state: State<'_, AppState>,
+    project_id: ProjectId,
+    media_id: MediaId,
+) -> AppResult<Vec<Segment>> {
+    let lib = state.library.clone();
+    blocking(move || Ok(lib.project(project_id)?.segments(media_id)?)).await
+}
+
+/// Run the analysis of a media (again). `fresh` discards earlier results and
+/// checkpoints first; otherwise a stopped or failed run continues.
+#[tauri::command]
+#[specta::specta]
+pub async fn media_analyze(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    project_id: ProjectId,
+    media_id: MediaId,
+    fresh: bool,
+) -> AppResult<()> {
+    if fresh {
+        state.jobs.cancel_where(|j| j.kind == JobKind::Analyze && j.media_id == Some(media_id));
+    }
+    let lib = state.library.clone();
+    let project = blocking(move || {
+        let p = lib.project(project_id)?;
+        let m = p.media(media_id)?;
+        if m.status != MediaStatus::Ready {
+            return Err(AppError::new(ErrorCode::NotReady, format!("{} isn't indexed yet.", m.file_name)));
+        }
+        if fresh {
+            p.reset_shots(media_id)?;
+        } else {
+            p.set_shots_state(media_id, as_api::StageState::Pending, None)?;
+        }
+        Ok(p)
+    })
+    .await?;
+    work::queue_shots(&app, &project, media_id);
+    crate::events::emit_media_changed(&app, project_id, Some(media_id));
+    let _ = crate::events::AnalysisChanged { project_id, media_id }.emit(&app);
+    Ok(())
 }

@@ -40,3 +40,40 @@ pub fn load_truth() -> Option<Truth> {
         Err(e) => panic!("{} is stale or corrupt ({e}); run `cargo xtask fixtures`", p.display()),
     }
 }
+
+/// The ONNX Runtime the app bundles (`cargo xtask fetch-sidecars`), or
+/// `AUTOSCENE_ORT_DIR`. `None` (tests skip) when it isn't there and
+/// `AUTOSCENE_REQUIRE_MODELS` is unset.
+pub fn ort_dir() -> Option<PathBuf> {
+    let dir = std::env::var_os("AUTOSCENE_ORT_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../app/src-tauri/onnxruntime"));
+    let lib = if cfg!(windows) {
+        "onnxruntime.dll"
+    } else if cfg!(target_os = "macos") {
+        "libonnxruntime.dylib"
+    } else {
+        "libonnxruntime.so"
+    };
+    if dir.join(lib).is_file() {
+        return Some(dir);
+    }
+    if models_required() {
+        panic!("no ONNX Runtime in {} (run `cargo xtask fetch-sidecars`)", dir.display());
+    }
+    eprintln!("ONNX Runtime missing; run `cargo xtask fetch-sidecars` (skipping)");
+    None
+}
+
+/// Where tests find AI models: `AUTOSCENE_MODELS_DIR`, else `fixtures/models`
+/// (filled by `cargo xtask fetch-models`).
+pub fn models_dir() -> PathBuf {
+    std::env::var_os("AUTOSCENE_MODELS_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/models"))
+}
+
+/// CI sets `AUTOSCENE_REQUIRE_MODELS` so missing models fail instead of skip.
+pub fn models_required() -> bool {
+    std::env::var_os("AUTOSCENE_REQUIRE_MODELS").is_some_and(|v| v != "0")
+}

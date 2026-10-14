@@ -20,7 +20,7 @@ import {
   X,
 } from "lucide-react"
 import { toast } from "sonner"
-import type { FrameMap, MediaItem } from "@/bindings"
+import type { FrameMap, MediaItem, Segment } from "@/bindings"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Kbd } from "@/components/ui/kbd"
@@ -34,13 +34,15 @@ import { formatPercent } from "@/lib/format"
 import { commands, errorMessage, isAppError } from "@/lib/ipc"
 import { assetUrl, audioOption, codecLabel, currentAudio, fileStem, formatFlags, mediaTitle, releaseTitle } from "@/lib/media"
 import { modKey } from "@/lib/platform"
-import { useFrameMap, useMediaList, useProject } from "@/lib/queries"
+import { useFrameMap, useMediaList, useProject, useSegments } from "@/lib/queries"
+import { nextShotStart, prevShotStart, segmentIndexAt, shotAt, shotNumbers } from "@/lib/segments"
 import { formatFps, parseTimecode, timecode } from "@/lib/timecode"
 import { cn } from "@/lib/utils"
 import { useMediaJob } from "@/state/activity"
 import { NO_MARKS, useMarks } from "@/state/marks"
 import { usePlayback } from "@/state/playback"
 import { Scrubber } from "./Scrubber"
+import { ShotStrip } from "./ShotStrip"
 import { usePlayer } from "./use-player"
 
 /** Same shape as the backend's default clip names: `Title_S01E03_00-12-03-05`. */
@@ -181,6 +183,8 @@ function ReadyPlayer({ pid, media: m, map }: { pid: string; media: MediaItem; ma
   const [gotoOpen, setGotoOpen] = useState(false)
   const { volume, muted, setVolume, toggleMute } = usePlayback()
   const { data: project } = useProject(pid)
+  const { data: segments } = useSegments(pid, m.id, m.shots === "ready")
+  const shots = m.shots === "ready" ? (segments ?? []) : []
   const fps = map.fps
   const tc = (f: number) => timecode(f, fps, map.dropFrame)
   const last = clock.frames - 1
@@ -189,6 +193,13 @@ function ReadyPlayer({ pid, media: m, map }: { pid: string; media: MediaItem; ma
   const markIn = (f = frame) => setMarks(m.id, { in: f, ...(outFrame != null && outFrame < f ? { out: null } : {}) })
   const markOut = (f = frame) => setMarks(m.id, { out: f, ...(inFrame != null && inFrame > f ? { in: null } : {}) })
   const clear = () => setMarks(m.id, { in: null, out: null })
+  /** The whole shot (its clean range, without transition frames) becomes the clip. */
+  const markShot = (s: Segment | null = shotAt(shots, frame)) => {
+    if (s) setMarks(m.id, { in: s.start, out: s.end - 1 })
+  }
+  const goShot = (to: number | null) => {
+    if (to != null) seek(to)
+  }
   const hasMarks = inFrame != null || outFrame != null
   const start = inFrame ?? 0
   const end = (outFrame ?? last) + 1
@@ -285,6 +296,8 @@ function ReadyPlayer({ pid, media: m, map }: { pid: string; media: MediaItem; ma
       else if (k === " " || k === "k") toggle()
       else if (e.key === "ArrowLeft") step(e.shiftKey ? -oneSecond : -1)
       else if (e.key === "ArrowRight") step(e.shiftKey ? oneSecond : 1)
+      else if (e.key === "ArrowUp") goShot(prevShotStart(shots, frame))
+      else if (e.key === "ArrowDown") goShot(nextShotStart(shots, frame))
       else if (e.key === "Home") seek(0)
       else if (e.key === "End") seek(last)
       else if (k === "i" && e.shiftKey) {
@@ -295,6 +308,7 @@ function ReadyPlayer({ pid, media: m, map }: { pid: string; media: MediaItem; ma
       else if (k === "i") markIn()
       else if (k === "o") markOut()
       else if (k === "x" && e.altKey) clear()
+      else if (k === "x") markShot()
       else if (k === "m") toggleMute()
       else handled = false
       if (handled) e.preventDefault()
@@ -332,6 +346,19 @@ function ReadyPlayer({ pid, media: m, map }: { pid: string; media: MediaItem; ma
             onScrubStart={pause}
             formatFrame={tc}
           />
+          {shots.length > 0 && (
+            <ShotStrip
+              segments={shots}
+              clock={clock}
+              frame={frame}
+              onSeek={(f) => {
+                pause()
+                seek(f)
+              }}
+              onMarkShot={markShot}
+              formatFrame={tc}
+            />
+          )}
           <div className="mt-1 grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-4">
             <div className="flex min-w-0 items-baseline gap-3">
               {gotoOpen ? (
@@ -463,6 +490,8 @@ function ReadyPlayer({ pid, media: m, map }: { pid: string; media: MediaItem; ma
           {!hasMarks && <p className="mt-2 text-center text-2xs text-fg-3">Mark an in or out point to export.</p>}
         </section>
 
+        <ShotsPanel pid={pid} media={m} segments={shots} frame={frame} tc={tc} onMark={() => markShot()} onGo={goShot} />
+
         <section className="border-b border-hairline p-4">
           <h2 className="eyebrow mb-3">Source</h2>
           <p className="text-sm text-fg-1">{releaseTitle(m.fileName)}</p>
@@ -511,6 +540,8 @@ function ReadyPlayer({ pid, media: m, map }: { pid: string; media: MediaItem; ma
               ["Play / pause", ["Space"]],
               ["Step one frame", ["←", "→"]],
               ["Step one second", ["Shift", "←"]],
+              ["Previous / next shot", ["↑", "↓"]],
+              ["Mark shot", ["X"]],
               ["Mark in / out", ["I", "O"]],
               ["Go to in / out", ["Shift", "I"]],
               ["Go to timecode", [modKey, "G"]],
@@ -528,6 +559,104 @@ function ReadyPlayer({ pid, media: m, map }: { pid: string; media: MediaItem; ma
       <ExportDialog projectId={pid} clips={[clip]} open={exportOpen} onOpenChange={setExportOpen} />
     </div>
   )
+}
+
+/** The shot under the playhead, or where shot detection stands. */
+function ShotsPanel({
+  pid,
+  media: m,
+  segments,
+  frame,
+  tc,
+  onMark,
+  onGo,
+}: {
+  pid: string
+  media: MediaItem
+  segments: Segment[]
+  frame: number
+  tc: (f: number) => string
+  onMark: () => void
+  onGo: (f: number | null) => void
+}) {
+  const job = useMediaJob(m.id)
+  const analyzing = job?.kind === "analyze"
+  const numbers = useMemo(() => shotNumbers(segments), [segments])
+  const total = numbers.reduce((n, x) => (x >= 0 ? n + 1 : n), 0)
+  const i = segmentIndexAt(segments, frame)
+  const seg = i >= 0 ? segments[i] : null
+  const analyze = () =>
+    void commands.mediaAnalyze(pid, m.id, false).catch((e) => toast.error("Couldn't start the analysis", { description: errorMessage(e) }))
+
+  return (
+    <section className="border-b border-hairline p-4">
+      <div className="mb-3 flex items-center justify-between">
+        <h2 className="eyebrow">Shot</h2>
+        {m.shots === "ready" && <span className="timecode text-2xs text-fg-3">{total} shots</span>}
+      </div>
+      {m.shots === "ready" && seg ? (
+        <>
+          <div className="flex items-baseline justify-between gap-2">
+            <span className="text-sm text-fg-1">
+              {seg.kind === "shot" ? `Shot ${numbers[i] + 1}` : SEGMENT_LABEL[seg.kind]}
+              {seg.tiny && <span className="text-fg-3"> · tiny</span>}
+            </span>
+            <span className="timecode text-xs text-fg-2">{seg.end - seg.start} frames</span>
+          </div>
+          <p className="timecode mt-0.5 text-2xs text-fg-3">
+            {tc(seg.start)} – {tc(seg.end - 1)}
+          </p>
+          <div className="mt-3 flex gap-2">
+            <Button size="sm" variant="secondary" className="flex-1" onClick={onMark}>
+              Mark shot <Kbd keys={["X"]} className="ml-auto" />
+            </Button>
+            <Tooltip label="Previous shot" shortcut={["↑"]}>
+              <Button size="icon-sm" variant="ghost" aria-label="Previous shot" onClick={() => onGo(prevShotStart(segments, frame))}>
+                <ChevronLeft />
+              </Button>
+            </Tooltip>
+            <Tooltip label="Next shot" shortcut={["↓"]}>
+              <Button size="icon-sm" variant="ghost" aria-label="Next shot" onClick={() => onGo(nextShotStart(segments, frame))}>
+                <ChevronRight />
+              </Button>
+            </Tooltip>
+          </div>
+        </>
+      ) : analyzing ? (
+        <div>
+          <div className="flex justify-between text-2xs text-fg-3">
+            <span>{job.state === "queued" ? "Waiting…" : (job.stage ?? "Finding shots")}</span>
+            <span className="timecode">{formatPercent(job.progress)}</span>
+          </div>
+          <Progress className="mt-1.5" value={job.state === "running" ? job.progress : null} />
+        </div>
+      ) : m.shots === "failed" ? (
+        <div>
+          <p className="text-xs text-danger">Shot detection failed.</p>
+          {m.shotsError && <p className="mt-0.5 text-2xs break-words text-fg-3">{m.shotsError}</p>}
+          <Button size="sm" variant="ghost" className="mt-2 -ml-2" onClick={analyze}>
+            <RotateCcw /> Try again
+          </Button>
+        </div>
+      ) : (
+        <div>
+          <p className="text-xs text-fg-3">Shots haven't been detected yet.</p>
+          <Button size="sm" variant="ghost" className="mt-2 -ml-2" onClick={analyze}>
+            <Scissors /> Find shots
+          </Button>
+        </div>
+      )}
+    </section>
+  )
+}
+
+const SEGMENT_LABEL: Record<Segment["kind"], string> = {
+  shot: "Shot",
+  dissolve: "Dissolve",
+  fade_out: "Fade out",
+  fade_in: "Fade in",
+  black: "Black",
+  flash: "Flash",
 }
 
 function TransportButton({

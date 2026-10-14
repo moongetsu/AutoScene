@@ -14,16 +14,7 @@ pub const TONEMAP_SDR: &str =
 /// - convert anamorphic pixels to square,
 /// - scale to `height` (never upscale) with even dimensions.
 pub fn display_chain(info: &MediaInfo, height: Option<u32>, tonemap: bool) -> Vec<String> {
-    let mut f = Vec::new();
-    if info.is_interlaced() {
-        // Field order from the stream or idet; frames of unflagged sources
-        // don't carry it, and bwdif would otherwise assume top field first.
-        let parity = match info.video.field_order.as_deref() {
-            Some("bb" | "tb") => "bff",
-            _ => "tff",
-        };
-        f.push(format!("bwdif=mode=send_frame:parity={parity}"));
-    }
+    let mut f: Vec<String> = deinterlace(info).into_iter().collect();
     if tonemap && info.video.hdr != HdrKind::None {
         f.push(TONEMAP_SDR.to_string());
     }
@@ -35,4 +26,19 @@ pub fn display_chain(info: &MediaInfo, height: Option<u32>, tonemap: bool) -> Ve
         f.push(format!("scale=-2:'min({h},ih)':flags=bicubic"));
     }
     f
+}
+
+/// One-frame-per-frame deinterlacing for interlaced sources (the canonical
+/// grid keeps every frame), `None` for progressive ones.
+pub fn deinterlace(info: &MediaInfo) -> Option<String> {
+    if !info.is_interlaced() {
+        return None;
+    }
+    // Field order from the stream or idet; frames of unflagged sources
+    // don't carry it, and bwdif would otherwise assume top field first.
+    let parity = match info.video.field_order.as_deref() {
+        Some("bb" | "tb") => "bff",
+        _ => "tff",
+    };
+    Some(format!("bwdif=mode=send_frame:parity={parity}"))
 }

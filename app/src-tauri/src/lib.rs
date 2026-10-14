@@ -1,13 +1,15 @@
 //! AutoScene desktop shell.
 //!
 //! Owns the window, typed IPC (tauri-specta → `app/src/bindings.ts`), the
-//! library, background jobs (indexing, previews, exports), logging and
-//! updates. Media analysis runs in the separate `autoscene-engine` process
-//! (added in M2) so a GPU/driver crash can never take the UI down.
+//! library, background jobs (indexing, previews, analysis, exports), logging
+//! and updates. AI analysis runs in a separate engine process (this same
+//! executable started with `--engine`) so a GPU or driver crash can never
+//! take the UI down.
 
 mod commands;
 mod error;
 mod events;
+mod keep_awake;
 #[cfg(target_os = "macos")]
 mod mac_menu;
 mod state;
@@ -49,6 +51,8 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::DynRuntime> {
             commands::media::media_prepare_preview,
             commands::media::media_set_audio,
             commands::media::media_frame_map,
+            commands::media::media_segments,
+            commands::media::media_analyze,
             commands::export::export_presets,
             commands::export::export_default_dir,
             commands::export::export_start,
@@ -67,6 +71,7 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::DynRuntime> {
             events::LibraryChanged,
             events::MediaChanged,
             events::ExportChanged,
+            events::AnalysisChanged,
             updater::UpdateProgress,
         ])
 }
@@ -146,7 +151,7 @@ pub fn run() {
                 }
             };
             let handle = app.handle().clone();
-            app.manage(state::AppState::new(&handle, library));
+            app.manage(state::AppState::new(&handle, library, &paths));
             // Resume interrupted indexing and previews; locate ffmpeg and probe
             // the hardware off the UI thread so the first job starts warm.
             std::thread::spawn(move || {

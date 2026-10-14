@@ -14,6 +14,7 @@ import { qk, queryClient } from "./queries"
  * | job:progress     | activity store (progress only)                     |
  * | library:changed  | projects, project(id), exportDir                   |
  * | media:changed    | media(pid), frameMap(pid, mid), project(pid)       |
+ * | analysis:changed | segments(pid, mid)                                 |
  * | export:changed   | exports(pid)                                       |
  */
 export function startEventBridge(): () => void {
@@ -41,6 +42,9 @@ export function startEventBridge(): () => void {
         : (["frameMap", payload.projectId] as const)
       void queryClient.invalidateQueries({ queryKey: key })
     }),
+    events.analysisChanged.listen(({ payload }) => {
+      void queryClient.invalidateQueries({ queryKey: qk.segments(payload.projectId, payload.mediaId) })
+    }),
     events.exportChanged.listen(({ payload }) => {
       void queryClient.invalidateQueries({ queryKey: qk.exports(payload.projectId) })
     }),
@@ -56,7 +60,10 @@ export function startEventBridge(): () => void {
 /** Exports finish in the background; say so wherever the user is. */
 function notifyFinished(job: JobInfo) {
   if (job.kind !== "export") {
-    if (job.state === "failed") toast.error(job.title.replace(/^Indexing/, "Couldn't index"), { description: job.error ?? undefined })
+    if (job.state === "failed") {
+      const title = job.title.replace(/^Indexing/, "Couldn't index").replace(/^Finding shots in/, "Couldn't find the shots in")
+      toast.error(title, { description: job.error ?? undefined })
+    }
     return
   }
   if (job.state === "done") toast.success("Export finished", { description: job.subtitle ?? undefined })
