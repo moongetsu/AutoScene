@@ -5,6 +5,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use as_analysis::FaceParams;
+use as_analysis::tracker::TrackerParams;
 use as_analysis::tracks::{self, FaceTrack};
 use as_api::{
     Cast, CastEdit, Character, ClipRequest, FaceTrackItem, MediaInfo, Presence, SegmentKind, StageState, TrackAssign,
@@ -20,6 +22,9 @@ use crate::{Project, ProjectError, ProjectResult};
 pub const FACE_CHUNK: u32 = 2400;
 /// Tracks pinned when a character is named, so it keeps its identity.
 const NAME_ANCHORS: usize = 5;
+/// Clusterings in a row that may find the cast changed by the user before
+/// one is stored.
+const CLUSTER_ATTEMPTS: usize = 8;
 
 /// What the engine needs to find a media's faces.
 #[derive(Clone, Debug)]
@@ -193,9 +198,27 @@ impl Project {
     // -- identity -----------------------------------------------------------
 
     /// Group every track of the project into characters, keeping characters
-    /// (names, edits) stable. Returns the number of characters.
+    /// (names, edits) stable. Returns the number of characters. A decision
+    /// the user makes meanwhile is never overwritten: the clustering is
+    /// computed again.
     pub fn recluster(&self) -> ProjectResult<usize> {
+        let _one = self.clustering.lock();
+        for attempt in 1..=CLUSTER_ATTEMPTS {
+            if let Some(n) = self.cluster_once()? {
+                return Ok(n);
+            }
+            tracing::info!(attempt, "the cast changed while clustering; clustering again");
+        }
+        Err(ProjectError::NotReady("The cast kept changing while it was being grouped. Try again.".into()))
+    }
+
+    /// One clustering, stored if the cast didn't change meanwhile.
+    fn cluster_once(&self) -> ProjectResult<Option<usize>> {
+        // The revision first: anything decided after it makes it stale.
+        let rev = self.db().cast_rev()?;
         let rows: Vec<IdentityTrack> = self.db().identity_tracks()?;
+        let face = FaceParams::default();
+        let max_gap = TrackerParams::new(face.stride).max_gap;
         let existing: Vec<CharacterId> = self.db().characters()?.into_iter().map(|c| c.id).collect();
         let key: HashMap<CharacterId, CharKey> = existing.iter().enumerate().map(|(i, c)| (*c, i as CharKey)).collect();
         let mut media: HashMap<MediaId, u32> = HashMap::new();
@@ -206,10 +229,14 @@ impl Project {
             let m = media.len() as u32;
             let m = *media.entry(r.media_id).or_insert(m);
             let assigned = r.character_id.and_then(|c| key.get(&c).copied());
+            let spans = tracks::dets_from_bytes(&r.det_bytes)
+                .map(|d| tracks::presence_spans(&d, r.end, face.stride, max_gap))
+                .unwrap_or_default();
             input.push(TrackIn {
                 media: m,
                 start: r.start,
                 end: r.end,
+                spans,
                 embedding,
                 quality: r.quality,
                 dets: r.dets,
@@ -235,7 +262,9 @@ impl Project {
                 Assign::None => (t, None, TrackAssign::None, score),
             })
             .collect();
-        self.db().apply_identity(&new, &updates)?;
+        if !self.db().apply_identity(rev, &new, &updates)? {
+            return Ok(None);
+        }
         tracing::info!(
             tracks = kept.len(),
             characters = ids.len(),
@@ -243,7 +272,7 @@ impl Project {
             ms = started.elapsed().as_millis() as u64,
             "cast clustered"
         );
-        Ok(ids.len())
+        Ok(Some(ids.len()))
     }
 
     // -- cast ---------------------------------------------------------------
@@ -322,7 +351,9 @@ impl Project {
                 let name = name.as_deref().map(str::trim).filter(|n| !n.is_empty());
                 self.db().rename_character(*character_id, name, NAME_ANCHORS)?;
             }
-            CastEdit::SetHidden { character_id, hidden } => self.db().set_character_hidden(*character_id, *hidden)?,
+            CastEdit::SetHidden { character_id, hidden } => {
+                self.db().set_character_hidden(*character_id, *hidden, NAME_ANCHORS)?
+            }
             CastEdit::Merge { from, into } => {
                 known(*from)?;
                 known(*into)?;

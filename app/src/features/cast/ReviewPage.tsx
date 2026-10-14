@@ -26,24 +26,40 @@ export function ReviewPage() {
   const { data: media } = useMediaList(pid)
   const queue = useCastTracks(pid, c ? { kind: "unsure", id: c } : { kind: "all_unsure" })
   const [skipped, setSkipped] = useState<Set<number>>(new Set())
+  // Answered faces leave at once, before the list is fetched again: a quick
+  // second key must not land on the face just decided.
+  const [answered, setAnswered] = useState<Set<number>>(new Set())
   const [done, setDone] = useState(0)
   const [busy, setBusy] = useState(false)
+  // Quick picks 1–9: the biggest characters when the review started, in a
+  // fixed order (numbers don't move as answers change the screen time).
+  const [pickIds, setPickIds] = useState<string[] | null>(null)
+  if (pickIds === null && cast) setPickIds(cast.characters.filter((x) => !x.hidden).slice(0, 9).map((x) => x.id))
 
-  const items = queue.data ?? []
+  const items = (queue.data ?? []).filter((t) => !answered.has(t.id))
   const current = items.find((t) => !skipped.has(t.id))
   const byId = useMemo(() => new Map((cast?.characters ?? []).map((x) => [x.id, x])), [cast])
   const suggestion = current?.characterId ? byId.get(current.characterId) : undefined
-  // Quick picks: the biggest characters, numbered 1–9.
-  const picks = useMemo(() => (cast?.characters ?? []).filter((x) => !x.hidden).slice(0, 9), [cast])
+  // A pick merged away meanwhile leaves its number empty.
+  const picks = (pickIds ?? []).map((id) => byId.get(id))
   const m = current ? media?.find((x) => x.id === current.mediaId) : undefined
   const total = done + items.length
 
-  const answer = async (fn: () => Promise<unknown>) => {
+  const answer = async (id: number, fn: () => Promise<unknown>) => {
     if (busy) return
     setBusy(true)
+    setAnswered((s) => new Set(s).add(id))
     const r = await fn()
     setBusy(false)
-    if (r !== undefined) setDone((d) => d + 1)
+    if (r !== undefined) {
+      setDone((d) => d + 1)
+    } else {
+      setAnswered((s) => {
+        const next = new Set(s)
+        next.delete(id)
+        return next
+      })
+    }
   }
 
   useEffect(() => {
@@ -54,18 +70,18 @@ export function ReviewPage() {
       // A focused button answers Enter and Space itself.
       if ((e.key === "Enter" || e.key === " ") && e.target instanceof Element && e.target.closest("button, a")) return
       const k = e.key.toLowerCase()
-      const ids = [current.id]
+      const id = current.id
+      const target = /^[1-9]$/.test(k) ? picks[Number(k) - 1] : undefined
       if ((k === "y" || k === "j" || k === "enter") && suggestion) {
-        void answer(() => castEdit(pid, { op: "confirm", tracks: ids }))
+        void answer(id, () => castEdit(pid, { op: "confirm", tracks: [id] }))
       } else if (k === "n" && suggestion) {
-        void answer(() => castEdit(pid, { op: "not_them", tracks: ids, characterId: suggestion.id }))
+        void answer(id, () => castEdit(pid, { op: "not_them", tracks: [id], characterId: suggestion.id }))
       } else if (k === "x") {
-        void answer(() => castEdit(pid, { op: "not_a_face", tracks: ids }))
+        void answer(id, () => castEdit(pid, { op: "not_a_face", tracks: [id] }))
       } else if (k === "s" || e.key === "ArrowRight") {
-        setSkipped((s) => new Set(s).add(current.id))
-      } else if (/^[1-9]$/.test(k) && picks[Number(k) - 1]) {
-        const target = picks[Number(k) - 1]
-        void answer(() => castEdit(pid, { op: "assign", tracks: ids, characterId: target.id }))
+        setSkipped((s) => new Set(s).add(id))
+      } else if (target) {
+        void answer(id, () => castEdit(pid, { op: "assign", tracks: [id], characterId: target.id }))
       } else return
       e.preventDefault()
     }
@@ -160,7 +176,7 @@ export function ReviewPage() {
                     <Button
                       variant="primary"
                       disabled={busy}
-                      onClick={() => void answer(() => castEdit(pid, { op: "confirm", tracks: [current.id] }))}
+                      onClick={() => void answer(current.id, () => castEdit(pid, { op: "confirm", tracks: [current.id] }))}
                     >
                       <Check /> Yes, {suggestion.label}
                       <Kbd keys={["Y"]} className="ml-auto opacity-70 [&_kbd]:border-on-accent/20 [&_kbd]:bg-on-accent/10 [&_kbd]:text-on-accent" />
@@ -168,7 +184,9 @@ export function ReviewPage() {
                     <Button
                       disabled={busy}
                       onClick={() =>
-                        void answer(() => castEdit(pid, { op: "not_them", tracks: [current.id], characterId: suggestion.id }))
+                        void answer(current.id, () =>
+                          castEdit(pid, { op: "not_them", tracks: [current.id], characterId: suggestion.id }),
+                        )
                       }
                     >
                       No, someone else <Kbd keys={["N"]} className="ml-auto" />
@@ -179,7 +197,7 @@ export function ReviewPage() {
                   <Button
                     variant="ghost"
                     disabled={busy}
-                    onClick={() => void answer(() => castEdit(pid, { op: "not_a_face", tracks: [current.id] }))}
+                    onClick={() => void answer(current.id, () => castEdit(pid, { op: "not_a_face", tracks: [current.id] }))}
                   >
                     Not a face <Kbd keys={["X"]} className="ml-auto" />
                   </Button>
@@ -192,15 +210,17 @@ export function ReviewPage() {
           </div>
         )}
 
-        {current && picks.length > 0 && (
+        {current && picks.some(Boolean) && (
           <div className="mt-10">
             <h2 className="eyebrow mb-2">Or someone else</h2>
             <div className="flex flex-wrap gap-2">
-              {picks.map((p, i) => (
+              {picks.map((p, i) => p && (
                 <button
                   key={p.id}
                   disabled={busy}
-                  onClick={() => void answer(() => castEdit(pid, { op: "assign", tracks: [current.id], characterId: p.id }))}
+                  onClick={() =>
+                    void answer(current.id, () => castEdit(pid, { op: "assign", tracks: [current.id], characterId: p.id }))
+                  }
                   className={cn(
                     "flex items-center gap-2 rounded-md border border-hairline bg-panel py-1 pr-2.5 pl-1 text-left transition-colors hover:border-strong hover:bg-hover",
                     p.id === suggestion?.id && "border-accent-line",

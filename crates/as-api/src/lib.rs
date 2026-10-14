@@ -303,7 +303,8 @@ pub struct Character {
     pub id: CharacterId,
     /// Given by the user; `None` until then.
     pub name: Option<String>,
-    /// The name, or "Character N" (numbered by screen time).
+    /// The name, or "Character N" (numbered in the order characters were
+    /// found; a number is never reused).
     pub label: String,
     pub hidden: bool,
     /// Face tracks (auto and pinned).

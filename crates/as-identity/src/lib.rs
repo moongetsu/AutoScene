@@ -28,10 +28,14 @@ pub type CharKey = u32;
 
 #[derive(Clone, Debug)]
 pub struct TrackIn {
-    /// Media the track belongs to: tracks of one media overlapping in time can't be one person.
+    /// Media the track belongs to: tracks of one media on screen together can't be one person.
     pub media: u32,
     pub start: u32,
     pub end: u32,
+    /// Frames the face is actually on screen (sorted, within `start..end`);
+    /// empty means all of `start..end`. A gap is a face that was gone for a
+    /// while (see `as_analysis::tracks::presence_spans`).
+    pub spans: Vec<(u32, u32)>,
     /// Unit-length identity embedding.
     pub embedding: Vec<f32>,
     pub quality: f32,
@@ -123,6 +127,24 @@ pub struct Outcome {
     pub tracks: Vec<(Assign, f32)>,
 }
 
+impl TrackIn {
+    /// Frames the face is on screen.
+    fn presence(&self) -> Vec<(u32, u32)> {
+        if self.spans.is_empty() { vec![(self.start, self.end)] } else { self.spans.clone() }
+    }
+}
+
+/// Whether two lists of frame ranges share a frame.
+fn overlaps(a: &[(u32, u32)], b: &[(u32, u32)]) -> bool {
+    a.iter().any(|&(s, e)| b.iter().any(|&(s2, e2)| s < e2 && s2 < e))
+}
+
+/// Two tracks of one media whose faces are on screen at the same time: two
+/// people.
+pub(crate) fn together(a: &TrackIn, b: &TrackIn) -> bool {
+    a.media == b.media && a.start < b.end && b.start < a.end && overlaps(&a.presence(), &b.presence())
+}
+
 /// Quality-weighted mean similarity between the different tracks of a group:
 /// `(|S|² − Σw²) / (W² − Σw²)` with `S = Σ wᵢeᵢ`, `W = Σ wᵢ` (unit `eᵢ`).
 fn cohesion(tracks: &[TrackIn], g: &[usize]) -> f32 {
@@ -179,7 +201,14 @@ pub fn identify(tracks: &[TrackIn], p: &Params) -> Outcome {
             taken.insert(k);
         }
     }
-    let mut overlaps: Vec<(f32, usize, CharKey)> = Vec::new();
+    // How much of each earlier character's clear tracks this run has.
+    let mut before: HashMap<CharKey, f32> = HashMap::new();
+    for &i in &core {
+        if let Some(k) = tracks[i].previous {
+            *before.entry(k).or_default() += tracks[i].quality;
+        }
+    }
+    let mut inherits: Vec<(f32, usize, CharKey)> = Vec::new();
     for (ci, (g, key)) in chars.iter().enumerate() {
         if key.is_some() {
             continue;
@@ -192,13 +221,15 @@ pub fn identify(tracks: &[TrackIn], p: &Params) -> Outcome {
             }
         }
         for (k, w) in by {
-            if w / total >= p.inherit {
-                overlaps.push((w, ci, k));
+            // Enough of the group was that character — or most of that
+            // character went into the group (it grew with new episodes).
+            if w / total >= p.inherit || w / before[&k].max(1e-6) > 0.5 {
+                inherits.push((w, ci, k));
             }
         }
     }
-    overlaps.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
-    for (_, ci, k) in overlaps {
+    inherits.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+    for (_, ci, k) in inherits {
         if chars[ci].1.is_none() && !taken.contains(&k) {
             chars[ci].1 = Some(k);
             taken.insert(k);
@@ -215,7 +246,7 @@ pub fn identify(tracks: &[TrackIn], p: &Params) -> Outcome {
         let mut sp: HashMap<u32, Vec<(u32, u32)>> = HashMap::new();
         for &i in g {
             out[i] = (if tracks[i].pin.is_some() { Assign::Pinned(ci) } else { Assign::Auto(ci) }, 1.0);
-            sp.entry(tracks[i].media).or_default().push((tracks[i].start, tracks[i].end));
+            sp.entry(tracks[i].media).or_default().extend(tracks[i].presence());
         }
         let members: Vec<(&[f32], f32)> =
             g.iter().map(|&i| (tracks[i].embedding.as_slice(), tracks[i].quality.max(0.05))).collect();
@@ -223,23 +254,32 @@ pub fn identify(tracks: &[TrackIn], p: &Params) -> Outcome {
         protos.push(proto::prototypes(&members, p.prototypes));
         spans.push(sp);
     }
-    // Pinned tracks outside the core can't happen (pins are core), but a
-    // forbidden character must never keep a track.
-    loose.sort_unstable();
-    for i in loose {
+    // Every other track, most similar first: a character already on screen
+    // in a frame (a member, or a closer look-alike placed before) can't take
+    // a second face there. A forbidden character never gets a track.
+    let mut loose: Vec<(usize, Vec<(f32, usize)>)> = loose
+        .into_iter()
+        .map(|i| {
+            let t = &tracks[i];
+            let mut scores: Vec<(f32, usize)> = (0..characters.len())
+                .filter(|&ci| characters[ci].key.is_none_or(|k| !t.forbid.contains(&k)))
+                .map(|ci| (proto::similarity(&t.embedding, &protos[ci]), ci))
+                .collect();
+            scores.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+            (i, scores)
+        })
+        .collect();
+    let top = |s: &[(f32, usize)]| s.first().map_or(f32::NEG_INFINITY, |x| x.0);
+    loose.sort_by(|a, b| top(&b.1).total_cmp(&top(&a.1)).then(a.0.cmp(&b.0)));
+    for (i, scores) in loose {
         let t = &tracks[i];
-        let mut scores: Vec<(f32, usize)> = (0..characters.len())
-            .filter(|&ci| characters[ci].key.is_none_or(|k| !t.forbid.contains(&k)))
-            .filter(|&ci| spans[ci].get(&t.media).is_none_or(|v| v.iter().all(|&(s, e)| !(t.start < e && s < t.end))))
-            .map(|ci| (proto::similarity(&t.embedding, &protos[ci]), ci))
-            .collect();
-        scores.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
-        let (s1, c1) = match scores.first() {
-            Some(&x) => x,
-            None => continue,
-        };
-        let s2 = scores.get(1).map_or(-1.0, |x| x.0);
+        let here = t.presence();
+        let mut free =
+            scores.into_iter().filter(|&(_, ci)| spans[ci].get(&t.media).is_none_or(|v| !overlaps(&here, v)));
+        let Some((s1, c1)) = free.next() else { continue };
+        let s2 = free.next().map_or(-1.0, |x| x.0);
         out[i] = if s1 >= p.assign && s1 - s2 >= p.margin {
+            spans[c1].entry(t.media).or_default().extend(here);
             (Assign::Auto(c1), s1)
         } else if s1 >= p.unsure {
             (Assign::Unsure(c1), s1)

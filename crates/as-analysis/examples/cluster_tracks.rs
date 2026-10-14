@@ -24,6 +24,7 @@ fn main() {
             media: 0,
             start: t.start,
             end: t.end,
+            spans: as_analysis::tracks::presence_spans(&t.dets, t.end, 3, 8),
             embedding: t.embedding.clone(),
             quality: t.quality,
             dets: t.dets.len() as u32,

@@ -29,6 +29,8 @@ pub struct Project {
     /// Latest proxy build per media. A replaced build that finishes (or
     /// fails) late must not overwrite the state of the one that replaced it.
     proxy_builds: Mutex<HashMap<MediaId, u64>>,
+    /// One clustering of the cast at a time.
+    pub(crate) clustering: Mutex<()>,
 }
 
 impl Project {
@@ -46,15 +48,28 @@ impl Project {
         ] {
             db.set_meta(k, &v)?;
         }
-        let p =
-            Self { id: s.id, dir, db, indexes: Mutex::new(HashMap::new()), proxy_builds: Mutex::new(HashMap::new()) };
+        let p = Self {
+            id: s.id,
+            dir,
+            db,
+            indexes: Mutex::default(),
+            proxy_builds: Mutex::default(),
+            clustering: Mutex::default(),
+        };
         p.ensure_dirs()?;
         Ok(p)
     }
 
     pub(crate) fn open(id: ProjectId, dir: PathBuf) -> ProjectResult<Self> {
         let db = ProjectDb::open(&dir.join(PROJECT_DB))?;
-        let p = Self { id, dir, db, indexes: Mutex::new(HashMap::new()), proxy_builds: Mutex::new(HashMap::new()) };
+        let p = Self {
+            id,
+            dir,
+            db,
+            indexes: Mutex::default(),
+            proxy_builds: Mutex::default(),
+            clustering: Mutex::default(),
+        };
         p.ensure_dirs()?;
         // Exports can't resume mid-way (M1): close them out.
         p.db.close_stale_exports()?;

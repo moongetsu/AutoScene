@@ -73,11 +73,16 @@ pub async fn media_remove(
     let project = blocking(move || {
         let p = lib.project(project_id)?;
         p.remove_media(media_id)?;
+        // Its faces are gone: characters only it had go too.
+        if let Err(e) = p.recluster() {
+            log::warn!("grouping the cast after removing a media: {}", e.detail());
+        }
         Ok(p)
     })
     .await?;
     work::library_changed(&app, &project);
     crate::events::emit_media_changed(&app, project_id, Some(media_id));
+    let _ = crate::events::CastChanged { project_id }.emit(&app);
     Ok(())
 }
 
@@ -225,26 +230,33 @@ pub async fn media_analyze(
         Ok(p)
     })
     .await?;
-    let running = |j: &as_api::JobInfo| j.kind == JobKind::Analyze && j.media_id == Some(media_id);
+    let analysis = |j: &as_api::JobInfo| j.kind == JobKind::Analyze && j.media_id == Some(media_id);
     match redo {
-        Some(stage) if state.jobs.is_active(running) => {
-            // The running job restarts the analysis once it has stopped.
-            let mut redo = state.redo.lock();
-            let merged = match redo.get(&media_id) {
-                Some(AnalysisStage::Shots) => AnalysisStage::Shots,
-                _ => stage,
-            };
-            redo.insert(media_id, merged);
-            drop(redo);
-            state.jobs.cancel_where(running);
-        }
         Some(stage) => {
-            let app2 = app.clone();
-            blocking(move || {
-                work::restart_analysis(&app2, &project, media_id, stage);
-                Ok(())
-            })
-            .await?;
+            // A running job restarts the analysis once it has stopped; with
+            // none running, a queued one is dropped and the restart made here.
+            let handed_over = {
+                let mut runs = state.analysis.lock();
+                if runs.running.contains(&media_id) {
+                    let merged = match runs.redo.get(&media_id) {
+                        Some(AnalysisStage::Shots) => AnalysisStage::Shots,
+                        _ => stage,
+                    };
+                    runs.redo.insert(media_id, merged);
+                    true
+                } else {
+                    false
+                }
+            };
+            state.jobs.cancel_where(analysis);
+            if !handed_over {
+                let app2 = app.clone();
+                blocking(move || {
+                    work::restart_analysis(&app2, &project, media_id, stage);
+                    Ok(())
+                })
+                .await?;
+            }
         }
         None => {
             let p = project.clone();

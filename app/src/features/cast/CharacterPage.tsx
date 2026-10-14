@@ -182,6 +182,11 @@ export function CharacterPage() {
           title={`${character.label} is the same person as…`}
           description="Every face of both becomes one character. It keeps a name if either has one."
           exclude={character.id}
+          confirm={(target) => ({
+            question: `Merge ${character.label} into ${target.label}?`,
+            detail: "This can't be undone. Faces you said aren't them stay apart.",
+            action: "Merge",
+          })}
           onPick={async (target) => {
             setMergeOpen(false)
             if (target.kind !== "existing") return
@@ -441,7 +446,7 @@ function Maybe({
 
 type Pick = { kind: "existing"; id: string } | { kind: "new"; name: string }
 
-/** Choose a character (or start a new one). */
+/** Choose a character (or start a new one), optionally confirming the choice. */
 export function PickCharacter({
   pid,
   open,
@@ -450,6 +455,7 @@ export function PickCharacter({
   description,
   exclude,
   allowNew,
+  confirm,
   onPick,
 }: {
   pid: string
@@ -459,57 +465,121 @@ export function PickCharacter({
   description?: string
   exclude?: string
   allowNew?: boolean
+  /** Ask before an existing character is taken (for what can't be undone). */
+  confirm?: (target: Character) => { question: string; detail: string; action: string }
   onPick: (p: Pick) => void
 }) {
   const { data: cast } = useCast(pid)
   const [query, setQuery] = useState("")
+  // The row arrows moved to (an index into `options`); null: none yet.
+  const [active, setActive] = useState<number | null>(null)
+  const [pending, setPending] = useState<Character | null>(null)
   const q = query.trim().toLowerCase()
   const options = (cast?.characters ?? []).filter((c) => c.id !== exclude && (!q || c.label.toLowerCase().includes(q)))
+  // Enter takes the row the arrows chose, else an exact name — never just
+  // the first partial match (typing a new name must not pick an old one).
+  const exact = options.findIndex((c) => c.label.toLowerCase() === q)
+  const selected = active ?? (exact >= 0 ? exact : null)
+  const reset = () => {
+    setQuery("")
+    setActive(null)
+    setPending(null)
+  }
+  const choose = (c: Character) => (confirm ? setPending(c) : onPick({ kind: "existing", id: c.id }))
+  const asked = pending && confirm?.(pending)
   return (
-    <Dialog open={open} onOpenChange={(o) => (onOpenChange(o), setQuery(""))}>
+    <Dialog open={open} onOpenChange={(o) => (onOpenChange(o), reset())}>
       <DialogContent title={title} description={description} className="w-[min(440px,calc(100vw-32px))]">
-        <Input
-          autoFocus
-          placeholder={allowNew ? "Search, or type a new name" : "Search"}
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key !== "Enter") return
-            if (options[0]) onPick({ kind: "existing", id: options[0].id })
-            else if (allowNew) onPick({ kind: "new", name: query.trim() })
-          }}
-        />
-        <div className="mt-3 max-h-[320px] overflow-y-auto">
-          {allowNew && (
-            <button
-              onClick={() => onPick({ kind: "new", name: query.trim() })}
-              className="flex w-full items-center gap-3 rounded-md px-2 py-1.5 text-left text-sm text-fg-1 hover:bg-hover"
-            >
-              <span className="flex size-8 items-center justify-center rounded-md border border-dashed border-soft text-fg-3">
-                <UserRoundPlus className="size-4" />
+        {pending && asked ? (
+          <div className="flex flex-col gap-4">
+            <div className="flex items-center gap-3">
+              <span className="size-12 shrink-0 overflow-hidden rounded-md bg-inset">
+                {pending.cover && <img src={assetUrl(pending.cover)} alt="" className="size-full object-cover" />}
               </span>
-              {query.trim() ? <>New character “{query.trim()}”</> : "New character"}
-            </button>
-          )}
-          {options.map((c) => (
-            <button
-              key={c.id}
-              onClick={() => onPick({ kind: "existing", id: c.id })}
-              className="flex w-full items-center gap-3 rounded-md px-2 py-1.5 text-left hover:bg-hover"
-            >
-              <span className="size-8 shrink-0 overflow-hidden rounded-md bg-inset">
-                {c.cover && <img src={assetUrl(c.cover)} alt="" className="size-full object-cover" />}
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className={cn("block truncate text-sm", c.name ? "text-fg-1" : "text-fg-2")}>{c.label}</span>
-                <span className="block text-2xs text-fg-3">
-                  {formatScreenTime(c.screenSec ?? 0)} · {plural(c.shots, "shot")}
-                </span>
-              </span>
-            </button>
-          ))}
-          {!allowNew && options.length === 0 && <p className="px-2 py-3 text-sm text-fg-3">Nobody matches.</p>}
-        </div>
+              <div>
+                <p className="text-sm text-fg-1">{asked.question}</p>
+                <p className="mt-0.5 text-2xs text-fg-3">{asked.detail}</p>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="ghost" onClick={() => setPending(null)}>
+                Back
+              </Button>
+              <Button variant="primary" autoFocus onClick={() => onPick({ kind: "existing", id: pending.id })}>
+                {asked.action}
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <Input
+              autoFocus
+              placeholder={allowNew ? "Search, or type a new name" : "Search"}
+              value={query}
+              role="combobox"
+              aria-expanded
+              aria-controls="pick-character-list"
+              aria-activedescendant={selected != null && options[selected] ? `pick-${options[selected].id}` : undefined}
+              onChange={(e) => {
+                setQuery(e.target.value)
+                setActive(null)
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                  e.preventDefault()
+                  if (options.length === 0) return
+                  const from = selected ?? (e.key === "ArrowDown" ? -1 : options.length)
+                  setActive(Math.min(options.length - 1, Math.max(0, from + (e.key === "ArrowDown" ? 1 : -1))))
+                } else if (e.key === "Enter") {
+                  e.preventDefault()
+                  if (selected != null && options[selected]) choose(options[selected])
+                  else if (allowNew && q) onPick({ kind: "new", name: query.trim() })
+                }
+              }}
+            />
+            <div id="pick-character-list" role="listbox" className="mt-3 max-h-[320px] overflow-y-auto">
+              {allowNew && (
+                <button
+                  onClick={() => onPick({ kind: "new", name: query.trim() })}
+                  className={cn(
+                    "flex w-full items-center gap-3 rounded-md px-2 py-1.5 text-left text-sm text-fg-1 hover:bg-hover",
+                    selected == null && q && "bg-hover",
+                  )}
+                >
+                  <span className="flex size-8 items-center justify-center rounded-md border border-dashed border-soft text-fg-3">
+                    <UserRoundPlus className="size-4" />
+                  </span>
+                  {query.trim() ? <>New character “{query.trim()}”</> : "New character"}
+                </button>
+              )}
+              {options.map((c, i) => (
+                <button
+                  key={c.id}
+                  id={`pick-${c.id}`}
+                  role="option"
+                  aria-selected={i === selected}
+                  onClick={() => choose(c)}
+                  onMouseMove={() => active !== i && setActive(i)}
+                  className={cn(
+                    "flex w-full items-center gap-3 rounded-md px-2 py-1.5 text-left hover:bg-hover",
+                    i === selected && "bg-hover ring-1 ring-strong",
+                  )}
+                >
+                  <span className="size-8 shrink-0 overflow-hidden rounded-md bg-inset">
+                    {c.cover && <img src={assetUrl(c.cover)} alt="" className="size-full object-cover" />}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className={cn("block truncate text-sm", c.name ? "text-fg-1" : "text-fg-2")}>{c.label}</span>
+                    <span className="block text-2xs text-fg-3">
+                      {formatScreenTime(c.screenSec ?? 0)} · {plural(c.shots, "shot")}
+                    </span>
+                  </span>
+                </button>
+              ))}
+              {!allowNew && options.length === 0 && <p className="px-2 py-3 text-sm text-fg-3">Nobody matches.</p>}
+            </div>
+          </>
+        )}
       </DialogContent>
     </Dialog>
   )

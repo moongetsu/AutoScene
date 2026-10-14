@@ -46,6 +46,26 @@ pub struct FaceTrack {
     pub thumb: Vec<u8>,
 }
 
+/// Where a track's face is on screen, from its detections (in frame order):
+/// runs of samples at most `max_gap` samples apart — the tracker links those
+/// by position — each lasting one sample (`stride` frames) past its last
+/// detection, clipped to the track's `end`. A longer gap is a face that was
+/// gone and came back (linked by identity alone); someone else may fill it.
+pub fn presence_spans(dets: &[FaceDet], end: FrameIdx, stride: u32, max_gap: u32) -> Vec<(FrameIdx, FrameIdx)> {
+    let stride = stride.max(1);
+    let mut out: Vec<(FrameIdx, FrameIdx)> = Vec::new();
+    let mut prev: Option<FrameIdx> = None;
+    for d in dets {
+        let until = (d.frame + stride).min(end).max(d.frame + 1);
+        match (out.last_mut(), prev) {
+            (Some(last), Some(p)) if d.frame >= p && (d.frame - p) / stride <= max_gap => last.1 = last.1.max(until),
+            _ => out.push((d.frame, until)),
+        }
+        prev = Some(d.frame);
+    }
+    out
+}
+
 impl FaceTrack {
     /// Median face height (fraction of the frame height).
     pub fn face_height(&self) -> f32 {
@@ -179,6 +199,19 @@ pub fn decode(blob: &[u8]) -> Option<Vec<FaceTrack>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn det(frame: FrameIdx) -> FaceDet {
+        FaceDet { frame, bbox: [0.1, 0.1, 0.2, 0.3], score: 0.9, norm: 20.0, quality: 0.8 }
+    }
+
+    #[test]
+    fn presence_splits_where_the_face_was_gone() {
+        // Samples every 3 frames; a gap of up to 8 samples counts as present.
+        let dets: Vec<FaceDet> = [0, 3, 6, 30, 33, 99, 102].into_iter().map(det).collect();
+        assert_eq!(presence_spans(&dets, 104, 3, 8), [(0, 36), (99, 104)]);
+        assert_eq!(presence_spans(&dets[..1], 2, 3, 8), [(0, 2)]);
+        assert!(presence_spans(&[], 10, 3, 8).is_empty());
+    }
 
     #[test]
     fn tracks_round_trip() {

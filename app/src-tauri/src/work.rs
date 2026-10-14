@@ -150,12 +150,47 @@ fn finds_faces(project: &Project) -> bool {
 
 /// Analyse a media in the engine: shots, then faces, then the project's
 /// cast is clustered again. Resumes from checkpoints; downloads the models
-/// it needs first.
+/// it needs first. Nothing happens when its analysis is already queued or
+/// running.
 pub fn queue_analysis(app: &AppHandle, project: &Arc<Project>, media_id: MediaId) {
     let state = app.state::<AppState>();
     if state.jobs.is_active(|j| j.kind == JobKind::Analyze && j.media_id == Some(media_id)) {
         return;
     }
+    submit_analysis(app, project, media_id);
+}
+
+/// Unregisters a running analysis however its job ends (a panic drops the
+/// restart it owed: the stage stays as it was and can be retried).
+struct Running<'a> {
+    state: &'a AppState,
+    media: MediaId,
+}
+
+impl Running<'_> {
+    /// The job is done writing: the restart asked for meanwhile, if any.
+    fn finish(self) -> Option<AnalysisStage> {
+        let mut runs = self.state.analysis.lock();
+        runs.running.remove(&self.media);
+        let redo = runs.redo.remove(&self.media);
+        drop(runs);
+        std::mem::forget(self);
+        redo
+    }
+}
+
+impl Drop for Running<'_> {
+    fn drop(&mut self) {
+        let mut runs = self.state.analysis.lock();
+        runs.running.remove(&self.media);
+        runs.redo.remove(&self.media);
+    }
+}
+
+/// Queue an analysis job for a media unconditionally (a duplicate finds
+/// its stages done and ends at once: one analysis runs at a time).
+fn submit_analysis(app: &AppHandle, project: &Arc<Project>, media_id: MediaId) {
+    let state = app.state::<AppState>();
     let Ok(m) = project.media(media_id) else { return };
     let spec = JobSpec {
         kind: JobKind::Analyze,
@@ -169,6 +204,8 @@ pub fn queue_analysis(app: &AppHandle, project: &Arc<Project>, media_id: MediaId
     let (app2, project) = (app.clone(), project.clone());
     state.jobs.submit(spec, move |ctx| {
         let state = app2.state::<AppState>();
+        state.analysis.lock().running.insert(media_id);
+        let running = Running { state: &state, media: media_id };
         let _awake = crate::keep_awake::hold();
         let notify = || {
             let _ = AnalysisChanged { project_id: project.id, media_id }.emit(&app2);
@@ -187,8 +224,7 @@ pub fn queue_analysis(app: &AppHandle, project: &Arc<Project>, media_id: MediaId
             faces
         });
         // Asked to start over while this ran: now nothing writes any more.
-        let redo = state.redo.lock().remove(&media_id);
-        if let Some(stage) = redo {
+        if let Some(stage) = running.finish() {
             restart_analysis(&app2, &project, media_id, stage);
             return Ok(());
         }
@@ -196,19 +232,24 @@ pub fn queue_analysis(app: &AppHandle, project: &Arc<Project>, media_id: MediaId
     });
 }
 
-/// Clear a media's results from `stage` on and analyse it again.
+/// Clear a media's results from `stage` on and analyse it again. Only call
+/// it when no analysis of the media runs (see [`AnalysisRuns`]).
+///
+/// [`AnalysisRuns`]: crate::state::AnalysisRuns
 pub fn restart_analysis(app: &AppHandle, project: &Arc<Project>, media_id: MediaId, stage: AnalysisStage) {
     let reset = match stage {
         AnalysisStage::Shots => project.reset_shots(media_id),
         AnalysisStage::Faces => project.reset_faces(media_id),
     };
+    // The cast forgets this media's faces; the user's decisions on them wait
+    // for the new tracks.
     if let Err(e) = reset.and_then(|()| project.recluster().map(|_| ())) {
         log::warn!("resetting the analysis: {}", e.detail());
     }
     let _ = CastChanged { project_id: project.id }.emit(app);
     let _ = AnalysisChanged { project_id: project.id, media_id }.emit(app);
     media_changed(app, project, Some(media_id));
-    queue_analysis(app, project, media_id);
+    submit_analysis(app, project, media_id);
 }
 
 fn run_shots(

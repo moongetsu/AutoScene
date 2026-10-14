@@ -232,7 +232,10 @@ export type Character = {
 	id: CharacterId,
 	/**  Given by the user; `None` until then. */
 	name: string | null,
-	/**  The name, or "Character N" (numbered by screen time). */
+	/**
+	 *  The name, or "Character N" (numbered in the order characters were
+	 *  found; a number is never reused).
+	 */
 	label: string,
 	hidden: boolean,
 	/**  Face tracks (auto and pinned). */

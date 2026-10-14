@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 
-use crate::{CharKey, TrackIn};
+use crate::{CharKey, TrackIn, together};
 
 /// Above this many groups the clustering runs per media first.
 const SINGLE_LEVEL: usize = 4000;
@@ -52,9 +52,12 @@ pub fn cluster(tracks: &[TrackIn], core: &[usize], link: f32) -> Vec<Vec<usize>>
         for m in media {
             level1.extend(merge(tracks, by_media.remove(&m).expect("listed"), link));
         }
-        level1.sort_by(|a, b| b.weight.total_cmp(&a.weight));
-        let split = level1.iter().take(SECOND_LEVEL).take_while(|g| g.members.len() > 1 || g.pin.is_some()).count();
-        let rest = level1.split_off(split);
+        // Pinned groups and then the heaviest meet across media. A person
+        // seen once per episode is a single track in each: those join too,
+        // as far as the cap allows.
+        level1.sort_by(|a, b| b.pin.is_some().cmp(&a.pin.is_some()).then(b.weight.total_cmp(&a.weight)));
+        let pinned = level1.iter().filter(|g| g.pin.is_some()).count();
+        let rest = level1.split_off(level1.len().min(SECOND_LEVEL.max(pinned)));
         groups = merge(tracks, level1, link);
         groups.extend(rest);
     } else {
@@ -135,7 +138,7 @@ fn cannot_links(tracks: &[TrackIn], groups: &[Group]) -> Bits {
             if tracks[tb].media != tracks[ta].media || tracks[tb].start >= tracks[ta].end {
                 break;
             }
-            if ga != gb {
+            if ga != gb && together(&tracks[ta], &tracks[tb]) {
                 cl.set(ga, gb);
             }
         }

@@ -104,8 +104,29 @@ struct Queued {
 type Detected = Result<(Vec<Queued>, Vec<Vec<FaceBox>>), AnalysisError>;
 
 /// The detector thread: batches in, faces out, in order. `halve`: detect on
-/// half-size copies (boxes are scaled back). Stops after the first error.
+/// half-size copies (boxes are scaled back). Stops after the first error; a
+/// panic becomes one, so the pass fails instead of the engine.
 fn detect_batches(
+    detector: &mut Scrfd,
+    size: (usize, usize),
+    halve: bool,
+    threshold: f32,
+    batches: Receiver<Vec<Queued>>,
+    out: Sender<Detected>,
+) {
+    let errors = out.clone();
+    let run = std::panic::AssertUnwindSafe(|| detect_each(detector, size, halve, threshold, batches, out));
+    if let Err(panic) = std::panic::catch_unwind(run) {
+        let why = panic
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| panic.downcast_ref::<String>().cloned())
+            .unwrap_or_default();
+        let _ = errors.send(Err(AnalysisError::Internal(format!("the face detector failed: {why}"))));
+    }
+}
+
+fn detect_each(
     detector: &mut Scrfd,
     (w, h): (usize, usize),
     halve: bool,

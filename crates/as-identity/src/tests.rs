@@ -40,7 +40,18 @@ fn around(rng: &mut Rng, center: &[f32], fidelity: f32) -> Vec<f32> {
 }
 
 fn track(media: u32, start: u32, embedding: Vec<f32>, quality: f32) -> TrackIn {
-    TrackIn { media, start, end: start + 48, embedding, quality, dets: 10, pin: None, forbid: vec![], previous: None }
+    TrackIn {
+        media,
+        start,
+        end: start + 48,
+        spans: vec![],
+        embedding,
+        quality,
+        dets: 10,
+        pin: None,
+        forbid: vec![],
+        previous: None,
+    }
 }
 
 /// `people` identities, `per` core tracks each, on screen one after another.
@@ -202,4 +213,77 @@ fn a_face_seen_with_a_character_is_not_them() {
     let o = identify(&tracks, &Params::default());
     let c0 = o.tracks[0].0.character().unwrap();
     assert_ne!(o.tracks.last().unwrap().0.character(), Some(c0));
+}
+
+#[test]
+fn a_face_back_after_a_gap_leaves_the_gap_free() {
+    let mut rng = Rng(19);
+    let (centers, mut tracks, _) = cast(&mut rng, 2, 10);
+    // Person 0 left and came back: one track, on screen 0..100 and 201..330.
+    let mut long = track(1, 0, around(&mut rng, &centers[0], 0.75), 0.8);
+    (long.end, long.spans) = (330, vec![(0, 100), (201, 330)]);
+    tracks.push(long);
+    // A weak view of them in between.
+    tracks.push(track(1, 110, around(&mut rng, &centers[0], 0.7), 0.2));
+    let o = identify(&tracks, &Params::default());
+    let c0 = o.tracks[0].0.character().unwrap();
+    assert_eq!(o.tracks.last().unwrap().0, Assign::Auto(c0));
+}
+
+#[test]
+fn a_character_is_on_screen_once_per_frame() {
+    let mut rng = Rng(29);
+    let (centers, mut tracks, _) = cast(&mut rng, 2, 10);
+    // Two weak faces like person 0 at the same time: only the closer one is them.
+    let n = tracks.len();
+    tracks.push(track(1, 0, around(&mut rng, &centers[0], 0.7), 0.2));
+    tracks.push(track(1, 10, around(&mut rng, &centers[0], 0.85), 0.2));
+    let o = identify(&tracks, &Params::default());
+    let c0 = o.tracks[0].0.character().unwrap();
+    assert_eq!(o.tracks[n + 1].0, Assign::Auto(c0));
+    assert_ne!(o.tracks[n].0.character(), Some(c0));
+}
+
+#[test]
+fn characters_keep_their_identity_when_they_grow() {
+    let mut rng = Rng(31);
+    let (centers, mut tracks, _) = cast(&mut rng, 2, 5);
+    let first = identify(&tracks, &Params::default());
+    for (t, (a, _)) in tracks.iter_mut().zip(&first.tracks) {
+        t.previous = a.character().map(|c| 100 + c as u32);
+    }
+    let key0 = 100 + first.tracks[0].0.character().unwrap() as u32;
+    // A small part in episode 1, a big one in episode 2.
+    for i in 0..30u32 {
+        tracks.push(track(1, i * 100, around(&mut rng, &centers[0], 0.75), 0.8));
+    }
+    let second = identify(&tracks, &Params::default());
+    let c = second.tracks[0].0.character().unwrap();
+    assert_eq!(second.characters[c].key, Some(key0));
+    assert!(second.tracks[10..].iter().all(|(a, _)| a.character() == Some(c)));
+}
+
+#[test]
+fn a_person_seen_once_per_episode_is_found_in_a_big_series() {
+    // More clear tracks than one clustering level takes: a person with one
+    // track per episode is a single track in each episode's first level.
+    let mut rng = Rng(37);
+    let unit = |rng: &mut Rng| {
+        let mut v: Vec<f32> = (0..96).map(|_| rng.gauss()).collect();
+        proto_normalize(&mut v);
+        v
+    };
+    let person = unit(&mut rng);
+    let mut tracks: Vec<TrackIn> = (0..4100u32).map(|i| track(i % 8, (i / 8) * 100, unit(&mut rng), 0.9)).collect();
+    let first = tracks.len();
+    for m in 0..8u32 {
+        let noise = unit(&mut rng);
+        let mut e: Vec<f32> = person.iter().zip(&noise).map(|(c, n)| 0.9 * c + 0.436 * n).collect();
+        proto_normalize(&mut e);
+        tracks.push(track(m, 1_000_000, e, 0.6));
+    }
+    let o = identify(&tracks, &Params::default());
+    let c = o.tracks[first].0.character();
+    assert!(c.is_some(), "the person is no character");
+    assert!(o.tracks[first..].iter().all(|(a, _)| a.character() == c));
 }

@@ -339,8 +339,11 @@ function ingest(p: MockProject, m: MediaItem) {
 }
 
 function analyze(p: MockProject, m: MediaItem) {
-  m.shots = "running"
-  startJob("analyze", `Analysing ${m.label ? `${m.label} · ` : ""}${m.fileName}`, p, 4000, { mediaId: m.id, stage: "Finding shots" }, () => {
+  const facesOnly = m.shots === "ready"
+  if (facesOnly) m.faces = "running"
+  else m.shots = "running"
+  const stage = facesOnly ? "Finding characters" : "Finding shots"
+  startJob("analyze", `Analysing ${m.label ? `${m.label} · ` : ""}${m.fileName}`, p, 4000, { mediaId: m.id, stage }, () => {
     m.shots = "ready"
     m.shotCount = SHOT_COUNT
     if (p.content !== "anime") {
@@ -497,9 +500,12 @@ const handlers: Record<string, Handler> = {
     return { mediaId: m.id, src: VIDEO, isProxy: m.proxy === "ready", frames: FRAMES, fps: FPS, dropFrame: false, offset: 0, step: 1 / 24, times: null }
   },
   media_segments: ({ projectId, mediaId }): Segment[] => (findMedia(find(projectId), mediaId).shots === "ready" ? SEGMENTS : []),
-  media_analyze: ({ projectId, mediaId }) => {
+  media_analyze: ({ projectId, mediaId, redo }) => {
     const p = find(projectId)
-    analyze(p, findMedia(p, mediaId))
+    const m = findMedia(p, mediaId)
+    if (redo === "shots") Object.assign(m, { shots: "pending", shotCount: null })
+    if (redo) Object.assign(m, { faces: "pending", faceCount: null })
+    analyze(p, m)
     return null
   },
   cast_get: ({ projectId }) => castGet(String(projectId), find(projectId).media),

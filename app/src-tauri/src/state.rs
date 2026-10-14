@@ -1,6 +1,6 @@
 //! App-wide state shared by commands and background work.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
@@ -22,6 +22,18 @@ use crate::events::{JobChanged, JobProgressEvent};
 /// sessions are never oversubscribed; the engine analyses one media at a time.
 const LIMITS: &[(Class, usize)] = &[(Class::Media, 2), (Class::Export, 1), (Class::Analysis, 1)];
 
+/// Which media an analysis job is working on, and the restarts asked for
+/// meanwhile. Both change under one lock, so a restart is either handed to
+/// the running job (which makes it once nothing writes the results any more)
+/// or made at once — never lost, never made twice.
+#[derive(Debug, Default)]
+pub struct AnalysisRuns {
+    /// Media whose analysis job runs and will still look at `redo`.
+    pub running: HashSet<MediaId>,
+    /// Stage to clear and analyse again once that job has stopped.
+    pub redo: HashMap<MediaId, AnalysisStage>,
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub library: Arc<Library>,
@@ -30,9 +42,8 @@ pub struct AppState {
     pub engine: Arc<Engine>,
     /// AI models, downloaded on first use.
     pub models: ModelStore,
-    /// Analyses to start over once the running job of that media has stopped
-    /// (its results can only be cleared when nothing writes them any more).
-    pub redo: Arc<parking_lot::Mutex<HashMap<MediaId, AnalysisStage>>>,
+    /// Running analyses and the restarts they owe.
+    pub analysis: Arc<parking_lot::Mutex<AnalysisRuns>>,
     tools: Arc<OnceLock<Result<Arc<Tools>, String>>>,
     bundled_ffmpeg: Option<PathBuf>,
 }
@@ -79,7 +90,7 @@ impl AppState {
             jobs,
             engine,
             models,
-            redo: Arc::default(),
+            analysis: Arc::default(),
             tools: Arc::new(OnceLock::new()),
             bundled_ffmpeg,
         }
