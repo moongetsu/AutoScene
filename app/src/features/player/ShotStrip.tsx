@@ -57,6 +57,7 @@ export function ShotStrip({
     <div
       ref={ref}
       className="relative mt-1 h-3.5 cursor-pointer select-none"
+      role="group"
       aria-label="Shots"
       onPointerMove={(e) => setHover(indexAtX(e.clientX))}
       onPointerLeave={() => setHover(null)}

@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react"
 import { useNavigate, useParams } from "@tanstack/react-router"
-import { FilePlus2, FolderOpen, FolderPlus, MoreHorizontal, Play, RotateCcw, Scissors, Trash2 } from "lucide-react"
+import { FilePlus2, FolderOpen, FolderPlus, MoreHorizontal, Play, RotateCcw, ScanFace, Scissors, Trash2 } from "lucide-react"
 import { toast } from "sonner"
 import type { MediaItem } from "@/bindings"
 import { Badge } from "@/components/ui/badge"
@@ -122,6 +122,7 @@ export function EpisodesPage() {
                         media={m}
                         ambiguous={(nameCounts.get(releaseTitle(m.fileName)) ?? 0) > 1}
                         projectId={pid}
+                        faces={project?.content !== "anime"}
                         onOpen={() => void navigate({ to: "/p/$pid/timeline/$mid", params: { pid, mid: m.id } })}
                       />
                     ))}
@@ -138,14 +139,21 @@ function EpisodeRow({
   media: m,
   ambiguous,
   projectId,
+  faces,
   onOpen,
 }: {
   media: MediaItem
   /** Another row has the same clean name: show the file name too. */
   ambiguous: boolean
   projectId: string
+  /** The project finds characters (live action). */
+  faces: boolean
   onOpen: () => void
 }) {
+  const redo = (stage: "shots" | "faces") =>
+    void commands
+      .mediaAnalyze(projectId, m.id, stage)
+      .catch((e) => toast.error("Couldn't start the analysis", { description: errorMessage(e) }))
   const [posterFailed, setPosterFailed] = useState(false)
   const v = m.info?.video
   const ready = m.status === "ready"
@@ -241,7 +249,7 @@ function EpisodeRow({
         )}
       </td>
       <td className="py-2">
-        <StatusCell media={m} projectId={projectId} />
+        <StatusCell media={m} projectId={projectId} faces={faces} />
       </td>
       <td className="py-2 pr-2" onClick={(e) => e.stopPropagation()}>
         <DropdownMenu>
@@ -264,14 +272,13 @@ function EpisodeRow({
               </DropdownMenuItem>
             )}
             {ready && (
-              <DropdownMenuItem
-                onSelect={() =>
-                  void commands
-                    .mediaAnalyze(projectId, m.id, true)
-                    .catch((e) => toast.error("Couldn't start the analysis", { description: errorMessage(e) }))
-                }
-              >
+              <DropdownMenuItem onSelect={() => redo("shots")}>
                 <Scissors /> Find shots again
+              </DropdownMenuItem>
+            )}
+            {ready && faces && m.shots === "ready" && (
+              <DropdownMenuItem onSelect={() => redo("faces")}>
+                <ScanFace /> Find characters again
               </DropdownMenuItem>
             )}
             <DropdownMenuSeparator />

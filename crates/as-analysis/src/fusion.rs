@@ -408,9 +408,12 @@ pub fn fuse(sig: &[FrameSignals], p: &FusionParams) -> Vec<Segment> {
         };
         if into_prev {
             segs[i - 1].end = s.end;
+            // A kept tiny shot that grew is no longer tiny.
+            segs[i - 1].tiny &= segs[i - 1].len() < MIN_SHOT;
             segs.remove(i);
         } else if next_shot {
             segs[i + 1].start = s.start;
+            segs[i + 1].tiny &= segs[i + 1].len() < MIN_SHOT;
             segs.remove(i);
         } else {
             segs[i].tiny = true;

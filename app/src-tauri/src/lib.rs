@@ -53,6 +53,11 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::DynRuntime> {
             commands::media::media_frame_map,
             commands::media::media_segments,
             commands::media::media_analyze,
+            commands::cast::cast_get,
+            commands::cast::cast_tracks,
+            commands::cast::cast_edit,
+            commands::cast::media_presence,
+            commands::cast::character_clips,
             commands::export::export_presets,
             commands::export::export_default_dir,
             commands::export::export_start,
@@ -72,6 +77,7 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::DynRuntime> {
             events::MediaChanged,
             events::ExportChanged,
             events::AnalysisChanged,
+            events::CastChanged,
             updater::UpdateProgress,
         ])
 }

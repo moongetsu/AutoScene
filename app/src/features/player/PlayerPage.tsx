@@ -1,6 +1,6 @@
 import type * as React from "react"
 import { useEffect, useMemo, useRef, useState } from "react"
-import { Link, useParams } from "@tanstack/react-router"
+import { Link, useParams, useSearch } from "@tanstack/react-router"
 import {
   ChevronLeft,
   ChevronRight,
@@ -11,6 +11,7 @@ import {
   RotateCcw,
   Scissors,
   SkipBack,
+  Users,
   SkipForward,
   StepBack,
   StepForward,
@@ -34,13 +35,15 @@ import { formatPercent } from "@/lib/format"
 import { commands, errorMessage, isAppError } from "@/lib/ipc"
 import { assetUrl, audioOption, codecLabel, currentAudio, fileStem, formatFlags, mediaTitle, releaseTitle } from "@/lib/media"
 import { modKey } from "@/lib/platform"
-import { useFrameMap, useMediaList, useProject, useSegments } from "@/lib/queries"
+import { useCast, useFrameMap, useMediaList, usePresence, useProject, useSegments } from "@/lib/queries"
+import { type Lane, charactersIn, lanesOf, useCharacterMap } from "@/lib/presence"
 import { nextShotStart, prevShotStart, segmentIndexAt, shotAt, shotNumbers } from "@/lib/segments"
 import { formatFps, parseTimecode, timecode } from "@/lib/timecode"
 import { cn } from "@/lib/utils"
 import { useMediaJob } from "@/state/activity"
 import { NO_MARKS, useMarks } from "@/state/marks"
 import { usePlayback } from "@/state/playback"
+import { CharacterLanes } from "./CharacterLanes"
 import { Scrubber } from "./Scrubber"
 import { ShotStrip } from "./ShotStrip"
 import { usePlayer } from "./use-player"
@@ -56,6 +59,7 @@ function suggestedName(title: string, m: MediaItem, tc: string): string {
 
 export function PlayerPage() {
   const { pid, mid } = useParams({ from: "/p/$pid/timeline/$mid" })
+  const { f: openAt } = useSearch({ from: "/p/$pid/timeline/$mid" })
   const { data: media } = useMediaList(pid)
   const m = media?.find((x) => x.id === mid)
   const ready = m?.status === "ready"
@@ -85,7 +89,7 @@ export function PlayerPage() {
           )}
         </header>
         {m && ready && map.data ? (
-          <ReadyPlayer key={`${mid}:${map.data.src}`} pid={pid} media={m} map={map.data} />
+          <ReadyPlayer key={`${mid}:${map.data.src}`} pid={pid} media={m} map={map.data} openAt={openAt} />
         ) : (
           <NotReady pid={pid} media={m} error={map.error} />
         )}
@@ -171,9 +175,22 @@ function NotReady({ pid, media: m, error }: { pid: string; media?: MediaItem; er
   )
 }
 
-function ReadyPlayer({ pid, media: m, map }: { pid: string; media: MediaItem; map: FrameMap }) {
+function ReadyPlayer({ pid, media: m, map, openAt }: { pid: string; media: MediaItem; map: FrameMap; openAt?: number }) {
   const clock = useMemo(() => new FrameClock(map), [map])
   const { videoRef, frame, playing, seek, step, toggle, pause } = usePlayer(clock)
+  // Opened at a frame (a face in the cast): go there once.
+  const opened = useRef<number | undefined>(undefined)
+  useEffect(() => {
+    if (openAt != null && opened.current !== openAt) {
+      opened.current = openAt
+      seek(openAt)
+    }
+  }, [openAt, seek])
+  const { data: cast } = useCast(pid)
+  const characters = useCharacterMap(cast?.characters)
+  const { data: presence } = usePresence(pid, m.id, m.faces === "ready")
+  const lanes = useMemo(() => lanesOf(presence ?? [], characters), [presence, characters])
+  const [focus, setFocus] = useState<string | null>(null)
   const marks = useMarks((s) => s.byMedia[m.id] ?? NO_MARKS)
   const setMarks = useMarks((s) => s.set)
   const inFrame = marks.in
@@ -296,8 +313,8 @@ function ReadyPlayer({ pid, media: m, map }: { pid: string; media: MediaItem; ma
       else if (k === " " || k === "k") toggle()
       else if (e.key === "ArrowLeft") step(e.shiftKey ? -oneSecond : -1)
       else if (e.key === "ArrowRight") step(e.shiftKey ? oneSecond : 1)
-      else if (e.key === "ArrowUp") goShot(prevShotStart(shots, frame))
-      else if (e.key === "ArrowDown") goShot(nextShotStart(shots, frame))
+      else if (e.key === "ArrowUp" && shots.length > 0) goShot(prevShotStart(shots, frame))
+      else if (e.key === "ArrowDown" && shots.length > 0) goShot(nextShotStart(shots, frame))
       else if (e.key === "Home") seek(0)
       else if (e.key === "End") seek(last)
       else if (k === "i" && e.shiftKey) {
@@ -356,6 +373,18 @@ function ReadyPlayer({ pid, media: m, map }: { pid: string; media: MediaItem; ma
                 seek(f)
               }}
               onMarkShot={markShot}
+              formatFrame={tc}
+            />
+          )}
+          {lanes.length > 0 && (
+            <CharacterLanes
+              lanes={lanes}
+              clock={clock}
+              focus={focus}
+              onSeek={(f) => {
+                pause()
+                seek(f)
+              }}
               formatFrame={tc}
             />
           )}
@@ -492,6 +521,20 @@ function ReadyPlayer({ pid, media: m, map }: { pid: string; media: MediaItem; ma
 
         <ShotsPanel pid={pid} media={m} segments={shots} frame={frame} tc={tc} onMark={() => markShot()} onGo={goShot} />
 
+        <CharactersPanel
+          pid={pid}
+          media={m}
+          lanes={lanes}
+          shot={shotAt(shots, frame)}
+          frame={frame}
+          focus={focus}
+          onFocus={setFocus}
+          onGo={(f) => {
+            pause()
+            seek(f)
+          }}
+        />
+
         <section className="border-b border-hairline p-4">
           <h2 className="eyebrow mb-3">Source</h2>
           <p className="text-sm text-fg-1">{releaseTitle(m.fileName)}</p>
@@ -579,14 +622,14 @@ function ShotsPanel({
   onMark: () => void
   onGo: (f: number | null) => void
 }) {
-  const job = useMediaJob(m.id)
-  const analyzing = job?.kind === "analyze"
+  const job = useMediaJob(m.id, "analyze")
+  const analyzing = !!job
   const numbers = useMemo(() => shotNumbers(segments), [segments])
   const total = numbers.reduce((n, x) => (x >= 0 ? n + 1 : n), 0)
   const i = segmentIndexAt(segments, frame)
   const seg = i >= 0 ? segments[i] : null
   const analyze = () =>
-    void commands.mediaAnalyze(pid, m.id, false).catch((e) => toast.error("Couldn't start the analysis", { description: errorMessage(e) }))
+    void commands.mediaAnalyze(pid, m.id, null).catch((e) => toast.error("Couldn't start the analysis", { description: errorMessage(e) }))
 
   return (
     <section className="border-b border-hairline p-4">
@@ -645,6 +688,111 @@ function ShotsPanel({
             <Scissors /> Find shots
           </Button>
         </div>
+      )}
+    </section>
+  )
+}
+
+/** Who is in the shot under the playhead, and everyone in this episode. */
+function CharactersPanel({
+  pid,
+  media: m,
+  lanes,
+  shot,
+  frame,
+  focus,
+  onFocus,
+  onGo,
+}: {
+  pid: string
+  media: MediaItem
+  lanes: Lane[]
+  shot: Segment | null
+  frame: number
+  focus: string | null
+  onFocus: (id: string | null) => void
+  onGo: (f: number) => void
+}) {
+  const job = useMediaJob(m.id, "analyze")
+  const [all, setAll] = useState(false)
+  const here = shot ? charactersIn(lanes, shot.start, shot.end) : charactersIn(lanes, frame, frame + 1)
+  const hereIds = new Set(here.map((l) => l.character.id))
+  // Who is in the shot, then the episode's main characters; the rest on request.
+  const others = lanes.filter((l) => !hereIds.has(l.character.id))
+  const listed = [...here, ...(all ? others : others.slice(0, Math.max(0, 8 - here.length)))]
+  const hiddenCount = here.length + others.length - listed.length
+  /** The next time `lane` is on screen after the playhead (wrapping around). */
+  const next = (lane: Lane) => (lane.spans.find((s) => s.start > frame) ?? lane.spans[0])?.start
+  return (
+    <section className="border-b border-hairline p-4">
+      <div className="mb-3 flex items-center justify-between">
+        <h2 className="eyebrow">Characters</h2>
+        <Link to="/p/$pid/cast" params={{ pid }} className="text-2xs text-fg-3 hover:text-fg-1">
+          Cast
+        </Link>
+      </div>
+      {m.faces !== "ready" ? (
+        job ? (
+          <div>
+            <div className="flex justify-between text-2xs text-fg-3">
+              <span>{job.state === "queued" ? "Waiting…" : (job.stage ?? "Analysing")}</span>
+              <span className="timecode">{formatPercent(job.progress)}</span>
+            </div>
+            <Progress className="mt-1.5" value={job.state === "running" ? job.progress : null} />
+          </div>
+        ) : (
+          <p className="text-xs text-fg-3">
+            {m.faces === "failed" ? (m.facesError ?? "Finding characters failed.") : "Characters haven't been found in this episode yet."}
+          </p>
+        )
+      ) : lanes.length === 0 ? (
+        <p className="text-xs text-fg-3">Nobody the cast knows appears here.</p>
+      ) : (
+        <ul className="-mx-1 flex flex-col">
+          {listed.map((l) => {
+            const c = l.character
+            const on = hereIds.has(c.id)
+            return (
+              <li key={c.id}>
+                <button
+                  onClick={() => onFocus(focus === c.id ? null : c.id)}
+                  onDoubleClick={() => {
+                    const f = next(l)
+                    if (f != null) onGo(f)
+                  }}
+                  title="Click to highlight · double-click for the next appearance"
+                  className={cn(
+                    "flex w-full items-center gap-2 rounded-md px-1 py-1 text-left transition-colors hover:bg-hover",
+                    focus === c.id && "bg-accent-subtle",
+                  )}
+                >
+                  <span className={cn("size-6 shrink-0 overflow-hidden rounded-sm bg-inset", !on && "opacity-50")}>
+                    {c.cover && <img src={assetUrl(c.cover)} alt="" className="size-full object-cover" />}
+                  </span>
+                  <span className={cn("min-w-0 flex-1 truncate text-xs", on ? "text-fg-1" : "text-fg-3")}>{c.label}</span>
+                  {on && <span className="text-[10px] text-fg-3">in shot</span>}
+                </button>
+              </li>
+            )
+          })}
+          {(hiddenCount > 0 || all) && (
+            <li>
+              <button
+                onClick={() => setAll((v) => !v)}
+                className="mt-0.5 w-full rounded-md px-1 py-1 text-left text-2xs text-fg-3 hover:bg-hover hover:text-fg-1"
+              >
+                {all ? "Show fewer" : `${hiddenCount} more in this episode`}
+              </button>
+            </li>
+          )}
+        </ul>
+      )}
+      {m.faces === "ready" && lanes.length > 0 && (
+        <Button size="sm" variant="ghost" className="mt-2 -ml-2" asChild>
+          <Link to="/p/$pid/cast" params={{ pid }}>
+            <Users /> Edit the cast
+          </Link>
+        </Button>
       )}
     </section>
   )

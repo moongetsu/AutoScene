@@ -8,9 +8,11 @@
 //! Schemas only ever move forward through `rusqlite_migration` (`user_version`).
 //! A database written by a newer AutoScene is refused rather than damaged.
 
+mod cast;
 mod library;
 mod project;
 
+pub use cast::{CharacterRow, EditKind, IdentityTrack, NewTrack, TrackEdit, TrackRow};
 pub use library::LibraryDb;
 pub use project::{IngestRecord, NewExportItem, NewMedia, ProjectDb, ProjectStats, episode_label};
 
@@ -35,6 +37,9 @@ pub enum DbError {
     TooNew,
     #[error("corrupt record: {0}")]
     Corrupt(String),
+    /// A file written as part of a transaction failed (the transaction rolled back).
+    #[error("file error: {0}")]
+    Io(String),
 }
 
 /// One SQLite connection behind a mutex. Every statement here is short

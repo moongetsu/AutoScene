@@ -113,7 +113,7 @@ impl Project {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use as_analysis::signals::encode;
     use as_api::{AppSettings, HdrKind, NewProject, ProjectKind, ProxyState, VideoStream};
     use as_core::{AppPaths, FrameIndex, Rational};
@@ -153,7 +153,7 @@ mod tests {
     }
 
     /// A project with one media "indexed" as `frames` frames at 24 fps.
-    fn project_with_media(frames: u32) -> (tempfile::TempDir, std::sync::Arc<Project>, MediaId) {
+    pub(crate) fn project_with_media(frames: u32) -> (tempfile::TempDir, std::sync::Arc<Project>, MediaId) {
         let dir = tempfile::tempdir().unwrap();
         let lib = crate::Library::open(&AppPaths::at(dir.path().join("data"))).unwrap();
         lib.update_settings(&AppSettings {

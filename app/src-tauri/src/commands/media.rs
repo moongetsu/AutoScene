@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use as_api::{FrameMap, JobKind, JobState, MediaItem, MediaStatus, ProxyState, Segment};
+use as_api::{AnalysisStage, FrameMap, JobKind, JobState, MediaItem, MediaStatus, ProxyState, Segment};
 use as_core::{MediaId, ProjectId};
 use tauri::{AppHandle, State};
 use tauri_specta::Event;
@@ -203,8 +203,9 @@ pub async fn media_segments(
     blocking(move || Ok(lib.project(project_id)?.segments(media_id)?)).await
 }
 
-/// Run the analysis of a media (again). `fresh` discards earlier results and
-/// checkpoints first; otherwise a stopped or failed run continues.
+/// Run the analysis of a media again. `redo` clears results from that stage
+/// on first (a running analysis of the media is stopped and restarted once
+/// it has stopped); `None` continues a stopped or failed run.
 #[tauri::command]
 #[specta::specta]
 pub async fn media_analyze(
@@ -212,11 +213,8 @@ pub async fn media_analyze(
     state: State<'_, AppState>,
     project_id: ProjectId,
     media_id: MediaId,
-    fresh: bool,
+    redo: Option<AnalysisStage>,
 ) -> AppResult<()> {
-    if fresh {
-        state.jobs.cancel_where(|j| j.kind == JobKind::Analyze && j.media_id == Some(media_id));
-    }
     let lib = state.library.clone();
     let project = blocking(move || {
         let p = lib.project(project_id)?;
@@ -224,15 +222,45 @@ pub async fn media_analyze(
         if m.status != MediaStatus::Ready {
             return Err(AppError::new(ErrorCode::NotReady, format!("{} isn't indexed yet.", m.file_name)));
         }
-        if fresh {
-            p.reset_shots(media_id)?;
-        } else {
-            p.set_shots_state(media_id, as_api::StageState::Pending, None)?;
-        }
         Ok(p)
     })
     .await?;
-    work::queue_shots(&app, &project, media_id);
+    let running = |j: &as_api::JobInfo| j.kind == JobKind::Analyze && j.media_id == Some(media_id);
+    match redo {
+        Some(stage) if state.jobs.is_active(running) => {
+            // The running job restarts the analysis once it has stopped.
+            let mut redo = state.redo.lock();
+            let merged = match redo.get(&media_id) {
+                Some(AnalysisStage::Shots) => AnalysisStage::Shots,
+                _ => stage,
+            };
+            redo.insert(media_id, merged);
+            drop(redo);
+            state.jobs.cancel_where(running);
+        }
+        Some(stage) => {
+            let app2 = app.clone();
+            blocking(move || {
+                work::restart_analysis(&app2, &project, media_id, stage);
+                Ok(())
+            })
+            .await?;
+        }
+        None => {
+            let p = project.clone();
+            blocking(move || {
+                let m = p.media(media_id)?;
+                if m.shots != as_api::StageState::Ready {
+                    p.set_shots_state(media_id, as_api::StageState::Pending, None)?;
+                } else if m.faces != as_api::StageState::Ready {
+                    p.set_faces_state(media_id, as_api::StageState::Pending, None)?;
+                }
+                Ok(())
+            })
+            .await?;
+            work::queue_analysis(&app, &project, media_id);
+        }
+    }
     crate::events::emit_media_changed(&app, project_id, Some(media_id));
     let _ = crate::events::AnalysisChanged { project_id, media_id }.emit(&app);
     Ok(())

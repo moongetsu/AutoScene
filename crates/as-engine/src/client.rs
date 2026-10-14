@@ -1,10 +1,11 @@
 //! The app's side: starts the engine process on demand, hands it one job at
 //! a time and relays its replies. A crashed engine (GPU driver reset, out of
-//! memory, killed) fails only the job it was running; the next job starts a
-//! fresh process, and the job itself resumes from its checkpoints.
+//! memory, killed) fails only the job it was running; the job gets a fresh
+//! process and resumes from the last chunk the app received.
 
+use std::cell::Cell;
 use std::ffi::OsString;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -16,16 +17,14 @@ use as_media::MediaInfo;
 use parking_lot::Mutex;
 use thiserror::Error;
 
-use crate::protocol::{Blob, Reply, Request, ShotsJob};
+use crate::protocol::{Blob, FacesJob, Reply, Request, ShotsJob};
 
 #[derive(Debug, Error)]
 pub enum EngineError {
     /// The engine didn't start or reported it can't work (`detail` for the log).
     #[error("{message}")]
     Start { message: String, detail: String },
-    #[error(
-        "The analysis engine stopped unexpectedly. It restarts by itself; the analysis continues where it left off."
-    )]
+    #[error("The analysis engine stopped unexpectedly. Details are in the log.")]
     Crashed(String),
     #[error("{message}")]
     Failed { message: String, detail: String },
@@ -41,6 +40,10 @@ impl EngineError {
             Self::Failed { detail, .. } => detail.clone(),
             Self::Cancelled => "cancelled".into(),
         }
+    }
+
+    fn saving(detail: String) -> Self {
+        Self::Failed { message: "Saving the analysis failed.".into(), detail }
     }
 }
 
@@ -58,6 +61,17 @@ pub enum ShotsEvent {
     Chunk {
         start: u32,
         signals: Vec<u8>,
+    },
+}
+
+/// What a faces job reports while it runs.
+pub enum FacesEvent {
+    Progress(f64),
+    /// Face tracks of frames `start..end` (`as_analysis::tracks` format).
+    Chunk {
+        start: u32,
+        end: u32,
+        tracks: Vec<u8>,
     },
 }
 
@@ -85,10 +99,29 @@ impl Proc {
         matches!(self.child.try_wait(), Ok(None))
     }
 
+    /// Kill (if still running) and reap.
     fn kill(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+/// Lines of a child's pipe, whatever their encoding (a stray non-UTF-8 line
+/// must not end the reader: the child would block on a full pipe).
+fn pipe_lines(r: impl Read) -> impl Iterator<Item = String> {
+    let mut r = BufReader::new(r);
+    std::iter::from_fn(move || {
+        let mut buf = Vec::new();
+        match r.read_until(b'\n', &mut buf) {
+            Ok(0) | Err(_) => None,
+            Ok(_) => {
+                while buf.last().is_some_and(|&b| b == b'\n' || b == b'\r') {
+                    buf.pop();
+                }
+                Some(String::from_utf8_lossy(&buf).into_owned())
+            }
+        }
+    })
 }
 
 /// How long a cancelled job may take to stop before the engine is killed.
@@ -116,7 +149,8 @@ impl Engine {
         Some(self.pid.load(Ordering::Relaxed)).filter(|&p| p != 0)
     }
 
-    /// Where the running engine computes (`None` before it first started).
+    /// Where the running engine prefers to compute (`None` before it first
+    /// started; a model the GPU can't take runs on the CPU).
     pub fn device(&self) -> Option<String> {
         self.proc.lock().as_ref().map(|p| p.device.clone())
     }
@@ -134,26 +168,74 @@ impl Engine {
         cancel: &CancelToken,
         mut on: impl FnMut(ShotsEvent) -> Result<(), String>,
     ) -> Result<(), EngineError> {
-        let mut resume = resume;
-        // A crashed engine (or one that went away just as the job was sent)
-        // gets fresh tries, each from the last chunk the app received.
-        for attempt in 0..ATTEMPTS {
-            let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-            let job =
-                ShotsJob { id, path: path.clone(), info: info.clone(), index: Blob(index.clone()), resume, chunk };
-            let mut got_any = false;
-            let result = self.run(Request::Shots(Box::new(job)), id, cancel, |reply| match reply {
+        let resume = Cell::new(resume);
+        let index = Blob(index);
+        self.with_retries(
+            cancel,
+            |id| {
+                let (path, info, index, resume) = (path.clone(), info.clone(), index.clone(), resume.get());
+                Request::Shots(Box::new(ShotsJob { id, path, info, index, resume, chunk }))
+            },
+            |reply| match reply {
                 Reply::Progress { fraction, .. } => on(ShotsEvent::Progress(fraction)),
-                Reply::ShotChunk { start, signals, .. } => {
-                    got_any = true;
-                    resume = start + chunk;
-                    on(ShotsEvent::Chunk { start, signals: signals.0 })
+                Reply::ShotChunk { start, len, signals, .. } => {
+                    on(ShotsEvent::Chunk { start, signals: signals.0 })?;
+                    // Only what was stored counts as done.
+                    resume.set(start + len);
+                    Ok(())
                 }
                 _ => Ok(()),
-            });
-            match result {
+            },
+        )
+    }
+
+    /// Find the face tracks of a media's `shots` from `resume` on. Blocks
+    /// until the job ends; chunks arrive through `on` in order.
+    #[allow(clippy::too_many_arguments)]
+    pub fn faces(
+        &self,
+        path: PathBuf,
+        info: MediaInfo,
+        index: Vec<u8>,
+        shots: Vec<(u32, u32)>,
+        resume: u32,
+        chunk: u32,
+        cancel: &CancelToken,
+        mut on: impl FnMut(FacesEvent) -> Result<(), String>,
+    ) -> Result<(), EngineError> {
+        let resume = Cell::new(resume);
+        let index = Blob(index);
+        self.with_retries(
+            cancel,
+            |id| {
+                let (path, info, index, shots) = (path.clone(), info.clone(), index.clone(), shots.clone());
+                Request::Faces(Box::new(FacesJob { id, path, info, index, shots, resume: resume.get(), chunk }))
+            },
+            |reply| match reply {
+                Reply::Progress { fraction, .. } => on(FacesEvent::Progress(fraction)),
+                Reply::FaceChunk { start, end, tracks, .. } => {
+                    on(FacesEvent::Chunk { start, end, tracks: tracks.0 })?;
+                    resume.set(end);
+                    Ok(())
+                }
+                _ => Ok(()),
+            },
+        )
+    }
+
+    /// Run a job, giving it a fresh engine (and a fresh request, built from
+    /// what has been stored so far) when the engine goes away under it.
+    fn with_retries(
+        &self,
+        cancel: &CancelToken,
+        make: impl Fn(u64) -> Request,
+        mut on: impl FnMut(Reply) -> Result<(), String>,
+    ) -> Result<(), EngineError> {
+        for attempt in 0..ATTEMPTS {
+            let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+            match self.run(make(id), id, cancel, &mut on) {
                 Err(EngineError::Crashed(why)) if attempt + 1 < ATTEMPTS && !cancel.is_cancelled() => {
-                    tracing::warn!(%why, resume, got_any, "engine went away; resuming in a fresh one");
+                    tracing::warn!(%why, "engine went away; resuming in a fresh one");
                 }
                 r => return r,
             }
@@ -173,9 +255,18 @@ impl Engine {
                 std::thread::sleep(Duration::from_millis(20));
             }
             p.kill();
+            self.pid.store(0, Ordering::Relaxed);
         }
         // A job holding the lock is cancelled by its own token on shutdown;
         // the process dies with the app either way (kill-on-close job object).
+    }
+
+    /// Kill and forget the engine in `slot`.
+    fn discard(&self, slot: &mut Option<Proc>) {
+        if let Some(mut p) = slot.take() {
+            p.kill();
+        }
+        self.pid.store(0, Ordering::Relaxed);
     }
 
     fn run(
@@ -183,70 +274,65 @@ impl Engine {
         req: Request,
         id: u64,
         cancel: &CancelToken,
-        mut on: impl FnMut(Reply) -> Result<(), String>,
+        on: &mut impl FnMut(Reply) -> Result<(), String>,
     ) -> Result<(), EngineError> {
         let mut guard = self.proc.lock();
         if guard.as_mut().is_some_and(|p| !p.alive()) {
-            *guard = None;
+            self.discard(&mut guard);
+        }
+        // Replies left over from an earlier job are stale; an engine that
+        // exited since (idle) is replaced.
+        if let Some(p) = guard.as_mut() {
+            let mut exited = false;
+            while let Ok(m) = p.replies.try_recv() {
+                exited |= matches!(m, Msg::Exited);
+            }
+            if exited {
+                self.discard(&mut guard);
+            }
         }
         if guard.is_none() {
-            *guard = Some(self.start()?);
-        }
-        let p = guard.as_mut().expect("started");
-        // Replies left over from an earlier job (or its exit) are stale.
-        while let Ok(m) = p.replies.try_recv() {
-            if matches!(m, Msg::Exited) {
-                *guard = Some(self.start()?);
-                break;
-            }
+            *guard = Some(self.start(cancel)?);
         }
         let p = guard.as_mut().expect("started");
         if let Err(e) = p.send(&req) {
-            p.kill();
-            *guard = None;
+            self.discard(&mut guard);
             return Err(EngineError::Crashed(format!("sending the job: {e}")));
         }
         let mut cancel_sent: Option<Instant> = None;
         let mut handler_error: Option<String> = None;
         loop {
+            let p = guard.as_mut().expect("running");
             if (cancel.is_cancelled() || handler_error.is_some()) && cancel_sent.is_none() {
                 let _ = p.send(&Request::Cancel { id });
                 cancel_sent = Some(Instant::now());
             }
             if cancel_sent.is_some_and(|t| t.elapsed() > CANCEL_GRACE) {
                 tracing::warn!(id, "engine didn't stop after cancel; killing it");
-                p.kill();
-                *guard = None;
-                return Err(match handler_error {
-                    Some(e) => EngineError::Failed { message: "Saving the analysis failed.".into(), detail: e },
-                    None => EngineError::Cancelled,
-                });
+                self.discard(&mut guard);
+                return Err(handler_error.map_or(EngineError::Cancelled, EngineError::saving));
             }
             match p.replies.recv_timeout(Duration::from_millis(100)) {
                 Ok(Msg::Reply(r)) => match r {
                     Reply::Done { id: rid } if rid == id => {
-                        return match handler_error {
-                            Some(e) => {
-                                Err(EngineError::Failed { message: "Saving the analysis failed.".into(), detail: e })
-                            }
-                            None => Ok(()),
-                        };
+                        return handler_error.map_or(Ok(()), |e| Err(EngineError::saving(e)));
                     }
                     Reply::Failed { id: rid, message, detail, cancelled } if rid == id => {
                         return Err(match (handler_error, cancelled) {
-                            (Some(e), _) => {
-                                EngineError::Failed { message: "Saving the analysis failed.".into(), detail: e }
-                            }
+                            (Some(e), _) => EngineError::saving(e),
                             (None, true) => EngineError::Cancelled,
                             (None, false) => EngineError::Failed { message, detail },
                         });
                     }
                     Reply::Fatal { message, detail } => {
-                        p.kill();
-                        *guard = None;
+                        self.discard(&mut guard);
                         return Err(EngineError::Start { message, detail });
                     }
-                    r @ (Reply::Progress { id: rid, .. } | Reply::ShotChunk { id: rid, .. }) if rid == id => {
+                    r @ (Reply::Progress { id: rid, .. }
+                    | Reply::ShotChunk { id: rid, .. }
+                    | Reply::FaceChunk { id: rid, .. })
+                        if rid == id =>
+                    {
                         if handler_error.is_none()
                             && let Err(e) = on(r)
                         {
@@ -255,22 +341,25 @@ impl Engine {
                     }
                     _ => {}
                 },
-                Ok(Msg::Exited) => {
+                Ok(Msg::Exited) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    let mut p = guard.take().expect("running");
+                    p.kill();
                     let status = p.child.wait().map(|s| s.to_string()).unwrap_or_else(|e| e.to_string());
-                    *guard = None;
-                    return Err(EngineError::Crashed(format!("exited ({status})")));
+                    self.pid.store(0, Ordering::Relaxed);
+                    // A failed save outranks the crash: retrying past an
+                    // unsaved chunk would leave a hole.
+                    return Err(match handler_error {
+                        Some(e) => EngineError::saving(e),
+                        None if cancel.is_cancelled() => EngineError::Cancelled,
+                        None => EngineError::Crashed(format!("exited ({status})")),
+                    });
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    p.kill();
-                    *guard = None;
-                    return Err(EngineError::Crashed("reply channel closed".into()));
-                }
             }
         }
     }
 
-    fn start(&self) -> Result<Proc, EngineError> {
+    fn start(&self, cancel: &CancelToken) -> Result<Proc, EngineError> {
         let mut cmd = Command::new(&self.launch.program);
         cmd.args(&self.launch.args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         #[cfg(windows)]
@@ -288,13 +377,13 @@ impl Engine {
         let stderr = child.stderr.take().expect("piped stderr");
         // The engine logs to stderr; its lines go into the app's log.
         std::thread::spawn(move || {
-            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            for line in pipe_lines(stderr) {
                 tracing::info!(target: "engine", "{line}");
             }
         });
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
-            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            for line in pipe_lines(stdout) {
                 match serde_json::from_str::<Reply>(&line) {
                     Ok(r) => {
                         if tx.send(Msg::Reply(r)).is_err() {
@@ -309,7 +398,12 @@ impl Engine {
         let mut p = Proc { child, stdin, replies: rx, device: String::new() };
         let deadline = Instant::now() + START_TIMEOUT;
         loop {
-            match p.replies.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            if cancel.is_cancelled() {
+                p.kill();
+                return Err(EngineError::Cancelled);
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            match p.replies.recv_timeout(left.min(Duration::from_millis(100))) {
                 Ok(Msg::Reply(Reply::Ready { device })) => {
                     tracing::info!(%device, pid = p.child.id(), "analysis engine ready");
                     self.pid.store(p.child.id(), Ordering::Relaxed);
@@ -321,6 +415,7 @@ impl Engine {
                     return Err(EngineError::Start { message, detail });
                 }
                 Ok(Msg::Reply(_)) => {}
+                Err(mpsc::RecvTimeoutError::Timeout) if !left.is_zero() => {}
                 Ok(Msg::Exited) | Err(_) => {
                     p.kill();
                     return Err(EngineError::Start {
@@ -336,5 +431,17 @@ impl Engine {
 impl Drop for Engine {
     fn drop(&mut self) {
         self.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pipe_lines_survive_odd_bytes() {
+        let raw: &[u8] = b"one\r\n\xff\xfe bad\ntwo";
+        let lines: Vec<String> = pipe_lines(raw).collect();
+        assert_eq!(lines, ["one", "\u{fffd}\u{fffd} bad", "two"]);
     }
 }

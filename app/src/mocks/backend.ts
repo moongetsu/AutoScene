@@ -10,6 +10,7 @@
  */
 import { emit } from "@tauri-apps/api/event"
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks"
+import { castEdit, castGet, castTracks, characterClips, mediaPresence, seedCast } from "./cast"
 import type {
   AppInfo,
   AppSettings,
@@ -27,6 +28,8 @@ import type {
   ProjectKind,
   ProjectSummary,
   Segment,
+  TrackFilter,
+  CastEdit,
   UpdateStatus,
 } from "@/bindings"
 
@@ -182,6 +185,9 @@ function media(
     shots: ready ? "ready" : "pending",
     shotsError: null,
     shotCount: ready ? SHOT_COUNT : null,
+    faces: ready ? "ready" : "pending",
+    facesError: null,
+    faceCount: ready ? 31 : null,
     ...rest,
   }
 }
@@ -249,6 +255,8 @@ const projects: MockProject[] = [
     3 * 86_400_000,
   ),
 ]
+
+for (const p of projects) if (p.content !== "anime") seedCast(p.id, p.media, SEGMENTS)
 
 function find(pid: unknown): MockProject {
   const p = projects.find((x) => x.id === pid)
@@ -332,11 +340,16 @@ function ingest(p: MockProject, m: MediaItem) {
 
 function analyze(p: MockProject, m: MediaItem) {
   m.shots = "running"
-  startJob("analyze", `Finding shots in ${m.label ? `${m.label} · ` : ""}${m.fileName}`, p, 4000, { mediaId: m.id, stage: "Finding shots" }, () => {
+  startJob("analyze", `Analysing ${m.label ? `${m.label} · ` : ""}${m.fileName}`, p, 4000, { mediaId: m.id, stage: "Finding shots" }, () => {
     m.shots = "ready"
     m.shotCount = SHOT_COUNT
+    if (p.content !== "anime") {
+      m.faces = "ready"
+      m.faceCount = 31
+    }
     void emit("media:changed", { projectId: p.id, mediaId: m.id })
     void emit("analysis:changed", { projectId: p.id, mediaId: m.id })
+    void emit("cast:changed", { projectId: p.id })
   })
   void emit("media:changed", { projectId: p.id, mediaId: m.id })
 }
@@ -489,6 +502,16 @@ const handlers: Record<string, Handler> = {
     analyze(p, findMedia(p, mediaId))
     return null
   },
+  cast_get: ({ projectId }) => castGet(String(projectId), find(projectId).media),
+  cast_tracks: ({ projectId, filter }) => castTracks(String(find(projectId).id), filter as TrackFilter),
+  cast_edit: ({ projectId, edit }) => {
+    const created = castEdit(String(find(projectId).id), edit as CastEdit)
+    void emit("cast:changed", { projectId })
+    return created
+  },
+  media_presence: ({ projectId, mediaId }) => mediaPresence(String(find(projectId).id), String(mediaId)),
+  character_clips: ({ projectId, characterId }) =>
+    characterClips(String(projectId), String(characterId), find(projectId).media, SEGMENTS),
   export_presets: () => presets,
   export_default_dir: ({ projectId }) => `${settings.libraryRoot}\\Exports\\${find(projectId).title}`,
   export_start: ({ projectId, req }) => startExport(find(projectId), req as ExportRequest),

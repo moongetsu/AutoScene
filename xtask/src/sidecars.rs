@@ -3,7 +3,10 @@
 //!
 //! - `ffmpeg/`: ffmpeg + ffprobe (media layer, exports);
 //! - `onnxruntime/`: ONNX Runtime for the analysis engine (DirectML on
-//!   Windows, CoreML via the stock build on macOS).
+//!   Windows, CoreML via the stock build on macOS). On Windows the folder also
+//!   gets the Visual C++ runtime DLLs ONNX Runtime links against, app-local
+//!   (Microsoft allows redistributing them this way), so the engine starts on
+//!   PCs that never installed the VC++ Redistributable.
 //!
 //! Both land in `app/src-tauri/` (git-ignored). Release builds bundle them as
 //! resources (`tauri.release.conf.json`); dev builds and tests find them there
@@ -41,7 +44,13 @@ struct Bundle {
     archives: &'static [Archive],
     /// Files that must be there; `true` = must also start with `-version`.
     required: &'static [(&'static str, bool)],
+    /// Copy the Visual C++ runtime DLLs in (Windows; from the local Visual Studio).
+    vc_runtime: bool,
 }
+
+/// What ONNX Runtime imports from the Visual C++ runtime.
+#[cfg(windows)]
+const VC_RUNTIME: &[&str] = &["msvcp140.dll", "msvcp140_1.dll", "vcruntime140.dll", "vcruntime140_1.dll"];
 
 #[cfg(windows)]
 const BUNDLES: &[Bundle] = &[
@@ -54,6 +63,7 @@ const BUNDLES: &[Bundle] = &[
             pick: Pick::Dir("ffmpeg-n9.0.2-27-g7e93014c5b-win64-gpl-shared-9.0/bin"),
         }],
         required: &[("ffmpeg.exe", true), ("ffprobe.exe", true)],
+        vc_runtime: false,
     },
     Bundle {
         dir: "onnxruntime",
@@ -74,7 +84,15 @@ const BUNDLES: &[Bundle] = &[
                 pick: Pick::Files(&[("bin/x64-win/DirectML.dll", "DirectML.dll")]),
             },
         ],
-        required: &[("onnxruntime.dll", false), ("DirectML.dll", false)],
+        required: &[
+            ("onnxruntime.dll", false),
+            ("DirectML.dll", false),
+            ("msvcp140.dll", false),
+            ("msvcp140_1.dll", false),
+            ("vcruntime140.dll", false),
+            ("vcruntime140_1.dll", false),
+        ],
+        vc_runtime: true,
     },
 ];
 
@@ -96,6 +114,7 @@ const BUNDLES: &[Bundle] = &[
             },
         ],
         required: &[("ffmpeg", true), ("ffprobe", true)],
+        vc_runtime: false,
     },
     Bundle {
         dir: "onnxruntime",
@@ -109,6 +128,7 @@ const BUNDLES: &[Bundle] = &[
             )]),
         }],
         required: &[("libonnxruntime.dylib", false)],
+        vc_runtime: false,
     },
 ];
 
@@ -130,8 +150,13 @@ pub fn fetch(root: &Path) -> Result<()> {
 }
 
 fn fetch_bundle(b: &Bundle, dest: &Path) -> Result<()> {
-    // Up to date only when the folder was completed from exactly these archives.
-    let want: String = b.archives.iter().map(|a| format!("{}\n", a.sha256)).collect();
+    let vc = if b.vc_runtime { Some(vc_runtime_dir()?) } else { None };
+    // Up to date only when the folder was completed from exactly these archives
+    // (and this Visual C++ runtime).
+    let mut want: String = b.archives.iter().map(|a| format!("{}\n", a.sha256)).collect();
+    if let Some(dir) = &vc {
+        want.push_str(&format!("vc-runtime {}\n", dir.display()));
+    }
     if fs::read_to_string(dest.join(STAMP)).is_ok_and(|s| s == want) {
         println!("{} is up to date", dest.display());
         return Ok(());
@@ -187,6 +212,14 @@ fn fetch_bundle(b: &Bundle, dest: &Path) -> Result<()> {
             }
         }
     }
+    #[cfg(windows)]
+    if let Some(dir) = &vc {
+        for name in VC_RUNTIME {
+            fs::copy(dir.join(name), staging.join(name))
+                .with_context(|| format!("copying {name} from {}", dir.display()))?;
+        }
+        println!("Visual C++ runtime from {}", dir.display());
+    }
     for (name, runs) in b.required {
         let p: PathBuf = staging.join(name);
         if !p.is_file() {
@@ -210,6 +243,61 @@ fn fetch_bundle(b: &Bundle, dest: &Path) -> Result<()> {
     fs::remove_dir_all(&work).ok();
     println!("ready: {}", dest.display());
     Ok(())
+}
+
+/// The newest x64 Visual C++ runtime redistributable folder
+/// (`…\VC\Redist\MSVC\<version>\x64\Microsoft.VC14x.CRT`): from a Developer
+/// prompt's `VCToolsRedistDir`, else from the newest Visual Studio with C++ tools.
+#[cfg(windows)]
+fn vc_runtime_dir() -> Result<PathBuf> {
+    let crt_in = |redist: &Path| -> Option<PathBuf> {
+        let mut crt: Vec<PathBuf> = fs::read_dir(redist.join("x64"))
+            .ok()?
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                let n = p.file_name().unwrap_or_default().to_string_lossy();
+                n.starts_with("Microsoft.VC14") && n.ends_with(".CRT") && VC_RUNTIME.iter().all(|f| p.join(f).is_file())
+            })
+            .collect();
+        crt.sort();
+        crt.pop()
+    };
+    if let Some(d) = std::env::var_os("VCToolsRedistDir").map(PathBuf::from)
+        && let Some(crt) = crt_in(&d)
+    {
+        return Ok(crt);
+    }
+    let program_files =
+        std::env::var_os("ProgramFiles(x86)").map_or_else(|| PathBuf::from(r"C:\Program Files (x86)"), PathBuf::from);
+    let vswhere = program_files.join(r"Microsoft Visual Studio\Installer\vswhere.exe");
+    let out = Command::new(&vswhere)
+        .args(["-latest", "-products", "*", "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64"])
+        .args(["-property", "installationPath"])
+        .output()
+        .with_context(|| format!("running {} (Visual Studio with C++ tools is needed)", vswhere.display()))?;
+    let msvc = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim()).join(r"VC\Redist\MSVC");
+    let mut versions: Vec<PathBuf> = fs::read_dir(&msvc)
+        .with_context(|| format!("reading {}", msvc.display()))?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir() && p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("14.")))
+        .collect();
+    // Numeric order: 14.51.36231 after 14.50.35710.
+    versions.sort_by_key(|p| {
+        let name = p.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        name.split('.').map(|x| x.parse::<u32>().unwrap_or(0)).collect::<Vec<_>>()
+    });
+    versions
+        .iter()
+        .rev()
+        .find_map(|v| crt_in(v))
+        .with_context(|| format!("no x64 Visual C++ runtime under {}", msvc.display()))
+}
+
+#[cfg(not(windows))]
+fn vc_runtime_dir() -> Result<PathBuf> {
+    bail!("the Visual C++ runtime is only bundled on Windows")
 }
 
 fn sha256(path: &Path) -> Result<String> {

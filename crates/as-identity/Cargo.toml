@@ -1,0 +1,9 @@
+[package]
+name = "as-identity"
+description = "AutoScene identities: constrained clustering of face tracks into characters that survive edits and new episodes"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true

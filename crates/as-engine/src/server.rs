@@ -12,15 +12,18 @@ use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use as_analysis::{AnalysisError, shot_signals, signals};
-use as_core::{CancelToken, FrameIndex};
+use as_analysis::{AnalysisError, DETECT_BATCH, FaceParams, face_tracks, frame_sizes, shot_signals, signals, tracks};
+use as_core::{CancelToken, FrameIndex, FrameRange};
 use as_infer::Runtime;
 use as_media::{Source, Tools};
 use as_models::ModelStore;
-use as_vision::TransNet;
+use as_vision::{ArcFace, Scrfd, TransNet};
 use parking_lot::Mutex;
 
-use crate::protocol::{Blob, Reply, Request, ShotsJob};
+use crate::protocol::{Blob, FacesJob, Reply, Request, ShotsJob};
+
+/// Faces per embedding call.
+const EMBED_BATCH: usize = 32;
 
 /// How the engine finds its runtime, models and tools.
 #[derive(Clone, Debug)]
@@ -72,7 +75,7 @@ pub fn serve(cfg: Config, input: impl BufRead + Send + 'static, output: impl Wri
     out.send(&Reply::Ready { device: rt.preferred_device().label().to_string() });
 
     // Jobs queue up here; cancellation needs no queue and is handled at once.
-    let (tx, rx) = mpsc::channel::<(ShotsJob, CancelToken)>();
+    let (tx, rx) = mpsc::channel::<(Request, CancelToken)>();
     let cancels: Arc<Mutex<HashMap<u64, CancelToken>>> = Arc::default();
     let reader = {
         let cancels = cancels.clone();
@@ -80,7 +83,7 @@ pub fn serve(cfg: Config, input: impl BufRead + Send + 'static, output: impl Wri
         std::thread::spawn(move || read_requests(input, tx, cancels, out))
     };
 
-    let mut models = Models { store: ModelStore::new(&cfg.models_dir), transnet: None };
+    let mut models = Models { store: ModelStore::new(&cfg.models_dir), transnet: None, scrfd: None, arcface: None };
     loop {
         let next = match cfg.idle_exit {
             Some(idle) => rx.recv_timeout(idle).map_err(|e| e == mpsc::RecvTimeoutError::Timeout),
@@ -94,8 +97,13 @@ pub fn serve(cfg: Config, input: impl BufRead + Send + 'static, output: impl Wri
             }
             Err(false) => break,
         };
-        let id = job.id;
-        let reply = match run_shots(&tools, &rt, &mut models, job, &cancel, &out) {
+        let id = job.id().expect("only jobs are queued");
+        let result = match job {
+            Request::Shots(j) => run_shots(&tools, &rt, &mut models, *j, &cancel, &out),
+            Request::Faces(j) => run_faces(&tools, &rt, &mut models, *j, &cancel, &out),
+            Request::Cancel { .. } | Request::Shutdown => Ok(()),
+        };
+        let reply = match result {
             Ok(()) => Reply::Done { id },
             Err(e) => {
                 if !e.is_cancelled() {
@@ -115,7 +123,7 @@ pub fn serve(cfg: Config, input: impl BufRead + Send + 'static, output: impl Wri
 
 fn read_requests(
     input: impl BufRead,
-    tx: mpsc::Sender<(ShotsJob, CancelToken)>,
+    tx: mpsc::Sender<(Request, CancelToken)>,
     cancels: Arc<Mutex<HashMap<u64, CancelToken>>>,
     out: Out,
 ) {
@@ -127,13 +135,14 @@ fn read_requests(
             continue;
         }
         match serde_json::from_str::<Request>(&line) {
-            Ok(Request::Shots(job)) => {
+            Ok(job @ (Request::Shots(_) | Request::Faces(_))) => {
+                let id = job.id().expect("a job");
                 let cancel = CancelToken::new();
-                if early.remove(&job.id) {
+                if early.remove(&id) {
                     cancel.cancel();
                 }
-                cancels.lock().insert(job.id, cancel.clone());
-                if tx.send((*job, cancel)).is_err() {
+                cancels.lock().insert(id, cancel.clone());
+                if tx.send((job, cancel)).is_err() {
                     break;
                 }
             }
@@ -162,9 +171,31 @@ fn read_requests(
 struct Models {
     store: ModelStore,
     transnet: Option<TransNet>,
+    scrfd: Option<Scrfd>,
+    arcface: Option<ArcFace>,
 }
 
 impl Models {
+    fn path(&self, id: &str) -> Result<PathBuf, AnalysisError> {
+        self.store
+            .installed(id)
+            .map_err(|e| AnalysisError::Internal(e.detail()))?
+            .ok_or_else(|| AnalysisError::Internal(format!("{id} isn't installed in {}", self.store.dir().display())))
+    }
+
+    /// The face models, the detector planned for `size` frames (loaded again
+    /// when a media needs another size).
+    fn faces(&mut self, rt: &Runtime, size: (usize, usize)) -> Result<(&mut Scrfd, &mut ArcFace), AnalysisError> {
+        if self.scrfd.as_ref().is_none_or(|d| d.frame_size() != size) {
+            self.scrfd = None;
+            self.scrfd = Some(Scrfd::load(rt, &self.path(as_models::ids::SCRFD)?, size, DETECT_BATCH)?);
+        }
+        if self.arcface.is_none() {
+            self.arcface = Some(ArcFace::load(rt, &self.path(as_models::ids::ARCFACE)?, EMBED_BATCH)?);
+        }
+        Ok((self.scrfd.as_mut().expect("loaded"), self.arcface.as_mut().expect("loaded")))
+    }
+
     fn transnet(&mut self, rt: &Runtime) -> Result<&mut TransNet, AnalysisError> {
         if self.transnet.is_none() {
             let path = self
@@ -202,12 +233,52 @@ fn run_shots(
         cancel,
         |fraction| out.send(&Reply::Progress { id, fraction }),
         |start, s| {
-            out.send(&Reply::ShotChunk { id, start, signals: Blob(signals::encode(s)) });
+            out.send(&Reply::ShotChunk { id, start, len: s.len() as u32, signals: Blob(signals::encode(s)) });
             Ok(())
         },
     )?;
-    let frames = index.len() - job.resume;
+    let frames = index.len().saturating_sub(job.resume);
     let secs = started.elapsed().as_secs_f64();
     tracing::info!(id, frames, secs, fps = frames as f64 / secs.max(1e-3), "shots measured");
+    Ok(())
+}
+
+fn run_faces(
+    tools: &Tools,
+    rt: &Runtime,
+    models: &mut Models,
+    job: FacesJob,
+    cancel: &CancelToken,
+    out: &Out,
+) -> Result<(), AnalysisError> {
+    let params = FaceParams::default();
+    let (_, det_size) = frame_sizes(&job.info, &params);
+    let (detector, embedder) = models.faces(rt, det_size)?;
+    let index = FrameIndex::from_bytes(&job.index.0).map_err(|e| AnalysisError::Internal(e.to_string()))?;
+    let shots: Vec<FrameRange> = job.shots.iter().map(|&(s, e)| FrameRange::new(s, e)).collect();
+    let started = Instant::now();
+    let id = job.id;
+    tracing::info!(id, path = %job.path.display(), resume = job.resume, device = ?detector.device(), "finding faces");
+    let mut found = 0usize;
+    face_tracks(
+        tools,
+        Source { path: Path::new(&job.path), info: &job.info, index: &index },
+        detector,
+        embedder,
+        &shots,
+        job.resume,
+        job.chunk,
+        &params,
+        cancel,
+        |fraction| out.send(&Reply::Progress { id, fraction }),
+        |start, end, t| {
+            found += t.len();
+            out.send(&Reply::FaceChunk { id, start, end, tracks: Blob(tracks::encode(t)) });
+            Ok(())
+        },
+    )?;
+    let frames = index.len().saturating_sub(job.resume);
+    let secs = started.elapsed().as_secs_f64();
+    tracing::info!(id, frames, tracks = found, secs, fps = frames as f64 / secs.max(1e-3), "faces found");
     Ok(())
 }

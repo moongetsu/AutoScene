@@ -1,6 +1,6 @@
 [package]
 name = "as-project"
-description = "AutoScene library and projects: import with episode parsing, ingest (probe, index, posters, proxies), clip exports"
+description = "AutoScene library and projects: import with episode parsing, ingest (probe, index, posters, proxies), analysis results, cast, clip exports"
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
@@ -15,6 +15,7 @@ as-db.workspace = true
 as-media.workspace = true
 as-export.workspace = true
 as-analysis.workspace = true
+as-identity.workspace = true
 parking_lot.workspace = true
 regex = "1.13"
 serde_json.workspace = true

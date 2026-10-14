@@ -58,10 +58,23 @@ export const commands = {
 	 */
 	mediaSegments: (projectId: ProjectId, mediaId: MediaId) => __TAURI_INVOKE<Segment[]>("media_segments", { projectId, mediaId }),
 	/**
-	 *  Run the analysis of a media (again). `fresh` discards earlier results and
-	 *  checkpoints first; otherwise a stopped or failed run continues.
+	 *  Run the analysis of a media again. `redo` clears results from that stage
+	 *  on first (a running analysis of the media is stopped and restarted once
+	 *  it has stopped); `None` continues a stopped or failed run.
 	 */
-	mediaAnalyze: (projectId: ProjectId, mediaId: MediaId, fresh: boolean) => __TAURI_INVOKE<null>("media_analyze", { projectId, mediaId, fresh }),
+	mediaAnalyze: (projectId: ProjectId, mediaId: MediaId, redo: 
+/**  Shots (and everything built on them: faces). */
+"shots" | 
+/**  Faces and characters only. */
+"faces" | null) => __TAURI_INVOKE<null>("media_analyze", { projectId, mediaId, redo }),
+	castGet: (projectId: ProjectId) => __TAURI_INVOKE<Cast>("cast_get", { projectId }),
+	castTracks: (projectId: ProjectId, filter: TrackFilter) => __TAURI_INVOKE<FaceTrackItem[]>("cast_tracks", { projectId, filter }),
+	/**  Apply a decision about the cast. Returns the character it created, if any. */
+	castEdit: (projectId: ProjectId, edit: CastEdit) => __TAURI_INVOKE<string | null>("cast_edit", { projectId, edit }),
+	/**  Where characters are on screen in one media (for the timeline). */
+	mediaPresence: (projectId: ProjectId, mediaId: MediaId) => __TAURI_INVOKE<Presence[]>("media_presence", { projectId, mediaId }),
+	/**  Every shot a character is seen in, as clips ready to export. */
+	characterClips: (projectId: ProjectId, characterId: CharacterId) => __TAURI_INVOKE<ClipRequest[]>("character_clips", { projectId, characterId }),
 	exportPresets: () => __TAURI_INVOKE<ExportPreset[]>("export_presets"),
 	/**  Folder exports of this project go to unless the user picks another. */
 	exportDefaultDir: (projectId: ProjectId) => __TAURI_INVOKE<string>("export_default_dir", { projectId }),
@@ -100,6 +113,7 @@ export const commands = {
 /** Events */
 export const events = {
 	analysisChanged: makeEvent<AnalysisChanged>("analysis:changed"),
+	castChanged: makeEvent<CastChanged>("cast:changed"),
 	exportChanged: makeEvent<ExportChanged>("export:changed"),
 	jobChanged: makeEvent<JobChanged>("job:changed"),
 	jobProgress: makeEvent<JobProgressEvent>("job:progress"),
@@ -110,11 +124,18 @@ export const events = {
 };
 
 /* Types */
-/**  Analysis results of a media changed (shots detected or reset). */
+/**  Analysis results of a media changed (shots or faces found, or reset). */
 export type AnalysisChanged = {
 	projectId: ProjectId,
 	mediaId: MediaId,
 };
+
+/**  A stage of a media's analysis, to run again from scratch. */
+export type AnalysisStage = 
+/**  Shots (and everything built on them: faces). */
+"shots" | 
+/**  Faces and characters only. */
+"faces";
 
 /**
  *  Error returned by every command. Serialised as `{ code, message }` and
@@ -172,6 +193,63 @@ export type AudioStream = {
 	/**  Director's commentary or audio description, not the programme sound. */
 	commentary: boolean,
 };
+
+/**  The cast of a project. */
+export type Cast = {
+	/**  Most screen time first. */
+	characters: Character[],
+	/**  Tracks of nobody in particular. */
+	unassigned: number,
+	/**  Tracks waiting for a decision. */
+	unsure: number,
+	/**  Media whose faces are analysed / all media. */
+	mediaDone: number,
+	mediaTotal: number,
+};
+
+/**  The cast of a project changed (characters found, renamed, merged, tracks moved). */
+export type CastChanged = {
+	projectId: ProjectId,
+};
+
+/**  A user decision about face tracks. */
+export type CastEdit = 
+/**  These tracks are this character. */
+{ op: "assign"; tracks: number[]; characterId: CharacterId } | 
+/**  These tracks are someone new (returns the new character). */
+{ op: "new_character"; tracks: number[]; name: string | null } | 
+/**  These tracks are not this character. */
+{ op: "not_them"; tracks: number[]; characterId: CharacterId } | 
+/**  These tracks aren't faces at all. */
+{ op: "not_a_face"; tracks: number[] } | 
+/**  Accept the suggestions of these unsure tracks. */
+{ op: "confirm"; tracks: number[] } | { op: "rename"; characterId: CharacterId; name: string | null } | { op: "set_hidden"; characterId: CharacterId; hidden: boolean } | 
+/**  Everyone of `from` is `into`. */
+{ op: "merge"; from: CharacterId; into: CharacterId } | { op: "set_cover"; characterId: CharacterId; track: number };
+
+/**  A person the analysis found across the project's media. */
+export type Character = {
+	id: CharacterId,
+	/**  Given by the user; `None` until then. */
+	name: string | null,
+	/**  The name, or "Character N" (numbered by screen time). */
+	label: string,
+	hidden: boolean,
+	/**  Face tracks (auto and pinned). */
+	tracks: number,
+	/**  Shots the character is seen in. */
+	shots: number,
+	/**  Media (episodes) the character is seen in. */
+	media: number,
+	/**  Time the character's face is on screen. */
+	screenSec: number | null,
+	/**  Face thumbnail (absolute path). */
+	cover: string | null,
+	/**  Tracks that look like the character and wait for a decision. */
+	unsure: number,
+};
+
+export type CharacterId = string;
 
 export type ClipRequest = {
 	mediaId: MediaId,
@@ -266,6 +344,25 @@ export type ExportSummary = {
 	items: ExportItem[],
 };
 
+/**  One face followed through one shot. */
+export type FaceTrackItem = {
+	id: number,
+	mediaId: MediaId,
+	start: number,
+	end: number,
+	/**  0..1: how clearly the face shows who it is. */
+	quality: number | null,
+	/**  Median face height as a share of the frame height. */
+	faceHeight: number | null,
+	/**  Square JPEG of the face (absolute path). */
+	thumb: string,
+	/**  Assigned character, or the suggestion when `assign` is `unsure`. */
+	characterId: CharacterId | null,
+	assign: TrackAssign,
+	/**  Similarity behind an automatic assignment or suggestion. */
+	score: number | null,
+};
+
 /**
  *  Everything the player needs to map `<video>` time to source frames.
  * 
@@ -346,7 +443,7 @@ export type JobInfo = {
 };
 
 export type JobKind = "ingest" | "proxy" | "export" | 
-/**  AI analysis of a media (shots; faces from M3). */
+/**  AI analysis of a media: shots, then faces and characters. */
 "analyze";
 
 /**  Throttled progress for a running job (≤ 4 Hz per job). */
@@ -421,6 +518,11 @@ export type MediaItem = {
 	shotsError: string | null,
 	/**  Number of shots once detected. */
 	shotCount: number | null,
+	/**  Face analysis (characters). */
+	faces: StageState,
+	facesError: string | null,
+	/**  Face tracks once found. */
+	faceCount: number | null,
 };
 
 export type MediaStatus = 
@@ -451,6 +553,14 @@ export type NewProject = {
 };
 
 export type Platform = "windows" | "macos" | "linux";
+
+/**  Where characters are on screen in one media. */
+export type Presence = {
+	characterId: CharacterId,
+	trackId: number,
+	start: number,
+	end: number,
+};
 
 export type ProResProfile = "proxy" | "lt" | "standard" | "hq" | "p4444";
 
@@ -516,7 +626,9 @@ export type SegmentKind = "shot" |
 /**  Progress of one analysis stage of a media. */
 export type StageState = 
 /**  Not done yet (waiting for indexing or its job). */
-"pending" | "running" | "ready" | "failed";
+"pending" | "running" | "ready" | "failed" | 
+/**  Stopped by the user; continues only when asked to. */
+"stopped";
 
 export type SubtitleStream = {
 	index: number,
@@ -529,6 +641,28 @@ export type SubtitleStream = {
 	/**  Text subtitles (SRT/ASS/…) can feed dialogue search; bitmap ones can't. */
 	textBased: boolean,
 };
+
+/**  How a face track got to its character. */
+export type TrackAssign = 
+/**  Nobody (an extra, a background face). */
+"none" | 
+/**  Found by the analysis. */
+"auto" | 
+/**  Looks like the character, but not clearly: waits for a decision. */
+"unsure" | 
+/**  Decided by the user. */
+"pinned";
+
+/**  Which tracks of the cast to list. */
+export type TrackFilter = 
+/**  Tracks of a character (auto and pinned). */
+{ kind: "character"; id: CharacterId } | 
+/**  Tracks suggested for a character, waiting for a decision. */
+{ kind: "unsure"; id: CharacterId } | 
+/**  Every track waiting for a decision. */
+{ kind: "all_unsure" } | 
+/**  Tracks of nobody. */
+{ kind: "unassigned" };
 
 /**
  *  Download progress. `downloaded == 0 && total == None` after the download

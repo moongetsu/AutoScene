@@ -78,7 +78,16 @@ pub fn model(id: &str) -> ModelResult<&'static Model> {
 /// Ids, so code can't misspell them.
 pub mod ids {
     pub const TRANSNET: &str = "transnetv2";
+    pub const SCRFD: &str = "scrfd-10g";
+    pub const ARCFACE: &str = "arcface-w600k-r50";
+    /// What the face pass needs.
+    pub const FACES: [&str; 2] = [SCRFD, ARCFACE];
 }
+
+/// Name lookup, connecting and the response headers each get this long.
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// A download that receives nothing for this long fails (and resumes later).
+const STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 #[derive(Clone, Debug)]
 pub struct ModelStore {
@@ -127,7 +136,14 @@ impl ModelStore {
         }
         if have < m.size {
             tracing::info!(model = id, resume_from = have, "downloading model");
-            let mut req = ureq::get(&m.url);
+            let agent: ureq::Agent = ureq::Agent::config_builder()
+                .timeout_resolve(Some(CONNECT_TIMEOUT))
+                .timeout_connect(Some(CONNECT_TIMEOUT))
+                .timeout_send_request(Some(CONNECT_TIMEOUT))
+                .timeout_recv_response(Some(CONNECT_TIMEOUT))
+                .build()
+                .into();
+            let mut req = agent.get(&m.url);
             if have > 0 {
                 req = req.header("Range", &format!("bytes={have}-"));
             }
@@ -138,21 +154,45 @@ impl ModelStore {
             }
             let mut out =
                 OpenOptions::new().create(true).write(true).append(have > 0).truncate(have == 0).open(&part)?;
+            // The body is read on its own thread, so cancelling (or a stalled
+            // connection) never waits on a socket that has gone quiet.
+            let (tx, rx) = std::sync::mpsc::sync_channel::<std::io::Result<Vec<u8>>>(16);
             let mut body = resp.into_body().into_reader();
-            let mut buf = vec![0u8; 1 << 16];
+            std::thread::spawn(move || {
+                let mut buf = vec![0u8; 1 << 16];
+                loop {
+                    let r = body.read(&mut buf).map(|n| buf[..n].to_vec());
+                    let end = !matches!(&r, Ok(b) if !b.is_empty());
+                    if tx.send(r).is_err() || end {
+                        return;
+                    }
+                }
+            });
             let mut done = have;
+            let mut last_data = std::time::Instant::now();
             progress(done, m.size);
             loop {
                 if cancel.is_cancelled() {
                     out.flush()?;
                     return Err(ModelError::Cancelled);
                 }
-                let n = body.read(&mut buf).map_err(|e| ModelError::Download(e.to_string()))?;
-                if n == 0 {
+                let chunk = match rx.recv_timeout(std::time::Duration::from_millis(250)) {
+                    Ok(r) => r.map_err(|e| ModelError::Download(e.to_string()))?,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        if last_data.elapsed() > STALL_TIMEOUT {
+                            out.flush()?;
+                            return Err(ModelError::Download(format!("{id}: no data for {STALL_TIMEOUT:?}")));
+                        }
+                        continue;
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Vec::new(),
+                };
+                if chunk.is_empty() {
                     break;
                 }
-                out.write_all(&buf[..n])?;
-                done += n as u64;
+                last_data = std::time::Instant::now();
+                out.write_all(&chunk)?;
+                done += chunk.len() as u64;
                 progress(done.min(m.size), m.size);
             }
             out.sync_all()?;
@@ -199,7 +239,9 @@ mod tests {
             assert!(m.url.starts_with("https://"), "{}: url", m.id);
             assert!(m.size > 0, "{}: size", m.id);
         }
-        assert!(model(ids::TRANSNET).is_ok());
+        for id in [ids::TRANSNET, ids::SCRFD, ids::ARCFACE] {
+            assert!(model(id).is_ok(), "{id}");
+        }
         assert!(matches!(model("nope"), Err(ModelError::Unknown(_))));
     }
 

@@ -27,6 +27,7 @@ as-infer = { path = "crates/as-infer" }
 as-vision = { path = "crates/as-vision" }
 as-analysis = { path = "crates/as-analysis" }
 as-engine = { path = "crates/as-engine" }
+as-identity = { path = "crates/as-identity" }
 
 # shared third-party
 anyhow = "1.0.104"
@@ -37,6 +38,7 @@ uuid = { version = "1.28", features = ["v7", "serde"] }
 tracing = "0.1.44"
 parking_lot = "0.12.5"
 zstd = "0.14.2"
+half = "=2.7.1"
 tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util", "fs"] }
 specta = { version = "=2.0.0-rc.25", features = ["derive", "serde_json", "uuid"] }
 dirs = "7.0"
@@ -48,6 +50,14 @@ rusqlite_migration = "2.6"
 opt-level = 1
 
 [profile.dev.package."*"]
+opt-level = 3
+
+# Per-pixel loops (scaling, alignment, thumbnails, signals) run on every
+# analysed frame; dev builds would otherwise analyse several times slower.
+[profile.dev.package.as-vision]
+opt-level = 3
+
+[profile.dev.package.as-analysis]
 opt-level = 3
 
 [profile.release]

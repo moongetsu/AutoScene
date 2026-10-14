@@ -120,6 +120,7 @@ impl Project {
             let _ = std::fs::remove_file(p);
         }
         self.remove_proxies(id, None);
+        let _ = std::fs::remove_dir_all(self.faces_dir().join(id.to_string()));
         Ok(())
     }
 

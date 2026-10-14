@@ -1,6 +1,6 @@
 import type * as React from "react"
 import { Link, useRouterState } from "@tanstack/react-router"
-import { Film, Library, ListVideo, PackageOpen, PanelLeftClose, PanelLeftOpen, Plus, Settings, Tv } from "lucide-react"
+import { Film, Library, ListVideo, PackageOpen, PanelLeftClose, PanelLeftOpen, Plus, Settings, Tv, Users } from "lucide-react"
 import type { ProjectSummary } from "@/bindings"
 import { Tooltip } from "@/components/ui/tooltip"
 import { useProjects } from "@/lib/queries"
@@ -175,6 +175,14 @@ function ProjectNav({
             icon={<ListVideo />}
             label={p.kind === "movie" ? "Files" : "Episodes"}
             active={path === `${base}/episodes` || path.startsWith(`${base}/timeline`)}
+            collapsed={collapsed}
+            inset
+          />
+          <NavItem
+            to={`${base}/cast`}
+            icon={<Users />}
+            label="Cast"
+            active={path.startsWith(`${base}/cast`)}
             collapsed={collapsed}
             inset
           />

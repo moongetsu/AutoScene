@@ -1,5 +1,5 @@
 import { QueryClient, useQuery } from "@tanstack/react-query"
-import { commands, type MediaId, type ProjectId } from "./ipc"
+import { commands, type CharacterId, type MediaId, type ProjectId, type TrackFilter } from "./ipc"
 
 export const queryClient = new QueryClient({
   defaultOptions: {
@@ -24,6 +24,10 @@ export const qk = {
   frameMap: (pid: ProjectId, mid: MediaId) => ["frameMap", pid, mid] as const,
   segments: (pid: ProjectId, mid: MediaId) => ["segments", pid, mid] as const,
   exports: (pid: ProjectId) => ["exports", pid] as const,
+  cast: (pid: ProjectId) => ["cast", pid] as const,
+  tracks: (pid: ProjectId, filter: TrackFilter) => ["cast", pid, "tracks", filter] as const,
+  presence: (pid: ProjectId, mid: MediaId) => ["cast", pid, "presence", mid] as const,
+  characterClips: (pid: ProjectId, cid: CharacterId) => ["cast", pid, "clips", cid] as const,
   exportDir: (pid: ProjectId) => ["exportDir", pid] as const,
 }
 
@@ -75,4 +79,18 @@ export function useExports(pid: ProjectId) {
 
 export function useExportDir(pid: ProjectId) {
   return useQuery({ queryKey: qk.exportDir(pid), queryFn: () => commands.exportDefaultDir(pid) })
+}
+
+/** The project's characters and where face analysis stands. */
+export function useCast(pid: ProjectId) {
+  return useQuery({ queryKey: qk.cast(pid), queryFn: () => commands.castGet(pid) })
+}
+
+export function useCastTracks(pid: ProjectId, filter: TrackFilter, enabled = true) {
+  return useQuery({ queryKey: qk.tracks(pid, filter), queryFn: () => commands.castTracks(pid, filter), enabled })
+}
+
+/** Where characters are on screen in one media. */
+export function usePresence(pid: ProjectId, mid: MediaId, enabled: boolean) {
+  return useQuery({ queryKey: qk.presence(pid, mid), queryFn: () => commands.mediaPresence(pid, mid), enabled })
 }

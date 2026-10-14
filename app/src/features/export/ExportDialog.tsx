@@ -58,7 +58,7 @@ function ExportForm({ projectId, clips, onDone }: { projectId: string; clips: Ex
       const req = {
         presetId,
         outDir: dir,
-        clips: clips.map((c) => ({ mediaId: c.mediaId, start: c.start, end: c.end, name: single && name.trim() ? name.trim() : null })),
+        clips: clips.map((c) => ({ mediaId: c.mediaId, start: c.start, end: c.end, name: single && name.trim() ? name.trim() : c.name })),
       }
       await commands.exportStart(projectId, req)
       // Remember the preset for next time.

@@ -9,12 +9,14 @@
 //! `load-dynamic` binds one runtime per process, which is one reason the
 //! engine is its own process: switching runtimes means restarting it.
 
+pub mod onnx;
+
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 pub use ort::inputs;
 pub use ort::session::Session;
-pub use ort::value::Tensor;
+pub use ort::value::{Tensor, TensorRef};
 use thiserror::Error;
 
 pub type InferResult<T> = Result<T, InferError>;
@@ -118,19 +120,35 @@ impl Runtime {
 
     /// Load `model`, on the GPU when possible. Returns where it runs.
     pub fn session(&self, model: &Path) -> InferResult<(Session, Device)> {
+        self.session_from(model, None)
+    }
+
+    /// Like [`Runtime::session`], with the shapes the model declares for its
+    /// outputs and intermediate values dropped and its input shaped as
+    /// `input` says (see [`onnx::reshaped`]): for graphs that compute any
+    /// input size or batch but were exported declaring one.
+    pub fn session_shaped(&self, model: &Path, input: onnx::InputShape) -> InferResult<(Session, Device)> {
+        let bytes = std::fs::read(model).map_err(|e| InferError::Model(format!("{}: {e}", model.display())))?;
+        let patched = onnx::reshaped(&bytes, input).ok_or_else(|| {
+            InferError::Model(format!("{}: not a readable ONNX model, or not shaped like {input:?}", model.display()))
+        })?;
+        self.session_from(model, Some(&patched))
+    }
+
+    fn session_from(&self, model: &Path, bytes: Option<&[u8]>) -> InferResult<(Session, Device)> {
         let want = self.preferred_device();
         if want != Device::Cpu {
-            match self.build(model, want) {
+            match self.build(model, bytes, want) {
                 Ok(s) => return Ok((s, want)),
                 Err(e) => {
                     tracing::warn!(model = %model.display(), device = ?want, error = %e.detail(), "GPU session failed; using the CPU")
                 }
             }
         }
-        Ok((self.build(model, Device::Cpu)?, Device::Cpu))
+        Ok((self.build(model, bytes, Device::Cpu)?, Device::Cpu))
     }
 
-    fn build(&self, model: &Path, device: Device) -> InferResult<Session> {
+    fn build(&self, model: &Path, bytes: Option<&[u8]>, device: Device) -> InferResult<Session> {
         let err = |e: String| InferError::Model(format!("{}: {e}", model.display()));
         let mut b = Session::builder(&self.env).map_err(|e| err(e.to_string()))?;
         match device {
@@ -153,7 +171,10 @@ impl Runtime {
             }
             _ => {}
         }
-        b.commit_from_file(model).map_err(|e| err(e.to_string()))
+        match bytes {
+            Some(bytes) => b.commit_from_memory(bytes).map_err(|e| err(e.to_string())),
+            None => b.commit_from_file(model).map_err(|e| err(e.to_string())),
+        }
     }
 }
 

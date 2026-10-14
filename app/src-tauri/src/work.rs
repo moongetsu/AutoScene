@@ -5,16 +5,16 @@
 
 use std::sync::Arc;
 
-use as_api::{JobKind, MediaItem, ProxyState, StageState};
+use as_api::{AnalysisStage, ContentKind, JobKind, MediaItem, ProxyState, StageState};
 use as_core::{ExportId, MediaId};
-use as_engine::{EngineError, ShotsEvent};
-use as_jobs::{Class, JobCtx, JobError, JobResult, JobSpec};
+use as_engine::{EngineError, FacesEvent, ShotsEvent};
+use as_jobs::{Class, JobCtx, JobError, JobSpec};
 use as_models::ModelError;
 use as_project::{Project, ProjectError};
 use tauri::{AppHandle, Manager};
 use tauri_specta::Event;
 
-use crate::events::{AnalysisChanged, ExportChanged, LibraryChanged};
+use crate::events::{AnalysisChanged, CastChanged, ExportChanged, LibraryChanged};
 use crate::state::AppState;
 
 fn job_error(e: ProjectError) -> JobError {
@@ -78,14 +78,80 @@ pub fn queue_ingest(app: &AppHandle, project: &Arc<Project>, media_id: MediaId) 
         if m.proxy == ProxyState::Pending {
             queue_proxy(&app2, &project, media_id);
         }
-        queue_shots(&app2, &project, media_id);
+        queue_analysis(&app2, &project, media_id);
         Ok(())
     });
 }
 
-/// Find the shots of a media in the analysis engine, resuming from its
-/// checkpoints. Downloads the model first when it is not installed yet.
-pub fn queue_shots(app: &AppHandle, project: &Arc<Project>, media_id: MediaId) {
+/// Why an analysis stage stopped.
+enum StageError {
+    Cancelled,
+    /// Something about this media or the analysis itself.
+    Failed(String),
+    /// The environment (offline model download, an engine that can't start):
+    /// the stage waits as pending and runs again on the next launch.
+    Later(String),
+}
+
+impl From<StageError> for JobError {
+    fn from(e: StageError) -> Self {
+        match e {
+            StageError::Cancelled => JobError::Cancelled,
+            StageError::Failed(m) | StageError::Later(m) => JobError::Failed(m),
+        }
+    }
+}
+
+fn stage_error(e: ProjectError) -> StageError {
+    match job_error(e) {
+        JobError::Cancelled => StageError::Cancelled,
+        JobError::Failed(m) => StageError::Failed(m),
+    }
+}
+
+fn engine_error(e: EngineError) -> StageError {
+    match e {
+        EngineError::Cancelled => StageError::Cancelled,
+        e @ EngineError::Start { .. } => {
+            log::warn!("analysis: {}", e.detail());
+            StageError::Later(e.to_string())
+        }
+        e => {
+            log::warn!("analysis: {}", e.detail());
+            StageError::Failed(e.to_string())
+        }
+    }
+}
+
+/// Record how a stage ended (`set(state, error)`); a quit leaves it
+/// `running` so it resumes on the next launch.
+fn record_stage(
+    state: &AppState,
+    r: &Result<(), StageError>,
+    set: impl FnOnce(StageState, Option<&str>) -> as_project::ProjectResult<()>,
+) {
+    let outcome = match r {
+        Ok(()) => return,
+        Err(StageError::Cancelled) if state.jobs.is_shutting_down() => return,
+        // Stopped by the user: stays stopped (not resumed on the next launch).
+        Err(StageError::Cancelled) => set(StageState::Stopped, None),
+        Err(StageError::Later(msg)) => set(StageState::Pending, Some(msg)),
+        Err(StageError::Failed(msg)) => set(StageState::Failed, Some(msg)),
+    };
+    if let Err(e) = outcome {
+        log::warn!("recording the analysis state: {e}");
+    }
+}
+
+/// Faces are found in live action; anime gets its own detectors later.
+fn finds_faces(project: &Project) -> bool {
+    !matches!(project.content(), Ok(ContentKind::Anime))
+}
+
+/// Analyse a media in the engine: shots, then faces, then the project's
+/// cast is clustered again. Resumes from checkpoints; downloads the models
+/// it needs first.
+pub fn queue_analysis(app: &AppHandle, project: &Arc<Project>, media_id: MediaId) {
     let state = app.state::<AppState>();
     if state.jobs.is_active(|j| j.kind == JobKind::Analyze && j.media_id == Some(media_id)) {
         return;
@@ -94,7 +160,7 @@ pub fn queue_shots(app: &AppHandle, project: &Arc<Project>, media_id: MediaId) {
     let spec = JobSpec {
         kind: JobKind::Analyze,
         class: Class::Analysis,
-        title: format!("Finding shots in {}", media_title(&m)),
+        title: format!("Analysing {}", media_title(&m)),
         subtitle: project.title().ok(),
         project_id: Some(project.id),
         media_id: Some(media_id),
@@ -104,28 +170,61 @@ pub fn queue_shots(app: &AppHandle, project: &Arc<Project>, media_id: MediaId) {
     state.jobs.submit(spec, move |ctx| {
         let state = app2.state::<AppState>();
         let _awake = crate::keep_awake::hold();
-        let result = run_shots(&app2, &state, &project, media_id, ctx);
-        let outcome = match &result {
-            Ok(()) => Ok(()),
-            // Quitting: the run stays `running` and resumes on the next launch.
-            Err(JobError::Cancelled) if state.jobs.is_shutting_down() => Ok(()),
-            Err(JobError::Cancelled) => project.set_shots_state(media_id, StageState::Pending, None),
-            Err(JobError::Failed(msg)) => project.set_shots_state(media_id, StageState::Failed, Some(msg)),
+        let notify = || {
+            let _ = AnalysisChanged { project_id: project.id, media_id }.emit(&app2);
+            media_changed(&app2, &project, Some(media_id));
         };
-        if let Err(e) = outcome {
-            log::warn!("recording the shot analysis state: {e}");
+        let shots = run_shots(&app2, &state, &project, media_id, ctx);
+        record_stage(&state, &shots, |s, e| project.set_shots_state(media_id, s, e));
+        notify();
+        let result = shots.and_then(|()| {
+            if !finds_faces(&project) {
+                return Ok(());
+            }
+            let faces = run_faces(&app2, &state, &project, media_id, ctx);
+            record_stage(&state, &faces, |s, e| project.set_faces_state(media_id, s, e));
+            notify();
+            faces
+        });
+        // Asked to start over while this ran: now nothing writes any more.
+        let redo = state.redo.lock().remove(&media_id);
+        if let Some(stage) = redo {
+            restart_analysis(&app2, &project, media_id, stage);
+            return Ok(());
         }
-        let _ = AnalysisChanged { project_id: project.id, media_id }.emit(&app2);
-        media_changed(&app2, &project, Some(media_id));
-        result
+        result.map_err(JobError::from)
     });
 }
 
-fn run_shots(app: &AppHandle, state: &AppState, project: &Project, media_id: MediaId, ctx: &JobCtx) -> JobResult {
-    install_model(state, as_models::ids::TRANSNET, ctx)?;
-    project.set_shots_state(media_id, StageState::Running, None).map_err(job_error)?;
+/// Clear a media's results from `stage` on and analyse it again.
+pub fn restart_analysis(app: &AppHandle, project: &Arc<Project>, media_id: MediaId, stage: AnalysisStage) {
+    let reset = match stage {
+        AnalysisStage::Shots => project.reset_shots(media_id),
+        AnalysisStage::Faces => project.reset_faces(media_id),
+    };
+    if let Err(e) = reset.and_then(|()| project.recluster().map(|_| ())) {
+        log::warn!("resetting the analysis: {}", e.detail());
+    }
+    let _ = CastChanged { project_id: project.id }.emit(app);
+    let _ = AnalysisChanged { project_id: project.id, media_id }.emit(app);
     media_changed(app, project, Some(media_id));
-    let plan = project.shots_plan(media_id).map_err(job_error)?;
+    queue_analysis(app, project, media_id);
+}
+
+fn run_shots(
+    app: &AppHandle,
+    state: &AppState,
+    project: &Project,
+    media_id: MediaId,
+    ctx: &JobCtx,
+) -> Result<(), StageError> {
+    if project.media(media_id).map_err(stage_error)?.shots == StageState::Ready {
+        return Ok(());
+    }
+    install_models(state, &[as_models::ids::TRANSNET], ctx)?;
+    project.set_shots_state(media_id, StageState::Running, None).map_err(stage_error)?;
+    media_changed(app, project, Some(media_id));
+    let plan = project.shots_plan(media_id).map_err(stage_error)?;
     const STAGE: &str = "Finding shots";
     if plan.resume < plan.frames {
         ctx.progress(STAGE, plan.resume as f64 / plan.frames as f64);
@@ -140,39 +239,73 @@ fn run_shots(app: &AppHandle, state: &AppState, project: &Project, media_id: Med
                     project.store_shot_chunk(media_id, start, &signals).map_err(|e| e.detail())
                 }
             })
-            .map_err(|e| match e {
-                EngineError::Cancelled => JobError::Cancelled,
-                e => {
-                    log::warn!("shot analysis: {}", e.detail());
-                    JobError::Failed(e.to_string())
-                }
-            })?;
+            .map_err(engine_error)?;
     }
     ctx.stage(STAGE);
-    let shots = project.finish_shots(media_id).map_err(job_error)?;
-    log::info!("{shots} shots found (engine on {})", state.engine.device().unwrap_or_default());
+    let shots = project.finish_shots(media_id).map_err(stage_error)?;
+    log::info!("{shots} shots found (engine prefers {})", state.engine.device().unwrap_or_default());
     Ok(())
 }
 
-/// Download an AI model on first use (verified; resumes an interrupted download).
-fn install_model(state: &AppState, id: &str, ctx: &JobCtx) -> JobResult {
-    let installed = state.models.installed(id).map_err(|e| JobError::Failed(e.to_string()))?;
-    if installed.is_some() {
+fn run_faces(
+    app: &AppHandle,
+    state: &AppState,
+    project: &Project,
+    media_id: MediaId,
+    ctx: &JobCtx,
+) -> Result<(), StageError> {
+    if project.media(media_id).map_err(stage_error)?.faces == StageState::Ready {
         return Ok(());
     }
-    const STAGE: &str = "Downloading AI model";
-    ctx.progress(STAGE, 0.0);
-    state
-        .models
-        .install(id, &ctx.cancel, |done, total| ctx.progress(STAGE, done as f64 / total.max(1) as f64))
-        .map(|_| ())
-        .map_err(|e| match e {
-            ModelError::Cancelled => JobError::Cancelled,
-            e => {
-                log::warn!("{}", e.detail());
-                JobError::Failed(e.to_string())
-            }
-        })
+    install_models(state, &as_models::ids::FACES, ctx)?;
+    project.set_faces_state(media_id, StageState::Running, None).map_err(stage_error)?;
+    media_changed(app, project, Some(media_id));
+    let plan = project.faces_plan(media_id).map_err(stage_error)?;
+    const STAGE: &str = "Finding characters";
+    if plan.resume < plan.frames {
+        ctx.progress(STAGE, plan.resume as f64 / plan.frames as f64);
+        state
+            .engine
+            .faces(plan.path, plan.info, plan.index, plan.shots, plan.resume, plan.chunk, &ctx.cancel, |e| match e {
+                FacesEvent::Progress(f) => {
+                    ctx.progress(STAGE, f);
+                    Ok(())
+                }
+                FacesEvent::Chunk { start, end, tracks } => {
+                    project.store_face_chunk(media_id, start, end, &tracks).map(|_| ()).map_err(|e| e.detail())
+                }
+            })
+            .map_err(engine_error)?;
+    }
+    ctx.stage("Grouping characters");
+    project.finish_faces(media_id).map_err(stage_error)?;
+    let characters = project.recluster().map_err(stage_error)?;
+    log::info!("faces found; the cast has {characters} characters");
+    let _ = CastChanged { project_id: project.id }.emit(app);
+    Ok(())
+}
+
+/// Download AI models on first use (verified; resumes an interrupted download).
+fn install_models(state: &AppState, ids: &[&str], ctx: &JobCtx) -> Result<(), StageError> {
+    for &id in ids {
+        let installed = state.models.installed(id).map_err(|e| StageError::Failed(e.to_string()))?;
+        if installed.is_some() {
+            continue;
+        }
+        const STAGE: &str = "Downloading AI model";
+        ctx.progress(STAGE, 0.0);
+        state
+            .models
+            .install(id, &ctx.cancel, |done, total| ctx.progress(STAGE, done as f64 / total.max(1) as f64))
+            .map_err(|e| match e {
+                ModelError::Cancelled => StageError::Cancelled,
+                e => {
+                    log::warn!("{}", e.detail());
+                    StageError::Later(e.to_string())
+                }
+            })?;
+    }
+    Ok(())
 }
 
 /// Build the playback proxy for a media whose source the webview can't play frame-accurately.
@@ -276,13 +409,23 @@ pub fn recover_all(app: &AppHandle) {
             }
             Err(e) => log::warn!("recovering '{}': {e}", summary.title),
         }
-        match project.pending_shots() {
+        let pending = project.pending_shots().and_then(|mut ids| {
+            if finds_faces(&project) {
+                for id in project.pending_faces()? {
+                    if !ids.contains(&id) {
+                        ids.push(id);
+                    }
+                }
+            }
+            Ok(ids)
+        });
+        match pending {
             Ok(ids) => {
                 if !ids.is_empty() {
                     log::info!("resuming '{}': {} to analyse", summary.title, ids.len());
                 }
                 for id in ids {
-                    queue_shots(app, &project, id);
+                    queue_analysis(app, &project, id);
                 }
             }
             Err(e) => log::warn!("recovering analysis of '{}': {e}", summary.title),

@@ -15,6 +15,7 @@ import { qk, queryClient } from "./queries"
  * | library:changed  | projects, project(id), exportDir                   |
  * | media:changed    | media(pid), frameMap(pid, mid), project(pid)       |
  * | analysis:changed | segments(pid, mid)                                 |
+ * | cast:changed     | cast(pid) and everything under it (tracks, presence) |
  * | export:changed   | exports(pid)                                       |
  */
 export function startEventBridge(): () => void {
@@ -45,6 +46,10 @@ export function startEventBridge(): () => void {
     events.analysisChanged.listen(({ payload }) => {
       void queryClient.invalidateQueries({ queryKey: qk.segments(payload.projectId, payload.mediaId) })
     }),
+    events.castChanged.listen(({ payload }) => {
+      // Prefix match: the cast, its track lists, presence lanes and clip lists.
+      void queryClient.invalidateQueries({ queryKey: qk.cast(payload.projectId) })
+    }),
     events.exportChanged.listen(({ payload }) => {
       void queryClient.invalidateQueries({ queryKey: qk.exports(payload.projectId) })
     }),
@@ -61,7 +66,7 @@ export function startEventBridge(): () => void {
 function notifyFinished(job: JobInfo) {
   if (job.kind !== "export") {
     if (job.state === "failed") {
-      const title = job.title.replace(/^Indexing/, "Couldn't index").replace(/^Finding shots in/, "Couldn't find the shots in")
+      const title = job.title.replace(/^Indexing/, "Couldn't index").replace(/^Analysing/, "Couldn't analyse")
       toast.error(title, { description: job.error ?? undefined })
     }
     return

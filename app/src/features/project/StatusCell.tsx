@@ -1,4 +1,4 @@
-import { AlertTriangle, Check, Clock, FileQuestion, RotateCcw, Scissors } from "lucide-react"
+import { AlertTriangle, Check, Clock, FileQuestion, RotateCcw, ScanFace, Scissors } from "lucide-react"
 import { toast } from "sonner"
 import type { JobInfo, MediaItem } from "@/bindings"
 import { Progress } from "@/components/ui/progress"
@@ -9,7 +9,7 @@ import { useMediaJob } from "@/state/activity"
 
 function runningLabel(job: JobInfo): string {
   if (job.kind === "proxy") return "Preparing preview"
-  if (job.kind === "analyze") return job.stage ?? "Finding shots"
+  if (job.kind === "analyze") return job.stage ?? "Analysing"
   return job.stage ?? "Indexing"
 }
 
@@ -21,7 +21,7 @@ function queuedLabel(m: MediaItem, job?: JobInfo): string {
 }
 
 /** Indexing, preview and analysis state of one media, with live progress from its job. */
-export function StatusCell({ media: m, projectId }: { media: MediaItem; projectId: string }) {
+export function StatusCell({ media: m, projectId, faces }: { media: MediaItem; projectId: string; faces: boolean }) {
   const job = useMediaJob(m.id)
   const retry = (e: React.MouseEvent) => {
     e.stopPropagation()
@@ -30,7 +30,7 @@ export function StatusCell({ media: m, projectId }: { media: MediaItem; projectI
   const analyze = (e: React.MouseEvent) => {
     e.stopPropagation()
     commands
-      .mediaAnalyze(projectId, m.id, false)
+      .mediaAnalyze(projectId, m.id, null)
       .catch((err) => toast.error("Couldn't start the analysis", { description: errorMessage(err) }))
   }
 
@@ -93,17 +93,54 @@ export function StatusCell({ media: m, projectId }: { media: MediaItem; projectI
     return (
       <span className="inline-flex items-center gap-2 text-xs">
         <span className="inline-flex items-center gap-1.5 text-fg-2">
-          <Check className="size-3.5 text-fg-3" /> Indexed
+          <Check className="size-3.5 text-fg-3" /> {m.shots === "stopped" ? "Stopped" : "Indexed"}
         </span>
         <button onClick={analyze} className="inline-flex items-center gap-1 rounded-xs px-1 text-fg-3 hover:text-fg-1">
-          <Scissors className="size-3" /> Find shots
+          <Scissors className="size-3" /> {m.shots === "stopped" ? "Continue" : "Find shots"}
         </button>
       </span>
     )
   }
+  const shots = (
+    <span className="inline-flex items-center gap-1.5 text-fg-2">
+      <Check className="size-3.5 text-fg-3" /> <span className="timecode">{(m.shotCount ?? 0).toLocaleString("en-GB")}</span> shots
+    </span>
+  )
+  if (!faces || m.faces === "ready") {
+    return (
+      <span className="inline-flex flex-col text-xs">
+        {shots}
+        {faces && (
+          <span className="pl-5 text-2xs text-fg-3">
+            <span className="timecode">{(m.faceCount ?? 0).toLocaleString("en-GB")}</span> faces
+          </span>
+        )}
+      </span>
+    )
+  }
+  if (m.faces === "failed") {
+    return (
+      <span className="inline-flex flex-col gap-0.5 text-xs">
+        {shots}
+        <span className="inline-flex items-center gap-2 pl-5 text-2xs">
+          <Tooltip label={m.facesError ?? "Finding characters failed"}>
+            <span className="inline-flex items-center gap-1 text-danger">
+              <AlertTriangle className="size-3" /> Characters failed
+            </span>
+          </Tooltip>
+          <button onClick={analyze} className="inline-flex items-center gap-1 rounded-xs px-1 text-fg-3 hover:text-fg-1">
+            <RotateCcw className="size-3" /> Retry
+          </button>
+        </span>
+      </span>
+    )
+  }
   return (
-    <span className="inline-flex items-center gap-1.5 text-xs text-fg-2">
-      <Check className="size-3.5 text-fg-3" /> <span className="timecode">{m.shotCount ?? 0}</span> shots
+    <span className="inline-flex flex-col gap-0.5 text-xs">
+      {shots}
+      <button onClick={analyze} className="inline-flex items-center gap-1 rounded-xs pl-5 text-left text-2xs text-fg-3 hover:text-fg-1">
+        <ScanFace className="size-3" /> {m.faces === "stopped" ? "Stopped · continue" : "Find characters"}
+      </button>
     </span>
   )
 }

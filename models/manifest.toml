@@ -11,3 +11,23 @@ sha256 = "c4d54a682bace32f25136ef83ca2c9d403e8f8193775efeb995172a0d95a8e0c"
 size = 31250929
 license = "MIT"
 source = "TransNetV2 (Souček & Lokoč), ONNX export of the original weights"
+
+[[model]]
+id = "scrfd-10g"
+file = "scrfd_10g.onnx"
+purpose = "Face detection with five landmarks (live action)"
+url = "https://huggingface.co/immich-app/buffalo_l/resolve/d09715916a0778919a770c343533641e250b8699/detection/model.onnx"
+sha256 = "5838f7fe053675b1c7a08b633df49e7af5495cee0493c7dcf6697200b85b5b91"
+size = 16923827
+license = "InsightFace non-commercial research"
+source = "InsightFace buffalo_l det_10g (SCRFD-10G, Guo et al. 2021), byte-identical mirror by Immich"
+
+[[model]]
+id = "arcface-w600k-r50"
+file = "arcface_w600k_r50.onnx"
+purpose = "Face identity embeddings (live action)"
+url = "https://huggingface.co/immich-app/buffalo_l/resolve/d09715916a0778919a770c343533641e250b8699/recognition/model.onnx"
+sha256 = "4c06341c33c2ca1f86781dab0e829f88ad5b64be9fba56e56bc9ebdefc619e43"
+size = 174383860
+license = "InsightFace non-commercial research"
+source = "InsightFace buffalo_l w600k_r50 (ArcFace ResNet-50 on WebFace600K), byte-identical mirror by Immich"

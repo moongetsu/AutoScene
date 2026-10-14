@@ -1,13 +1,18 @@
-//! Analysis: frame signals, shot fusion and the resumable passes that
-//! produce them. M2: shots and transitions.
+//! Analysis: the resumable passes over a media and what they produce —
+//! frame signals fused into shots and transitions, face tracks.
 
+pub mod faces;
 pub mod fusion;
 pub mod pipeline;
 pub mod signals;
+pub mod tracker;
+pub mod tracks;
 
+pub use faces::{DETECT_BATCH, FaceParams, face_tracks, frame_sizes};
 pub use fusion::{FusionParams, Segment, SegmentKind, TransitionKind, fuse};
 pub use pipeline::{CHUNK, shot_signals};
 pub use signals::FrameSignals;
+pub use tracks::{FaceDet, FaceTrack};
 
 use thiserror::Error;
 

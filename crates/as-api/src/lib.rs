@@ -2,7 +2,7 @@
 //! `specta::Type`, and `app/src/bindings.ts` is generated from it — the UI
 //! never hand-writes a backend type.
 
-use as_core::{ExportId, FrameIdx, JobId, MediaId, ProjectId, Rational};
+use as_core::{CharacterId, ExportId, FrameIdx, JobId, MediaId, ProjectId, Rational};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
@@ -195,6 +195,21 @@ pub struct MediaItem {
     pub shots_error: Option<String>,
     /// Number of shots once detected.
     pub shot_count: Option<u32>,
+    /// Face analysis (characters).
+    pub faces: StageState,
+    pub faces_error: Option<String>,
+    /// Face tracks once found.
+    pub face_count: Option<u32>,
+}
+
+/// A stage of a media's analysis, to run again from scratch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum AnalysisStage {
+    /// Shots (and everything built on them: faces).
+    Shots,
+    /// Faces and characters only.
+    Faces,
 }
 
 /// Progress of one analysis stage of a media.
@@ -206,6 +221,8 @@ pub enum StageState {
     Running,
     Ready,
     Failed,
+    /// Stopped by the user; continues only when asked to.
+    Stopped,
 }
 
 // ---------------------------------------------------------------------------
@@ -259,6 +276,154 @@ pub struct FrameMap {
     pub offset: f64,
     pub step: Option<f64>,
     pub times: Option<Vec<f64>>,
+}
+
+// ---------------------------------------------------------------------------
+// Cast
+// ---------------------------------------------------------------------------
+
+/// How a face track got to its character.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum TrackAssign {
+    /// Nobody (an extra, a background face).
+    None,
+    /// Found by the analysis.
+    Auto,
+    /// Looks like the character, but not clearly: waits for a decision.
+    Unsure,
+    /// Decided by the user.
+    Pinned,
+}
+
+/// A person the analysis found across the project's media.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct Character {
+    pub id: CharacterId,
+    /// Given by the user; `None` until then.
+    pub name: Option<String>,
+    /// The name, or "Character N" (numbered by screen time).
+    pub label: String,
+    pub hidden: bool,
+    /// Face tracks (auto and pinned).
+    pub tracks: u32,
+    /// Shots the character is seen in.
+    pub shots: u32,
+    /// Media (episodes) the character is seen in.
+    pub media: u32,
+    /// Time the character's face is on screen.
+    pub screen_sec: f64,
+    /// Face thumbnail (absolute path).
+    pub cover: Option<String>,
+    /// Tracks that look like the character and wait for a decision.
+    pub unsure: u32,
+}
+
+/// The cast of a project.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct Cast {
+    /// Most screen time first.
+    pub characters: Vec<Character>,
+    /// Tracks of nobody in particular.
+    pub unassigned: u32,
+    /// Tracks waiting for a decision.
+    pub unsure: u32,
+    /// Media whose faces are analysed / all media.
+    pub media_done: u32,
+    pub media_total: u32,
+}
+
+/// One face followed through one shot.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct FaceTrackItem {
+    pub id: u32,
+    pub media_id: MediaId,
+    pub start: FrameIdx,
+    pub end: FrameIdx,
+    /// 0..1: how clearly the face shows who it is.
+    pub quality: f32,
+    /// Median face height as a share of the frame height.
+    pub face_height: f32,
+    /// Square JPEG of the face (absolute path).
+    pub thumb: String,
+    /// Assigned character, or the suggestion when `assign` is `unsure`.
+    pub character_id: Option<CharacterId>,
+    pub assign: TrackAssign,
+    /// Similarity behind an automatic assignment or suggestion.
+    pub score: f32,
+}
+
+/// Which tracks of the cast to list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", content = "id", rename_all = "snake_case")]
+pub enum TrackFilter {
+    /// Tracks of a character (auto and pinned).
+    Character(CharacterId),
+    /// Tracks suggested for a character, waiting for a decision.
+    Unsure(CharacterId),
+    /// Every track waiting for a decision.
+    AllUnsure,
+    /// Tracks of nobody.
+    Unassigned,
+}
+
+/// A user decision about face tracks.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(tag = "op", rename_all = "snake_case", rename_all_fields = "camelCase")]
+pub enum CastEdit {
+    /// These tracks are this character.
+    Assign {
+        tracks: Vec<u32>,
+        character_id: CharacterId,
+    },
+    /// These tracks are someone new (returns the new character).
+    NewCharacter {
+        tracks: Vec<u32>,
+        name: Option<String>,
+    },
+    /// These tracks are not this character.
+    NotThem {
+        tracks: Vec<u32>,
+        character_id: CharacterId,
+    },
+    /// These tracks aren't faces at all.
+    NotAFace {
+        tracks: Vec<u32>,
+    },
+    /// Accept the suggestions of these unsure tracks.
+    Confirm {
+        tracks: Vec<u32>,
+    },
+    Rename {
+        character_id: CharacterId,
+        name: Option<String>,
+    },
+    SetHidden {
+        character_id: CharacterId,
+        hidden: bool,
+    },
+    /// Everyone of `from` is `into`.
+    Merge {
+        from: CharacterId,
+        into: CharacterId,
+    },
+    SetCover {
+        character_id: CharacterId,
+        track: u32,
+    },
+}
+
+/// Where characters are on screen in one media.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct Presence {
+    pub character_id: CharacterId,
+    pub track_id: u32,
+    pub start: FrameIdx,
+    pub end: FrameIdx,
 }
 
 // ---------------------------------------------------------------------------
@@ -335,7 +500,7 @@ pub enum JobKind {
     Ingest,
     Proxy,
     Export,
-    /// AI analysis of a media (shots; faces from M3).
+    /// AI analysis of a media: shots, then faces and characters.
     Analyze,
 }
 

@@ -31,6 +31,8 @@ impl<'de> Deserialize<'de> for Blob {
 pub enum Request {
     /// Measure the shot signals of a media from `resume` on.
     Shots(Box<ShotsJob>),
+    /// Find, embed and track the faces of a media's shots from `resume` on.
+    Faces(Box<FacesJob>),
     /// Stop job `id` as soon as possible (it then fails with `cancelled`).
     Cancel { id: u64 },
     /// Finish the current job's cancellation and exit.
@@ -50,11 +52,37 @@ pub struct ShotsJob {
     pub chunk: u32,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FacesJob {
+    pub id: u64,
+    pub path: PathBuf,
+    pub info: MediaInfo,
+    /// `FrameIndex::to_bytes`.
+    pub index: Blob,
+    /// Shot ranges `(start, end)`, sorted; faces are looked for only there.
+    pub shots: Vec<(u32, u32)>,
+    /// First frame to look at: 0 or the end of a chunk handed out earlier.
+    pub resume: u32,
+    /// Frames per checkpoint chunk (chunks end at the next shot start).
+    pub chunk: u32,
+}
+
+impl Request {
+    pub fn id(&self) -> Option<u64> {
+        match self {
+            Self::Shots(j) => Some(j.id),
+            Self::Faces(j) => Some(j.id),
+            Self::Cancel { .. } | Self::Shutdown => None,
+        }
+    }
+}
+
 /// Engine → app.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum Reply {
-    /// The runtime is loaded; jobs run on `device`.
+    /// The runtime is loaded; models run on `device` where they can (each
+    /// falls back to the CPU on its own, which the engine logs).
     Ready {
         device: String,
     },
@@ -62,11 +90,19 @@ pub enum Reply {
         id: u64,
         fraction: f64,
     },
-    /// Finished signals of frames `start..` (`as_analysis::signals::encode`).
+    /// Finished signals of frames `start..start + len` (`as_analysis::signals::encode`).
     ShotChunk {
         id: u64,
         start: u32,
+        len: u32,
         signals: Blob,
+    },
+    /// Face tracks of frames `start..end` (`as_analysis::tracks::encode`).
+    FaceChunk {
+        id: u64,
+        start: u32,
+        end: u32,
+        tracks: Blob,
     },
     Done {
         id: u64,
@@ -90,9 +126,9 @@ mod tests {
 
     #[test]
     fn blobs_travel_as_base64() {
-        let r = Reply::ShotChunk { id: 7, start: 2400, signals: Blob(vec![0, 1, 2, 255]) };
+        let r = Reply::ShotChunk { id: 7, start: 2400, len: 2400, signals: Blob(vec![0, 1, 2, 255]) };
         let line = serde_json::to_string(&r).unwrap();
-        assert_eq!(line, r#"{"event":"shot_chunk","id":7,"start":2400,"signals":"AAEC/w=="}"#);
+        assert_eq!(line, r#"{"event":"shot_chunk","id":7,"start":2400,"len":2400,"signals":"AAEC/w=="}"#);
         match serde_json::from_str::<Reply>(&line).unwrap() {
             Reply::ShotChunk { signals, .. } => assert_eq!(signals.0, [0, 1, 2, 255]),
             other => panic!("{other:?}"),

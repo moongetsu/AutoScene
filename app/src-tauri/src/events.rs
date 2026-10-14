@@ -49,13 +49,21 @@ pub struct ExportChanged {
     pub export_id: ExportId,
 }
 
-/// Analysis results of a media changed (shots detected or reset).
+/// Analysis results of a media changed (shots or faces found, or reset).
 #[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
 #[tauri_specta(event_name = "analysis:changed")]
 #[serde(rename_all = "camelCase")]
 pub struct AnalysisChanged {
     pub project_id: ProjectId,
     pub media_id: MediaId,
+}
+
+/// The cast of a project changed (characters found, renamed, merged, tracks moved).
+#[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
+#[tauri_specta(event_name = "cast:changed")]
+#[serde(rename_all = "camelCase")]
+pub struct CastChanged {
+    pub project_id: ProjectId,
 }
 
 pub fn emit_media_changed(app: &tauri::AppHandle, project_id: ProjectId, media_id: Option<MediaId>) {

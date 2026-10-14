@@ -102,10 +102,68 @@ const STEPS: &[M<'static>] = &[
         PRIMARY KEY (media_id, start)
     ) STRICT;",
     ),
+    // M3: faces and characters. Tracks are stored per checkpoint chunk (a
+    // face_chunks row says frames start..end are done); characters are the
+    // project's people, tracks point at them. User edits are pins, forbids
+    // and not-a-face marks on tracks — never cluster numbers — and survive a
+    // re-analysis through track_edits (re-anchored by time and position).
+    M::up(
+        "ALTER TABLE media ADD COLUMN faces TEXT NOT NULL DEFAULT 'pending';
+    ALTER TABLE media ADD COLUMN faces_error TEXT;
+
+    CREATE TABLE face_chunks (
+        media_id TEXT NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+        start    INTEGER NOT NULL,
+        end      INTEGER NOT NULL,
+        PRIMARY KEY (media_id, start)
+    ) STRICT;
+
+    CREATE TABLE characters (
+        id         TEXT PRIMARY KEY,
+        number     INTEGER NOT NULL,    -- 'Character N' until named; never reused
+        name       TEXT,
+        hidden     INTEGER NOT NULL DEFAULT 0,
+        cover      INTEGER,             -- track id; NULL = the best track
+        created_at INTEGER NOT NULL
+    ) STRICT;
+
+    CREATE TABLE tracks (
+        id           INTEGER PRIMARY KEY,
+        media_id     TEXT NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+        start        INTEGER NOT NULL,
+        end          INTEGER NOT NULL,
+        shot         INTEGER NOT NULL,  -- start frame of its shot
+        quality      REAL NOT NULL,
+        face_h       REAL NOT NULL,
+        dets         BLOB NOT NULL,     -- as_analysis::tracks::dets_to_bytes
+        emb          BLOB NOT NULL,     -- 512 x f16
+        character_id TEXT REFERENCES characters(id) ON DELETE SET NULL,
+        assign       TEXT NOT NULL DEFAULT 'none',  -- none | auto | unsure | pinned
+        score        REAL NOT NULL DEFAULT 0,
+        not_face     INTEGER NOT NULL DEFAULT 0
+    ) STRICT;
+    CREATE INDEX tracks_by_media ON tracks(media_id, start);
+    CREATE INDEX tracks_by_character ON tracks(character_id, assign);
+
+    CREATE TABLE track_forbids (
+        track_id     INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+        character_id TEXT NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+        PRIMARY KEY (track_id, character_id)
+    ) STRICT;
+
+    CREATE TABLE track_edits (
+        media_id     TEXT NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+        start        INTEGER NOT NULL,
+        end          INTEGER NOT NULL,
+        dets         BLOB NOT NULL,
+        kind         TEXT NOT NULL,     -- pin | forbid | not_face
+        character_id TEXT REFERENCES characters(id) ON DELETE CASCADE
+    ) STRICT;",
+    ),
 ];
 const MIGRATIONS: Migrations<'static> = Migrations::from_slice(STEPS);
 
-pub struct ProjectDb(Db);
+pub struct ProjectDb(pub(crate) Db);
 
 /// A file being added to the project, before it is probed.
 #[derive(Clone, Debug)]
@@ -155,7 +213,9 @@ pub struct NewExportItem {
 
 const MEDIA_COLS: &str = "id, path, file_name, size_bytes, season, episode, status, error, info, frames, duration_sec, \
      fps_num, fps_den, vfr, interlaced, audio_ordinal, proxy, poster, added_at, shots, shots_error, \
-     CASE WHEN shots = 'ready' THEN (SELECT COUNT(*) FROM segments s WHERE s.media_id = media.id AND s.kind = 'shot') END";
+     CASE WHEN shots = 'ready' THEN (SELECT COUNT(*) FROM segments s WHERE s.media_id = media.id AND s.kind = 'shot') END, \
+     faces, faces_error, \
+     CASE WHEN faces = 'ready' THEN (SELECT COUNT(*) FROM tracks t WHERE t.media_id = media.id AND t.not_face = 0) END";
 
 /// Episode order (same as `as_project::naming::episode_cmp`): numbered episodes by
 /// (season, episode), then the rest in the order they were added.
@@ -200,6 +260,9 @@ fn media_row(r: &Row, position: u32) -> DbResult<MediaItem> {
         shots: enum_from_sql(&r.get::<_, String>(19)?)?,
         shots_error: r.get(20)?,
         shot_count: r.get(21)?,
+        faces: enum_from_sql(&r.get::<_, String>(22)?)?,
+        faces_error: r.get(23)?,
+        face_count: r.get(24)?,
     })
 }
 
@@ -232,7 +295,8 @@ fn clear_shots(tx: &rusqlite::Transaction, id: MediaId) -> DbResult<()> {
     tx.execute("DELETE FROM shot_signals WHERE media_id = ?1", [id.to_string()])?;
     tx.execute("DELETE FROM segments WHERE media_id = ?1", [id.to_string()])?;
     tx.execute("UPDATE media SET shots = 'pending', shots_error = NULL WHERE id = ?1", [id.to_string()])?;
-    Ok(())
+    // Tracks belong to shots.
+    crate::cast::clear_faces(tx, id)
 }
 
 impl ProjectDb {
@@ -649,11 +713,11 @@ impl ProjectDb {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use as_api::{AudioStream, HdrKind, VideoStream};
 
-    fn new_media(path: &str, season: Option<u32>, episode: Option<u32>) -> NewMedia {
+    pub(crate) fn new_media(path: &str, season: Option<u32>, episode: Option<u32>) -> NewMedia {
         NewMedia {
             id: MediaId::new(),
             path: path.into(),
@@ -665,7 +729,7 @@ mod tests {
         }
     }
 
-    fn info() -> MediaInfo {
+    pub(crate) fn info() -> MediaInfo {
         MediaInfo {
             container: "matroska,webm".into(),
             duration_sec: Some(10.0),

@@ -60,13 +60,13 @@ export function useJobs(): JobInfo[] {
   return order.map((id) => jobs[id]).filter(Boolean)
 }
 
-/** The unfinished job working on `mediaId` (indexing or preview), if any. */
-export function useMediaJob(mediaId: string | undefined): JobInfo | undefined {
+/** The unfinished job working on `mediaId` (of `kind`, if given), if any. */
+export function useMediaJob(mediaId: string | undefined, kind?: JobInfo["kind"]): JobInfo | undefined {
   return useActivity((s) => {
     if (!mediaId) return undefined
     for (const id of s.order) {
       const j = s.jobs[id]
-      if (j.mediaId === mediaId && !isFinished(j)) return j
+      if (j.mediaId === mediaId && !isFinished(j) && (!kind || j.kind === kind)) return j
     }
     return undefined
   })

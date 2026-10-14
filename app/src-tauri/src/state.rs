@@ -1,10 +1,11 @@
 //! App-wide state shared by commands and background work.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
-use as_api::MediaToolsStatus;
-use as_core::AppPaths;
+use as_api::{AnalysisStage, MediaToolsStatus};
+use as_core::{AppPaths, MediaId};
 use as_engine::{Engine, Launch};
 use as_jobs::{Class, JobEvent, JobRunner};
 use as_media::Tools;
@@ -29,6 +30,9 @@ pub struct AppState {
     pub engine: Arc<Engine>,
     /// AI models, downloaded on first use.
     pub models: ModelStore,
+    /// Analyses to start over once the running job of that media has stopped
+    /// (its results can only be cleared when nothing writes them any more).
+    pub redo: Arc<parking_lot::Mutex<HashMap<MediaId, AnalysisStage>>>,
     tools: Arc<OnceLock<Result<Arc<Tools>, String>>>,
     bundled_ffmpeg: Option<PathBuf>,
 }
@@ -70,7 +74,15 @@ impl AppState {
         let mut args = vec!["--engine".into()];
         args.extend(as_engine::args(&engine_cfg));
         let engine = Arc::new(Engine::new(Launch { program, args }));
-        Self { library: Arc::new(library), jobs, engine, models, tools: Arc::new(OnceLock::new()), bundled_ffmpeg }
+        Self {
+            library: Arc::new(library),
+            jobs,
+            engine,
+            models,
+            redo: Arc::default(),
+            tools: Arc::new(OnceLock::new()),
+            bundled_ffmpeg,
+        }
     }
 
     /// ffmpeg/ffprobe, located once. Hardware capabilities are probed on first
@@ -126,6 +138,13 @@ pub fn allow_asset(app: &AppHandle, path: &Path) {
 
 pub fn allow_asset_dir(app: &AppHandle, dir: &Path) {
     if let Err(e) = app.asset_protocol_scope().allow_directory(dir, false) {
+        log::warn!("asset scope: {}: {e}", dir.display());
+    }
+}
+
+/// Like [`allow_asset_dir`], including subfolders (face thumbnails per media).
+pub fn allow_asset_tree(app: &AppHandle, dir: &Path) {
+    if let Err(e) = app.asset_protocol_scope().allow_directory(dir, true) {
         log::warn!("asset scope: {}: {e}", dir.display());
     }
 }

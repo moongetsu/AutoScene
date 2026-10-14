@@ -8,11 +8,14 @@ import {
   redirect,
 } from "@tanstack/react-router"
 import { AppShell } from "@/components/shell/AppShell"
+import { CastPage } from "@/features/cast/CastPage"
+import { CharacterPage } from "@/features/cast/CharacterPage"
+import { ReviewPage } from "@/features/cast/ReviewPage"
 import { LibraryPage } from "@/features/library/LibraryPage"
 import { PlayerPage } from "@/features/player/PlayerPage"
 import { EpisodesPage } from "@/features/project/EpisodesPage"
 import { ExportsPage } from "@/features/project/ExportsPage"
-import { MediaCrumb, ProjectCrumb } from "@/features/project/crumbs"
+import { CharacterCrumb, MediaCrumb, ProjectCrumb } from "@/features/project/crumbs"
 import { SettingsPage } from "@/features/settings/SettingsPage"
 import { settingsLabel } from "@/features/settings/sections"
 import { NotFound } from "@/features/not-found"
@@ -63,7 +66,35 @@ const playerRoute = createRoute({
   getParentRoute: () => projectRoute,
   path: "/timeline/$mid",
   staticData: { crumb: (p) => <MediaCrumb pid={p.pid} mid={p.mid} /> },
+  // `f`: frame to open at (from a face in the cast).
+  validateSearch: (s: Record<string, unknown>): { f?: number } => {
+    const f = Number(s.f)
+    return Number.isInteger(f) && f >= 0 ? { f } : {}
+  },
   component: PlayerPage,
+})
+
+const castRoute = createRoute({
+  getParentRoute: () => projectRoute,
+  path: "/cast",
+  staticData: { crumb: "Cast" },
+  component: CastPage,
+})
+
+const reviewRoute = createRoute({
+  getParentRoute: () => projectRoute,
+  path: "/cast/review",
+  staticData: { crumb: "Cast · Review" },
+  // `c`: only the faces suggested for this character.
+  validateSearch: (s: Record<string, unknown>): { c?: string } => (typeof s.c === "string" ? { c: s.c } : {}),
+  component: ReviewPage,
+})
+
+const characterRoute = createRoute({
+  getParentRoute: () => projectRoute,
+  path: "/cast/$cid",
+  staticData: { crumb: (p) => <CharacterCrumb pid={p.pid} cid={p.cid} />, crumbTo: (p) => `/p/${p.pid}/cast/${p.cid}` },
+  component: CharacterPage,
 })
 
 const exportsRoute = createRoute({
@@ -96,7 +127,15 @@ const settingsRoute = createRoute({
 
 const routeTree = rootRoute.addChildren([
   libraryRoute,
-  projectRoute.addChildren([projectIndexRoute, episodesRoute, playerRoute, exportsRoute]),
+  projectRoute.addChildren([
+    projectIndexRoute,
+    episodesRoute,
+    playerRoute,
+    castRoute,
+    reviewRoute,
+    characterRoute,
+    exportsRoute,
+  ]),
   settingsIndexRoute,
   settingsRoute,
 ])
