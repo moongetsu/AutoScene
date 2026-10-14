@@ -17,6 +17,7 @@
 //! Pure computation; the project layer loads tracks and stores the result.
 
 mod ahc;
+pub mod metrics;
 mod proto;
 
 use std::collections::{HashMap, HashSet};

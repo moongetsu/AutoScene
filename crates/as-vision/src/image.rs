@@ -1,5 +1,5 @@
 //! Small RGB24 helpers for the face pass: downscaling for detection and
-//! square face thumbnails.
+//! shot sprites, and square face thumbnails.
 
 use crate::arcface::bilinear;
 
@@ -20,6 +20,50 @@ pub fn half(rgb: &[u8], w: usize, h: usize) -> Vec<u8> {
         }
     }
     out
+}
+
+/// Shrink a whole `w`×`h` RGB24 frame to `ow`×`oh` — every source pixel
+/// under an output pixel averaged — into `out`, an RGB24 image `out_w`
+/// pixels wide, at column `ox`. The frame must be at least as big as the
+/// result.
+pub fn shrink_into(
+    rgb: &[u8],
+    (w, h): (usize, usize),
+    out: &mut [u8],
+    out_w: usize,
+    ox: usize,
+    (ow, oh): (usize, usize),
+) {
+    assert!(ow > 0 && oh > 0 && ow <= w && oh <= h && rgb.len() == w * h * 3);
+    assert!(ox + ow <= out_w && out.len() >= out_w * oh * 3);
+    // Source span [i·n/on, (i+1)·n/on) under output pixel i: never empty as n ≥ on.
+    let edge = |n: usize, on: usize, i: usize| i * n / on;
+    let cols: Vec<(usize, usize)> = (0..ow).map(|u| (edge(w, ow, u), edge(w, ow, u + 1))).collect();
+    // Rows are summed whole first (a loop the compiler vectorises), then
+    // each output pixel adds up its columns of that sum.
+    let mut sum = vec![0u32; w * 3];
+    for v in 0..oh {
+        let (ya, yb) = (edge(h, oh, v), edge(h, oh, v + 1));
+        sum.fill(0);
+        for y in ya..yb {
+            for (s, &p) in sum.iter_mut().zip(&rgb[y * w * 3..(y + 1) * w * 3]) {
+                *s += p as u32;
+            }
+        }
+        let row = &mut out[(v * out_w + ox) * 3..(v * out_w + ox + ow) * 3];
+        for (o, &(xa, xb)) in row.as_chunks_mut::<3>().0.iter_mut().zip(&cols) {
+            let mut a = [0u32; 3];
+            for px in sum[xa * 3..xb * 3].as_chunks::<3>().0 {
+                a[0] += px[0];
+                a[1] += px[1];
+                a[2] += px[2];
+            }
+            let n = ((xb - xa) * (yb - ya)) as u32;
+            for c in 0..3 {
+                o[c] = ((a[c] + n / 2) / n) as u8;
+            }
+        }
+    }
 }
 
 /// A `size`×`size` RGB24 thumbnail of the square around `bbox` (x1, y1, x2,
@@ -76,10 +120,15 @@ pub fn face_thumb(rgb: &[u8], w: usize, h: usize, bbox: [f32; 4], context: f32, 
     out
 }
 
-/// Encode a `w`×`h` RGB24 image as a baseline JPEG.
+/// Encode a `w`×`h` RGB24 image as a baseline JPEG (Robidoux's tables and
+/// optimised Huffman codes: about a fifth smaller than the textbook ones at
+/// the same look).
 pub fn jpeg(rgb: &[u8], w: usize, h: usize, quality: u8) -> Vec<u8> {
     let mut out = Vec::with_capacity(8 << 10);
-    let enc = jpeg_encoder::Encoder::new(&mut out, quality);
+    let mut enc = jpeg_encoder::Encoder::new(&mut out, quality);
+    let table = jpeg_encoder::QuantizationTableType::ImageMagick;
+    enc.set_quantization_tables(table.clone(), table);
+    enc.set_optimized_huffman_tables(true);
     enc.encode(rgb, w as u16, h as u16, jpeg_encoder::ColorType::Rgb).expect("in-memory JPEG encoding");
     out
 }
@@ -107,6 +156,22 @@ mod tests {
         // A box reaching past the top edge: black above the frame.
         let t = face_thumb(&rgb, w, h, [0.0, -20.0, 20.0, 0.0], 1.0, 10);
         assert_eq!(&t[..3], &[0, 0, 0]);
+    }
+
+    #[test]
+    fn frames_shrink_into_a_strip() {
+        // 6×4: left third red, the rest a gradient of blue; shrunk to 3×2 at column 1 of a 5-wide strip.
+        let (w, h) = (6, 4);
+        let rgb: Vec<u8> =
+            (0..w * h).flat_map(|i| if i % w < 2 { [200, 0, 0] } else { [0, 0, (i % w * 40) as u8] }).collect();
+        let mut out = vec![7u8; 5 * 2 * 3];
+        shrink_into(&rgb, (w, h), &mut out, 5, 1, (3, 2));
+        assert_eq!(&out[..3], &[7, 7, 7], "left of the cell untouched");
+        assert_eq!(&out[3..6], &[200, 0, 0]);
+        assert_eq!(&out[6..9], &[0, 0, 100]);
+        assert_eq!(&out[9..12], &[0, 0, 180]);
+        assert_eq!(&out[12..15], &[7, 7, 7], "right of the cell untouched");
+        assert_eq!(&out[15 + 3..15 + 6], &[200, 0, 0], "second row");
     }
 
     #[test]

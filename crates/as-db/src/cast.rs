@@ -6,7 +6,7 @@
 //! `not_face` — so a recluster can never undo it. Every decision bumps the
 //! cast's revision; a clustering computed before it is not stored.
 
-use as_api::{StageState, TrackAssign, TrackFilter, now_ms};
+use as_api::{SegmentKind, StageState, TrackAssign, TrackFilter, now_ms};
 use as_core::{CharacterId, FrameIdx, MediaId};
 use rusqlite::{OptionalExtension, Transaction, params, params_from_iter};
 
@@ -71,12 +71,30 @@ pub struct CharacterRow {
     pub media: u32,
     pub screen_sec: f64,
     pub unsure: u32,
+    /// Decisions and faces waiting for a media being analysed again (not
+    /// for one whose analysis failed or was stopped).
+    pub waiting: u32,
+}
+
+/// A shot a character is seen in.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CharacterShotRow {
+    pub media_id: MediaId,
+    pub start: FrameIdx,
+    pub end: FrameIdx,
+    /// The shot's sprite, if it has one: the shot end it was made for, and its cells.
+    pub sprite: Option<(FrameIdx, u32)>,
+    /// The character's clearest face in the shot, and the biggest face
+    /// height (fraction of the frame) it has there.
+    pub track: i64,
+    pub face_h: f32,
 }
 
 /// `(track, start, end, dets)`.
 pub type TrackDets = (i64, FrameIdx, FrameIdx, Vec<u8>);
 
-/// A user decision on a track that was deleted for a re-analysis.
+/// A user decision — or the character clustering gave it — on a track that
+/// was deleted for a re-analysis.
 #[derive(Clone, Debug)]
 pub struct TrackEdit {
     pub start: FrameIdx,
@@ -90,6 +108,10 @@ pub enum EditKind {
     Pin(CharacterId),
     Forbid(CharacterId),
     NotFace,
+    /// Clustering had put the track on this character: the new track starts
+    /// out there, so the next clustering keeps the character (its number,
+    /// its place in the cast) instead of making a new one.
+    Was(CharacterId),
 }
 
 fn parse_id<T: std::str::FromStr>(s: &str) -> DbResult<T>
@@ -108,8 +130,9 @@ fn marks(n: usize) -> String {
     vec!["?"; n].join(", ")
 }
 
-/// Forget a media's faces, keeping the user's decisions on them in
-/// `track_edits` for the next face pass to re-anchor.
+/// Forget a media's faces, keeping the user's decisions on them — and who
+/// clustering said they were — in `track_edits` for the next face pass to
+/// re-anchor.
 pub(crate) fn clear_faces(tx: &Transaction, id: MediaId) -> DbResult<()> {
     let m = id.to_string();
     tx.execute(
@@ -120,10 +143,14 @@ pub(crate) fn clear_faces(tx: &Transaction, id: MediaId) -> DbResult<()> {
          SELECT t.media_id, t.start, t.end, t.dets, 'forbid', f.character_id
            FROM tracks t JOIN track_forbids f ON f.track_id = t.id WHERE t.media_id = ?1
          UNION ALL
-         SELECT media_id, start, end, dets, 'not_face', NULL FROM tracks WHERE media_id = ?1 AND not_face = 1",
+         SELECT media_id, start, end, dets, 'not_face', NULL FROM tracks WHERE media_id = ?1 AND not_face = 1
+         UNION ALL
+         SELECT media_id, start, end, dets, 'was', character_id FROM tracks
+          WHERE media_id = ?1 AND assign = 'auto' AND character_id IS NOT NULL AND not_face = 0",
         [&m],
     )?;
     tx.execute("DELETE FROM tracks WHERE media_id = ?1", [&m])?;
+    tx.execute("DELETE FROM sprites WHERE media_id = ?1", [&m])?;
     tx.execute("DELETE FROM face_chunks WHERE media_id = ?1", [&m])?;
     tx.execute("UPDATE media SET faces = 'pending', faces_error = NULL WHERE id = ?1", [&m])?;
     bump_rev(tx)
@@ -224,28 +251,37 @@ impl ProjectDb {
         })
     }
 
-    /// Drop chunks (and their tracks) from `start` on.
+    /// Drop chunks (and their tracks and sprites) from `start` on.
     pub fn drop_face_chunks_from(&self, id: MediaId, start: FrameIdx) -> DbResult<()> {
         self.0.write(|tx| {
             tx.execute("DELETE FROM tracks WHERE media_id = ?1 AND shot >= ?2", params![id.to_string(), start])?;
+            tx.execute("DELETE FROM sprites WHERE media_id = ?1 AND shot >= ?2", params![id.to_string(), start])?;
             tx.execute("DELETE FROM face_chunks WHERE media_id = ?1 AND start >= ?2", params![id.to_string(), start])?;
             Ok(())
         })
     }
 
-    /// Store the tracks of chunk `start..end` and the chunk itself, atomically.
-    /// `files(ids)` runs before the commit (thumbnails); its error rolls back.
+    /// Store the tracks of chunk `start..end`, its shots' sprites `(shot,
+    /// end, cells)` and the chunk itself, atomically. `files(ids)` runs before
+    /// the commit (thumbnails, sprites); its error rolls back.
     pub fn put_face_chunk(
         &self,
         id: MediaId,
         start: FrameIdx,
         end: FrameIdx,
         tracks: &[NewTrack],
+        sprites: &[(FrameIdx, FrameIdx, u32)],
         files: impl FnOnce(&[i64]) -> Result<(), String>,
     ) -> DbResult<Vec<i64>> {
         self.0.write(|tx| {
             let m = id.to_string();
             tx.execute("DELETE FROM tracks WHERE media_id = ?1 AND shot >= ?2 AND shot < ?3", params![m, start, end])?;
+            tx.execute("DELETE FROM sprites WHERE media_id = ?1 AND shot >= ?2 AND shot < ?3", params![m, start, end])?;
+            let mut st = tx.prepare("INSERT INTO sprites (media_id, shot, end, cells) VALUES (?1, ?2, ?3, ?4)")?;
+            for &(shot, end, cells) in sprites {
+                st.execute(params![m, shot, end, cells])?;
+            }
+            drop(st);
             let mut st = tx.prepare(
                 "INSERT INTO tracks (media_id, start, end, shot, quality, face_h, dets, emb)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -279,6 +315,7 @@ impl ProjectDb {
                     ("pin", Some(c)) => EditKind::Pin(c),
                     ("forbid", Some(c)) => EditKind::Forbid(c),
                     ("not_face", _) => EditKind::NotFace,
+                    ("was", Some(c)) => EditKind::Was(c),
                     _ => continue,
                 };
                 out.push(TrackEdit { start: r.get(0)?, end: r.get(1)?, dets: r.get(2)?, kind });
@@ -287,22 +324,36 @@ impl ProjectDb {
         })
     }
 
-    /// Re-apply edits to new tracks (`(track, edit)`) and forget all of the media's pending edits.
+    /// Re-apply edits to new tracks (`(track, edit)`, one consistent set per
+    /// track) and forget all of the media's pending edits. Decisions go
+    /// first, each like the user made it; a former character only lands on a
+    /// face nobody decided about and that may be it.
     pub fn reanchor_edits(&self, id: MediaId, matched: &[(i64, EditKind)]) -> DbResult<()> {
         self.0.write(|tx| {
             for &(track, kind) in matched {
                 match kind {
                     EditKind::Pin(c) => {
-                        tx.execute(
-                            "UPDATE tracks SET character_id = ?2, assign = 'pinned', score = 1 WHERE id = ?1
+                        let n = tx.execute(
+                            "UPDATE tracks SET character_id = ?2, assign = 'pinned', score = 1, not_face = 0 WHERE id = ?1
                                AND EXISTS (SELECT 1 FROM characters WHERE id = ?2)",
                             params![track, c.to_string()],
                         )?;
+                        if n > 0 {
+                            tx.execute(
+                                "DELETE FROM track_forbids WHERE track_id = ?1 AND character_id = ?2",
+                                params![track, c.to_string()],
+                            )?;
+                        }
                     }
                     EditKind::Forbid(c) => {
                         tx.execute(
                             "INSERT OR IGNORE INTO track_forbids (track_id, character_id)
                              SELECT ?1, id FROM characters WHERE id = ?2",
+                            params![track, c.to_string()],
+                        )?;
+                        tx.execute(
+                            "UPDATE tracks SET character_id = NULL, assign = 'none', score = 0
+                              WHERE id = ?1 AND character_id = ?2",
                             params![track, c.to_string()],
                         )?;
                     }
@@ -312,6 +363,18 @@ impl ProjectDb {
                             [track],
                         )?;
                     }
+                    EditKind::Was(_) => {}
+                }
+            }
+            for &(track, kind) in matched {
+                if let EditKind::Was(c) = kind {
+                    tx.execute(
+                        "UPDATE tracks SET character_id = ?2, assign = 'auto', score = 1
+                          WHERE id = ?1 AND assign = 'none' AND not_face = 0
+                            AND EXISTS (SELECT 1 FROM characters WHERE id = ?2)
+                            AND NOT EXISTS (SELECT 1 FROM track_forbids f WHERE f.track_id = ?1 AND f.character_id = ?2)",
+                        params![track, c.to_string()],
+                    )?;
                 }
             }
             tx.execute("DELETE FROM track_edits WHERE media_id = ?1", [id.to_string()])?;
@@ -354,7 +417,9 @@ impl ProjectDb {
         self.0.read(rev_of)
     }
 
-    /// Every track that is a face, with what clustering needs.
+    /// Every track that is a face, with what clustering needs — of media
+    /// whose face pass is complete: a pass still running has stored only
+    /// part of its tracks, without the earlier decisions on them yet.
     pub fn identity_tracks(&self) -> DbResult<Vec<IdentityTrack>> {
         self.0.read(|c| {
             let mut forbids: std::collections::HashMap<i64, Vec<CharacterId>> = Default::default();
@@ -367,7 +432,8 @@ impl ProjectDb {
             }
             let mut st = c.prepare(
                 "SELECT id, media_id, start, end, quality, length(dets) / 32, emb, character_id, assign, dets
-                   FROM tracks WHERE not_face = 0 ORDER BY media_id, start, id",
+                   FROM tracks WHERE not_face = 0 AND media_id IN (SELECT id FROM media WHERE faces = 'ready')
+                  ORDER BY media_id, start, id",
             )?;
             let mut rows = st.query([])?;
             let mut out = Vec::new();
@@ -433,7 +499,9 @@ impl ProjectDb {
                         COUNT(DISTINCT t.media_id || ':' || t.shot),
                         COUNT(DISTINCT t.media_id),
                         COALESCE(SUM((t.end - t.start) * 1.0 * m.fps_den / m.fps_num), 0),
-                        (SELECT COUNT(*) FROM tracks u WHERE u.character_id = c.id AND u.assign = 'unsure' AND u.not_face = 0)
+                        (SELECT COUNT(*) FROM tracks u WHERE u.character_id = c.id AND u.assign = 'unsure' AND u.not_face = 0),
+                        (SELECT COUNT(*) FROM track_edits e WHERE e.character_id = c.id AND e.kind IN ('pin', 'was')
+                            AND e.media_id IN (SELECT id FROM media WHERE faces IN ('pending', 'running')))
                    FROM characters c
                    LEFT JOIN tracks t ON t.character_id = c.id AND t.assign IN ('auto', 'pinned') AND t.not_face = 0
                    LEFT JOIN media m ON m.id = t.media_id
@@ -463,6 +531,7 @@ impl ProjectDb {
                     media: r.get(7)?,
                     screen_sec: r.get(8)?,
                     unsure: r.get(9)?,
+                    waiting: r.get(10)?,
                 });
             }
             Ok(out)
@@ -473,7 +542,8 @@ impl ProjectDb {
     pub fn cast_counts(&self) -> DbResult<(u32, u32, u32, u32)> {
         self.0.read(|c| {
             Ok(c.query_row(
-                "SELECT (SELECT COUNT(*) FROM tracks WHERE not_face = 0 AND assign = 'none'),
+                "SELECT (SELECT COUNT(*) FROM tracks WHERE not_face = 0 AND assign = 'none'
+                           AND media_id IN (SELECT id FROM media WHERE faces = 'ready')),
                         (SELECT COUNT(*) FROM tracks WHERE not_face = 0 AND assign = 'unsure'),
                         (SELECT COUNT(*) FROM media WHERE faces = 'ready'),
                         (SELECT COUNT(*) FROM media)",
@@ -491,7 +561,9 @@ impl ProjectDb {
             }
             TrackFilter::Unsure(c) => ("t.character_id = ?1 AND t.assign = 'unsure'", Some(c.to_string())),
             TrackFilter::AllUnsure => ("t.assign = 'unsure'", None),
-            TrackFilter::Unassigned => ("t.assign = 'none'", None),
+            TrackFilter::Unassigned => {
+                ("t.assign = 'none' AND t.media_id IN (SELECT id FROM media WHERE faces = 'ready')", None)
+            }
         };
         self.0.read(|c| {
             let order = match filter {
@@ -543,17 +615,36 @@ impl ProjectDb {
         })
     }
 
-    /// Shots `(media, shot start)` a character is seen in.
-    pub fn character_shots(&self, c: CharacterId) -> DbResult<Vec<(MediaId, FrameIdx)>> {
+    /// The shots a character is seen in, by media then time.
+    pub fn character_shots(&self, c: CharacterId) -> DbResult<Vec<CharacterShotRow>> {
         self.0.read(|conn| {
             let mut st = conn.prepare(
-                "SELECT DISTINCT media_id, shot FROM tracks
-                  WHERE character_id = ?1 AND assign IN ('auto', 'pinned') AND not_face = 0",
+                "SELECT t.media_id, t.shot, g.end, sp.end, sp.cells, t.id, t.face_h
+                   FROM tracks t
+                   JOIN segments g ON g.media_id = t.media_id AND g.start = t.shot AND g.kind = ?2
+                   LEFT JOIN sprites sp ON sp.media_id = t.media_id AND sp.shot = t.shot
+                  WHERE t.character_id = ?1 AND t.assign IN ('auto', 'pinned') AND t.not_face = 0
+                  ORDER BY t.media_id, t.shot, t.face_h >= 0.12 DESC, t.quality DESC, t.id",
             )?;
-            let mut rows = st.query([c.to_string()])?;
-            let mut out = Vec::new();
+            let mut rows = st.query(params![c.to_string(), enum_to_sql(SegmentKind::Shot)])?;
+            let mut out: Vec<CharacterShotRow> = Vec::new();
             while let Some(r) = rows.next()? {
-                out.push((parse_id(&r.get::<_, String>(0)?)?, r.get(1)?));
+                let media_id = parse_id(&r.get::<_, String>(0)?)?;
+                let start: FrameIdx = r.get(1)?;
+                let face_h = r.get::<_, f64>(6)? as f32;
+                // The first row of a shot is its clearest face.
+                if let Some(last) = out.last_mut().filter(|s| s.media_id == media_id && s.start == start) {
+                    last.face_h = last.face_h.max(face_h);
+                    continue;
+                }
+                out.push(CharacterShotRow {
+                    media_id,
+                    start,
+                    end: r.get(2)?,
+                    sprite: r.get::<_, Option<FrameIdx>>(3)?.zip(r.get::<_, Option<u32>>(4)?),
+                    track: r.get(5)?,
+                    face_h,
+                });
             }
             Ok(out)
         })
@@ -750,28 +841,41 @@ mod tests {
         assert_eq!(db.pending_faces().unwrap(), vec![m]);
         let mut seen = vec![];
         let ids = db
-            .put_face_chunk(m, 0, 500, &[track(10, 0.9), track(300, 0.5)], |ids| {
+            .put_face_chunk(m, 0, 500, &[track(10, 0.9), track(300, 0.5)], &[], |ids| {
                 seen = ids.to_vec();
                 Ok(())
             })
             .unwrap();
         assert_eq!(ids, seen);
         // A failing file write rolls the chunk back.
-        assert!(db.put_face_chunk(m, 500, 1000, &[track(600, 0.9)], |_| Err("disk full".into())).is_err());
+        assert!(db.put_face_chunk(m, 500, 1000, &[track(600, 0.9)], &[], |_| Err("disk full".into())).is_err());
         assert_eq!(db.face_chunks(m).unwrap(), [(0, 500)]);
-        db.put_face_chunk(m, 500, 1000, &[track(600, 0.9)], |_| Ok(())).unwrap();
+        db.put_face_chunk(m, 500, 1000, &[track(600, 0.9)], &[(600, 624, 8)], |_| Ok(())).unwrap();
+        // A pass that isn't finished isn't clustered (nor listed as nobody's).
+        assert!(db.identity_tracks().unwrap().is_empty());
+        assert!(db.tracks(TrackFilter::Unassigned).unwrap().is_empty());
+        assert_eq!(db.cast_counts().unwrap().0, 0);
+        db.set_faces_state(m, StageState::Ready, None).unwrap();
         assert_eq!(db.identity_tracks().unwrap().len(), 3);
+        assert_eq!(db.tracks(TrackFilter::Unassigned).unwrap().len(), 3);
+        let sprites = |db: &ProjectDb| -> i64 {
+            db.0.read(|c| Ok(c.query_row("SELECT COUNT(*) FROM sprites", [], |r| r.get(0))?)).unwrap()
+        };
+        assert_eq!(sprites(&db), 1);
         db.drop_face_chunks_from(m, 500).unwrap();
         assert_eq!(db.identity_tracks().unwrap().len(), 2);
         assert_eq!(db.face_chunks(m).unwrap(), [(0, 500)]);
+        assert_eq!(sprites(&db), 0);
     }
 
     #[test]
     fn edits_stick_and_survive_reanalysis() {
         let db = ProjectDb::memory();
         let m = ready_media(&db, "/v/a.mkv");
-        let ids =
-            db.put_face_chunk(m, 0, 1000, &[track(10, 0.9), track(100, 0.8), track(200, 0.7)], |_| Ok(())).unwrap();
+        let ids = db
+            .put_face_chunk(m, 0, 1000, &[track(10, 0.9), track(100, 0.8), track(200, 0.7)], &[], |_| Ok(()))
+            .unwrap();
+        db.set_faces_state(m, StageState::Ready, None).unwrap();
         // Clustering made one character of all three, then the user named it.
         let (a, b) = (CharacterId::new(), CharacterId::new());
         db.apply_identity(
@@ -801,7 +905,7 @@ mod tests {
         assert!(!db.character_exists(b).unwrap());
         db.mark_not_face(&[ids[2]]).unwrap();
         assert_eq!(db.identity_tracks().unwrap().len(), 2);
-        assert_eq!(db.cast_counts().unwrap(), (1, 0, 0, 1));
+        assert_eq!(db.cast_counts().unwrap(), (1, 0, 1, 1));
 
         // Re-analysis: the decisions wait in track_edits for the new tracks.
         db.reset_faces(m).unwrap();
@@ -810,8 +914,9 @@ mod tests {
         let mut kinds: Vec<_> = edits.iter().map(|e| (e.start, e.kind)).collect();
         kinds.sort_by_key(|k| k.0);
         assert_eq!(kinds, [(10, EditKind::Pin(a)), (200, EditKind::NotFace)]);
-        let new = db.put_face_chunk(m, 0, 1000, &[track(10, 0.9), track(200, 0.7)], |_| Ok(())).unwrap();
+        let new = db.put_face_chunk(m, 0, 1000, &[track(10, 0.9), track(200, 0.7)], &[], |_| Ok(())).unwrap();
         db.reanchor_edits(m, &[(new[0], EditKind::Pin(a)), (new[1], EditKind::NotFace)]).unwrap();
+        db.set_faces_state(m, StageState::Ready, None).unwrap();
         assert!(db.track_edits(m).unwrap().is_empty());
         assert_eq!(db.tracks(TrackFilter::Character(a)).unwrap().len(), 1);
         assert_eq!(db.identity_tracks().unwrap().len(), 1);
@@ -824,8 +929,11 @@ mod tests {
     fn merging_moves_everything() {
         let db = ProjectDb::memory();
         let m = ready_media(&db, "/v/a.mkv");
-        let ids =
-            db.put_face_chunk(m, 0, 1000, &[track(10, 0.9), track(100, 0.8), track(200, 0.2)], |_| Ok(())).unwrap();
+        let shot = |start| as_api::Segment { start, end: start + 50, kind: SegmentKind::Shot, tiny: false };
+        db.store_segments(m, &[shot(10), shot(100), shot(200)]).unwrap();
+        let ids = db
+            .put_face_chunk(m, 0, 1000, &[track(10, 0.9), track(100, 0.8), track(200, 0.2)], &[], |_| Ok(()))
+            .unwrap();
         let (a, b) = (CharacterId::new(), CharacterId::new());
         db.apply_identity(
             db.cast_rev().unwrap(),
@@ -846,14 +954,18 @@ mod tests {
         db.confirm_tracks(&[ids[2]]).unwrap();
         assert_eq!(db.tracks(TrackFilter::Character(a)).unwrap().len(), 3);
         assert_eq!(db.presence(m).unwrap().len(), 3);
-        assert_eq!(db.character_shots(a).unwrap().len(), 3);
+        let shots = db.character_shots(a).unwrap();
+        assert_eq!(
+            shots.iter().map(|s| (s.start, s.end, s.sprite)).collect::<Vec<_>>(),
+            [(10, 60, None), (100, 150, None), (200, 250, None)]
+        );
     }
 
     #[test]
     fn a_clustering_older_than_a_decision_is_not_stored() {
         let db = ProjectDb::memory();
         let m = ready_media(&db, "/v/a.mkv");
-        let ids = db.put_face_chunk(m, 0, 1000, &[track(10, 0.9), track(100, 0.8)], |_| Ok(())).unwrap();
+        let ids = db.put_face_chunk(m, 0, 1000, &[track(10, 0.9), track(100, 0.8)], &[], |_| Ok(())).unwrap();
         let a = CharacterId::new();
         let all = |c: Option<CharacterId>| ids.iter().map(|&t| (t, c, TrackAssign::Auto, 0.9)).collect::<Vec<_>>();
         assert!(db.apply_identity(db.cast_rev().unwrap(), &[a], &all(Some(a))).unwrap());
@@ -873,7 +985,7 @@ mod tests {
     fn decisions_waiting_for_a_reanalysis_keep_their_character() {
         let db = ProjectDb::memory();
         let m = ready_media(&db, "/v/a.mkv");
-        let ids = db.put_face_chunk(m, 0, 1000, &[track(10, 0.9), track(100, 0.8)], |_| Ok(())).unwrap();
+        let ids = db.put_face_chunk(m, 0, 1000, &[track(10, 0.9), track(100, 0.8)], &[], |_| Ok(())).unwrap();
         // An unnamed character made by moving a face, and a hidden one.
         let (a, h) = (CharacterId::new(), CharacterId::new());
         db.pin_tracks(&[ids[0]], a, Some(None)).unwrap();
@@ -893,10 +1005,44 @@ mod tests {
     }
 
     #[test]
+    fn characters_nobody_decided_about_survive_a_reanalysis() {
+        let db = ProjectDb::memory();
+        let m = ready_media(&db, "/v/a.mkv");
+        let ids = db.put_face_chunk(m, 0, 1000, &[track(10, 0.9), track(100, 0.8)], &[], |_| Ok(())).unwrap();
+        let a = CharacterId::new();
+        db.apply_identity(
+            db.cast_rev().unwrap(),
+            &[a],
+            &ids.iter().map(|&t| (t, Some(a), TrackAssign::Auto, 0.9)).collect::<Vec<_>>(),
+        )
+        .unwrap();
+        // Analysed again; another media's clustering runs meanwhile.
+        db.reset_faces(m).unwrap();
+        db.apply_identity(db.cast_rev().unwrap(), &[], &[]).unwrap();
+        assert!(db.character_exists(a).unwrap(), "kept while its faces are found again");
+        assert_eq!((db.characters().unwrap()[0].tracks, db.characters().unwrap()[0].waiting), (0, 2));
+        assert!(db.track_edits(m).unwrap().iter().all(|e| e.kind == EditKind::Was(a)));
+        // The new tracks start out on it — unless a decision says otherwise.
+        let new = db.put_face_chunk(m, 0, 1000, &[track(10, 0.9), track(100, 0.8)], &[], |_| Ok(())).unwrap();
+        db.reanchor_edits(m, &[(new[0], EditKind::Was(a)), (new[1], EditKind::Was(a)), (new[1], EditKind::Forbid(a))])
+            .unwrap();
+        let t = db.tracks_by_id(&new).unwrap();
+        let on = |id| t.iter().find(|r| r.id == id).map(|r| (r.character_id, r.assign)).unwrap();
+        assert_eq!(on(new[0]), (Some(a), TrackAssign::Auto));
+        assert_eq!(on(new[1]), (None, TrackAssign::None));
+        assert_eq!(db.characters().unwrap()[0].number, 1);
+        // Faces that didn't come back leave the character to the next clustering.
+        db.reset_faces(m).unwrap();
+        db.reanchor_edits(m, &[]).unwrap();
+        db.apply_identity(db.cast_rev().unwrap(), &[], &[]).unwrap();
+        assert!(!db.character_exists(a).unwrap());
+    }
+
+    #[test]
     fn merging_respects_not_them() {
         let db = ProjectDb::memory();
         let m = ready_media(&db, "/v/a.mkv");
-        let ids = db.put_face_chunk(m, 0, 1000, &[track(10, 0.9), track(100, 0.8)], |_| Ok(())).unwrap();
+        let ids = db.put_face_chunk(m, 0, 1000, &[track(10, 0.9), track(100, 0.8)], &[], |_| Ok(())).unwrap();
         let (a, b) = (CharacterId::new(), CharacterId::new());
         db.apply_identity(
             db.cast_rev().unwrap(),
@@ -919,7 +1065,7 @@ mod tests {
         let m = ready_media(&db, "/v/a.mkv");
         let small = NewTrack { face_h: 0.05, ..track(400, 0.95) };
         let ids = db
-            .put_face_chunk(m, 0, 1000, &[track(10, 0.6), track(100, 0.7), small, track(700, 0.9)], |_| Ok(()))
+            .put_face_chunk(m, 0, 1000, &[track(10, 0.6), track(100, 0.7), small, track(700, 0.9)], &[], |_| Ok(()))
             .unwrap();
         let (a, b) = (CharacterId::new(), CharacterId::new());
         // `a` is created first but `b` is on screen longer.

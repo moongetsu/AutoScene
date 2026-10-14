@@ -20,7 +20,7 @@ use as_models::ModelStore;
 use as_vision::{ArcFace, Scrfd, TransNet};
 use parking_lot::Mutex;
 
-use crate::protocol::{Blob, FacesJob, Reply, Request, ShotsJob};
+use crate::protocol::{Blob, FacesJob, Reply, Request, ShotsJob, Sprite};
 
 /// Faces per embedding call.
 const EMBED_BATCH: usize = 32;
@@ -271,9 +271,20 @@ fn run_faces(
         &params,
         cancel,
         |fraction| out.send(&Reply::Progress { id, fraction }),
-        |start, end, t| {
-            found += t.len();
-            out.send(&Reply::FaceChunk { id, start, end, tracks: Blob(tracks::encode(t)) });
+        |c| {
+            found += c.tracks.len();
+            let sprites = c
+                .sprites
+                .iter()
+                .map(|s| Sprite { shot: s.shot, end: s.end, cells: s.cells, jpeg: Blob(s.jpeg.clone()) })
+                .collect();
+            out.send(&Reply::FaceChunk {
+                id,
+                start: c.start,
+                end: c.end,
+                tracks: Blob(tracks::encode(c.tracks)),
+                sprites,
+            });
             Ok(())
         },
     )?;

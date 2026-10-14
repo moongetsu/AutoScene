@@ -2,7 +2,7 @@
 //! per inference, on a thread of its own so the GPU works while this one
 //! crops, embeds and tracks), embed them, follow them through each shot, and
 //! hand finished tracks out in chunks — the checkpoints a later run resumes
-//! from.
+//! from. The same samples make each shot's sprite.
 //!
 //! Chunks are made of whole shots (tracks never cross a cut), so a chunk
 //! boundary is the start of a shot and a resumed run produces the same
@@ -17,6 +17,7 @@ use as_vision::arcface::{self, ArcFace};
 use as_vision::{FaceBox, Scrfd, image};
 
 use crate::AnalysisError;
+use crate::sprites::{ShotSprite, SpriteCanvas};
 use crate::tracker::{Observation, TrackerParams, track_shot};
 use crate::tracks::{FaceDet, FaceTrack};
 
@@ -39,6 +40,10 @@ pub struct FaceParams {
     pub norm_full: f32,
     /// Face height (fraction of the frame) from which size stops limiting quality.
     pub full_height: f32,
+    /// Shot sprites: frames per shot, cell width, JPEG quality.
+    pub sprite_cells: u32,
+    pub sprite_width: usize,
+    pub sprite_quality: u8,
 }
 
 impl Default for FaceParams {
@@ -53,6 +58,9 @@ impl Default for FaceParams {
             norm_floor: 14.0,
             norm_full: 22.0,
             full_height: 0.12,
+            sprite_cells: 8,
+            sprite_width: 240,
+            sprite_quality: 72,
         }
     }
 }
@@ -92,6 +100,17 @@ struct Found {
 struct ShotWork {
     range: FrameRange,
     samples: Vec<(FrameIdx, Vec<Found>)>,
+    sprite: Option<SpriteCanvas>,
+}
+
+/// A finished checkpoint chunk of the face pass: frames `start..end` (whole
+/// shots), their tracks and the sprites of their shots.
+#[derive(Clone, Copy, Debug)]
+pub struct FaceChunk<'a> {
+    pub start: FrameIdx,
+    pub end: FrameIdx,
+    pub tracks: &'a [FaceTrack],
+    pub sprites: &'a [ShotSprite],
 }
 
 /// A sample in a shot, on its way through the detector.
@@ -228,10 +247,11 @@ struct Pass<'a, C> {
     /// The chunk closes at the first shot starting at or after this frame.
     chunk_goal: FrameIdx,
     tracks_in_chunk: Vec<FaceTrack>,
+    sprites_in_chunk: Vec<ShotSprite>,
     on_chunk: C,
 }
 
-impl<C: FnMut(FrameIdx, FrameIdx, &[FaceTrack]) -> Result<(), AnalysisError>> Pass<'_, C> {
+impl<C: FnMut(FaceChunk) -> Result<(), AnalysisError>> Pass<'_, C> {
     /// Whether frame `f` lies in a shot; only those are searched for faces.
     fn in_shot(&self, f: FrameIdx) -> bool {
         let i = self.shots.partition_point(|s| s.end <= f);
@@ -310,7 +330,9 @@ impl<C: FnMut(FrameIdx, FrameIdx, &[FaceTrack]) -> Result<(), AnalysisError>> Pa
                 self.close_chunk(s.start)?;
             }
             if s.end > f {
-                self.current = Some(ShotWork { range: s, samples: Vec::new() });
+                let p = self.params;
+                let sprite = SpriteCanvas::new(s, p.stride, p.sprite_cells, self.size, p.sprite_width);
+                self.current = Some(ShotWork { range: s, samples: Vec::new(), sprite });
             }
             self.next_shot += 1;
         }
@@ -319,6 +341,9 @@ impl<C: FnMut(FrameIdx, FrameIdx, &[FaceTrack]) -> Result<(), AnalysisError>> Pa
         };
         let (w, h) = self.size;
         let p = self.params;
+        if let Some(sprite) = cur.sprite.as_mut() {
+            sprite.paint(f, rgb, self.size);
+        }
         let mut found = Vec::new();
         for b in faces {
             let height = b.height() / h as f32;
@@ -346,9 +371,20 @@ impl<C: FnMut(FrameIdx, FrameIdx, &[FaceTrack]) -> Result<(), AnalysisError>> Pa
             let mut refs: Vec<&mut ShotWork> = self.done_shots.iter_mut().chain(self.current.iter_mut()).collect();
             embed(&mut refs, self.embedder, p)?;
             self.pending_crops = 0;
-            self.tracks_in_chunk.extend(track(std::mem::take(&mut self.done_shots), &self.tracker));
+            self.finish_shots();
         }
         Ok(())
+    }
+
+    /// Track the faces of the finished (embedded) shots; finish their sprites.
+    fn finish_shots(&mut self) {
+        let mut shots = std::mem::take(&mut self.done_shots);
+        for s in &mut shots {
+            if let Some(sprite) = s.sprite.take() {
+                self.sprites_in_chunk.push(sprite.finish(self.params.sprite_quality));
+            }
+        }
+        self.tracks_in_chunk.extend(track(shots, &self.tracker));
     }
 
     /// Hand out the chunk that ends at `end` (a shot start, or the end):
@@ -357,9 +393,15 @@ impl<C: FnMut(FrameIdx, FrameIdx, &[FaceTrack]) -> Result<(), AnalysisError>> Pa
         let mut refs: Vec<&mut ShotWork> = self.done_shots.iter_mut().collect();
         embed(&mut refs, self.embedder, self.params)?;
         self.pending_crops = 0;
-        self.tracks_in_chunk.extend(track(std::mem::take(&mut self.done_shots), &self.tracker));
-        (self.on_chunk)(self.chunk_start, end, &self.tracks_in_chunk)?;
+        self.finish_shots();
+        (self.on_chunk)(FaceChunk {
+            start: self.chunk_start,
+            end,
+            tracks: &self.tracks_in_chunk,
+            sprites: &self.sprites_in_chunk,
+        })?;
         self.tracks_in_chunk.clear();
+        self.sprites_in_chunk.clear();
         self.chunk_start = end;
         self.chunk_goal = end + self.chunk;
         Ok(())
@@ -381,10 +423,9 @@ impl<C: FnMut(FrameIdx, FrameIdx, &[FaceTrack]) -> Result<(), AnalysisError>> Pa
 /// Find, embed and track the faces of `src` in `shots` (sorted, disjoint)
 /// from frame `resume` on — which must be 0 or a chunk end handed out
 /// earlier. `detector` must take frames of the detection size of
-/// [`frame_sizes`]. Each finished chunk goes to `on_chunk(start, end,
-/// tracks)`; chunks tile `resume..index.len()` and end at shot starts at
-/// least `chunk` frames after their own start (or at the end). `progress`
-/// gets 0..1.
+/// [`frame_sizes`]. Each finished chunk goes to `on_chunk`; chunks tile
+/// `resume..index.len()` and end at shot starts at least `chunk` frames
+/// after their own start (or at the end). `progress` gets 0..1.
 #[allow(clippy::too_many_arguments)]
 pub fn face_tracks(
     tools: &Tools,
@@ -397,7 +438,7 @@ pub fn face_tracks(
     params: &FaceParams,
     cancel: &CancelToken,
     mut progress: impl FnMut(f64),
-    on_chunk: impl FnMut(FrameIdx, FrameIdx, &[FaceTrack]) -> Result<(), AnalysisError>,
+    on_chunk: impl FnMut(FaceChunk) -> Result<(), AnalysisError>,
 ) -> Result<(), AnalysisError> {
     assert!(chunk > 0 && params.stride > 0);
     let n = src.index.len();
@@ -446,6 +487,7 @@ pub fn face_tracks(
             chunk_start: resume,
             chunk_goal: resume + chunk,
             tracks_in_chunk: Vec::new(),
+            sprites_in_chunk: Vec::new(),
             on_chunk,
         };
         let mut failure: Option<AnalysisError> = None;

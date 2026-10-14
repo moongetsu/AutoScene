@@ -72,18 +72,7 @@ fn cast(rng: &mut Rng, people: usize, per: usize) -> (Vec<Vec<f32>>, Vec<TrackIn
 
 /// BCubed F-measure of an assignment against the truth (unassigned = own cluster).
 fn bcubed(assigned: &[Option<usize>], truth: &[usize]) -> f32 {
-    let n = truth.len();
-    let (mut p, mut r) = (0.0, 0.0);
-    for i in 0..n {
-        let same_cluster: Vec<usize> =
-            (0..n).filter(|&j| assigned[i].is_some() && assigned[j] == assigned[i] || j == i).collect();
-        let same_truth = (0..n).filter(|&j| truth[j] == truth[i]).count();
-        let correct = same_cluster.iter().filter(|&&j| truth[j] == truth[i]).count();
-        p += correct as f32 / same_cluster.len() as f32;
-        r += correct as f32 / same_truth as f32;
-    }
-    let (p, r) = (p / n as f32, r / n as f32);
-    2.0 * p * r / (p + r)
+    crate::metrics::bcubed(assigned, truth, &vec![1.0; truth.len()], |_| true).f
 }
 
 fn chars(o: &Outcome) -> Vec<Option<usize>> {

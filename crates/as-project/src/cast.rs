@@ -8,12 +8,13 @@ use std::path::{Path, PathBuf};
 use as_analysis::FaceParams;
 use as_analysis::tracker::TrackerParams;
 use as_analysis::tracks::{self, FaceTrack};
+use as_analysis::{FaceDet, ShotSprite};
 use as_api::{
-    Cast, CastEdit, Character, ClipRequest, FaceTrackItem, MediaInfo, Presence, SegmentKind, StageState, TrackAssign,
-    TrackFilter,
+    Cast, CastEdit, Character, CharacterShot, ClipRequest, FaceTrackItem, MediaInfo, Presence, SegmentKind, StageState,
+    TrackAssign, TrackFilter,
 };
 use as_core::{CharacterId, FrameIdx, FrameRange, MediaId};
-use as_db::{IdentityTrack, NewTrack, TrackRow};
+use as_db::{EditKind, IdentityTrack, NewTrack, TrackRow};
 use as_identity::{Assign, CharKey, Params, TrackIn, identify};
 
 use crate::{Project, ProjectError, ProjectResult};
@@ -40,7 +41,7 @@ pub struct FacesPlan {
     pub chunk: u32,
 }
 
-fn mean_box(dets: &[as_analysis::FaceDet]) -> [f32; 4] {
+fn mean_box(dets: &[FaceDet]) -> [f32; 4] {
     let n = dets.len().max(1) as f32;
     let mut b = [0f32; 4];
     for d in dets {
@@ -49,6 +50,71 @@ fn mean_box(dets: &[as_analysis::FaceDet]) -> [f32; 4] {
         }
     }
     b
+}
+
+/// The mean box of `dets` in `range`, or of the one nearest to it when none
+/// is (a track bridging a gap).
+fn box_in(dets: &[FaceDet], range: FrameRange) -> Option<[f32; 4]> {
+    let inside: Vec<FaceDet> = dets.iter().filter(|d| range.contains(d.frame)).copied().collect();
+    if !inside.is_empty() {
+        return Some(mean_box(&inside));
+    }
+    let mid = range.start + range.len() / 2;
+    dets.iter().min_by_key(|d| d.frame.abs_diff(mid)).map(|d| d.bbox)
+}
+
+/// Whether an old track (a decision's) and a new one are the same face: they
+/// share most of the shorter of the two in time, and the face is at the same
+/// place on screen during the frames they share — so a face the tracker now
+/// follows in one piece, or in two, is found again even while it moves.
+/// Returns the frames they share.
+fn same_face(old: (FrameRange, &[FaceDet]), new: (FrameRange, &[FaceDet])) -> Option<u32> {
+    let both = old.0.intersect(&new.0)?;
+    if 2 * both.len() < old.0.len().min(new.0.len()) {
+        return None;
+    }
+    let (a, b) = (box_in(old.1, both)?, box_in(new.1, both)?);
+    (box_iou(&a, &b) >= 0.5).then_some(both.len())
+}
+
+/// The decisions found again on new tracks (`(frames shared, track,
+/// decision)`) made consistent, one track at a time: of "this is X" and
+/// "not a face" the one sharing most frames holds — "this is X" only if no
+/// "not X" shares more; the other "not Y"s hold; with neither left, the
+/// track starts out on the character clustering said it was (sharing most,
+/// and not one it is "not").
+fn resolve(mut found: Vec<(u32, i64, EditKind)>) -> Vec<(i64, EditKind)> {
+    found.sort_by_key(|&(shared, track, _)| (track, std::cmp::Reverse(shared)));
+    let mut out = Vec::new();
+    for group in found.chunk_by(|a, b| a.1 == b.1) {
+        let track = group[0].1;
+        let forbids: Vec<(u32, CharacterId)> = group
+            .iter()
+            .filter_map(|&(s, _, k)| if let EditKind::Forbid(c) = k { Some((s, c)) } else { None })
+            .collect();
+        let forbidden = |c: CharacterId, shared: u32| forbids.iter().any(|&(s, f)| f == c && s > shared);
+        // Most frames first (sorted above).
+        let decided = group.iter().find(|(_, _, k)| matches!(k, EditKind::Pin(_) | EditKind::NotFace));
+        let decided = decided.filter(|&&(s, _, k)| !matches!(k, EditKind::Pin(c) if forbidden(c, s)));
+        out.extend(
+            forbids
+                .iter()
+                .filter(|&&(_, c)| !matches!(decided, Some(&(_, _, EditKind::Pin(p))) if p == c))
+                .map(|&(_, c)| (track, EditKind::Forbid(c))),
+        );
+        match decided {
+            Some(&(_, _, k)) => out.push((track, k)),
+            None => {
+                let was = group
+                    .iter()
+                    .find(|&&(_, _, k)| matches!(k, EditKind::Was(c) if !forbids.iter().any(|&(_, f)| f == c)));
+                if let Some(&(_, _, k)) = was {
+                    out.push((track, k));
+                }
+            }
+        }
+    }
+    out
 }
 
 fn box_iou(a: &[f32; 4], b: &[f32; 4]) -> f32 {
@@ -64,7 +130,8 @@ fn track_id(id: i64) -> u32 {
 }
 
 impl Project {
-    /// Face thumbnails, one folder per media.
+    /// What the face pass made, one folder per media: face thumbnails, and
+    /// shot sprites in `shots/`.
     pub fn faces_dir(&self) -> PathBuf {
         self.dir.join("faces")
     }
@@ -75,6 +142,12 @@ impl Project {
 
     fn thumb_path(&self, media: MediaId, track: i64) -> PathBuf {
         self.media_faces_dir(media).join(format!("{track}.jpg"))
+    }
+
+    /// Named by the shot's start and end: a shot found again differently is
+    /// a new file, never a stale one from the webview's cache.
+    fn sprite_path(&self, media: MediaId, shot: FrameIdx, end: FrameIdx) -> PathBuf {
+        self.media_faces_dir(media).join("shots").join(format!("{shot}-{end}.jpg"))
     }
 
     // -- face pass ----------------------------------------------------------
@@ -118,10 +191,17 @@ impl Project {
         })
     }
 
-    /// Store one chunk from the engine (`as_analysis::tracks::encode`):
-    /// tracks in the database, thumbnails as files, atomically. Returns the
-    /// number of tracks.
-    pub fn store_face_chunk(&self, id: MediaId, start: FrameIdx, end: FrameIdx, blob: &[u8]) -> ProjectResult<usize> {
+    /// Store one chunk from the engine (tracks as `as_analysis::tracks::encode`,
+    /// and the sprites of its shots): tracks in the database, thumbnails and
+    /// sprites as files, atomically. Returns the number of tracks.
+    pub fn store_face_chunk(
+        &self,
+        id: MediaId,
+        start: FrameIdx,
+        end: FrameIdx,
+        blob: &[u8],
+        sprites: &[ShotSprite],
+    ) -> ProjectResult<usize> {
         let found: Vec<FaceTrack> =
             tracks::decode(blob).ok_or_else(|| ProjectError::Invalid("unreadable face tracks".into()))?;
         let rows: Vec<NewTrack> = found
@@ -136,12 +216,18 @@ impl Project {
                 emb: tracks::embedding_to_bytes(&t.embedding),
             })
             .collect();
-        let dir = self.media_faces_dir(id);
-        self.db().put_face_chunk(id, start, end, &rows, |ids| {
-            std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let sprites: Vec<&ShotSprite> = sprites.iter().filter(|s| (start..end).contains(&s.shot)).collect();
+        let cells: Vec<(FrameIdx, FrameIdx, u32)> = sprites.iter().map(|s| (s.shot, s.end, s.cells)).collect();
+        let shots_dir = self.media_faces_dir(id).join("shots");
+        self.db().put_face_chunk(id, start, end, &rows, &cells, |ids| {
+            std::fs::create_dir_all(&shots_dir).map_err(|e| format!("{}: {e}", shots_dir.display()))?;
             for (track, t) in ids.iter().zip(&found) {
                 let path = self.thumb_path(id, *track);
                 std::fs::write(&path, &t.thumb).map_err(|e| format!("{}: {e}", path.display()))?;
+            }
+            for s in &sprites {
+                let path = self.sprite_path(id, s.shot, s.end);
+                std::fs::write(&path, &s.jpeg).map_err(|e| format!("{}: {e}", path.display()))?;
             }
             Ok(())
         })?;
@@ -153,31 +239,32 @@ impl Project {
     }
 
     /// The face pass of `id` is complete: put the user's earlier decisions
-    /// back on the new tracks (same time span and place on screen), then
-    /// mark the faces ready.
+    /// back on the new tracks (see [`same_face`] and [`resolve`]), then mark
+    /// the faces ready.
     pub fn finish_faces(&self, id: MediaId) -> ProjectResult<()> {
         let edits = self.db().track_edits(id)?;
         if !edits.is_empty() {
-            let new: Vec<(i64, FrameRange, [f32; 4])> = self
+            let new: Vec<(i64, FrameRange, Vec<FaceDet>)> = self
                 .db()
                 .media_track_dets(id)?
                 .into_iter()
-                .filter_map(|(t, s, e, d)| Some((t, FrameRange::new(s, e), mean_box(&tracks::dets_from_bytes(&d)?))))
+                .filter_map(|(t, s, e, d)| Some((t, FrameRange::new(s, e), tracks::dets_from_bytes(&d)?)))
                 .collect();
-            let mut matched = Vec::new();
+            let mut found: Vec<(u32, i64, EditKind)> = Vec::new();
+            let mut kept = 0;
             for e in &edits {
                 let span = FrameRange::new(e.start, e.end);
-                let bx = mean_box(&tracks::dets_from_bytes(&e.dets).unwrap_or_default());
-                let best = new
-                    .iter()
-                    .map(|(t, r, b)| (r.iou(&span), box_iou(b, &bx), *t))
-                    .filter(|&(ti, bi, _)| ti >= 0.5 && bi >= 0.5)
-                    .max_by(|a, b| (a.0 + a.1).total_cmp(&(b.0 + b.1)));
-                if let Some((_, _, t)) = best {
-                    matched.push((t, e.kind));
+                let dets = tracks::dets_from_bytes(&e.dets).unwrap_or_default();
+                let before = found.len();
+                for (t, r, new_dets) in &new {
+                    if let Some(shared) = same_face((span, &dets), (*r, new_dets)) {
+                        found.push((shared, *t, e.kind));
+                    }
                 }
+                kept += usize::from(found.len() > before);
             }
-            tracing::info!(media = %id, edits = edits.len(), kept = matched.len(), "re-anchored cast edits");
+            let matched = resolve(found);
+            tracing::info!(media = %id, edits = edits.len(), kept, tracks = matched.len(), "re-anchored cast edits");
             self.db().reanchor_edits(id, &matched)?;
         }
         Ok(self.db().set_faces_state(id, StageState::Ready, None)?)
@@ -297,6 +384,7 @@ impl Project {
                 screen_sec: c.screen_sec,
                 cover: c.cover.map(|(t, m)| Self::path_string(&self.thumb_path(m, t))),
                 unsure: c.unsure,
+                waiting: c.waiting,
             })
             .collect();
         let (unassigned, unsure, media_done, media_total) = self.db().cast_counts()?;
@@ -376,33 +464,43 @@ impl Project {
             .collect())
     }
 
+    /// Every shot a character is seen in, in episode order.
+    pub fn character_shots(&self, c: CharacterId) -> ProjectResult<Vec<CharacterShot>> {
+        let mut by_media: HashMap<MediaId, Vec<as_db::CharacterShotRow>> = HashMap::new();
+        for r in self.db().character_shots(c)? {
+            by_media.entry(r.media_id).or_default().push(r);
+        }
+        let mut shots = Vec::new();
+        for m in self.media_list()? {
+            for r in by_media.remove(&m.id).unwrap_or_default() {
+                shots.push(CharacterShot {
+                    media_id: r.media_id,
+                    start: r.start,
+                    end: r.end,
+                    sprite: r.sprite.map(|(end, _)| Self::path_string(&self.sprite_path(r.media_id, r.start, end))),
+                    cells: r.sprite.map_or(0, |s| s.1),
+                    track_id: track_id(r.track),
+                    face: Self::path_string(&self.thumb_path(r.media_id, r.track)),
+                    face_height: r.face_h,
+                });
+            }
+        }
+        Ok(shots)
+    }
+
     /// Every shot a character is seen in, as clips (the shot's clean range),
     /// in episode order.
     pub fn character_clips(&self, c: CharacterId) -> ProjectResult<Vec<ClipRequest>> {
-        let mut by_media: HashMap<MediaId, Vec<FrameIdx>> = HashMap::new();
-        for (m, shot) in self.db().character_shots(c)? {
-            by_media.entry(m).or_default().push(shot);
-        }
-        let mut clips = Vec::new();
-        for m in self.media_list()? {
-            let Some(mut shots) = by_media.remove(&m.id) else { continue };
-            shots.sort_unstable();
-            let segments = self.segments(m.id)?;
-            for s in shots {
-                if let Ok(i) = segments.binary_search_by_key(&s, |seg| seg.start)
-                    && segments[i].kind == SegmentKind::Shot
-                {
-                    clips.push(ClipRequest { media_id: m.id, start: s, end: segments[i].end, name: None });
-                }
-            }
-        }
-        Ok(clips)
+        Ok(self
+            .character_shots(c)?
+            .into_iter()
+            .map(|s| ClipRequest { media_id: s.media_id, start: s.start, end: s.end, name: None })
+            .collect())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use as_analysis::FaceDet;
     use as_api::Segment;
 
     use super::*;
@@ -426,6 +524,128 @@ mod tests {
         }
     }
 
+    /// Person `who` in shot `shot`, seen from `start` to `end` (a detection
+    /// every 15 frames), at `x` at frame `shot` and moving `speed` per frame.
+    fn moving(who: usize, shot: FrameIdx, start: FrameIdx, end: FrameIdx, x: f32, speed: f32) -> FaceTrack {
+        let mut t = face(who, shot, x, 0.9);
+        t.start = start;
+        t.end = end;
+        let first = t.dets[0];
+        t.dets = (start..end)
+            .step_by(15)
+            .map(|frame| {
+                let dx = speed * (frame - shot) as f32;
+                FaceDet { frame, bbox: [first.bbox[0] + dx, first.bbox[1], first.bbox[2] + dx, first.bbox[3]], ..first }
+            })
+            .collect();
+        t
+    }
+
+    fn seen(who: usize, shot: FrameIdx, start: FrameIdx, end: FrameIdx, x: f32) -> FaceTrack {
+        moving(who, shot, start, end, x, 0.0)
+    }
+
+    #[test]
+    fn a_moving_face_is_found_again_in_pieces() {
+        // 0.2 wide, crossing 0.6 of the frame: the halves' boxes are far
+        // from the whole track's mean box, but match it where they share frames.
+        let whole = moving(1, 0, 0, 90, 0.0, 0.006);
+        let (a, b) = (moving(1, 0, 0, 45, 0.0, 0.006), moving(1, 0, 45, 90, 0.0, 0.006));
+        let r = |t: &FaceTrack| FrameRange::new(t.start, t.end);
+        assert_eq!(same_face((r(&whole), &whole.dets), (r(&a), &a.dets)), Some(45));
+        assert_eq!(same_face((r(&whole), &whole.dets), (r(&b), &b.dets)), Some(45));
+        assert_eq!(same_face((r(&a), &a.dets), (r(&whole), &whole.dets)), Some(45));
+        // Someone else at the other side of the frame at the same time isn't.
+        let other = seen(2, 0, 0, 90, 0.7);
+        assert_eq!(same_face((r(&whole), &whole.dets), (r(&other), &other.dets)), None);
+        // A short glimpse inside a long track: most of the shorter one is shared.
+        let glimpse = seen(1, 0, 30, 33, 0.18);
+        assert_eq!(same_face((r(&glimpse), &glimpse.dets), (r(&whole), &whole.dets)), Some(3));
+    }
+
+    #[test]
+    fn decisions_on_one_track_are_made_consistent() {
+        let (x, y) = (CharacterId::new(), CharacterId::new());
+        let got = |found: Vec<(u32, i64, EditKind)>| {
+            let mut v = resolve(found);
+            v.sort_by_key(|(t, k)| (*t, format!("{k:?}")));
+            v
+        };
+        // The decision sharing most frames wins: here "not a face".
+        assert_eq!(got(vec![(10, 1, EditKind::Pin(x)), (30, 1, EditKind::NotFace)]), [(1, EditKind::NotFace)]);
+        // "This is X" against "not X": the bigger one holds, the other goes.
+        assert_eq!(got(vec![(40, 2, EditKind::Pin(x)), (10, 2, EditKind::Forbid(x))]), [(2, EditKind::Pin(x))]);
+        assert_eq!(got(vec![(10, 3, EditKind::Pin(x)), (40, 3, EditKind::Forbid(x))]), [(3, EditKind::Forbid(x))]);
+        // Clustering's word only without a decision, the biggest, never a "not".
+        assert_eq!(
+            got(vec![(5, 4, EditKind::Was(x)), (50, 4, EditKind::Was(y)), (1, 4, EditKind::Forbid(y))]),
+            [(4, EditKind::Forbid(y)), (4, EditKind::Was(x))]
+        );
+        assert_eq!(got(vec![(50, 5, EditKind::Was(y)), (5, 5, EditKind::Pin(x))]), [(5, EditKind::Pin(x))]);
+        assert_eq!(got(vec![(5, 6, EditKind::Was(x)), (50, 6, EditKind::Was(y))]), [(6, EditKind::Was(y))]);
+    }
+
+    #[test]
+    fn decisions_follow_a_face_the_tracker_now_joins_or_splits() {
+        let frames = 400;
+        let (_dir, project, id) = project_with_media(frames);
+        let segments: Vec<Segment> = (0..frames)
+            .step_by(100)
+            .map(|s| Segment { start: s, end: s + 100, kind: SegmentKind::Shot, tiny: false })
+            .collect();
+        project.db().store_segments(id, &segments).unwrap();
+        // Walter in two pieces in shot 0; Jesse walking across shot 100 in
+        // one piece; an extra in shot 200 the user said isn't Walter.
+        let first = [
+            seen(1, 0, 0, 30, 0.1),
+            seen(1, 0, 30, 60, 0.1),
+            moving(2, 100, 100, 190, 0.0, 0.007),
+            seen(3, 200, 200, 260, 0.3),
+        ];
+        project.store_face_chunk(id, 0, frames, &tracks::encode(&first), &[]).unwrap();
+        project.finish_faces(id).unwrap();
+        let ids = |f: TrackFilter| -> Vec<u32> { project.cast_tracks(f).unwrap().iter().map(|t| t.id).collect() };
+        let all = ids(TrackFilter::Unassigned);
+        assert_eq!(all.len(), 4);
+        let by_start = |start| {
+            project.cast_tracks(TrackFilter::Unassigned).unwrap().into_iter().find(|t| t.start == start).unwrap().id
+        };
+        let (w1, w2, j, extra) = (by_start(0), by_start(30), by_start(100), by_start(200));
+        let walter = project
+            .cast_edit(&CastEdit::NewCharacter { tracks: vec![w1, w2], name: Some("Walter".into()) })
+            .unwrap()
+            .unwrap();
+        let jesse = project
+            .cast_edit(&CastEdit::NewCharacter { tracks: vec![j], name: Some("Jesse".into()) })
+            .unwrap()
+            .unwrap();
+        project.cast_edit(&CastEdit::NotThem { tracks: vec![extra], character_id: walter }).unwrap();
+
+        // A better tracker: Walter in one piece, Jesse in two, the extra a little longer.
+        project.reset_faces(id).unwrap();
+        let again = [
+            seen(1, 0, 0, 60, 0.1),
+            moving(2, 100, 100, 145, 0.0, 0.007),
+            moving(2, 100, 145, 190, 0.0, 0.007),
+            seen(3, 200, 200, 290, 0.3),
+        ];
+        project.store_face_chunk(id, 0, frames, &tracks::encode(&again), &[]).unwrap();
+        project.finish_faces(id).unwrap();
+        let spans = |c| -> Vec<(FrameIdx, FrameIdx)> {
+            let mut v: Vec<_> =
+                project.cast_tracks(TrackFilter::Character(c)).unwrap().iter().map(|t| (t.start, t.end)).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(spans(walter), [(0, 60)]);
+        assert_eq!(spans(jesse), [(100, 145), (145, 190)]);
+        // Clustering can't put the extra on Walter.
+        project.recluster().unwrap();
+        assert!(spans(walter).iter().all(|s| s.0 != 200));
+        let extra = project.db().identity_tracks().unwrap().into_iter().find(|t| t.start == 200).unwrap();
+        assert_eq!(extra.forbids, [walter]);
+    }
+
     #[test]
     fn faces_become_a_cast_whose_edits_survive_reanalysis() {
         let frames = 2000;
@@ -447,9 +667,11 @@ mod tests {
         };
         let first = all(0.0);
         let (a, b): (Vec<_>, Vec<_>) = first.iter().cloned().partition(|t| t.start < 1000);
-        assert_eq!(project.store_face_chunk(id, 0, 1000, &tracks::encode(&a)).unwrap(), 11);
+        let sprite = |shot| ShotSprite { shot, end: shot + 100, cells: 8, jpeg: vec![0xFF, 0xD8, 1] };
+        // A sprite outside the chunk is not this chunk's.
+        assert_eq!(project.store_face_chunk(id, 0, 1000, &tracks::encode(&a), &[sprite(0), sprite(1000)]).unwrap(), 11);
         assert_eq!(project.faces_plan(id).unwrap().resume, 1000);
-        project.store_face_chunk(id, 1000, frames, &tracks::encode(&b)).unwrap();
+        project.store_face_chunk(id, 1000, frames, &tracks::encode(&b), &[]).unwrap();
         project.finish_faces(id).unwrap();
         assert!(project.pending_faces().unwrap().is_empty());
         assert_eq!(project.recluster().unwrap(), 2);
@@ -457,12 +679,19 @@ mod tests {
         let cast = project.cast().unwrap();
         assert_eq!(cast.characters.len(), 2);
         let walter = cast.characters[0].clone();
+        let other = cast.characters[1].clone();
         assert_eq!(walter.tracks, 11);
         assert!(std::path::Path::new(walter.cover.as_deref().unwrap()).is_file());
         project.cast_edit(&CastEdit::Rename { character_id: walter.id, name: Some(" Walter ".into()) }).unwrap();
         let clips = project.character_clips(walter.id).unwrap();
         assert_eq!(clips.len(), 11);
         assert_eq!((clips[0].start, clips[0].end), (0, 100));
+        let shots = project.character_shots(walter.id).unwrap();
+        assert_eq!(shots.len(), 11);
+        assert!(std::path::Path::new(shots[0].sprite.as_deref().unwrap()).is_file());
+        assert_eq!(shots[0].cells, 8);
+        assert!(shots[1..].iter().all(|s| s.sprite.is_none() && s.cells == 0));
+        assert!(shots.iter().all(|s| std::path::Path::new(&s.face).is_file()));
         assert_eq!(project.presence(id).unwrap().len(), 21);
 
         // "Not them" on one of Walter's tracks.
@@ -475,7 +704,15 @@ mod tests {
         project.reset_faces(id).unwrap();
         assert!(project.cast().unwrap().characters.iter().any(|c| c.name.as_deref() == Some("Walter")));
         let again = all(0.02);
-        project.store_face_chunk(id, 0, frames, &tracks::encode(&again)).unwrap();
+        let (a, b): (Vec<_>, Vec<_>) = again.into_iter().partition(|t| t.start < 1000);
+        project.store_face_chunk(id, 0, 1000, &tracks::encode(&a), &[]).unwrap();
+        // Another media's restart reclusters while this pass is half done:
+        // its new faces must not become new characters meanwhile.
+        project.recluster().unwrap();
+        let mid: Vec<CharacterId> = project.cast().unwrap().characters.iter().map(|c| c.id).collect();
+        assert_eq!(mid.len(), 2);
+        assert!(mid.contains(&walter.id) && mid.contains(&other.id));
+        project.store_face_chunk(id, 1000, frames, &tracks::encode(&b), &[]).unwrap();
         project.finish_faces(id).unwrap();
         project.recluster().unwrap();
         let cast = project.cast().unwrap();
@@ -484,5 +721,9 @@ mod tests {
         let mine = project.cast_tracks(TrackFilter::Character(w.id)).unwrap();
         assert_eq!(mine.len(), 10, "the 'not them' decision survived");
         assert!(mine.iter().all(|t| t.start != 300));
+        // The character nobody named or touched is still the same one.
+        let o = cast.characters.iter().find(|c| c.id == other.id).expect("the unnamed character survived");
+        assert_eq!((o.label.as_str(), o.tracks), (other.label.as_str(), other.tracks));
+        assert_eq!(cast.characters.len(), 2);
     }
 }

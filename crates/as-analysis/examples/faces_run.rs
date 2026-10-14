@@ -1,8 +1,9 @@
 //! Dev tool: run the face pass over a real episode and save its tracks.
 //! `cargo run --release -p as-analysis --example faces_run -- <ort_dir> <models_dir> <ffmpeg_dir> <dir with
 //! bb.index/bb.info.json/bb.path/bb.segments.tsv> <out_prefix> [resume]`
-//! Writes `<out_prefix>.tracks` (as_analysis::tracks::encode of all tracks)
-//! and `<out_prefix>.chunks` (one `start end tracks` line per chunk).
+//! Writes `<out_prefix>.tracks` (as_analysis::tracks::encode of all tracks),
+//! `<out_prefix>.chunks` (one `start end tracks` line per chunk) and the
+//! shot sprites as `<out_prefix>.sprites/<shot>.jpg`.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -37,6 +38,9 @@ fn main() {
     let t0 = Instant::now();
     let mut all = Vec::new();
     let mut chunks = std::fs::File::create(format!("{out}.chunks")).unwrap();
+    let sprites = PathBuf::from(format!("{out}.sprites"));
+    std::fs::create_dir_all(&sprites).unwrap();
+    let (mut sprite_count, mut sprite_bytes) = (0usize, 0usize);
     as_analysis::face_tracks(
         &tools,
         Source { path: &path, info: &info, index: &index },
@@ -48,9 +52,14 @@ fn main() {
         &params,
         &CancelToken::new(),
         |p| eprint!("\r{:5.1}% {:5.0}s", 100.0 * p, t0.elapsed().as_secs_f64()),
-        |s, e, tracks| {
-            writeln!(chunks, "{s} {e} {}", tracks.len()).unwrap();
-            all.extend_from_slice(tracks);
+        |c| {
+            writeln!(chunks, "{} {} {} {}", c.start, c.end, c.tracks.len(), c.sprites.len()).unwrap();
+            all.extend_from_slice(c.tracks);
+            for s in c.sprites {
+                std::fs::write(sprites.join(format!("{}.jpg", s.shot)), &s.jpeg).unwrap();
+                sprite_count += 1;
+                sprite_bytes += s.jpeg.len();
+            }
             Ok(())
         },
     )
@@ -64,5 +73,11 @@ fn main() {
         index.len() - resume,
         (index.len() - resume) as f64 / secs,
         all.len()
+    );
+    println!(
+        "{sprite_count} sprites for {} shots, {:.1} MB ({:.0} KB each)",
+        shots.len(),
+        sprite_bytes as f64 / 1e6,
+        sprite_bytes as f64 / 1e3 / sprite_count.max(1) as f64
     );
 }

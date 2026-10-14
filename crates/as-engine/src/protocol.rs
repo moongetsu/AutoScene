@@ -67,6 +67,15 @@ pub struct FacesJob {
     pub chunk: u32,
 }
 
+/// A shot's sprite (`as_analysis::ShotSprite`).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Sprite {
+    pub shot: u32,
+    pub end: u32,
+    pub cells: u32,
+    pub jpeg: Blob,
+}
+
 impl Request {
     pub fn id(&self) -> Option<u64> {
         match self {
@@ -97,12 +106,15 @@ pub enum Reply {
         len: u32,
         signals: Blob,
     },
-    /// Face tracks of frames `start..end` (`as_analysis::tracks::encode`).
+    /// Face tracks of frames `start..end` (`as_analysis::tracks::encode`)
+    /// and the sprites of its shots.
     FaceChunk {
         id: u64,
         start: u32,
         end: u32,
         tracks: Blob,
+        #[serde(default)]
+        sprites: Vec<Sprite>,
     },
     Done {
         id: u64,

@@ -319,6 +319,9 @@ pub struct Character {
     pub cover: Option<String>,
     /// Tracks that look like the character and wait for a decision.
     pub unsure: u32,
+    /// Faces of the character in media waiting for or in a new analysis:
+    /// they come back when it is done.
+    pub waiting: u32,
 }
 
 /// The cast of a project.
@@ -355,6 +358,25 @@ pub struct FaceTrackItem {
     pub assign: TrackAssign,
     /// Similarity behind an automatic assignment or suggestion.
     pub score: f32,
+}
+
+/// A shot a character is seen in.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CharacterShot {
+    pub media_id: MediaId,
+    pub start: FrameIdx,
+    pub end: FrameIdx,
+    /// JPEG of `cells` frames spread over the shot, side by side (absolute
+    /// path); `None` for media analysed before shots had sprites.
+    pub sprite: Option<String>,
+    pub cells: u32,
+    /// The character's clearest face in the shot.
+    pub track_id: u32,
+    /// Its thumbnail (absolute path).
+    pub face: String,
+    /// The biggest the character's face is in the shot, as a share of the frame height.
+    pub face_height: f32,
 }
 
 /// Which tracks of the cast to list.

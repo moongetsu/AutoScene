@@ -19,7 +19,7 @@ import {
   X,
 } from "lucide-react"
 import { toast } from "sonner"
-import type { CastEdit, Character, FaceTrackItem, MediaItem } from "@/bindings"
+import type { CastEdit, Character, CharacterShot, FaceTrackItem, MediaItem } from "@/bindings"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent } from "@/components/ui/dialog"
 import {
@@ -32,16 +32,24 @@ import {
 import { EmptyState } from "@/components/ui/empty-state"
 import { Input } from "@/components/ui/input"
 import { Page } from "@/components/ui/page"
+import { Segmented } from "@/components/ui/segmented"
 import { ExportDialog, type ExportClip } from "@/features/export/ExportDialog"
+import { ShotCard } from "@/features/shots/ShotCard"
+import { formatShotLength } from "@/features/shots/shots"
 import { commands, errorMessage } from "@/lib/ipc"
 import { assetUrl } from "@/lib/media"
-import { useCast, useCastTracks, useMediaList, useProject } from "@/lib/queries"
+import { useCast, useCastTracks, useCharacterShots, useMediaList, useProject } from "@/lib/queries"
 import { timecode } from "@/lib/timecode"
 import { cn } from "@/lib/utils"
 import { castEdit, formatScreenTime, plural } from "./cast"
 import { FaceGrid } from "./FaceGrid"
 
 const NO_TRACKS: FaceTrackItem[] = []
+const NO_SHOTS: CharacterShot[] = []
+
+type View = "shots" | "faces"
+/** The view last chosen, for the next character opened. */
+let lastView: View = "shots"
 
 /** One character (or everyone nobody claimed): faces, decisions, export. */
 export function CharacterPage() {
@@ -56,6 +64,14 @@ export function CharacterPage() {
   const [picked, setSelected] = useState<Set<number>>(new Set())
   const [moveOpen, setMoveOpen] = useState(false)
   const [mergeOpen, setMergeOpen] = useState(false)
+  const [chosenView, setView] = useState<View>(lastView)
+  // Everyone else has faces, not shots of their own.
+  const view: View = everyone ? "faces" : chosenView
+  const chooseView = (v: View) => {
+    lastView = v
+    setView(v)
+    setSelected(new Set())
+  }
   const mediaById = useMemo(() => new Map((media ?? []).map((m) => [m.id, m])), [media])
 
   const list = tracks.data ?? NO_TRACKS
@@ -65,8 +81,9 @@ export function CharacterPage() {
     return new Set([...picked].filter((id) => ids.has(id)))
   }, [list, picked])
 
-  // Esc clears the selection; Ctrl/⌘+A selects every face.
+  // Esc clears the selection; Ctrl/⌘+A selects every face (where faces are shown).
   useEffect(() => {
+    if (view !== "faces") return
     const onKey = (e: KeyboardEvent) => {
       if (e.target instanceof Element && e.target.closest("input, textarea, [role=dialog], [role=menu]")) return
       if (e.key === "Escape" && selected.size > 0) setSelected(new Set())
@@ -77,9 +94,9 @@ export function CharacterPage() {
     }
     window.addEventListener("keydown", onKey)
     return () => window.removeEventListener("keydown", onKey)
-  }, [list, selected])
+  }, [list, selected, view])
 
-  const open = (t: FaceTrackItem) =>
+  const open = (t: { mediaId: string; start: number }) =>
     void navigate({ to: "/p/$pid/timeline/$mid", params: { pid, mid: t.mediaId }, search: { f: t.start } })
 
   if (!everyone && !isPending && !character) {
@@ -116,13 +133,27 @@ export function CharacterPage() {
       )}
 
       <section className="px-8 pb-24">
-        <div className="mb-3 flex items-baseline justify-between">
-          <h2 className="eyebrow">{everyone ? "Faces nobody claimed" : "Faces"}</h2>
-          {list.length > 0 && (
+        <div className="mb-3 flex items-center justify-between gap-4">
+          {everyone ? (
+            <h2 className="eyebrow">Faces nobody claimed</h2>
+          ) : (
+            <Segmented<View>
+              aria-label="Show"
+              value={view}
+              onChange={chooseView}
+              options={[
+                { value: "shots", label: "Shots" },
+                { value: "faces", label: "Faces" },
+              ]}
+            />
+          )}
+          {view === "faces" && list.length > 0 && (
             <span className="text-2xs text-fg-3">Click to select · Shift for a range · double-click to watch</span>
           )}
         </div>
-        {tracks.isPending ? (
+        {view === "shots" && character ? (
+          <Shots pid={pid} character={character} media={mediaById} onOpen={open} />
+        ) : tracks.isPending ? (
           <div className="grid grid-cols-[repeat(auto-fill,minmax(96px,1fr))] gap-2">
             {Array.from({ length: 24 }, (_, i) => (
               <div key={i} className="skeleton aspect-square rounded-md" />
@@ -135,7 +166,7 @@ export function CharacterPage() {
         )}
       </section>
 
-      {selected.size > 0 && (
+      {view === "faces" && selected.size > 0 && (
         <div className="glass fixed bottom-5 left-1/2 z-40 flex -translate-x-1/2 items-center gap-1 rounded-xl px-2 py-1.5 shadow-2">
           <span className="px-2 text-sm text-fg-1">{plural(selected.size, "face")}</span>
           <Button size="sm" variant="ghost" onClick={() => setMoveOpen(true)}>
@@ -197,6 +228,58 @@ export function CharacterPage() {
         />
       )}
     </Page>
+  )
+}
+
+/** The character's shots — what a scenepack of them is made of. */
+function Shots({
+  pid,
+  character,
+  media,
+  onOpen,
+}: {
+  pid: string
+  character: Character
+  media: Map<string, MediaItem>
+  onOpen: (s: { mediaId: string; start: number }) => void
+}) {
+  const shots = useCharacterShots(pid, character.id)
+  const list = shots.data ?? NO_SHOTS
+  const seconds = useMemo(
+    () =>
+      list.reduce((sum, s) => {
+        const fps = media.get(s.mediaId)?.fps
+        return sum + (fps ? ((s.end - s.start) * fps.den) / fps.num : 0)
+      }, 0),
+    [list, media],
+  )
+  if (shots.isPending) {
+    return (
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-2">
+        {Array.from({ length: 12 }, (_, i) => (
+          <div key={i} className="skeleton aspect-video rounded-md" />
+        ))}
+      </div>
+    )
+  }
+  if (list.length === 0) {
+    return (
+      <p className="text-sm text-fg-3">
+        {character.waiting > 0 ? "Their episode is being analysed again; the shots come back when it's done." : "No shots yet."}
+      </p>
+    )
+  }
+  return (
+    <>
+      <p className="mb-3 text-xs text-fg-3">
+        {plural(list.length, "shot")} · {formatShotLength(seconds)} in all · hover to scrub, click to watch
+      </p>
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-2">
+        {list.map((s) => (
+          <ShotCard key={`${s.mediaId}:${s.start}`} shot={s} media={media.get(s.mediaId)} onOpen={onOpen} />
+        ))}
+      </div>
+    </>
   )
 }
 

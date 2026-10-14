@@ -28,6 +28,7 @@ export const qk = {
   tracks: (pid: ProjectId, filter: TrackFilter) => ["cast", pid, "tracks", filter] as const,
   presence: (pid: ProjectId, mid: MediaId) => ["cast", pid, "presence", mid] as const,
   characterClips: (pid: ProjectId, cid: CharacterId) => ["cast", pid, "clips", cid] as const,
+  characterShots: (pid: ProjectId, cid: CharacterId) => ["cast", pid, "shots", cid] as const,
   exportDir: (pid: ProjectId) => ["exportDir", pid] as const,
 }
 
@@ -88,6 +89,15 @@ export function useCast(pid: ProjectId) {
 
 export function useCastTracks(pid: ProjectId, filter: TrackFilter, enabled = true) {
   return useQuery({ queryKey: qk.tracks(pid, filter), queryFn: () => commands.castTracks(pid, filter), enabled })
+}
+
+/** Every shot a character is seen in, in episode order. */
+export function useCharacterShots(pid: ProjectId, cid: CharacterId, enabled = true) {
+  return useQuery({
+    queryKey: qk.characterShots(pid, cid),
+    queryFn: () => commands.characterShots(pid, cid),
+    enabled,
+  })
 }
 
 /** Where characters are on screen in one media. */

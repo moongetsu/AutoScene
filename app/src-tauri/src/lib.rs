@@ -58,6 +58,7 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::DynRuntime> {
             commands::cast::cast_edit,
             commands::cast::media_presence,
             commands::cast::character_clips,
+            commands::cast::character_shots,
             commands::export::export_presets,
             commands::export::export_default_dir,
             commands::export::export_start,

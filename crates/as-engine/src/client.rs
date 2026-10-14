@@ -67,11 +67,13 @@ pub enum ShotsEvent {
 /// What a faces job reports while it runs.
 pub enum FacesEvent {
     Progress(f64),
-    /// Face tracks of frames `start..end` (`as_analysis::tracks` format).
+    /// Face tracks of frames `start..end` (`as_analysis::tracks` format)
+    /// and the sprites of its shots.
     Chunk {
         start: u32,
         end: u32,
         tracks: Vec<u8>,
+        sprites: Vec<as_analysis::ShotSprite>,
     },
 }
 
@@ -213,8 +215,12 @@ impl Engine {
             },
             |reply| match reply {
                 Reply::Progress { fraction, .. } => on(FacesEvent::Progress(fraction)),
-                Reply::FaceChunk { start, end, tracks, .. } => {
-                    on(FacesEvent::Chunk { start, end, tracks: tracks.0 })?;
+                Reply::FaceChunk { start, end, tracks, sprites, .. } => {
+                    let sprites = sprites
+                        .into_iter()
+                        .map(|s| as_analysis::ShotSprite { shot: s.shot, end: s.end, cells: s.cells, jpeg: s.jpeg.0 })
+                        .collect();
+                    on(FacesEvent::Chunk { start, end, tracks: tracks.0, sprites })?;
                     resume.set(end);
                     Ok(())
                 }

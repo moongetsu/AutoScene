@@ -132,18 +132,25 @@ fn face_chunks_tile_the_media_even_across_a_kill() {
     let shots: Vec<(u32, u32)> = (0..m.frames).step_by(50).map(|s| (s, (s + 50).min(m.frames))).collect();
     let mut chunks: Vec<(u32, u32)> = Vec::new();
     let mut killed = false;
-    let r = engine.faces(m.path.clone(), m.info.clone(), m.index.clone(), shots, 0, 100, &CancelToken::new(), |e| {
-        if let FacesEvent::Chunk { start, end, tracks } = e {
-            // The synthetic fixture shows barcodes, not people.
-            assert!(as_analysis::tracks::decode(&tracks).expect("readable tracks").is_empty());
-            chunks.push((start, end));
-            if chunks.len() == 1 && !killed {
-                killed = true;
-                kill_hard(engine.pid().unwrap());
+    let r =
+        engine.faces(m.path.clone(), m.info.clone(), m.index.clone(), shots, 0, 100, &CancelToken::new(), |e| {
+            if let FacesEvent::Chunk { start, end, tracks, sprites } = e {
+                // The synthetic fixture shows barcodes, not people.
+                assert!(as_analysis::tracks::decode(&tracks).expect("readable tracks").is_empty());
+                // Every shot of the chunk has its sprite.
+                let starts: Vec<u32> = (start..end).step_by(50).collect();
+                assert_eq!(sprites.iter().map(|s| s.shot).collect::<Vec<_>>(), starts);
+                assert!(sprites.iter().all(|s| s.end == (s.shot + 50).min(m.frames)
+                    && s.cells == 8
+                    && s.jpeg.starts_with(&[0xFF, 0xD8])));
+                chunks.push((start, end));
+                if chunks.len() == 1 && !killed {
+                    killed = true;
+                    kill_hard(engine.pid().unwrap());
+                }
             }
-        }
-        Ok(())
-    });
+            Ok(())
+        });
     r.unwrap();
     assert!(killed);
     let mut expect = 0;

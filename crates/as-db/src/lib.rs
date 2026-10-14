@@ -12,7 +12,7 @@ mod cast;
 mod library;
 mod project;
 
-pub use cast::{CharacterRow, EditKind, IdentityTrack, NewTrack, TrackEdit, TrackRow};
+pub use cast::{CharacterRow, CharacterShotRow, EditKind, IdentityTrack, NewTrack, TrackEdit, TrackRow};
 pub use library::LibraryDb;
 pub use project::{IngestRecord, NewExportItem, NewMedia, ProjectDb, ProjectStats, episode_label};
 

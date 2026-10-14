@@ -75,6 +75,11 @@ export const commands = {
 	mediaPresence: (projectId: ProjectId, mediaId: MediaId) => __TAURI_INVOKE<Presence[]>("media_presence", { projectId, mediaId }),
 	/**  Every shot a character is seen in, as clips ready to export. */
 	characterClips: (projectId: ProjectId, characterId: CharacterId) => __TAURI_INVOKE<ClipRequest[]>("character_clips", { projectId, characterId }),
+	/**
+	 *  Every shot a character is seen in, with its sprite and the character's
+	 *  clearest face there.
+	 */
+	characterShots: (projectId: ProjectId, characterId: CharacterId) => __TAURI_INVOKE<CharacterShot[]>("character_shots", { projectId, characterId }),
 	exportPresets: () => __TAURI_INVOKE<ExportPreset[]>("export_presets"),
 	/**  Folder exports of this project go to unless the user picks another. */
 	exportDefaultDir: (projectId: ProjectId) => __TAURI_INVOKE<string>("export_default_dir", { projectId }),
@@ -250,9 +255,33 @@ export type Character = {
 	cover: string | null,
 	/**  Tracks that look like the character and wait for a decision. */
 	unsure: number,
+	/**
+	 *  Faces of the character in media waiting for or in a new analysis:
+	 *  they come back when it is done.
+	 */
+	waiting: number,
 };
 
 export type CharacterId = string;
+
+/**  A shot a character is seen in. */
+export type CharacterShot = {
+	mediaId: MediaId,
+	start: number,
+	end: number,
+	/**
+	 *  JPEG of `cells` frames spread over the shot, side by side (absolute
+	 *  path); `None` for media analysed before shots had sprites.
+	 */
+	sprite: string | null,
+	cells: number,
+	/**  The character's clearest face in the shot. */
+	trackId: number,
+	/**  Its thumbnail (absolute path). */
+	face: string,
+	/**  The biggest the character's face is in the shot, as a share of the frame height. */
+	faceHeight: number | null,
+};
 
 export type ClipRequest = {
 	mediaId: MediaId,

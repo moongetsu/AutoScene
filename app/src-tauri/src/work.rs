@@ -312,9 +312,10 @@ fn run_faces(
                     ctx.progress(STAGE, f);
                     Ok(())
                 }
-                FacesEvent::Chunk { start, end, tracks } => {
-                    project.store_face_chunk(media_id, start, end, &tracks).map(|_| ()).map_err(|e| e.detail())
-                }
+                FacesEvent::Chunk { start, end, tracks, sprites } => project
+                    .store_face_chunk(media_id, start, end, &tracks, &sprites)
+                    .map(|_| ())
+                    .map_err(|e| e.detail()),
             })
             .map_err(engine_error)?;
     }

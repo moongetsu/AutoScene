@@ -13,6 +13,7 @@ const who = (id: string, hidden = false): Character => ({
   screenSec: 0,
   cover: null,
   unsure: 0,
+  waiting: 0,
 })
 const at = (characterId: string, start: number, end: number, trackId = start): Presence => ({ characterId, trackId, start, end })
 const cast = new Map([

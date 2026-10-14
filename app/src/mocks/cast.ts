@@ -3,7 +3,18 @@
  * a project's episodes, edits that behave like the real ones (pins, forbids,
  * not-a-face, merges), and the derived views (presence, clips).
  */
-import type { Cast, CastEdit, Character, ClipRequest, FaceTrackItem, MediaItem, Presence, Segment, TrackFilter } from "@/bindings"
+import type {
+  Cast,
+  CastEdit,
+  Character,
+  CharacterShot,
+  ClipRequest,
+  FaceTrackItem,
+  MediaItem,
+  Presence,
+  Segment,
+  TrackFilter,
+} from "@/bindings"
 
 type Track = FaceTrackItem & { forbid: Set<string>; notFace: boolean }
 type Person = { id: string; number: number; name: string | null; hidden: boolean; cover: number | null }
@@ -17,6 +28,23 @@ let personSeq = 0
 function face(hue: number, variant: number): string {
   const l = 26 + (variant % 5) * 3
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160"><rect width="160" height="160" fill="hsl(${hue} 18% ${l}%)"/><circle cx="80" cy="66" r="30" fill="hsl(${hue} 30% ${l + 34}%)"/><path d="M28 160c4-34 26-52 52-52s48 18 52 52z" fill="hsl(${hue} 22% ${l + 20}%)"/></svg>`
+  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`
+}
+
+/** A shot sprite: `cells` frames of someone walking across, in the person's hue. */
+function sprite(hue: number, seed: number, cells = 8): string {
+  const [w, h] = [240, 135]
+  let body = ""
+  for (let k = 0; k < cells; k++) {
+    const x = k * w
+    const l = 16 + ((seed + k) % 4) * 3
+    const cx = x + 70 + k * 12
+    body +=
+      `<rect x="${x}" width="${w}" height="${h}" fill="hsl(${(hue + k * 5) % 360} 16% ${l}%)"/>` +
+      `<circle cx="${cx}" cy="56" r="22" fill="hsl(${hue} 30% ${l + 36}%)"/>` +
+      `<path d="M${cx - 48} ${h}c3-30 21-44 48-44s45 14 48 44z" fill="hsl(${hue} 22% ${l + 22}%)"/>`
+  }
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w * cells} ${h}">${body}</svg>`
   return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`
 }
 
@@ -91,6 +119,7 @@ function character(c: ProjectCast, p: Person, fps = 24): Character {
     screenSec: mine.reduce((s, t) => s + (t.end - t.start), 0) / fps,
     cover: cover?.thumb ?? null,
     unsure: c.tracks.filter((t) => !t.notFace && t.assign === "unsure" && t.characterId === p.id).length,
+    waiting: 0,
   }
 }
 
@@ -215,6 +244,34 @@ export function characterClips(projectId: string, characterId: string, media: Me
     for (const s of starts) {
       const seg = segments.find((x) => x.start === s && x.kind === "shot")
       if (seg) out.push({ mediaId: m.id, start: seg.start, end: seg.end, name: null })
+    }
+  }
+  return out
+}
+
+export function characterShots(projectId: string, characterId: string, media: MediaItem[], segments: Segment[]): CharacterShot[] {
+  const c = get(projectId)
+  const hue = ((c.people.findIndex((p) => p.id === characterId) * 57 + 20) % 360 + 360) % 360
+  const mine = c.tracks.filter((t) => assigned(t) && t.characterId === characterId)
+  const out: CharacterShot[] = []
+  for (const m of media) {
+    const here = mine.filter((t) => t.mediaId === m.id)
+    for (const s of [...new Set(here.map((t) => t.start))].sort((a, b) => a - b)) {
+      const seg = segments.find((x) => x.start === s && x.kind === "shot")
+      if (!seg) continue
+      const faces = here.filter((t) => t.start === s).sort((a, b) => (b.quality ?? 0) - (a.quality ?? 0))
+      // Like media analysed before shots had sprites: a few shots of the first episode.
+      const old = m === media[0] && out.length % 5 === 4
+      out.push({
+        mediaId: m.id,
+        start: seg.start,
+        end: seg.end,
+        sprite: old ? null : sprite(hue, s),
+        cells: old ? 0 : 8,
+        trackId: faces[0].id,
+        face: faces[0].thumb,
+        faceHeight: Math.max(...faces.map((t) => t.faceHeight ?? 0)),
+      })
     }
   }
   return out

@@ -126,11 +126,16 @@ function CardGrid({ className, children }: { className?: string; children: React
 
 function CharacterCard({ pid, character: c }: { pid: string; character: Character }) {
   const [failed, setFailed] = useState(false)
+  // Their episode is being analysed again: the faces come back when it's done.
+  const refinding = c.tracks === 0 && c.waiting > 0
   return (
     <Link
       to="/p/$pid/cast/$cid"
       params={{ pid, cid: c.id }}
-      className="group flex flex-col overflow-hidden rounded-lg border border-hairline bg-panel shadow-1 transition-[border-color,transform] duration-[var(--dur-fast)] hover:-translate-y-px hover:border-strong focus-visible:border-accent-line focus-visible:outline-none"
+      className={cn(
+        "group flex flex-col overflow-hidden rounded-lg border border-hairline bg-panel shadow-1 transition-[border-color,transform,opacity] duration-[var(--dur-fast)] hover:-translate-y-px hover:border-strong focus-visible:border-accent-line focus-visible:outline-none",
+        refinding && "opacity-60",
+      )}
     >
       <div className="relative aspect-square bg-inset">
         {c.cover && !failed ? (
@@ -141,6 +146,8 @@ function CharacterCard({ pid, character: c }: { pid: string; character: Characte
             onError={() => setFailed(true)}
             className="size-full object-cover"
           />
+        ) : refinding ? (
+          <ScanFace className="absolute inset-0 m-auto size-10 text-fg-3" />
         ) : (
           <UserRound className="absolute inset-0 m-auto size-10 text-fg-3" />
         )}
@@ -153,8 +160,14 @@ function CharacterCard({ pid, character: c }: { pid: string; character: Characte
       <div className="px-3 py-2.5">
         <div className={cn("truncate text-sm font-medium", c.name ? "text-fg-1" : "text-fg-2")}>{c.label}</div>
         <div className="mt-0.5 truncate text-2xs text-fg-3">
-          {formatScreenTime(c.screenSec ?? 0)} · {plural(c.shots, "shot")}
-          {c.media > 1 && <> · {c.media} eps</>}
+          {refinding ? (
+            "Being found again…"
+          ) : (
+            <>
+              {formatScreenTime(c.screenSec ?? 0)} · {plural(c.shots, "shot")}
+              {c.media > 1 && <> · {c.media} eps</>}
+            </>
+          )}
         </div>
       </div>
     </Link>

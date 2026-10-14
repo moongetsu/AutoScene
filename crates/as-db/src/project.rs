@@ -160,6 +160,22 @@ const STEPS: &[M<'static>] = &[
         character_id TEXT REFERENCES characters(id) ON DELETE CASCADE
     ) STRICT;",
     ),
+    // Shot sprites, made by the face pass with each chunk's tracks (the
+    // files live next to the face thumbnails).
+    M::up(
+        "CREATE TABLE sprites (
+        media_id TEXT NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+        shot     INTEGER NOT NULL,  -- start frame of the shot
+        end      INTEGER NOT NULL,  -- and its end (part of the file name)
+        cells    INTEGER NOT NULL,
+        PRIMARY KEY (media_id, shot)
+    ) STRICT;
+
+    -- A re-analysis keeps every face's character in track_edits ('was'):
+    -- the cast looks them up per character, the face pass per media.
+    CREATE INDEX track_edits_by_character ON track_edits(character_id);
+    CREATE INDEX track_edits_by_media ON track_edits(media_id);",
+    ),
 ];
 const MIGRATIONS: Migrations<'static> = Migrations::from_slice(STEPS);
 

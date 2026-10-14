@@ -10,7 +10,7 @@
  */
 import { emit } from "@tauri-apps/api/event"
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks"
-import { castEdit, castGet, castTracks, characterClips, mediaPresence, seedCast } from "./cast"
+import { castEdit, castGet, castTracks, characterClips, characterShots, mediaPresence, seedCast } from "./cast"
 import type {
   AppInfo,
   AppSettings,
@@ -518,6 +518,8 @@ const handlers: Record<string, Handler> = {
   media_presence: ({ projectId, mediaId }) => mediaPresence(String(find(projectId).id), String(mediaId)),
   character_clips: ({ projectId, characterId }) =>
     characterClips(String(projectId), String(characterId), find(projectId).media, SEGMENTS),
+  character_shots: ({ projectId, characterId }) =>
+    characterShots(String(projectId), String(characterId), find(projectId).media, SEGMENTS),
   export_presets: () => presets,
   export_default_dir: ({ projectId }) => `${settings.libraryRoot}\\Exports\\${find(projectId).title}`,
   export_start: ({ projectId, req }) => startExport(find(projectId), req as ExportRequest),
