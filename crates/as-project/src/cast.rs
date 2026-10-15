@@ -534,6 +534,12 @@ impl Project {
                     }
                     _ => None,
                 };
+                // Another file, and no face to compare with (another model,
+                // a decision older than kept faces): what the analysis gave
+                // isn't put back by place alone; the user's own answers are.
+                if must_match && face.is_none() && matches!(e.kind, EditKind::Was(_) | EditKind::Cover(_)) {
+                    continue;
+                }
                 let looks = |emb: &Option<Vec<f32>>| match (&face, emb) {
                     (Some(a), Some(b)) => a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>() >= REANCHOR_MIN_COS,
                     _ => true,

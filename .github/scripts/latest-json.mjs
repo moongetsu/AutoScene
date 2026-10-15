@@ -14,11 +14,17 @@ if (!dir || !tag?.startsWith("v")) {
 }
 const repo = process.env.GITHUB_REPOSITORY ?? "tcmmi/AutoScene"
 
-/** Which bundle updates which platform (`<os>-<arch>` as the updater asks). */
+/**
+ * Which bundle updates which install. The updater asks for
+ * `<os>-<arch>-<installer>` first, then `<os>-<arch>`: on Linux each package
+ * kind has its own key, so a .deb install is never offered an AppImage.
+ */
 const KINDS = [
   { platform: "windows-x86_64", test: (f) => f.endsWith("_x64-setup.exe") },
   { platform: "darwin-aarch64", test: (f) => f.endsWith("_aarch64.app.tar.gz") },
-  { platform: "linux-x86_64", test: (f) => f.endsWith(".AppImage") },
+  { platform: "linux-x86_64-appimage", test: (f) => f.endsWith(".AppImage") },
+  { platform: "linux-x86_64-deb", test: (f) => f.endsWith(".deb") },
+  { platform: "linux-x86_64-rpm", test: (f) => f.endsWith(".rpm") },
 ]
 
 const files = readdirSync(dir)

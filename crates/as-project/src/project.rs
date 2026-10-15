@@ -207,11 +207,16 @@ impl Project {
         if let (Err(reason), false) = (&same, force) {
             return Ok(Relink::Different { reason: reason.clone() });
         }
+        // The same bytes keep everything only when the frame index on disk
+        // was made from them (an indexing that never finished left an older
+        // one).
         let indexed = m.status == MediaStatus::Ready && m.info.is_some();
         let same_bytes = same.is_ok() && indexed && meta.len() == m.size_bytes as u64;
-        // Another copy (another size): does it show the same picture? Two
-        // episodes can be just as long.
-        let same_picture = match same.is_ok() && indexed && !same_bytes {
+        // Another copy (another size, or one never fully indexed): does it
+        // show the same picture as the poster, at the poster's frame? Two
+        // episodes can be just as long. Without a poster or an index nobody
+        // can tell (`None`).
+        let same_picture = match same.is_ok() && m.info.is_some() && !same_bytes {
             true => self.same_picture(tools, &m, path, &found),
             false => None,
         };
@@ -325,6 +330,7 @@ impl Project {
     pub fn remove_media(&self, id: MediaId) -> ProjectResult<()> {
         let m = self.media(id)?;
         self.db.remove_media(id)?;
+        let _ = self.db.delete_meta(&crate::cast::source_changed_key(id));
         self.indexes.lock().remove(&id);
         // Its pictures go: the ones it points at, and ones made under its
         // names that it doesn't point at yet (a poster upkeep it raced).

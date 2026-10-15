@@ -126,14 +126,14 @@ pub async fn media_relink(
 ) -> AppResult<Relink> {
     let lib = state.library.clone();
     let tools = state.tools()?;
+    let _one_at_a_time = RELINKING.lock().await;
     let interrupted = stop_work_on(&state, &[media_id]).await?;
     let (project, relink) = blocking(move || {
         let p = lib.project(project_id)?;
-        let r = p.relink(&tools, media_id, Path::new(&path), force)?;
-        if !matches!(r, Relink::Different { .. }) {
-            resume_interrupted(&p, &interrupted);
-        }
-        Ok((p, r))
+        let r = p.relink(&tools, media_id, Path::new(&path), force);
+        // Whatever the answer: what the relink stopped goes on.
+        resume_interrupted(&p, &interrupted);
+        Ok((p, r?))
     })
     .await?;
     match relink {
@@ -153,9 +153,16 @@ pub async fn media_relink(
 /// How long a relink waits for the work on the old path to stop.
 const STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
 
+/// One relink (of a file or a folder) at a time: one deciding which files
+/// are missing while another is queueing work for one it found would stop
+/// that work again.
+static RELINKING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Stop every job of `media` and wait until they have ended: nothing may go
 /// on reading the old path, or record its outcome over what the relink sets.
-/// Returns the media whose analysis was under way (see `resume_interrupted`).
+/// Work queued for them meanwhile (a restart the stopped analysis owed, a
+/// new face model's pass) is stopped too. Returns the media whose analysis
+/// was under way (see `resume_interrupted`).
 async fn stop_work_on(state: &AppState, media: &[MediaId]) -> AppResult<Vec<MediaId>> {
     let of = |j: &as_api::JobInfo| j.media_id.is_some_and(|m| media.contains(&m));
     let interrupted: Vec<MediaId> = media
@@ -163,9 +170,13 @@ async fn stop_work_on(state: &AppState, media: &[MediaId]) -> AppResult<Vec<Medi
         .copied()
         .filter(|&m| state.jobs.is_active(|j| j.kind == JobKind::Analyze && j.media_id == Some(m)))
         .collect();
-    state.jobs.cancel_where(of);
     let until = std::time::Instant::now() + STOP_WAIT;
-    while state.jobs.is_active(of) || media.iter().any(|m| state.analysis.lock().running.contains(m)) {
+    loop {
+        state.jobs.cancel_where(of);
+        let running = state.jobs.is_active(of) || media.iter().any(|m| state.analysis.lock().running.contains(m));
+        if !running {
+            break;
+        }
         if std::time::Instant::now() > until {
             return Err(AppError::new(
                 ErrorCode::NotReady,
@@ -177,8 +188,8 @@ async fn stop_work_on(state: &AppState, media: &[MediaId]) -> AppResult<Vec<Medi
     Ok(interrupted)
 }
 
-/// Analysis the relink itself stopped carries on from where it was (a stage
-/// the user had stopped stays stopped).
+/// Analysis the relink stopped is pending again, so it carries on from where
+/// it was (now, or at the next launch once its file is there).
 fn resume_interrupted(project: &as_project::Project, media: &[MediaId]) {
     for &id in media {
         let Ok(m) = project.media(id) else { continue };
@@ -216,6 +227,7 @@ pub async fn media_relink_folder(
 ) -> AppResult<RelinkSummary> {
     let lib = state.library.clone();
     let tools = state.tools()?;
+    let _one_at_a_time = RELINKING.lock().await;
     let missing: Vec<MediaId> = {
         let lib = state.library.clone();
         blocking(move || {
@@ -227,11 +239,9 @@ pub async fn media_relink_folder(
     let interrupted = stop_work_on(&state, &missing).await?;
     let (project, found) = blocking(move || {
         let p = lib.project(project_id)?;
-        let found = p.relink_folder(&tools, Path::new(&dir))?;
-        let back: Vec<MediaId> =
-            interrupted.into_iter().filter(|id| found.same.contains(id) || found.reindex.contains(id)).collect();
-        resume_interrupted(&p, &back);
-        Ok((p, found))
+        let found = p.relink_folder(&tools, Path::new(&dir));
+        resume_interrupted(&p, &interrupted);
+        Ok((p, found?))
     })
     .await?;
     for &id in &found.reindex {

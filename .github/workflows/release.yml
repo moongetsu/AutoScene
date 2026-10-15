@@ -1,9 +1,10 @@
 name: Release
 
-# A tag `vX.Y.Z` builds the installers on Windows, macOS (Apple Silicon) and
-# Linux and publishes them as one GitHub release, with the `latest.json` the
-# in-app updater reads. A pull request that changes how the app is packaged,
-# or a manual run, builds everything without publishing.
+# A pushed tag `vX.Y.Z` builds the installers on Windows, macOS (Apple
+# Silicon) and Linux and publishes them as one GitHub release, with the
+# `latest.json` the in-app updater reads (`vX.Y.Z-…` tags: a pre-release the
+# updater doesn't offer). A pull request that changes how the app is
+# packaged, or a manual run, builds everything without publishing.
 on:
   push:
     tags: ["v*"]
@@ -16,7 +17,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -39,14 +40,22 @@ jobs:
             os: ubuntu-22.04
     runs-on: ${{ matrix.os }}
     env:
-      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
       # linuxdeploy runs without FUSE and leaves the binaries as they are
       # (its strip is older than what the toolchain writes).
       APPIMAGE_EXTRACT_AND_RUN: "1"
       NO_STRIP: "true"
     steps:
       - uses: actions/checkout@v7
+      # A release is the version the app says it is.
+      - name: Tag matches the version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          version=$(node -p "require('./app/src-tauri/tauri.conf.json').version")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::The tag $GITHUB_REF_NAME doesn't match version $version in tauri.conf.json"
+            exit 1
+          fi
       - name: Linux packages
         if: runner.os == 'Linux'
         run: |
@@ -68,9 +77,13 @@ jobs:
       # The exact, checksum-pinned FFmpeg and ONNX Runtime the app ships with.
       - name: Native tools
         run: cargo xtask fetch-sidecars
+      # The update key reaches this step only (not installs or other actions).
       - name: Build the installers
         working-directory: app
         shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           configs=(--config src-tauri/tauri.release.conf.json)
           # Without the updater key (a fork, a key not set up yet) there are
@@ -102,7 +115,7 @@ jobs:
               ;;
             Linux)
               cp "$b"/appimage/*.AppImage "$b"/deb/*.deb "$b"/rpm/*.rpm out/
-              cp "$b"/appimage/*.AppImage.sig out/ 2>/dev/null || true
+              cp "$b"/appimage/*.AppImage.sig "$b"/deb/*.deb.sig "$b"/rpm/*.rpm.sig out/ 2>/dev/null || true
               ;;
           esac
           ls -la out
@@ -116,8 +129,10 @@ jobs:
   publish:
     name: Publish
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
@@ -142,4 +157,11 @@ jobs:
           # The update signatures are inside latest.json; the files themselves aren't needed.
           rm -f out/*.sig
           ls -la out
-          gh release create "$tag" out/* --verify-tag --latest --title "AutoScene ${tag#v}" --notes-file "$notes"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            # A run again after a publish that broke off: replace the files.
+            gh release upload "$tag" out/* --clobber
+          elif [[ "$tag" == *-* ]]; then
+            gh release create "$tag" out/* --verify-tag --prerelease --title "AutoScene ${tag#v}" --notes-file "$notes"
+          else
+            gh release create "$tag" out/* --verify-tag --latest --title "AutoScene ${tag#v}" --notes-file "$notes"
+          fi
