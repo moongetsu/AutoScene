@@ -49,7 +49,7 @@ struct Bundle {
     /// Copy the Visual C++ runtime DLLs in (Windows; from the local Visual Studio).
     vc_runtime: bool,
     /// The programs and libraries look for their libraries beside them
-    /// (Linux builds that expect a `../lib` folder; see `libraries_beside`).
+    /// (Linux; see `libraries_beside`).
     libs_beside: bool,
 }
 
@@ -272,10 +272,8 @@ fn fetch_bundle(b: &Bundle, dest: &Path) -> Result<()> {
         println!("Visual C++ runtime from {}", dir.display());
     }
     if b.libs_beside {
-        // The programs load every library themselves (the libraries carry no
-        // run path: what they need is loaded by then).
-        for (name, _) in b.required.iter().filter(|(_, runs)| *runs) {
-            libraries_beside(&staging.join(name))?;
+        for e in fs::read_dir(&staging)? {
+            libraries_beside(&e?.path())?;
         }
     }
     for (name, runs) in b.required {
@@ -353,27 +351,14 @@ fn vc_runtime_dir() -> Result<PathBuf> {
         .with_context(|| format!("no x64 Visual C++ runtime under {}", msvc.display()))
 }
 
-/// Linux builds that find their libraries in `$ORIGIN/../lib` (a `bin` and
-/// a `lib` folder) find them beside themselves instead, in the one folder
-/// the bundle keeps. The run path is a NUL-terminated string in the ELF
-/// file's dynamic string table, where the entry points to its start:
-/// shortened in place and padded with NULs, it reads `$ORIGIN`.
+/// Every program and library of a Linux bundle looks for its libraries
+/// beside itself, in the one folder the bundle keeps: the programs expect a
+/// `lib` folder next to their `bin` (`$ORIGIN/../lib`), and the libraries say
+/// nothing at all, which linuxdeploy (making the AppImage) refuses, as it
+/// checks every library it finds. Needs `patchelf`.
 fn libraries_beside(path: &Path) -> Result<()> {
-    const FROM: &[u8] = b"$ORIGIN/../lib\0";
-    const TO: &[u8] = b"$ORIGIN\0\0\0\0\0\0\0\0";
-    let mut bytes = fs::read(path)?;
-    let mut found = 0;
-    let mut at = 0;
-    while let Some(i) = bytes[at..].windows(FROM.len()).position(|w| w == FROM) {
-        bytes[at + i..at + i + TO.len()].copy_from_slice(TO);
-        at += i + TO.len();
-        found += 1;
-    }
-    if found == 0 {
-        bail!("{} doesn't look for its libraries in $ORIGIN/../lib", path.display());
-    }
-    fs::write(path, &bytes)?;
-    Ok(())
+    run(Command::new("patchelf").args(["--set-rpath", "$ORIGIN"]).arg(path))
+        .with_context(|| format!("setting where {} finds its libraries (is patchelf installed?)", path.display()))
 }
 
 #[cfg(not(windows))]

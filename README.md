@@ -54,7 +54,7 @@ You need:
   installs it.
 - **Node:** version 26.
 - **Windows:** Visual Studio with the C++ tools.
-- **Linux:** the WebKitGTK development packages. See `.github/workflows/ci.yml`.
+- **Linux:** the WebKitGTK development packages and `patchelf`. See `.github/workflows/ci.yml`.
 
 ```bash
 cargo xtask fetch-sidecars        # pinned FFmpeg + ONNX Runtime into app/src-tauri
