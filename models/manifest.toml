@@ -1,0 +1,41 @@
+# AI models AutoScene downloads on demand into the app data folder
+# (`AppPaths::models()`). Every file is pinned by URL (immutable revision)
+# and SHA256; see docs/plan for provenance and licences.
+
+# Files of models a better one replaced: removed from the models folder at
+# launch (`ModelStore::prune`). Nothing else there is ever deleted.
+retired = ["arcface_w600k_r50.onnx"]
+
+[[model]]
+id = "transnetv2"
+file = "transnetv2.onnx"
+purpose = "Shot boundaries (hard cuts and gradual transitions)"
+url = "https://huggingface.co/elya5/transnetv2/resolve/e1cfcb717af91e41ffb84b5fd851505682c576ee/transnetv2.onnx"
+sha256 = "c4d54a682bace32f25136ef83ca2c9d403e8f8193775efeb995172a0d95a8e0c"
+size = 31250929
+license = "MIT"
+source = "TransNetV2 (Souček & Lokoč), ONNX export of the original weights"
+
+[[model]]
+id = "scrfd-10g"
+file = "scrfd_10g.onnx"
+purpose = "Face detection with five landmarks (live action)"
+url = "https://huggingface.co/immich-app/buffalo_l/resolve/d09715916a0778919a770c343533641e250b8699/detection/model.onnx"
+sha256 = "5838f7fe053675b1c7a08b633df49e7af5495cee0493c7dcf6697200b85b5b91"
+size = 16923827
+license = "InsightFace non-commercial research"
+source = "InsightFace buffalo_l det_10g (SCRFD-10G, Guo et al. 2021), byte-identical mirror by Immich"
+
+# Chosen on bench/identity (Breaking Bad S01E01): tells people apart much
+# better than buffalo_l's w600k_r50 — blurry faces most (AUC 0.886 vs 0.784)
+# — and AdaFace IR-101 (tools/model-prep): main cast per-track F 0.925 vs
+# 0.898, at ~30 % more face-pass time. Per screen time both are level.
+[[model]]
+id = "arcface-glintr100"
+file = "arcface_glintr100.onnx"
+purpose = "Face identity embeddings (live action)"
+url = "https://huggingface.co/immich-app/antelopev2/resolve/51ca7e153bccebdbae224779e23c9c243e2fec85/recognition/model.onnx"
+sha256 = "4ab1d6435d639628a6f3e5008dd4f929edf4c4124b1a7169e1048f9fef534cdf"
+size = 260665334
+license = "InsightFace non-commercial research"
+source = "InsightFace antelopev2 glintr100 (ArcFace ResNet-100 on Glint360K), byte-identical mirror by Immich"

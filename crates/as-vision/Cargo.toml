@@ -1,0 +1,14 @@
+[package]
+name = "as-vision"
+description = "AutoScene vision models: TransNetV2 shot boundaries, SCRFD faces, ArcFace identities"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+as-infer.workspace = true
+jpeg-encoder = "=0.7.1"
+tracing.workspace = true

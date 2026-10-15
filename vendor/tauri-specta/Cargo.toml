@@ -1,0 +1,31 @@
+# Vendored copy of tauri-specta 2.0.0-rc.25 (MIT, https://github.com/specta-rs/tauri-specta),
+# ported to Tauri 3 (alpha) for AutoScene. Upstream only supports Tauri 2.
+# Changes are listed in AUTOSCENE.md; drop this copy once upstream supports Tauri 3.
+
+[package]
+name = "tauri-specta"
+version = "2.0.0-rc.25"
+edition = "2024"
+authors = ["Oscar Beaumont <oscar@otbeaumont.me>"]
+description = "Completely typesafe Tauri commands (AutoScene port to Tauri 3)"
+license = "MIT"
+repository = "https://github.com/specta-rs/tauri-specta"
+publish = false
+
+[features]
+default = []
+derive = ["dep:tauri-specta-macros"]
+javascript = ["dep:specta-typescript"]
+typescript = ["dep:specta-typescript"]
+
+[dependencies]
+heck = "0.5"
+serde = "1"
+serde_json = "1"
+specta = { version = "=2.0.0-rc.25", features = ["derive", "function"] }
+specta-serde = "0.0.12"
+specta-typescript = { version = "0.0.12", optional = true }
+specta-util = "0.0.12"
+tauri = { version = "=3.0.0-alpha.4", default-features = false, features = ["specta"] }
+tauri-specta-macros = { version = "=2.0.0-rc.25", optional = true }
+thiserror = "2"

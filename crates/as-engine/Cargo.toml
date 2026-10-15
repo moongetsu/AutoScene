@@ -1,0 +1,32 @@
+[package]
+name = "as-engine"
+description = "AutoScene analysis engine: a restartable worker process (ONNX Runtime + ffmpeg) and the supervisor the app drives it with"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "autoscene-engine"
+path = "src/main.rs"
+
+[dependencies]
+as-core.workspace = true
+as-media.workspace = true
+as-infer.workspace = true
+as-vision.workspace = true
+as-analysis.workspace = true
+as-models.workspace = true
+base64 = "=0.23.1"
+parking_lot.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["fmt", "std", "ansi"] }
+
+[dev-dependencies]
+as-testkit.workspace = true
+tempfile = "3.27"

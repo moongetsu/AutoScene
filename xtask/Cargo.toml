@@ -1,0 +1,17 @@
+[package]
+name = "xtask"
+description = "AutoScene dev tasks: fixtures, sidecars, bindings"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+as-testkit.workspace = true
+as-core.workspace = true
+as-models.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.11.1"

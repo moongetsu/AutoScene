@@ -1,0 +1,165 @@
+name: Release
+
+# A pushed tag `vX.Y.Z` (or `vX.Y.Z-BETA`) builds the installers on Windows,
+# macOS (Apple Silicon) and Linux and publishes them as the latest GitHub
+# release, with the `latest.json` the in-app updater reads: every tag is
+# what people download and update to. A pull request that changes how the
+# app is packaged, or a manual run, builds everything without publishing.
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - .github/scripts/latest-json.mjs
+      - xtask/src/sidecars.rs
+      - app/src-tauri/tauri*.json
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+          - name: macOS
+            os: macos-latest
+          # The oldest supported Ubuntu: what is built here runs on newer
+          # distributions too (glibc 2.35 and up).
+          - name: Linux
+            os: ubuntu-22.04
+    runs-on: ${{ matrix.os }}
+    env:
+      # linuxdeploy runs without FUSE and leaves the binaries as they are
+      # (its strip is older than what the toolchain writes).
+      APPIMAGE_EXTRACT_AND_RUN: "1"
+      NO_STRIP: "true"
+    steps:
+      - uses: actions/checkout@v7
+      # A release is the version the app says it is.
+      - name: Tag matches the version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          version=$(node -p "require('./app/src-tauri/tauri.conf.json').version")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::The tag $GITHUB_REF_NAME doesn't match version $version in tauri.conf.json"
+            exit 1
+          fi
+      - name: Linux packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf file
+      # Installs the pinned nightly from rust-toolchain.toml.
+      - name: Rust toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - run: npm ci
+        working-directory: app
+      # The exact, checksum-pinned FFmpeg and ONNX Runtime the app ships with.
+      - name: Native tools
+        run: cargo xtask fetch-sidecars
+      # The update key reaches this step only (not installs or other actions).
+      - name: Build the installers
+        working-directory: app
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          configs=(--config src-tauri/tauri.release.conf.json)
+          # Without the updater key (a fork, a key not set up yet) there are
+          # no signed update bundles; the installers are the same.
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo '{"bundle":{"createUpdaterArtifacts":false}}' > "$RUNNER_TEMP/no-updater.json"
+            configs+=(--config "$RUNNER_TEMP/no-updater.json")
+            echo "::warning::TAURI_SIGNING_PRIVATE_KEY isn't set: built without update bundles"
+          fi
+          npx tauri build "${configs[@]}"
+      - name: Collect
+        shell: bash
+        run: |
+          version=$(node -p "require('./app/src-tauri/tauri.conf.json').version")
+          b=target/release/bundle
+          mkdir -p out
+          case "$RUNNER_OS" in
+            Windows)
+              cp "$b"/nsis/*-setup.exe out/
+              cp "$b"/nsis/*-setup.exe.sig out/ 2>/dev/null || true
+              ;;
+            macOS)
+              cp "$b"/dmg/*.dmg out/
+              # The update bundle, named for its version and machine.
+              if [ -f "$b/macos/AutoScene.app.tar.gz" ]; then
+                cp "$b/macos/AutoScene.app.tar.gz" "out/AutoScene_${version}_aarch64.app.tar.gz"
+                cp "$b/macos/AutoScene.app.tar.gz.sig" "out/AutoScene_${version}_aarch64.app.tar.gz.sig"
+              fi
+              ;;
+            Linux)
+              cp "$b"/appimage/*.AppImage "$b"/deb/*.deb "$b"/rpm/*.rpm out/
+              cp "$b"/appimage/*.AppImage.sig "$b"/deb/*.deb.sig "$b"/rpm/*.rpm.sig out/ 2>/dev/null || true
+              ;;
+          esac
+          ls -la out
+      - uses: actions/upload-artifact@v7
+        with:
+          name: autoscene-${{ runner.os }}
+          path: out/*
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          path: out
+          merge-multiple: true
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+      - name: Update manifest
+        run: node .github/scripts/latest-json.mjs out "$GITHUB_REF_NAME"
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="$GITHUB_REF_NAME"
+          notes="docs/releases/$tag.md"
+          if [ ! -f "$notes" ]; then
+            echo "::error::$notes is missing"
+            exit 1
+          fi
+          # The update signatures are inside latest.json; the files themselves aren't needed.
+          rm -f out/*.sig
+          ls -la out
+          if gh release view "$tag" >/dev/null 2>&1; then
+            # A run again after a publish that broke off: replace the files.
+            gh release upload "$tag" out/* --clobber
+          else
+            gh release create "$tag" out/* --verify-tag --latest --title "AutoScene ${tag#v}" --notes-file "$notes"
+          fi

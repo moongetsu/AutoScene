@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/autoscene-mark.svg" />
+    <link rel="alternate icon" type="image/png" href="/autoscene-mark.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>AutoScene</title>
+    <style>
+      /* Paints before any module loads, so the window is never white. */
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #09090b;
+      }
+      #boot {
+        position: fixed;
+        inset: 0;
+        z-index: 2147483647;
+        display: grid;
+        place-items: center;
+        background: radial-gradient(60% 45% at 50% 38%, #141418 0%, #09090b 70%);
+        transition: opacity 0.35s cubic-bezier(0.2, 0.8, 0.2, 1);
+      }
+      #boot[data-hide] {
+        opacity: 0;
+        pointer-events: none;
+      }
+      #boot img {
+        width: 56px;
+        height: 56px;
+        animation: boot-in 0.6s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+      }
+      @keyframes boot-in {
+        from {
+          opacity: 0;
+          transform: scale(0.94);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #boot img {
+          animation: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="boot" aria-hidden="true">
+      <img src="/autoscene-mark.svg" alt="" width="56" height="56" draggable="false" />
+    </div>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

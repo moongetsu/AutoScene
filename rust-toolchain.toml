@@ -1,0 +1,7 @@
+# Newest nightly, pinned by date so every machine and CI builds with the same
+# compiler. Bump the date to move forward (`rustup toolchain install nightly`
+# shows the newest).
+[toolchain]
+channel = "nightly-2026-10-13"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

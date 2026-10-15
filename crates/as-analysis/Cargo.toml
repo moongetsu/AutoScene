@@ -1,0 +1,28 @@
+[package]
+name = "as-analysis"
+description = "AutoScene analysis: frame signals, shot/transition fusion, face tracks, resumable pipelines"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+as-core.workspace = true
+as-infer.workspace = true
+as-media.workspace = true
+as-vision.workspace = true
+half.workspace = true
+serde.workspace = true
+specta.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+zstd.workspace = true
+
+[dev-dependencies]
+as-identity.workspace = true
+serde_json.workspace = true
+as-testkit.workspace = true
+as-models.workspace = true
+tempfile = "3.27"

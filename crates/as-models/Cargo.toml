@@ -1,0 +1,21 @@
+[package]
+name = "as-models"
+description = "AutoScene AI model manifest and resumable, checksum-verified downloads"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+as-core.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+sha2 = "=0.11.1"
+toml = "=1.1.8"
+ureq = "=3.4.2"
+
+[dev-dependencies]
+tempfile = "3.27"
