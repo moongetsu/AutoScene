@@ -290,3 +290,20 @@ export function characterShots(projectId: string, characterId: string, media: Me
   }
   return out
 }
+
+/** How many other shown characters are on screen in a shot with `characterId`. */
+export function othersInShot(projectId: string, characterId: string, mediaId: string, start: number, end: number): number {
+  const c = get(projectId)
+  const shown = new Set(c.people.filter((p) => !p.hidden && p.id !== characterId).map((p) => p.id))
+  const here = c.tracks.filter(
+    (t) => assigned(t) && t.mediaId === mediaId && t.start >= start && t.start < end && t.characterId && shown.has(t.characterId),
+  )
+  return new Set(here.map((t) => t.characterId)).size
+}
+
+/** A character's name, or "Character N". */
+export function characterLabel(projectId: string, characterId: string): string {
+  const p = get(projectId).people.find((x) => x.id === characterId)
+  return p?.name ?? `Character ${p?.number ?? "?"}`
+}
+

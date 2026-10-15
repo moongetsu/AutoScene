@@ -568,7 +568,7 @@ impl Project {
         std::fs::create_dir_all(out_dir)
             .map_err(|e| ProjectError::Invalid(format!("Can't write to {}: {e}", out_dir.display())))?;
         let id = ExportId::new();
-        self.db.insert_export(id, &preset, &out_str, &items)?;
+        self.db.insert_export(id, &preset, &out_str, req.label.as_deref(), &items)?;
         self.export(id)
     }
 

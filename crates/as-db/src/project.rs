@@ -205,6 +205,8 @@ const STEPS: &[M<'static>] = &[
     -- Everyone in a shot (who else is on screen with a character).
     CREATE INDEX tracks_by_shot ON tracks(media_id, shot);",
     ),
+    // What an export is ("Walter · scenepack"), for the export history.
+    M::up("ALTER TABLE exports ADD COLUMN label TEXT;"),
 ];
 const MIGRATIONS: Migrations<'static> = Migrations::from_slice(STEPS);
 
@@ -627,12 +629,14 @@ impl ProjectDb {
         id: ExportId,
         preset: &ExportPreset,
         out_dir: &str,
+        label: Option<&str>,
         items: &[NewExportItem],
     ) -> DbResult<()> {
         self.0.write(|tx| {
             tx.execute(
-                "INSERT INTO exports (id, created_at, preset, out_dir, status) VALUES (?1, ?2, ?3, ?4, 'queued')",
-                params![id.to_string(), now_ms(), json_to_sql(preset), out_dir],
+                "INSERT INTO exports (id, created_at, preset, out_dir, status, label)
+                 VALUES (?1, ?2, ?3, ?4, 'queued', ?5)",
+                params![id.to_string(), now_ms(), json_to_sql(preset), out_dir, label],
             )?;
             let mut st = tx.prepare(
                 "INSERT INTO export_items (export_id, media_id, start_frame, end_frame, name, status, audio_ordinal)
@@ -702,14 +706,14 @@ impl ProjectDb {
 
     pub fn export(&self, project_id: ProjectId, id: ExportId) -> DbResult<Option<ExportSummary>> {
         self.0.read(|c| {
-            let head: Option<(i64, String, String, String)> = c
+            let head: Option<(i64, String, String, String, Option<String>)> = c
                 .query_row(
-                    "SELECT created_at, preset, out_dir, status FROM exports WHERE id = ?1",
+                    "SELECT created_at, preset, out_dir, status, label FROM exports WHERE id = ?1",
                     [id.to_string()],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
                 )
                 .optional()?;
-            let Some((created_at, preset, out_dir, status)) = head else { return Ok(None) };
+            let Some((created_at, preset, out_dir, status, label)) = head else { return Ok(None) };
             let mut st = c.prepare(
                 "SELECT id, media_id, start_frame, end_frame, name, status, path, verified, encoder, bytes, error
                  FROM export_items WHERE export_id = ?1 ORDER BY id",
@@ -727,6 +731,7 @@ impl ProjectDb {
                 out_dir,
                 status: enum_from_sql(&status)?,
                 items,
+                label,
             }))
         })
     }
@@ -968,11 +973,12 @@ pub(crate) mod tests {
             NewExportItem { media_id: m.id, start: 10, end: 34, name: "a_1".into(), audio_ordinal: Some(1) },
             NewExportItem { media_id: m.id, start: 50, end: 60, name: "a_2".into(), audio_ordinal: None },
         ];
-        db.insert_export(eid, &preset, "/out", &items).unwrap();
+        db.insert_export(eid, &preset, "/out", Some("Walter · scenepack"), &items).unwrap();
         let pid = ProjectId::new();
         let ex = db.export(pid, eid).unwrap().unwrap();
         assert_eq!(ex.items.len(), 2);
         assert_eq!(ex.preset, preset);
+        assert_eq!(ex.label.as_deref(), Some("Walter · scenepack"));
         assert_eq!(db.export_item_audio(ex.items[0].id).unwrap(), Some(1), "audio track is frozen per item");
         assert_eq!(ex.status, ExportStatus::Queued);
 
@@ -1005,6 +1011,7 @@ pub(crate) mod tests {
             eid,
             &preset,
             "/out",
+            None,
             &[NewExportItem { media_id: m.id, start: 0, end: 5, name: "x".into(), audio_ordinal: None }],
         )
         .unwrap();

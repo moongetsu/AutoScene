@@ -10,9 +10,25 @@
  */
 import { emit } from "@tauri-apps/api/event"
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks"
-import { castEdit, castGet, castPortrait, castTracks, characterClips, characterShots, mediaPresence, seedCast } from "./cast"
+import {
+  castEdit,
+  castGet,
+  castPortrait,
+  castTracks,
+  characterClips,
+  characterLabel,
+  characterShots,
+  mediaPresence,
+  seedCast,
+} from "./cast"
+import { packGet, packNames, packOverride, packPlan, packPreview, packSave } from "./pack"
 import type {
   AppInfo,
+  PackExportRequest,
+  PackKey,
+  PackNaming,
+  PackSpec,
+  PackState,
   AppSettings,
   ClipRequest,
   ExportItem,
@@ -402,7 +418,7 @@ function startExport(p: MockProject, req: ExportRequest): ExportSummary {
     const name = clipName(p, c)
     return { id: i + 1, mediaId: c.mediaId, start: c.start, end: c.end, name, status: "queued", path: null, verified: false, encoder: null, bytes: null, error: null }
   })
-  const ex: ExportSummary = { id: id(), projectId: p.id, createdAt: Date.now(), preset: pr, outDir, status: "running", items }
+  const ex: ExportSummary = { id: id(), projectId: p.id, createdAt: Date.now(), preset: pr, outDir, status: "running", items, label: req.label }
   p.exports.unshift(ex)
   items.forEach((it) => (it.status = "running"))
   startJob("export", items.length === 1 ? "Exporting 1 clip" : `Exporting ${items.length} clips`, p, 3500, { exportId: ex.id, stage: "Rendering" }, () => {
@@ -428,6 +444,7 @@ function seedExport(p: MockProject): ExportSummary {
     id: id(),
     projectId: p.id,
     createdAt: now - 3_600_000,
+    label: "Frieren · scenepack",
     preset: presets[0],
     outDir: `${ROOT}\\Exports\\${p.title}`,
     status: "done",
@@ -555,6 +572,43 @@ const handlers: Record<string, Handler> = {
   export_start: ({ projectId, req }) => startExport(find(projectId), req as ExportRequest),
   export_plan: ({ projectId, clips }) => exportPlan(find(projectId), clips as ClipRequest[]),
   exports_list: ({ projectId }) => find(projectId).exports,
+  pack_get: ({ projectId, characterId }) => packGet(find(projectId).id, String(characterId)),
+  pack_save: ({ projectId, characterId, pack }) => {
+    packSave(find(projectId).id, String(characterId), pack as PackState)
+    return null
+  },
+  pack_preview: ({ projectId, characterId, spec }) =>
+    packPreview(find(projectId).id, String(characterId), spec as PackSpec, find(projectId).media, SEGMENTS),
+  pack_override: ({ projectId, characterId, shots, include }) => {
+    packOverride(find(projectId).id, String(characterId), shots as PackKey[], include as boolean | null)
+    void emit("pack:changed", { projectId, characterId })
+    return null
+  },
+  pack_plan: ({ projectId, characterId, spec, naming }) => {
+    const p = find(projectId)
+    const preview = packPreview(p.id, String(characterId), spec as PackSpec, p.media, SEGMENTS)
+    return packPlan(packNames(p.id, String(characterId), p.title, preview, naming as PackNaming, p.media, tcName), preview, BYTES_PER_FRAME)
+  },
+  pack_export: ({ projectId, characterId, req }) => {
+    const p = find(projectId)
+    const r = req as PackExportRequest
+    const cid = String(characterId)
+    const preview = packPreview(p.id, cid, r.spec, p.media, SEGMENTS)
+    if (preview.stamp !== r.stamp) throw { code: "invalid", message: "The pack changed meanwhile. Check it and export again." }
+    const taken = preview.clips.filter((c) => c.included)
+    if (taken.length === 0) throw { code: "invalid", message: "There's nothing in the pack to export." }
+    const names = packNames(p.id, cid, p.title, preview, r.naming, p.media, tcName)
+    const label = characterLabel(p.id, cid)
+    packSave(p.id, cid, { spec: r.spec, naming: r.naming })
+    void emit("pack:changed", { projectId, characterId })
+    const base = r.outDir ?? `${settings.libraryRoot}\\Exports\\${p.title}`
+    return startExport(p, {
+      presetId: r.presetId,
+      outDir: r.naming.folder ? `${base}\\${label}` : base,
+      clips: taken.map((c, i) => ({ mediaId: c.shot.mediaId, start: c.start, end: c.end, name: names[i] })),
+      label: `${label} · scenepack`,
+    })
+  },
   jobs_list: () => jobs,
   job_cancel: ({ jobId }) => {
     const j = jobs.find((x) => x.id === jobId)

@@ -75,6 +75,19 @@ impl ProjectDb {
         })
     }
 
+    /// A character's name, or "Character N" until named; `None` when gone.
+    /// (The whole cast costs far more: it counts every track.)
+    pub fn character_label(&self, c: CharacterId) -> DbResult<Option<String>> {
+        self.0.read(|conn| {
+            let row = conn
+                .query_row("SELECT name, number FROM characters WHERE id = ?1", [c.to_string()], |r| {
+                    Ok((r.get::<_, Option<String>>(0)?, r.get::<_, u32>(1)?))
+                })
+                .optional()?;
+            Ok(row.map(|(name, n)| name.unwrap_or_else(|| format!("Character {n}"))))
+        })
+    }
+
     /// A character's last pack filters and naming (JSON, as stored).
     pub fn pack_state(&self, c: CharacterId) -> DbResult<Option<(String, Option<String>)>> {
         self.0.read(|conn| {
@@ -239,6 +252,8 @@ mod tests {
     fn filters_and_hand_picks_are_kept_per_character() {
         let (db, m, ids) = setup();
         let walter = character(&db, &[ids[0]], "Walter");
+        assert_eq!(db.character_label(walter).unwrap().as_deref(), Some("Walter"));
+        assert_eq!(db.character_label(CharacterId::new()).unwrap(), None);
         assert_eq!(db.pack_state(walter).unwrap(), None);
         assert!(db.set_pack_state(walter, r#"{"solo":true}"#, None).unwrap());
         assert!(db.set_pack_state(walter, r#"{"solo":false}"#, Some(r#"{"folder":true}"#)).unwrap());

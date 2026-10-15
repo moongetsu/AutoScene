@@ -10,6 +10,7 @@ mod cast;
 mod error;
 mod library;
 pub mod naming;
+mod pack;
 mod project;
 
 pub use analysis::ShotsPlan;

@@ -23,6 +23,7 @@ export function ExportDialog({
   projectId,
   clips,
   notice,
+  label = null,
   open,
   onOpenChange,
 }: {
@@ -30,13 +31,15 @@ export function ExportDialog({
   clips: ExportClip[]
   /** Something to check before exporting (a clip that runs to the episode's edge). */
   notice?: string
+  /** What it is, for the export history ("Walter · 12 shots"). */
+  label?: string | null
   open: boolean
   onOpenChange: (open: boolean) => void
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       {open && clips.length > 0 && (
-        <ExportForm projectId={projectId} clips={clips} notice={notice} onDone={() => onOpenChange(false)} />
+        <ExportForm projectId={projectId} clips={clips} notice={notice} label={label} onDone={() => onOpenChange(false)} />
       )}
     </Dialog>
   )
@@ -46,11 +49,13 @@ function ExportForm({
   projectId,
   clips,
   notice,
+  label,
   onDone,
 }: {
   projectId: string
   clips: ExportClip[]
   notice?: string
+  label: string | null
   onDone: () => void
 }) {
   const { data: presets } = usePresets()
@@ -84,6 +89,7 @@ function ExportForm({
         presetId,
         outDir: dir,
         clips: clips.map((c) => ({ mediaId: c.mediaId, start: c.start, end: c.end, name: single && name.trim() ? name.trim() : c.name })),
+        label,
       }
       await commands.exportStart(projectId, req)
       // Remember the preset for next time.

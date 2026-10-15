@@ -67,6 +67,12 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::DynRuntime> {
             commands::export::export_start,
             commands::export::export_plan,
             commands::export::exports_list,
+            commands::pack::pack_get,
+            commands::pack::pack_save,
+            commands::pack::pack_preview,
+            commands::pack::pack_override,
+            commands::pack::pack_plan,
+            commands::pack::pack_export,
             commands::jobs::jobs_list,
             commands::jobs::job_cancel,
             commands::jobs::jobs_clear_finished,
@@ -84,6 +90,7 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::DynRuntime> {
             events::AnalysisChanged,
             events::CastChanged,
             events::PortraitsChanged,
+            events::PackChanged,
             updater::UpdateProgress,
         ])
 }

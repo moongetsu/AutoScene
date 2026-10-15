@@ -74,10 +74,11 @@ function ExportCard({ ex, media }: { ex: ExportSummary; media: Map<string, Media
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2.5">
-            <h2 className="text-lg font-semibold text-fg-1">{ex.preset.name}</h2>
+            <h2 className="truncate text-lg font-semibold text-fg-1">{ex.label ?? ex.preset.name}</h2>
             <ExportStatusBadge ex={ex} unverified={unverified} />
           </div>
           <p className="mt-0.5 text-sm text-fg-3">
+            {ex.label && `${ex.preset.name} · `}
             {formatDateTime(ex.createdAt)} · {done} of {ex.items.length} {ex.items.length === 1 ? "clip" : "clips"}
           </p>
         </div>

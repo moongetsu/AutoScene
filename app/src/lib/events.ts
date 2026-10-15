@@ -15,7 +15,8 @@ import { qk, queryClient } from "./queries"
  * | library:changed  | projects, project(id), exportDir                   |
  * | media:changed    | media(pid), frameMap(pid, mid), project(pid)       |
  * | analysis:changed | segments(pid, mid)                                 |
- * | cast:changed     | cast(pid) and everything under it (tracks, presence) |
+ * | cast:changed     | cast(pid) and everything under it (tracks, presence, packs) |
+ * | pack:changed     | pack(pid, cid): its settings and hand picks         |
  * | export:changed   | exports(pid)                                       |
  */
 export function startEventBridge(): () => void {
@@ -56,6 +57,9 @@ export function startEventBridge(): () => void {
     events.portraitsChanged.listen(({ payload }) => {
       // Covers got sharp: the cast alone, not its lists.
       void queryClient.invalidateQueries({ queryKey: qk.cast(payload.projectId), exact: true })
+    }),
+    events.packChanged.listen(({ payload }) => {
+      void queryClient.invalidateQueries({ queryKey: qk.pack(payload.projectId, payload.characterId) })
     }),
     events.exportChanged.listen(({ payload }) => {
       void queryClient.invalidateQueries({ queryKey: qk.exports(payload.projectId) })

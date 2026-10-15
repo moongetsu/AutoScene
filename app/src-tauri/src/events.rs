@@ -2,7 +2,7 @@
 //! event → query-invalidation map (`app/src/lib/events.ts`) can be grepped.
 
 use as_api::{JobInfo, JobProgress};
-use as_core::{ExportId, MediaId, ProjectId};
+use as_core::{CharacterId, ExportId, MediaId, ProjectId};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use tauri_specta::Event;
@@ -73,6 +73,16 @@ pub struct CastChanged {
 #[serde(rename_all = "camelCase")]
 pub struct PortraitsChanged {
     pub project_id: ProjectId,
+}
+
+/// A character's pack settings or hand picks changed (the pack is made
+/// again from them).
+#[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
+#[tauri_specta(event_name = "pack:changed")]
+#[serde(rename_all = "camelCase")]
+pub struct PackChanged {
+    pub project_id: ProjectId,
+    pub character_id: CharacterId,
 }
 
 pub fn emit_media_changed(app: &tauri::AppHandle, project_id: ProjectId, media_id: Option<MediaId>) {

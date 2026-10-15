@@ -183,7 +183,7 @@ fn box_iou(a: &[f32; 4], b: &[f32; 4]) -> f32 {
     if union <= 0.0 { 0.0 } else { inter / union }
 }
 
-fn track_id(id: i64) -> u32 {
+pub(crate) fn track_id(id: i64) -> u32 {
     u32::try_from(id).unwrap_or(u32::MAX)
 }
 
@@ -198,13 +198,13 @@ impl Project {
         self.faces_dir().join(media.to_string())
     }
 
-    fn thumb_path(&self, media: MediaId, track: i64) -> PathBuf {
+    pub(crate) fn thumb_path(&self, media: MediaId, track: i64) -> PathBuf {
         self.media_faces_dir(media).join(format!("{track}.jpg"))
     }
 
     /// Named by the shot's start and end: a shot found again differently is
     /// a new file, never a stale one from the webview's cache.
-    fn sprite_path(&self, media: MediaId, shot: FrameIdx, end: FrameIdx) -> PathBuf {
+    pub(crate) fn sprite_path(&self, media: MediaId, shot: FrameIdx, end: FrameIdx) -> PathBuf {
         self.media_faces_dir(media).join("shots").join(format!("{shot}-{end}.jpg"))
     }
 
@@ -566,7 +566,7 @@ impl Project {
 
     // -- cast ---------------------------------------------------------------
 
-    fn path_string(p: &Path) -> String {
+    pub(crate) fn path_string(p: &Path) -> String {
         p.display().to_string()
     }
 
@@ -708,7 +708,7 @@ impl Project {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use as_api::Segment;
 
     use super::*;
@@ -717,7 +717,7 @@ mod tests {
     const MODEL: &str = "test-embedder";
 
     /// A face of person `who` (a direction in embedding space) in shot `shot`.
-    fn face(who: usize, shot: FrameIdx, x: f32, quality: f32) -> FaceTrack {
+    pub(crate) fn face(who: usize, shot: FrameIdx, x: f32, quality: f32) -> FaceTrack {
         let mut embedding = vec![0.02f32; tracks::DIM];
         embedding[who] = 1.0;
         let n = embedding.iter().map(|v| v * v).sum::<f32>().sqrt();
@@ -736,7 +736,7 @@ mod tests {
 
     /// Person `who` in shot `shot`, seen from `start` to `end` (a detection
     /// every 15 frames), at `x` at frame `shot` and moving `speed` per frame.
-    fn moving(who: usize, shot: FrameIdx, start: FrameIdx, end: FrameIdx, x: f32, speed: f32) -> FaceTrack {
+    pub(crate) fn moving(who: usize, shot: FrameIdx, start: FrameIdx, end: FrameIdx, x: f32, speed: f32) -> FaceTrack {
         let mut t = face(who, shot, x, 0.9);
         t.start = start;
         t.end = end;
@@ -751,7 +751,7 @@ mod tests {
         t
     }
 
-    fn seen(who: usize, shot: FrameIdx, start: FrameIdx, end: FrameIdx, x: f32) -> FaceTrack {
+    pub(crate) fn seen(who: usize, shot: FrameIdx, start: FrameIdx, end: FrameIdx, x: f32) -> FaceTrack {
         moving(who, shot, start, end, x, 0.0)
     }
 

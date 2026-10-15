@@ -481,6 +481,8 @@ pub struct ExportRequest {
     /// Destination folder; the project's default export folder when `None`.
     pub out_dir: Option<String>,
     pub clips: Vec<ClipRequest>,
+    /// What it is, for the export history ("Walter · scenepack").
+    pub label: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -538,6 +540,196 @@ pub struct ExportSummary {
     pub out_dir: String,
     pub status: ExportStatus,
     pub items: Vec<ExportItem>,
+    /// What it is ("Walter · scenepack"); `None` for single clips.
+    pub label: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Packs
+// ---------------------------------------------------------------------------
+
+/// How big a face is in a shot, from its height in the frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum ShotSize {
+    ExtremeCloseUp,
+    CloseUp,
+    MediumCloseUp,
+    Medium,
+    Wide,
+}
+
+impl ShotSize {
+    /// From the biggest face's height as a share of the frame height.
+    pub fn of(face_height: f32) -> Self {
+        match face_height {
+            h if h >= 0.45 => Self::ExtremeCloseUp,
+            h if h >= 0.25 => Self::CloseUp,
+            h if h >= 0.15 => Self::MediumCloseUp,
+            h if h >= 0.08 => Self::Medium,
+            _ => Self::Wide,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum PackOrder {
+    /// As they are in the episodes.
+    #[default]
+    Episodes,
+    /// The best first (clear, big, on screen the whole shot).
+    Best,
+}
+
+/// Which of a character's shots go into their scenepack. (Filters saved by
+/// an older version load with the defaults filled in: `as_project::pack`.)
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PackSpec {
+    /// Shots shorter than this many seconds are left out.
+    pub min_sec: Option<f64>,
+    /// Shots longer than this many seconds are left out.
+    pub max_sec: Option<f64>,
+    /// Only shots of these sizes (empty: any size).
+    pub sizes: Vec<ShotSize>,
+    /// Only shots with no one else in them.
+    pub solo: bool,
+    /// Leave out flash cuts (shots under 3 frames).
+    pub skip_tiny: bool,
+    /// Only these episodes (empty: all).
+    pub media: Vec<MediaId>,
+    pub order: PackOrder,
+    /// At most this many shots: the best ones.
+    pub limit: Option<u32>,
+    /// Extra frames before and after each shot (within the episode).
+    pub handles: u32,
+}
+
+impl Default for PackSpec {
+    fn default() -> Self {
+        Self {
+            min_sec: None,
+            max_sec: None,
+            sizes: Vec::new(),
+            solo: false,
+            skip_tiny: true,
+            media: Vec::new(),
+            order: PackOrder::Episodes,
+            limit: None,
+            handles: 0,
+        }
+    }
+}
+
+/// Why a shot is left out of a pack.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum PackReason {
+    /// The episode's file can't be found (or isn't indexed yet).
+    Missing,
+    Episode,
+    Tiny,
+    Short,
+    Long,
+    Size,
+    NotSolo,
+    /// Past the limit.
+    Limit,
+    /// Dropped by hand.
+    Removed,
+}
+
+/// A shot of a pack, picked or not.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PackClip {
+    /// The shot (its picture, face and range): picks by hand stick to its media and first frame.
+    pub shot: CharacterShot,
+    /// The clip: the shot and its handles, within the episode.
+    pub start: FrameIdx,
+    pub end: FrameIdx,
+    pub size: ShotSize,
+    /// 0..1: how clearly the character's face shows in it.
+    pub quality: f32,
+    /// Share of the shot the character is on screen.
+    pub coverage: f32,
+    /// Other characters on screen in the shot.
+    pub others: u32,
+    /// 0..1: how good a clip it makes (what "best first" sorts by).
+    pub score: f32,
+    pub included: bool,
+    /// What the filters alone would say.
+    pub by_rules: bool,
+    /// Why it's left out.
+    pub reason: Option<PackReason>,
+    /// Picked (`true`) or dropped (`false`) by hand.
+    pub manual: Option<bool>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PackTotals {
+    pub clips: u32,
+    pub frames: f64,
+    pub seconds: f64,
+}
+
+/// A pack as it stands: every shot of the character, the ones it takes
+/// marked, in the pack's order.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PackPreview {
+    pub clips: Vec<PackClip>,
+    pub totals: PackTotals,
+    /// Names exactly the clips it takes: an export of it is refused once the
+    /// pack changed, so what is exported is what was shown.
+    pub stamp: String,
+}
+
+/// How a pack's files are named and where they go.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PackNaming {
+    /// With `{series}`, `{character}`, `{episode}`, `{index}`, `{tc}`, `{frame}`.
+    pub template: String,
+    /// Into a folder named after the character.
+    pub folder: bool,
+}
+
+impl Default for PackNaming {
+    fn default() -> Self {
+        Self { template: "{series} {character} {episode} {tc}".into(), folder: true }
+    }
+}
+
+/// A character's pack settings, as last used.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PackState {
+    pub spec: PackSpec,
+    pub naming: PackNaming,
+}
+
+/// A shot of a pack, by its media and first frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PackKey {
+    pub media_id: MediaId,
+    pub shot: FrameIdx,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PackExportRequest {
+    pub spec: PackSpec,
+    pub naming: PackNaming,
+    pub preset_id: String,
+    /// The folder the files (or the character's folder) go to; the
+    /// project's default export folder when `None`.
+    pub out_dir: Option<String>,
+    /// The preview's stamp: the export is refused if the pack changed since.
+    pub stamp: String,
 }
 
 // ---------------------------------------------------------------------------

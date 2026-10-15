@@ -266,6 +266,7 @@ dependencies = [
  "parking_lot",
  "regex",
  "rusqlite",
+ "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",

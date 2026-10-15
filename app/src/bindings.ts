@@ -101,6 +101,22 @@ export const commands = {
 	exportPlan: (projectId: ProjectId, clips: ClipRequest[]) => __TAURI_INVOKE<ExportPlan>("export_plan", { projectId, clips }),
 	/**  Newest first. */
 	exportsList: (projectId: ProjectId) => __TAURI_INVOKE<ExportSummary[]>("exports_list", { projectId }),
+	/**  A character's pack settings as last used (the defaults the first time). */
+	packGet: (projectId: ProjectId, characterId: CharacterId) => __TAURI_INVOKE<PackState>("pack_get", { projectId, characterId }),
+	/**  Keep a character's pack settings for next time. */
+	packSave: (projectId: ProjectId, characterId: CharacterId, pack: PackState) => __TAURI_INVOKE<null>("pack_save", { projectId, characterId, pack }),
+	/**  Every shot of the character, the ones the pack takes marked, in its order. */
+	packPreview: (projectId: ProjectId, characterId: CharacterId, spec: PackSpec) => __TAURI_INVOKE<PackPreview>("pack_preview", { projectId, characterId, spec }),
+	/**  Pick (`true`), drop (`false`) or hand back to the filters (`null`) shots of a pack. */
+	packOverride: (projectId: ProjectId, characterId: CharacterId, shots: PackKey[], include: boolean | null) => __TAURI_INVOKE<null>("pack_override", { projectId, characterId, shots, include }),
+	/**  The names the pack's files would get and its size with each preset. */
+	packPlan: (projectId: ProjectId, characterId: CharacterId, spec: PackSpec, naming: PackNaming) => __TAURI_INVOKE<ExportPlan>("pack_plan", { projectId, characterId, spec, naming }),
+	/**
+	 *  Export a character's pack: exactly what the preview with `req.stamp`
+	 *  showed (refused if the pack changed since). Progress arrives as `job:*`
+	 *  events, results as `export:changed`.
+	 */
+	packExport: (projectId: ProjectId, characterId: CharacterId, req: PackExportRequest) => __TAURI_INVOKE<ExportSummary>("pack_export", { projectId, characterId, req }),
 	/**  Newest first. Live updates arrive as `job:changed` / `job:progress`. */
 	jobsList: () => __TAURI_INVOKE<JobInfo[]>("jobs_list"),
 	jobCancel: (jobId: JobId) => __TAURI_INVOKE<void>("job_cancel", { jobId }),
@@ -136,6 +152,7 @@ export const events = {
 	libraryChanged: makeEvent<LibraryChanged>("library:changed"),
 	mediaChanged: makeEvent<MediaChanged>("media:changed"),
 	menuAction: makeEvent<MenuAction>("menu:action"),
+	packChanged: makeEvent<PackChanged>("pack:changed"),
 	portraitsChanged: makeEvent<PortraitsChanged>("portraits:changed"),
 	updateProgress: makeEvent<UpdateProgress>("update:progress"),
 };
@@ -391,6 +408,8 @@ export type ExportRequest = {
 	/**  Destination folder; the project's default export folder when `None`. */
 	outDir: string | null,
 	clips: ClipRequest[],
+	/**  What it is, for the export history ("Walter · scenepack"). */
+	label: string | null,
 };
 
 export type ExportStatus = "queued" | "running" | "done" | "failed" | "cancelled";
@@ -403,6 +422,8 @@ export type ExportSummary = {
 	outDir: string,
 	status: ExportStatus,
 	items: ExportItem[],
+	/**  What it is ("Walter · scenepack"); `None` for single clips. */
+	label: string | null,
 };
 
 /**  One face followed through one shot. */
@@ -620,6 +641,132 @@ export type NewProject = {
 	files: string[],
 };
 
+/**
+ *  A character's pack settings or hand picks changed (the pack is made
+ *  again from them).
+ */
+export type PackChanged = {
+	projectId: ProjectId,
+	characterId: CharacterId,
+};
+
+/**  A shot of a pack, picked or not. */
+export type PackClip = {
+	/**  The shot (its picture, face and range): picks by hand stick to its media and first frame. */
+	shot: CharacterShot,
+	/**  The clip: the shot and its handles, within the episode. */
+	start: number,
+	end: number,
+	size: ShotSize,
+	/**  0..1: how clearly the character's face shows in it. */
+	quality: number | null,
+	/**  Share of the shot the character is on screen. */
+	coverage: number | null,
+	/**  Other characters on screen in the shot. */
+	others: number,
+	/**  0..1: how good a clip it makes (what "best first" sorts by). */
+	score: number | null,
+	included: boolean,
+	/**  What the filters alone would say. */
+	byRules: boolean,
+	/**  Why it's left out. */
+	reason: PackReason | null,
+	/**  Picked (`true`) or dropped (`false`) by hand. */
+	manual: boolean | null,
+};
+
+export type PackExportRequest = {
+	spec: PackSpec,
+	naming: PackNaming,
+	presetId: string,
+	/**
+	 *  The folder the files (or the character's folder) go to; the
+	 *  project's default export folder when `None`.
+	 */
+	outDir: string | null,
+	/**  The preview's stamp: the export is refused if the pack changed since. */
+	stamp: string,
+};
+
+/**  A shot of a pack, by its media and first frame. */
+export type PackKey = {
+	mediaId: MediaId,
+	shot: number,
+};
+
+/**  How a pack's files are named and where they go. */
+export type PackNaming = {
+	/**  With `{series}`, `{character}`, `{episode}`, `{index}`, `{tc}`, `{frame}`. */
+	template: string,
+	/**  Into a folder named after the character. */
+	folder: boolean,
+};
+
+export type PackOrder = 
+/**  As they are in the episodes. */
+"episodes" | 
+/**  The best first (clear, big, on screen the whole shot). */
+"best";
+
+/**
+ *  A pack as it stands: every shot of the character, the ones it takes
+ *  marked, in the pack's order.
+ */
+export type PackPreview = {
+	clips: PackClip[],
+	totals: PackTotals,
+	/**
+	 *  Names exactly the clips it takes: an export of it is refused once the
+	 *  pack changed, so what is exported is what was shown.
+	 */
+	stamp: string,
+};
+
+/**  Why a shot is left out of a pack. */
+export type PackReason = 
+/**  The episode's file can't be found (or isn't indexed yet). */
+"missing" | "episode" | "tiny" | "short" | "long" | "size" | "not_solo" | 
+/**  Past the limit. */
+"limit" | 
+/**  Dropped by hand. */
+"removed";
+
+/**
+ *  Which of a character's shots go into their scenepack. (Filters saved by
+ *  an older version load with the defaults filled in: `as_project::pack`.)
+ */
+export type PackSpec = {
+	/**  Shots shorter than this many seconds are left out. */
+	minSec: number | null,
+	/**  Shots longer than this many seconds are left out. */
+	maxSec: number | null,
+	/**  Only shots of these sizes (empty: any size). */
+	sizes: ShotSize[],
+	/**  Only shots with no one else in them. */
+	solo: boolean,
+	/**  Leave out flash cuts (shots under 3 frames). */
+	skipTiny: boolean,
+	/**  Only these episodes (empty: all). */
+	media: MediaId[],
+	order: PackOrder,
+	/**  At most this many shots: the best ones. */
+	limit: number | null,
+	/**  Extra frames before and after each shot (within the episode). */
+	handles: number,
+};
+
+/**  A character's pack settings, as last used. */
+export type PackState = {
+	spec: PackSpec,
+	naming: PackNaming,
+};
+
+export type PackTotals = {
+	clips: number,
+	frames: number | null,
+	seconds: number | null,
+};
+
 export type Platform = "windows" | "macos" | "linux";
 
 /**
@@ -705,6 +852,9 @@ export type SegmentKind = "shot" |
 "black" | 
 /**  A brief flash (muzzle flash, lightning, anime impact frame) inside a shot. */
 "flash";
+
+/**  How big a face is in a shot, from its height in the frame. */
+export type ShotSize = "extreme_close_up" | "close_up" | "medium_close_up" | "medium" | "wide";
 
 /**  Progress of one analysis stage of a media. */
 export type StageState = 

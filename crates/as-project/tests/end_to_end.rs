@@ -193,7 +193,7 @@ fn import_preview_and_export_three_episodes() {
     let prores = builtin_presets().into_iter().find(|p| p.id == "prores-hq").unwrap();
     let out_dir = lib.default_export_dir(&summary).unwrap();
     for preset in [prores, h264] {
-        let req = ExportRequest { preset_id: preset.id.clone(), out_dir: None, clips: clips.clone() };
+        let req = ExportRequest { preset_id: preset.id.clone(), out_dir: None, clips: clips.clone(), label: None };
         let ex = project.create_export(&req, preset, &out_dir).unwrap();
         assert_eq!(ex.status, ExportStatus::Queued);
         let updates = std::cell::Cell::new(0);
@@ -218,7 +218,7 @@ fn import_preview_and_export_three_episodes() {
 
     // Exporting the same range again with the same preset picks a new name.
     let prores = builtin_presets().into_iter().find(|p| p.id == "prores-hq").unwrap();
-    let req = ExportRequest { preset_id: prores.id.clone(), out_dir: None, clips: clips[..1].to_vec() };
+    let req = ExportRequest { preset_id: prores.id.clone(), out_dir: None, clips: clips[..1].to_vec(), label: None };
     let again = project.create_export(&req, prores.clone(), &out_dir).unwrap();
     assert_eq!(again.items[0].name, "Fixture_Show_cfr24_h264_00-00-04-04_2");
     // …and a second one queued before the first has written anything gets its own name too.
@@ -257,6 +257,7 @@ fn bad_ranges_and_missing_files_are_refused() {
         preset_id: preset.id.clone(),
         out_dir: None,
         clips: vec![ClipRequest { media_id: id, start: s, end: e, name: Some("x".into()) }],
+        label: None,
     };
     let out = tmp.path().join("out");
     assert!(project.create_export(&req(10, 10), preset.clone(), &out).is_err(), "empty range");
