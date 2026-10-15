@@ -71,6 +71,12 @@ export const commands = {
 	castTracks: (projectId: ProjectId, filter: TrackFilter) => __TAURI_INVOKE<FaceTrackItem[]>("cast_tracks", { projectId, filter }),
 	/**  Apply a decision about the cast. Returns the character it created, if any. */
 	castEdit: (projectId: ProjectId, edit: CastEdit) => __TAURI_INVOKE<string | null>("cast_edit", { projectId, edit }),
+	/**
+	 *  A face's portrait (3:4, sharp where a face is shown big), made now unless
+	 *  it exists. `None` when it can't be made now (the media is missing or being
+	 *  indexed): the thumbnail stands in.
+	 */
+	castPortrait: (projectId: ProjectId, trackId: number) => __TAURI_INVOKE<string | null>("cast_portrait", { projectId, trackId }),
 	/**  Where characters are on screen in one media (for the timeline). */
 	mediaPresence: (projectId: ProjectId, mediaId: MediaId) => __TAURI_INVOKE<Presence[]>("media_presence", { projectId, mediaId }),
 	/**  Every shot a character is seen in, as clips ready to export. */
@@ -125,6 +131,7 @@ export const events = {
 	libraryChanged: makeEvent<LibraryChanged>("library:changed"),
 	mediaChanged: makeEvent<MediaChanged>("media:changed"),
 	menuAction: makeEvent<MenuAction>("menu:action"),
+	portraitsChanged: makeEvent<PortraitsChanged>("portraits:changed"),
 	updateProgress: makeEvent<UpdateProgress>("update:progress"),
 };
 
@@ -251,8 +258,14 @@ export type Character = {
 	media: number,
 	/**  Time the character's face is on screen. */
 	screenSec: number | null,
-	/**  Face thumbnail (absolute path). */
+	/**
+	 *  Portrait for big places (cards, heroes): 3:4 from the exact frame at
+	 *  full resolution once it is made, the face thumbnail until then
+	 *  (absolute path).
+	 */
 	cover: string | null,
+	/**  The same face as a small square thumbnail, for avatars and lists. */
+	coverSmall: string | null,
 	/**  Tracks that look like the character and wait for a decision. */
 	unsure: number,
 	/**
@@ -478,7 +491,9 @@ export type JobKind = "ingest" | "proxy" | "export" |
 /**  AI analysis of a media: shots, then faces and characters. */
 "analyze" | 
 /**  Posters of a project made again at the current sizes. */
-"posters";
+"posters" | 
+/**  Sharp portraits of a project's characters, cut from the exact frames. */
+"portraits";
 
 /**  Throttled progress for a running job (≤ 4 Hz per job). */
 export type JobProgress = {
@@ -590,6 +605,14 @@ export type NewProject = {
 };
 
 export type Platform = "windows" | "macos" | "linux";
+
+/**
+ *  Character covers of a project got sharp portraits (the cast itself is
+ *  unchanged: its lists needn't be fetched again).
+ */
+export type PortraitsChanged = {
+	projectId: ProjectId,
+};
 
 /**  Where characters are on screen in one media. */
 export type Presence = {

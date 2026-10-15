@@ -4,15 +4,17 @@
 use std::path::Path;
 use std::process::Stdio;
 
+use as_analysis::FaceDet;
+use as_analysis::tracks::{self, FaceTrack};
 use as_api::{
-    AppSettings, ClipRequest, ContentKind, ExportRequest, ExportStatus, FrameMap, MediaStatus, NewProject, ProjectKind,
-    ProxyState,
+    AppSettings, CastEdit, ClipRequest, ContentKind, ExportRequest, ExportStatus, FrameMap, MediaStatus, NewProject,
+    ProjectKind, ProxyState, TrackFilter,
 };
 use as_core::{AppPaths, CancelToken};
 use as_export::builtin_presets;
 use as_export::preset::{EncoderPref, Gop, VideoCodec};
 use as_media::Tools;
-use as_project::Library;
+use as_project::{Library, Portrait};
 use as_testkit::{barcode, fixtures_dir, load_truth};
 
 const FILES: [&str; 3] = ["cfr24_h264.mp4", "transport_h264.ts", "vfr_h264.mkv"];
@@ -265,4 +267,108 @@ fn bad_ranges_and_missing_files_are_refused() {
     assert!(project.create_export(&req(0, 10), preset, &out).is_err(), "missing source");
     let err = project.ingest(&tools, id, "eng", &CancelToken::new(), &|_, _| {}).unwrap_err();
     assert!(err.to_string().contains("can't be found"), "{err}");
+}
+
+/// `(width, height)` of a picture.
+fn dimensions(tools: &Tools, file: &Path) -> (u32, u32) {
+    let out = tools
+        .ffprobe()
+        .args(["-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0"])
+        .arg(file)
+        .output()
+        .expect("ffprobe");
+    let text = String::from_utf8_lossy(&out.stdout);
+    let (w, h) = text.trim().split_once(',').expect("width,height");
+    (w.parse().unwrap(), h.parse().unwrap())
+}
+
+/// A character's cover gets a sharp portrait: 3:4 from the exact frame of
+/// its clearest face, named after that frame and its size. A portrait of
+/// another size goes; a source that is gone makes none.
+#[test]
+fn covers_get_portraits_from_the_exact_frame() {
+    let Some(_truth) = load_truth() else { return };
+    let tools = Tools::locate(None).expect("ffmpeg on PATH");
+    let tmp = tempfile::tempdir().unwrap();
+    let lib = Library::open(&AppPaths::at(tmp.path().join("data"))).unwrap();
+    lib.update_settings(&AppSettings {
+        library_root: tmp.path().join("Library").display().to_string(),
+        export_preset_id: "prores-hq".into(),
+        audio_language: "eng".into(),
+    })
+    .unwrap();
+    // A copy we can delete to simulate a disconnected drive.
+    let copy = tmp.path().join("Show - 01.mkv");
+    std::fs::copy(fixtures_dir().join("vfr_h264.mkv"), &copy).unwrap();
+    let (_, project, added) = lib
+        .create_project(&NewProject {
+            title: "Portraits".into(),
+            kind: ProjectKind::Series,
+            content: ContentKind::Live,
+            files: vec![copy.display().to_string()],
+        })
+        .unwrap();
+    let cancel = CancelToken::new();
+    let m = project.ingest(&tools, added[0], "eng", &cancel, &|_, _| {}).unwrap();
+
+    // One face, seen at 191, 200 and 209: clearest at 200. Another whose
+    // detections lie past the end of the file (as when a file comes back
+    // shorter and is indexed again).
+    let det = |frame, quality| FaceDet { frame, bbox: [0.4, 0.3, 0.55, 0.6], score: 0.9, norm: 22.0, quality };
+    let face = |who: usize, start: u32, dets: Vec<FaceDet>| {
+        let mut embedding = vec![0.0; tracks::DIM];
+        embedding[who] = 1.0;
+        FaceTrack {
+            start,
+            end: start + 21,
+            shot: 0,
+            dets,
+            embedding,
+            quality: 0.8,
+            thumb: vec![0xFF, 0xD8, 0xFF, 0xD9],
+        }
+    };
+    let frames = m.frames.unwrap();
+    let faces = [
+        face(0, 191, vec![det(191, 0.5), det(200, 0.9), det(209, 0.6)]),
+        face(1, frames + 10, vec![det(frames + 10, 0.9)]),
+    ];
+    project.store_face_chunk(m.id, 0, frames, &tracks::encode(&faces), &[]).unwrap();
+    project.finish_faces(m.id).unwrap();
+    let id_at = |start| {
+        project.cast_tracks(TrackFilter::Unassigned).unwrap().into_iter().find(|t| t.start == start).unwrap().id
+    };
+    let (track, past_the_end) = (id_at(191), id_at(frames + 10));
+    project.cast_edit(&CastEdit::NewCharacter { tracks: vec![track], name: Some("Walter".into()) }).unwrap();
+    project.cast_edit(&CastEdit::NewCharacter { tracks: vec![past_the_end], name: Some("Jesse".into()) }).unwrap();
+    let (track, past_the_end) = (i64::from(track), i64::from(past_the_end));
+    assert_eq!(project.missing_portraits().unwrap(), [track, past_the_end]);
+
+    // A portrait of an earlier size.
+    let faces = project.faces_dir().join(m.id.to_string());
+    let old = faces.join(format!("{track}-200-300x400.jpg"));
+    std::fs::write(&old, b"old").unwrap();
+
+    let Portrait::Made(portrait) = project.portrait(&tools, track, &cancel).unwrap() else { panic!("a portrait") };
+    let name = portrait.file_name().unwrap().to_string_lossy().into_owned();
+    assert!(name.starts_with(&format!("{track}-200-")) && name.ends_with("-450x600.jpg"), "{name}");
+    assert_eq!(portrait.parent(), Some(faces.as_path()));
+    assert_eq!(dimensions(&tools, &portrait), (450, 600));
+    assert!(!old.exists(), "the earlier size goes");
+    assert!(faces.join(format!("{track}.jpg")).is_file(), "the thumbnail stays");
+    let walter = project.cast().unwrap().characters.into_iter().find(|c| c.name.as_deref() == Some("Walter")).unwrap();
+    assert_eq!(walter.cover.as_deref(), Some(portrait.display().to_string().as_str()));
+    assert_eq!(walter.cover_small, Some(faces.join(format!("{track}.jpg")).display().to_string()));
+    assert_eq!(project.portrait(&tools, track, &cancel).unwrap(), Portrait::Ready(portrait.clone()), "made once");
+
+    // A face past the end of the file gets none, and isn't owed one again.
+    assert_eq!(project.portrait(&tools, past_the_end, &cancel).unwrap(), Portrait::Unavailable);
+    assert!(project.missing_portraits().unwrap().is_empty());
+
+    // The source is gone: no portrait, and none owed.
+    std::fs::remove_file(&portrait).unwrap();
+    std::fs::remove_file(&copy).unwrap();
+    assert_eq!(project.media(m.id).unwrap().status, MediaStatus::Missing);
+    assert_eq!(project.portrait(&tools, track, &cancel).unwrap(), Portrait::Unavailable);
+    assert!(project.missing_portraits().unwrap().is_empty());
 }

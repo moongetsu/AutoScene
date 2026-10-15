@@ -49,6 +49,13 @@ export function startEventBridge(): () => void {
     events.castChanged.listen(({ payload }) => {
       // Prefix match: the cast, its track lists, presence lanes and clip lists.
       void queryClient.invalidateQueries({ queryKey: qk.cast(payload.projectId) })
+      // Faces found again may reuse track numbers: portraits are asked for
+      // again when next shown, not now (the face on screen stays).
+      void queryClient.invalidateQueries({ queryKey: qk.portraits(payload.projectId), refetchType: "none" })
+    }),
+    events.portraitsChanged.listen(({ payload }) => {
+      // Covers got sharp: the cast alone, not its lists.
+      void queryClient.invalidateQueries({ queryKey: qk.cast(payload.projectId), exact: true })
     }),
     events.exportChanged.listen(({ payload }) => {
       void queryClient.invalidateQueries({ queryKey: qk.exports(payload.projectId) })

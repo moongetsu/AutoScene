@@ -82,7 +82,7 @@ pub async fn media_remove(
     .await?;
     work::library_changed(&app, &project);
     crate::events::emit_media_changed(&app, project_id, Some(media_id));
-    let _ = crate::events::CastChanged { project_id }.emit(&app);
+    work::cast_changed(&app, &project);
     Ok(())
 }
 

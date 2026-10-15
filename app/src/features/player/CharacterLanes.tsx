@@ -82,7 +82,7 @@ function LaneRow({
   return (
     <div className="group grid grid-cols-[var(--lane-label-w)_minmax(0,1fr)] items-center gap-3">
       <span className="flex min-w-0 items-center gap-2">
-        {c.cover && <img src={assetUrl(c.cover)} alt="" className="size-5 shrink-0 rounded-full object-cover" />}
+        {c.coverSmall && <img src={assetUrl(c.coverSmall)} alt="" className="size-5 shrink-0 rounded-full object-cover" />}
         <span
           className={cn(
             "truncate text-xs font-medium",

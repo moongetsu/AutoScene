@@ -9,7 +9,7 @@ import { Page } from "@/components/ui/page"
 import { Progress } from "@/components/ui/progress"
 import { TopBar } from "@/components/ui/topbar"
 import { assetUrl } from "@/lib/media"
-import { useCast, useCastTracks, useMediaList } from "@/lib/queries"
+import { portraitQuery, queryClient, useCast, useCastTracks, useMediaList, usePortrait } from "@/lib/queries"
 import { timecode } from "@/lib/timecode"
 import { cn } from "@/lib/utils"
 import { castEdit, plural } from "./cast"
@@ -45,6 +45,16 @@ export function ReviewPage() {
   const picks = (pickIds ?? []).map((id) => byId.get(id))
   const m = current ? media?.find((x) => x.id === current.mediaId) : undefined
   const total = done + items.length
+  // Shown big: the face's sharp portrait, the thumbnail until it's made.
+  const portrait = usePortrait(pid, current)
+  // The next faces' portraits are made while this one is decided.
+  const upcoming = items.filter((t) => !skipped.has(t.id) && t.id !== current?.id).slice(0, 2)
+  const upcomingIds = upcoming.map((t) => t.id).join(",")
+  useEffect(() => {
+    for (const t of upcoming) void queryClient.prefetchQuery(portraitQuery(pid, t))
+    // Once per new pair of faces (`upcomingIds`), not per render.
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
+  }, [pid, upcomingIds])
 
   const answer = async (id: number, fn: () => Promise<unknown>) => {
     if (busy) return
@@ -168,9 +178,9 @@ export function ReviewPage() {
                 <div className="size-[min(300px,32vh)] overflow-hidden rounded-[32px] bg-inset shadow-[0_40px_80px_-30px_rgb(0_0_0/0.9),inset_0_0_0_1px_rgb(255_255_255/0.12)]">
                   <img
                     key={current.id}
-                    src={assetUrl(current.thumb)}
+                    src={assetUrl(portrait.data ?? current.thumb)}
                     alt="The face to decide on"
-                    className="size-full animate-fade-in object-cover"
+                    className="size-full animate-fade-in object-cover object-[50%_30%]"
                   />
                 </div>
                 <figcaption className="mt-3 flex items-center gap-2 text-sm text-fg-3">
@@ -255,7 +265,7 @@ export function ReviewPage() {
                       )}
                     >
                       <span className="size-8 shrink-0 overflow-hidden rounded-full bg-inset">
-                        {p.cover && <img src={assetUrl(p.cover)} alt="" className="size-full object-cover" />}
+                        {p.coverSmall && <img src={assetUrl(p.coverSmall)} alt="" className="size-full object-cover" />}
                       </span>
                       <span className={cn("max-w-[140px] truncate text-sm font-medium", p.name ? "text-fg-1" : "text-fg-2")}>
                         {p.label}
@@ -281,7 +291,7 @@ function Suggestion({ character: c }: { character: Character }) {
       </span>
       <figure className="flex flex-col items-center">
         <div className="size-[min(300px,32vh)] overflow-hidden rounded-[32px] bg-inset shadow-[0_40px_80px_-30px_rgb(0_0_0/0.9),inset_0_0_0_1px_rgb(255_255_255/0.12)]">
-          {c.cover && <img src={assetUrl(c.cover)} alt="" className="size-full object-cover" />}
+          {c.cover && <img src={assetUrl(c.cover)} alt="" className="size-full object-cover object-[50%_30%]" />}
         </div>
         <figcaption className={cn("display mt-3 text-2xl", c.name ? "text-fg-1" : "text-fg-2 italic")}>{c.label}</figcaption>
       </figure>

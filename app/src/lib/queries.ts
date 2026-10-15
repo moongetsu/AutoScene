@@ -1,5 +1,5 @@
 import { QueryClient, useQuery } from "@tanstack/react-query"
-import { commands, type CharacterId, type MediaId, type ProjectId, type TrackFilter } from "./ipc"
+import { commands, type CharacterId, type FaceTrackItem, type MediaId, type ProjectId, type TrackFilter } from "./ipc"
 
 export const queryClient = new QueryClient({
   defaultOptions: {
@@ -26,6 +26,11 @@ export const qk = {
   exports: (pid: ProjectId) => ["exports", pid] as const,
   cast: (pid: ProjectId) => ["cast", pid] as const,
   tracks: (pid: ProjectId, filter: TrackFilter) => ["cast", pid, "tracks", filter] as const,
+  // Outside the cast: a face's portrait doesn't change when the cast does.
+  // The face's place keeps a track number handed out again apart.
+  portraits: (pid: ProjectId) => ["portrait", pid] as const,
+  portrait: (pid: ProjectId, t: Pick<FaceTrackItem, "id" | "mediaId" | "start">) =>
+    ["portrait", pid, t.id, t.mediaId, t.start] as const,
   presence: (pid: ProjectId, mid: MediaId) => ["cast", pid, "presence", mid] as const,
   characterClips: (pid: ProjectId, cid: CharacterId) => ["cast", pid, "clips", cid] as const,
   characterShots: (pid: ProjectId, cid: CharacterId) => ["cast", pid, "shots", cid] as const,
@@ -89,6 +94,26 @@ export function useCast(pid: ProjectId) {
 
 export function useCastTracks(pid: ProjectId, filter: TrackFilter, enabled = true) {
   return useQuery({ queryKey: qk.tracks(pid, filter), queryFn: () => commands.castTracks(pid, filter), enabled })
+}
+
+/**
+ * A face's sharp portrait for showing it big (made on first ask, from the
+ * exact frame); `null` while it can't be made. Show the thumbnail meanwhile.
+ */
+export const portraitQuery = (pid: ProjectId, t: FaceTrackItem) => ({
+  queryKey: qk.portrait(pid, t),
+  queryFn: () => commands.castPortrait(pid, t.id),
+  // A failure leaves the thumbnail; it isn't worth a retry.
+  retry: false,
+})
+
+export function usePortrait(pid: ProjectId, t: FaceTrackItem | undefined) {
+  return useQuery({
+    queryKey: t ? qk.portrait(pid, t) : qk.portraits(pid),
+    queryFn: () => commands.castPortrait(pid, t!.id),
+    retry: false,
+    enabled: t !== undefined,
+  })
 }
 
 /** Every shot a character is seen in, in episode order. */

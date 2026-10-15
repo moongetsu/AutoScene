@@ -16,7 +16,7 @@ import type {
   TrackFilter,
 } from "@/bindings"
 
-type Track = FaceTrackItem & { forbid: Set<string>; notFace: boolean }
+type Track = FaceTrackItem & { forbid: Set<string>; notFace: boolean; portrait: string }
 type Person = { id: string; number: number; name: string | null; hidden: boolean; cover: number | null }
 type ProjectCast = { people: Person[]; tracks: Track[]; nextNumber: number }
 
@@ -28,6 +28,13 @@ let personSeq = 0
 function face(hue: number, variant: number): string {
   const l = 26 + (variant % 5) * 3
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160"><rect width="160" height="160" fill="hsl(${hue} 18% ${l}%)"/><circle cx="80" cy="66" r="30" fill="hsl(${hue} 30% ${l + 34}%)"/><path d="M28 160c4-34 26-52 52-52s48 18 52 52z" fill="hsl(${hue} 22% ${l + 20}%)"/></svg>`
+  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`
+}
+
+/** The same face as a 3:4 head-and-shoulders portrait (what the real one frames). */
+function portrait(hue: number, variant: number): string {
+  const l = 26 + (variant % 5) * 3
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 150 200"><rect width="150" height="200" fill="hsl(${hue} 18% ${l}%)"/><circle cx="75" cy="80" r="34" fill="hsl(${hue} 30% ${l + 34}%)"/><path d="M14 200c4-46 28-70 61-70s57 24 61 70z" fill="hsl(${hue} 22% ${l + 20}%)"/></svg>`
   return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`
 }
 
@@ -75,6 +82,7 @@ export function seedCast(projectId: string, media: MediaItem[], segments: Segmen
       quality: 0.35 + ((k * 37) % 60) / 100,
       faceHeight: 0.18 + (k % 5) * 0.04,
       thumb: face(hue, k),
+      portrait: portrait(hue, k),
       characterId: who?.id ?? null,
       assign,
       score,
@@ -117,7 +125,8 @@ function character(c: ProjectCast, p: Person, fps = 24): Character {
     shots: new Set(mine.map((t) => `${t.mediaId}:${t.start}`)).size,
     media: new Set(mine.map((t) => t.mediaId)).size,
     screenSec: mine.reduce((s, t) => s + (t.end - t.start), 0) / fps,
-    cover: cover?.thumb ?? null,
+    cover: cover?.portrait ?? null,
+    coverSmall: cover?.thumb ?? null,
     unsure: c.tracks.filter((t) => !t.notFace && t.assign === "unsure" && t.characterId === p.id).length,
     waiting: 0,
   }
@@ -166,7 +175,12 @@ export function castTracks(projectId: string, filter: TrackFilter): FaceTrackIte
   return c.tracks
     .filter(ok)
     .sort((a, b) => (b.quality ?? 0) - (a.quality ?? 0))
-    .map(({ forbid: _f, notFace: _n, ...t }) => t)
+    .map(({ forbid: _f, notFace: _n, portrait: _p, ...t }) => t)
+}
+
+/** A face's portrait (the mock has them all made). */
+export function castPortrait(projectId: string, trackId: number): string | null {
+  return get(projectId).tracks.find((t) => t.id === trackId)?.portrait ?? null
 }
 
 export function castEdit(projectId: string, edit: CastEdit): string | null {

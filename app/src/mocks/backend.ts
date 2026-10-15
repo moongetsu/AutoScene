@@ -10,7 +10,7 @@
  */
 import { emit } from "@tauri-apps/api/event"
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks"
-import { castEdit, castGet, castTracks, characterClips, characterShots, mediaPresence, seedCast } from "./cast"
+import { castEdit, castGet, castPortrait, castTracks, characterClips, characterShots, mediaPresence, seedCast } from "./cast"
 import type {
   AppInfo,
   AppSettings,
@@ -519,6 +519,7 @@ const handlers: Record<string, Handler> = {
     void emit("cast:changed", { projectId })
     return created
   },
+  cast_portrait: ({ projectId, trackId }) => castPortrait(String(find(projectId).id), Number(trackId)),
   media_presence: ({ projectId, mediaId }) => mediaPresence(String(find(projectId).id), String(mediaId)),
   character_clips: ({ projectId, characterId }) =>
     characterClips(String(projectId), String(characterId), find(projectId).media, SEGMENTS),

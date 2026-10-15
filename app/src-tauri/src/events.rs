@@ -66,6 +66,15 @@ pub struct CastChanged {
     pub project_id: ProjectId,
 }
 
+/// Character covers of a project got sharp portraits (the cast itself is
+/// unchanged: its lists needn't be fetched again).
+#[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
+#[tauri_specta(event_name = "portraits:changed")]
+#[serde(rename_all = "camelCase")]
+pub struct PortraitsChanged {
+    pub project_id: ProjectId,
+}
+
 pub fn emit_media_changed(app: &tauri::AppHandle, project_id: ProjectId, media_id: Option<MediaId>) {
     let _ = MediaChanged { project_id, media_id }.emit(app);
 }

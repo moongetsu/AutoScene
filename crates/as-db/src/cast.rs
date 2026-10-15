@@ -127,6 +127,14 @@ fn opt_id(s: Option<String>) -> DbResult<Option<CharacterId>> {
     s.as_deref().map(parse_id).transpose()
 }
 
+/// A character's (`c`) cover track: the chosen one while it is still theirs,
+/// else their clearest big face.
+const COVER: &str = "COALESCE((SELECT x.id FROM tracks x WHERE x.id = c.cover AND x.character_id = c.id
+                                 AND x.assign IN ('auto', 'pinned') AND x.not_face = 0),
+                              (SELECT b.id FROM tracks b WHERE b.character_id = c.id AND b.assign IN ('auto', 'pinned')
+                                           AND b.not_face = 0
+                                         ORDER BY b.face_h >= 0.12 DESC, b.quality DESC, b.face_h DESC LIMIT 1))";
+
 /// `?, ?, ?` for an `IN (...)` list.
 fn marks(n: usize) -> String {
     vec!["?"; n].join(", ")
@@ -467,6 +475,24 @@ impl ProjectDb {
         })
     }
 
+    /// Tracks by id with their media and detections (for portraits); ids
+    /// that don't exist are left out.
+    pub fn track_dets(&self, ids: &[i64]) -> DbResult<Vec<(i64, MediaId, Vec<u8>)>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.0.read(|c| {
+            let mut st =
+                c.prepare(&format!("SELECT id, media_id, dets FROM tracks WHERE id IN ({})", marks(ids.len())))?;
+            let mut rows = st.query(params_from_iter(ids_param(ids)))?;
+            let mut out = Vec::with_capacity(ids.len());
+            while let Some(r) = rows.next()? {
+                out.push((r.get(0)?, parse_id(&r.get::<_, String>(1)?)?, r.get(2)?));
+            }
+            Ok(out)
+        })
+    }
+
     /// Every track of a media with its detections (for re-anchoring edits).
     pub fn media_track_dets(&self, id: MediaId) -> DbResult<Vec<TrackDets>> {
         self.0.read(|c| {
@@ -573,15 +599,20 @@ impl ProjectDb {
         })
     }
 
+    /// Each character's cover track (as [`CharacterRow::cover`]), in the
+    /// order characters were found: a fraction of what the whole cast costs.
+    pub fn cover_tracks(&self) -> DbResult<Vec<i64>> {
+        self.0.read(|c| {
+            let mut st = c.prepare(&format!("SELECT {COVER} FROM characters c ORDER BY c.number"))?;
+            let rows = st.query_map([], |r| r.get::<_, Option<i64>>(0))?;
+            Ok(rows.filter_map(|r| r.transpose()).collect::<Result<_, _>>()?)
+        })
+    }
+
     pub fn characters(&self) -> DbResult<Vec<CharacterRow>> {
         self.0.read(|c| {
-            let mut st = c.prepare(
-                "SELECT c.id, c.number, c.name, c.hidden,
-                        COALESCE((SELECT x.id FROM tracks x WHERE x.id = c.cover AND x.character_id = c.id
-                                    AND x.assign IN ('auto', 'pinned') AND x.not_face = 0),
-                                 (SELECT b.id FROM tracks b WHERE b.character_id = c.id AND b.assign IN ('auto', 'pinned')
-                                              AND b.not_face = 0
-                                            ORDER BY b.face_h >= 0.12 DESC, b.quality DESC, b.face_h DESC LIMIT 1)),
+            let mut st = c.prepare(&format!(
+                "SELECT c.id, c.number, c.name, c.hidden, {COVER},
                         COUNT(t.id),
                         COUNT(DISTINCT t.media_id || ':' || t.shot),
                         COUNT(DISTINCT t.media_id),
@@ -593,8 +624,8 @@ impl ProjectDb {
                    LEFT JOIN tracks t ON t.character_id = c.id AND t.assign IN ('auto', 'pinned') AND t.not_face = 0
                    LEFT JOIN media m ON m.id = t.media_id
                   GROUP BY c.id
-                  ORDER BY 9 DESC, c.number",
-            )?;
+                  ORDER BY 9 DESC, c.number"
+            ))?;
             let mut rows = st.query([])?;
             let mut out = Vec::new();
             while let Some(r) = rows.next()? {
@@ -1209,5 +1240,15 @@ mod tests {
         assert_eq!(rows.iter().map(|r| r.id).collect::<Vec<_>>(), [b, a]);
         // The tiny face has the best quality, but a clear, big face makes the cover.
         assert_eq!(rows[0].cover.map(|c| c.0), Some(ids[1]));
+        // The covers alone, in the order characters were found: the same tracks.
+        assert_eq!(db.cover_tracks().unwrap(), [rows[1].cover.unwrap().0, rows[0].cover.unwrap().0]);
+
+        // A portrait needs the cover's media and detections; unknown tracks are left out.
+        let dets = NewTrack { dets: vec![7; 32], ..track(800, 0.5) };
+        let more = db.put_face_chunk(m, 1000, 2000, &[dets], &[], |_| Ok(())).unwrap();
+        let mut got = db.track_dets(&[more[0], ids[1], 9999]).unwrap();
+        got.sort_by_key(|t| t.0);
+        assert_eq!(got, [(ids[1], m, vec![0; 64]), (more[0], m, vec![7; 32])]);
+        assert!(db.track_dets(&[]).unwrap().is_empty());
     }
 }

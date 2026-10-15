@@ -1000,7 +1000,7 @@ function CharactersPanel({
                       on ? "ring-2 ring-accent/70" : "opacity-50",
                     )}
                   >
-                    {c.cover && <img src={assetUrl(c.cover)} alt="" className="size-full object-cover" />}
+                    {c.coverSmall && <img src={assetUrl(c.coverSmall)} alt="" className="size-full object-cover" />}
                   </span>
                   <span className={cn("min-w-0 flex-1 truncate text-sm font-medium", on ? "text-fg-1" : "text-fg-3")}>
                     {c.label}

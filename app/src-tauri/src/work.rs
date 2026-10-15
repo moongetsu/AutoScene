@@ -1,20 +1,22 @@
 //! Background work: ingest, playback proxies, analysis, exports and upkeep,
 //! queued on `as-jobs` workers. Each job reports through `job:*` events and announces
 //! what it changed (`media:changed`, `analysis:changed`, `library:changed`,
-//! `export:changed`) so the UI refetches exactly what moved.
+//! `export:changed`, `cast:changed`, `portraits:changed`) so the UI refetches
+//! exactly what moved.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use as_api::{AnalysisStage, ContentKind, JobKind, MediaItem, ProxyState, StageState};
-use as_core::{ExportId, MediaId};
+use as_core::{ExportId, MediaId, ProjectId};
 use as_engine::{EngineError, FacesEvent, ShotsEvent};
 use as_jobs::{Class, JobCtx, JobError, JobSpec};
 use as_models::ModelError;
-use as_project::{Project, ProjectError};
+use as_project::{Portrait, Project, ProjectError};
 use tauri::{AppHandle, Manager};
 use tauri_specta::Event;
 
-use crate::events::{AnalysisChanged, CastChanged, ExportChanged, LibraryChanged};
+use crate::events::{AnalysisChanged, CastChanged, ExportChanged, LibraryChanged, PortraitsChanged};
 use crate::state::AppState;
 
 fn job_error(e: ProjectError) -> JobError {
@@ -33,6 +35,15 @@ fn media_title(m: &MediaItem) -> String {
 
 fn media_changed(app: &AppHandle, project: &Project, media_id: Option<MediaId>) {
     crate::events::emit_media_changed(app, project.id, media_id);
+}
+
+/// The cast of a project changed: the UI refetches it, and covers new since
+/// get their portraits (see [`queue_portraits`]) — looked for off the
+/// caller's thread: a decision in the review answers at once.
+pub fn cast_changed(app: &AppHandle, project: &Arc<Project>) {
+    let _ = CastChanged { project_id: project.id }.emit(app);
+    let (app, project) = (app.clone(), project.clone());
+    tauri::async_runtime::spawn_blocking(move || queue_portraits(&app, &project));
 }
 
 /// Refresh the project's Library card after its media changed.
@@ -79,6 +90,8 @@ pub fn queue_ingest(app: &AppHandle, project: &Arc<Project>, media_id: MediaId) 
             queue_proxy(&app2, &project, media_id);
         }
         queue_analysis(&app2, &project, media_id);
+        // A file that was missing is back: its faces' covers can get portraits.
+        queue_portraits(&app2, &project);
         Ok(())
     });
 }
@@ -152,14 +165,14 @@ fn finds_faces(project: &Project) -> bool {
 /// two models can't be grouped together. Their decisions wait in
 /// `track_edits`. Returns them (pending now, not queued). Only call it once
 /// the current embedder is installed, so the old faces stay until then.
-fn refresh_outdated_faces(app: &AppHandle, project: &Project) -> as_project::ProjectResult<Vec<MediaId>> {
+fn refresh_outdated_faces(app: &AppHandle, project: &Arc<Project>) -> as_project::ProjectResult<Vec<MediaId>> {
     let ids = project.refresh_outdated_faces(as_models::ids::ARCFACE)?;
     if !ids.is_empty() {
         let title = project.title().unwrap_or_default();
         log::info!("'{title}': {} media get their faces found with the new model", ids.len());
         media_changed(app, project, None);
         library_changed(app, project);
-        let _ = CastChanged { project_id: project.id }.emit(app);
+        cast_changed(app, project);
     }
     Ok(ids)
 }
@@ -262,7 +275,7 @@ pub fn restart_analysis(app: &AppHandle, project: &Arc<Project>, media_id: Media
     if let Err(e) = reset.and_then(|()| project.recluster().map(|_| ())) {
         log::warn!("resetting the analysis: {}", e.detail());
     }
-    let _ = CastChanged { project_id: project.id }.emit(app);
+    cast_changed(app, project);
     let _ = AnalysisChanged { project_id: project.id, media_id }.emit(app);
     media_changed(app, project, Some(media_id));
     submit_analysis(app, project, media_id);
@@ -362,7 +375,7 @@ fn run_faces(
     project.finish_faces(media_id).map_err(stage_error)?;
     let characters = project.recluster().map_err(stage_error)?;
     log::info!("faces found; the cast has {characters} characters");
-    let _ = CastChanged { project_id: project.id }.emit(app);
+    cast_changed(app, project);
     Ok(())
 }
 
@@ -458,6 +471,123 @@ pub fn queue_posters(app: &AppHandle, project: &Arc<Project>, ids: Vec<MediaId>)
     });
 }
 
+/// How often the UI hears of new portraits while they are being made.
+const PORTRAITS_SHOWN_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Make the missing portraits of character covers — 3:4, from the exact
+/// frame of the cover's clearest face at the source's full resolution — on
+/// the upkeep worker, in the order characters were found (the main cast
+/// first, mostly). A card shows its face thumbnail until its portrait
+/// exists, then turns sharp.
+pub fn queue_portraits(app: &AppHandle, project: &Arc<Project>) {
+    let state = app.state::<AppState>();
+    // A job queued or running looks again before it ends.
+    if let Some(changed) = state.portraits.lock().get_mut(&project.id) {
+        *changed = true;
+        return;
+    }
+    match project.missing_portraits() {
+        Ok(missing) if missing.is_empty() => return,
+        Ok(_) => {}
+        Err(e) => {
+            log::warn!("covers without portraits: {}", e.detail());
+            return;
+        }
+    }
+    // Another change may have queued one meanwhile.
+    let mut job = {
+        let mut jobs = state.portraits.lock();
+        if let Some(changed) = jobs.get_mut(&project.id) {
+            *changed = true;
+            return;
+        }
+        jobs.insert(project.id, false);
+        PortraitsJob { jobs: state.portraits.clone(), project: project.id, ended: false }
+    };
+    let spec = JobSpec {
+        kind: JobKind::Portraits,
+        class: Class::Upkeep,
+        title: "Sharpening portraits".into(),
+        subtitle: project.title().ok(),
+        project_id: Some(project.id),
+        media_id: None,
+        export_id: None,
+    };
+    let (app2, project) = (app.clone(), project.clone());
+    state.jobs.submit(spec, move |ctx| {
+        let state = app2.state::<AppState>();
+        let tools = state.tools().map_err(|e| JobError::Failed(e.message))?;
+        // The cast is fetched again when portraits are new, at most every
+        // couple of seconds: cards turn sharp in batches, not one by one.
+        let changed = || {
+            let _ = PortraitsChanged { project_id: project.id }.emit(&app2);
+        };
+        let (mut unseen, mut told) = (false, std::time::Instant::now());
+        // What's missing now, and again while the cast changed meanwhile.
+        loop {
+            let tracks = project.missing_portraits().map_err(job_error)?;
+            for (i, &track) in tracks.iter().enumerate() {
+                ctx.progress(&format!("Portrait {} of {}", i + 1, tracks.len()), i as f64 / tracks.len() as f64);
+                match project.portrait(&tools, track, &ctx.cancel) {
+                    Ok(Portrait::Made(_)) => unseen = true,
+                    Ok(Portrait::Ready(_) | Portrait::Unavailable) => {}
+                    Err(ProjectError::Cancelled) => {
+                        if unseen {
+                            changed();
+                        }
+                        return Err(JobError::Cancelled);
+                    }
+                    // The thumbnail stays; the next launch tries again.
+                    Err(e) => log::warn!("portrait of track {track}: {}", e.detail()),
+                }
+                if unseen && told.elapsed() >= PORTRAITS_SHOWN_EVERY {
+                    changed();
+                    (unseen, told) = (false, std::time::Instant::now());
+                }
+            }
+            if !job.look_again() {
+                break;
+            }
+        }
+        if unseen {
+            changed();
+        }
+        Ok(())
+    });
+}
+
+/// A project's portraits job as `AppState::portraits` knows it: unregistered
+/// when it ends, however it ends — also when it is dropped unstarted
+/// (cancelled while queued).
+struct PortraitsJob {
+    jobs: Arc<parking_lot::Mutex<HashMap<ProjectId, bool>>>,
+    project: ProjectId,
+    ended: bool,
+}
+
+impl PortraitsJob {
+    /// Whether the cast changed since the job last looked; if not, the job
+    /// ends — under the same lock, so a change can't slip in between.
+    fn look_again(&mut self) -> bool {
+        let mut jobs = self.jobs.lock();
+        if jobs.get(&self.project) == Some(&true) {
+            jobs.insert(self.project, false);
+            return true;
+        }
+        jobs.remove(&self.project);
+        self.ended = true;
+        false
+    }
+}
+
+impl Drop for PortraitsJob {
+    fn drop(&mut self) {
+        if !self.ended {
+            self.jobs.lock().remove(&self.project);
+        }
+    }
+}
+
 /// Show a project's current posters on its Library card, without moving it
 /// to the front.
 fn sync_library_posters(app: &AppHandle, project: &Project) {
@@ -513,7 +643,8 @@ pub fn queue_export(app: &AppHandle, project: &Arc<Project>, export_id: ExportId
 }
 
 /// On launch: reopen every project, resume interrupted indexing, pending
-/// previews and analyses, and make outdated posters again.
+/// previews and analyses, make outdated posters again and the portraits
+/// covers don't have yet.
 pub fn recover_all(app: &AppHandle) {
     let state = app.state::<AppState>();
     let projects = match state.library.projects() {
@@ -556,6 +687,7 @@ pub fn recover_all(app: &AppHandle) {
             }
             Err(e) => log::warn!("recovering '{}': {e}", summary.title),
         }
+        queue_portraits(app, &project);
         let pending = project.pending_shots().and_then(|mut ids| {
             if finds_faces(&project) {
                 // Faces of an older embedder: their analysis installs the new

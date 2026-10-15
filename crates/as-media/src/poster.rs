@@ -1,24 +1,29 @@
-//! Exact single-frame stills (posters, thumbnails).
+//! Exact single-frame stills (posters, portraits, thumbnails).
 
 use std::path::{Path, PathBuf};
 
 use as_core::{CancelToken, FrameIdx, FrameRange};
 
-use crate::filters::{display_chain, scale_to_height};
+use crate::filters::{deinterlace, picture_chain, scale_to_height};
 use crate::{MediaError, MediaResult, Source, Tools, run_ffmpeg};
 
 /// Seconds of pre-roll before a cut point. Input seeking lands on the
 /// keyframe before `t - PREROLL`; `trim` then selects frames by timestamp.
 pub(crate) const PREROLL: f64 = 3.0;
 
-/// How big a still is made. Both keep the frame's shape and never upscale.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// How big a still is made. Whole frames keep their shape and are never
+/// upscaled.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum StillSize {
     /// This many pixels tall.
     Height(u32),
     /// Just big enough to cover a `w`×`h` box, so a 16:9 tile shows a 4:3
     /// or scope frame as sharp as a 16:9 one.
     Cover(u32, u32),
+    /// The part `[x1, y1, x2, y2]` (fractions of the upright, square-pixel
+    /// frame) at exactly `w`×`h`: a face portrait. The part should have the
+    /// shape of `w`×`h`; one reaching past an edge is moved inside the frame.
+    Region([f32; 4], u32, u32),
 }
 
 impl StillSize {
@@ -27,6 +32,12 @@ impl StillSize {
             Self::Height(h) => scale_to_height(h),
             Self::Cover(w, h) => format!(
                 "scale='min({w},iw)':'min({h},ih)':force_original_aspect_ratio=increase:force_divisible_by=2:flags=bicubic"
+            ),
+            // Lanczos: a face is often enlarged a little, and stays crisp.
+            Self::Region([x1, y1, x2, y2], w, h) => format!(
+                "crop=w=iw*{}:h=ih*{}:x=iw*{x1}:y=ih*{y1},scale={w}:{h}:flags=lanczos,setsar=1",
+                (x2 - x1).clamp(0.0, 1.0),
+                (y2 - y1).clamp(0.0, 1.0),
             ),
         }
     }
@@ -50,8 +61,11 @@ pub fn extract_frame_jpegs(
     }
     let seek = (index.t(f) - index.t0() - PREROLL).max(0.0);
     let (trim_start, trim_end) = index.trim_us(FrameRange::new(f, f + 1));
-    let mut chain = vec![format!("trim=start={trim_start}us:end={trim_end}us"), "setpts=PTS-STARTPTS".into()];
-    chain.extend(display_chain(info, None, true));
+    // Deinterlace before the trim: alone, the frame has no neighbours and
+    // its fields would just be woven together (combed).
+    let mut chain: Vec<String> = deinterlace(info).into_iter().collect();
+    chain.extend([format!("trim=start={trim_start}us:end={trim_end}us"), "setpts=PTS-STARTPTS".into()]);
+    chain.extend(picture_chain(info, None, true));
     chain.push(format!("split={}", outs.len()));
     let mut graph = format!("[0:{}]{}", info.video.index, chain.join(","));
     for i in 0..outs.len() {

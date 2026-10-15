@@ -49,6 +49,8 @@ pub struct Project {
     /// One poster decode at a time: an ingest and the poster upkeep of the
     /// same media would write the same files.
     posters: Mutex<()>,
+    /// Portraits being made and ones that failed (see `cast::PortraitWork`).
+    pub(crate) portraits: Mutex<crate::cast::PortraitWork>,
 }
 
 impl Project {
@@ -74,6 +76,7 @@ impl Project {
             proxy_builds: Mutex::default(),
             clustering: Mutex::default(),
             posters: Mutex::default(),
+            portraits: Mutex::default(),
         };
         p.ensure_dirs()?;
         Ok(p)
@@ -89,6 +92,7 @@ impl Project {
             proxy_builds: Mutex::default(),
             clustering: Mutex::default(),
             posters: Mutex::default(),
+            portraits: Mutex::default(),
         };
         p.ensure_dirs()?;
         // Exports can't resume mid-way (M1): close them out.
@@ -123,7 +127,7 @@ impl Project {
     fn poster_paths(&self, id: MediaId) -> (PathBuf, PathBuf) {
         let name = |size: StillSize| match size {
             StillSize::Height(h) => format!("{id}-{h}.jpg"),
-            StillSize::Cover(w, h) => format!("{id}-{w}x{h}.jpg"),
+            StillSize::Cover(w, h) | StillSize::Region(_, w, h) => format!("{id}-{w}x{h}.jpg"),
         };
         (self.thumbs_dir().join(name(POSTER)), self.thumbs_dir().join(name(POSTER_SMALL)))
     }

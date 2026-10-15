@@ -28,6 +28,18 @@ impl FaceDet {
     pub fn height(&self) -> f32 {
         self.bbox[3] - self.bbox[1]
     }
+
+    /// Which of two detections shows the face more clearly: the better
+    /// quality, then the bigger face.
+    pub fn clarity_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.quality.total_cmp(&other.quality).then(self.height().total_cmp(&other.height()))
+    }
+}
+
+/// A track's clearest detection: the one its thumbnail shows (the last of
+/// equals, as the tracker picks it) and its portrait is made from.
+pub fn clearest(dets: &[FaceDet]) -> Option<&FaceDet> {
+    dets.iter().max_by(|a, b| a.clarity_cmp(b))
 }
 
 #[derive(Clone, Debug, PartialEq)]

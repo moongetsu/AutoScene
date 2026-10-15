@@ -2,30 +2,87 @@
 //! files), clustering tracks into the project's cast, and every edit the
 //! user makes to it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use as_analysis::FaceParams;
 use as_analysis::tracker::TrackerParams;
 use as_analysis::tracks::{self, FaceTrack};
-use as_analysis::{FaceDet, ShotSprite};
+use as_analysis::{FaceDet, ShotSprite, portrait_region};
 use as_api::{
-    Cast, CastEdit, Character, CharacterShot, ClipRequest, FaceTrackItem, MediaInfo, Presence, SegmentKind, StageState,
-    TrackAssign, TrackFilter,
+    Cast, CastEdit, Character, CharacterShot, ClipRequest, FaceTrackItem, MediaInfo, MediaStatus, Presence,
+    SegmentKind, StageState, TrackAssign, TrackFilter,
 };
-use as_core::{CharacterId, FrameIdx, FrameRange, MediaId};
+use as_core::{CancelToken, CharacterId, FrameIdx, FrameRange, MediaId};
 use as_db::{EditKind, IdentityTrack, NewTrack, TrackRow};
 use as_identity::{Assign, CharKey, Params, TrackIn, identify};
+use as_media::poster::{StillSize, extract_frame_jpegs};
+use as_media::{Source, Tools};
+use parking_lot::Mutex;
 
 use crate::{Project, ProjectError, ProjectResult};
 
 /// Frames per face checkpoint chunk (closed at the next shot start).
 pub const FACE_CHUNK: u32 = 2400;
+/// Character portraits, 3:4: sharp in the biggest places a face is shown at
+/// 150 % display scaling — the review's 300 px square and a cast card (up to
+/// about 240×320) — and in the 176×235 cards of the Overview. Thumbnails
+/// (160 px squares from the face pass) serve lists and avatars.
+pub const PORTRAIT: (u32, u32) = (450, 600);
 /// Tracks pinned when a character is named, so it keeps its identity.
 const NAME_ANCHORS: usize = 5;
 /// Clusterings in a row that may find the cast changed by the user before
 /// one is stored.
 const CLUSTER_ATTEMPTS: usize = 8;
+
+/// Where a track's portrait goes and what it shows.
+struct PortraitPlan {
+    track: i64,
+    media: MediaId,
+    det: FaceDet,
+    path: PathBuf,
+}
+
+/// What [`Project::portrait`] found.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Portrait {
+    /// Made just now.
+    Made(PathBuf),
+    /// Made before.
+    Ready(PathBuf),
+    /// No such track (any more), or it can't be made now: its media is
+    /// missing or being indexed, or making it failed this session.
+    Unavailable,
+}
+
+impl Portrait {
+    pub fn path(self) -> Option<PathBuf> {
+        match self {
+            Self::Made(p) | Self::Ready(p) => Some(p),
+            Self::Unavailable => None,
+        }
+    }
+}
+
+/// Portraits being made (one decode per file at a time; others go on
+/// meanwhile) and ones that failed this session (not tried again until the
+/// next launch).
+#[derive(Default)]
+pub(crate) struct PortraitWork {
+    making: HashMap<PathBuf, Arc<Mutex<()>>>,
+    failed: HashSet<PathBuf>,
+}
+
+/// A short tag of a detection box: two faces in the same frame get
+/// different names (FNV-1a of its coordinates).
+fn box_tag(bbox: [f32; 4]) -> String {
+    let mut h: u32 = 0x811c_9dc5;
+    for b in bbox.iter().flat_map(|v| v.to_le_bytes()) {
+        h = (h ^ u32::from(b)).wrapping_mul(0x0100_0193);
+    }
+    format!("{:06x}", h & 0xff_ffff)
+}
 
 /// What the engine needs to find a media's faces.
 #[derive(Clone, Debug)]
@@ -149,6 +206,129 @@ impl Project {
     /// a new file, never a stale one from the webview's cache.
     fn sprite_path(&self, media: MediaId, shot: FrameIdx, end: FrameIdx) -> PathBuf {
         self.media_faces_dir(media).join("shots").join(format!("{shot}-{end}.jpg"))
+    }
+
+    /// Named by the frame and the box it shows and by its size: a track
+    /// number handed out again by a new face pass, or portraits of a new
+    /// size, are new files, never stale ones from the webview's cache.
+    fn portrait_path(&self, media: MediaId, track: i64, det: &FaceDet) -> PathBuf {
+        let (w, h) = PORTRAIT;
+        let frame = det.frame;
+        self.media_faces_dir(media).join(format!("{track}-{frame}-{}-{w}x{h}.jpg", box_tag(det.bbox)))
+    }
+
+    /// The portraits of `tracks` (those that exist): each shows the track's
+    /// clearest face, the moment its thumbnail shows.
+    fn portrait_plans(&self, tracks: &[i64]) -> ProjectResult<Vec<PortraitPlan>> {
+        Ok(self
+            .db()
+            .track_dets(tracks)?
+            .into_iter()
+            .filter_map(|(track, media, dets)| {
+                let det = *tracks::clearest(&tracks::dets_from_bytes(&dets)?)?;
+                Some(PortraitPlan { track, media, det, path: self.portrait_path(media, track, &det) })
+            })
+            .collect())
+    }
+
+    /// Character covers that have no portrait yet and can get one now (their
+    /// media is indexed and its file is there; it didn't fail this session),
+    /// in the order characters were found.
+    pub fn missing_portraits(&self) -> ProjectResult<Vec<i64>> {
+        let covers = self.db().cover_tracks()?;
+        let ready: HashSet<MediaId> =
+            self.media_list()?.into_iter().filter(|m| m.status == MediaStatus::Ready).map(|m| m.id).collect();
+        let plans: HashMap<i64, PortraitPlan> =
+            self.portrait_plans(&covers)?.into_iter().map(|p| (p.track, p)).collect();
+        let failed = self.portraits.lock().failed.clone();
+        Ok(covers
+            .into_iter()
+            .filter(|t| {
+                plans.get(t).is_some_and(|p| ready.contains(&p.media) && !failed.contains(&p.path) && !p.path.is_file())
+            })
+            .collect())
+    }
+
+    /// The portrait of `track`, made from the exact frame of its clearest
+    /// face unless it exists. One that fails isn't tried again this session.
+    pub fn portrait(&self, tools: &Tools, track: i64, cancel: &CancelToken) -> ProjectResult<Portrait> {
+        let Some(plan) = self.portrait_plans(&[track])?.pop() else { return Ok(Portrait::Unavailable) };
+        if plan.path.is_file() {
+            return Ok(Portrait::Ready(plan.path));
+        }
+        if self.portraits.lock().failed.contains(&plan.path) {
+            return Ok(Portrait::Unavailable);
+        }
+        let (m, info, index) = match self.ready_source(plan.media) {
+            Ok(source) => source,
+            Err(ProjectError::NotFound(_) | ProjectError::NotReady(_)) => return Ok(Portrait::Unavailable),
+            Err(e) => return Err(e),
+        };
+        // Detection boxes are fractions of the upright, square-pixel frame.
+        // A file indexed again may have fewer frames than its faces know.
+        let (w, h) = PORTRAIT;
+        let frame = as_media::frames::sample_size(&info, (u32::MAX, u32::MAX), 2);
+        let region = (plan.det.frame < index.len()).then(|| portrait_region(plan.det.bbox, frame, w as f32 / h as f32));
+        let Some(region) = region.flatten() else {
+            self.portraits.lock().failed.insert(plan.path);
+            return Ok(Portrait::Unavailable);
+        };
+
+        // One decode per file; other portraits are made meanwhile.
+        let slot = self.portraits.lock().making.entry(plan.path.clone()).or_default().clone();
+        let made = {
+            let _one = slot.lock();
+            if plan.path.is_file() {
+                // Made while this one waited.
+                Ok(false)
+            } else {
+                let path = PathBuf::from(&m.path);
+                let src = Source { path: &path, info: &info, index: &index };
+                let outs = [(StillSize::Region(region, w, h), plan.path.as_path())];
+                extract_frame_jpegs(tools, src, plan.det.frame, &outs, cancel).map(|()| true)
+            }
+        };
+        {
+            let mut work = self.portraits.lock();
+            // The map's copy and this one: nobody else waits for this file.
+            if Arc::strong_count(&slot) == 2 {
+                work.making.remove(&plan.path);
+            }
+        }
+        // The track may have gone meanwhile (its faces found again, its media
+        // removed): its folder may have been made again just for this file.
+        let current = self.portrait_plans(&[track])?.pop().is_some_and(|p| p.path == plan.path);
+        match made {
+            Ok(_) if !current => {
+                let _ = std::fs::remove_file(&plan.path);
+                let _ = std::fs::remove_dir(self.media_faces_dir(plan.media));
+                Ok(Portrait::Unavailable)
+            }
+            Ok(true) => {
+                self.remove_other_portraits(plan.media, plan.track, &plan.path);
+                Ok(Portrait::Made(plan.path))
+            }
+            Ok(false) => Ok(Portrait::Ready(plan.path)),
+            Err(e) => {
+                if current && !e.is_cancelled() {
+                    self.portraits.lock().failed.insert(plan.path);
+                }
+                Err(e.into())
+            }
+        }
+    }
+
+    /// Delete portraits of `track` other than `keep` (of an earlier size).
+    fn remove_other_portraits(&self, media: MediaId, track: i64, keep: &Path) {
+        let prefix = format!("{track}-");
+        let Ok(entries) = std::fs::read_dir(self.media_faces_dir(media)) else { return };
+        for e in entries.flatten() {
+            let (path, name) = (e.path(), e.file_name());
+            let name = name.to_string_lossy();
+            if name.starts_with(&prefix) && name.ends_with(".jpg") && path != keep {
+                let _ = std::fs::remove_file(path);
+            }
+        }
     }
 
     // -- face pass ----------------------------------------------------------
@@ -391,9 +571,11 @@ impl Project {
     }
 
     pub fn cast(&self) -> ProjectResult<Cast> {
-        let characters = self
-            .db()
-            .characters()?
+        let rows = self.db().characters()?;
+        let covers: Vec<i64> = rows.iter().filter_map(|c| c.cover.map(|(t, _)| t)).collect();
+        let portraits: HashMap<i64, PathBuf> =
+            self.portrait_plans(&covers)?.into_iter().filter(|p| p.path.is_file()).map(|p| (p.track, p.path)).collect();
+        let characters = rows
             .into_iter()
             .map(|c| Character {
                 id: c.id,
@@ -404,7 +586,11 @@ impl Project {
                 shots: c.shots,
                 media: c.media,
                 screen_sec: c.screen_sec,
-                cover: c.cover.map(|(t, m)| Self::path_string(&self.thumb_path(m, t))),
+                cover: c.cover.map(|(t, m)| match portraits.get(&t) {
+                    Some(p) => Self::path_string(p),
+                    None => Self::path_string(&self.thumb_path(m, t)),
+                }),
+                cover_small: c.cover.map(|(t, m)| Self::path_string(&self.thumb_path(m, t))),
                 unsure: c.unsure,
                 waiting: c.waiting,
             })
@@ -585,6 +771,60 @@ mod tests {
         // A short glimpse inside a long track: most of the shorter one is shared.
         let glimpse = seen(1, 0, 30, 33, 0.18);
         assert_eq!(same_face((r(&glimpse), &glimpse.dets), (r(&whole), &whole.dets)), Some(3));
+    }
+
+    #[test]
+    fn covers_show_their_portrait_once_it_is_made() {
+        let frames = 400;
+        let (_dir, project, id) = project_with_media(frames);
+        // Seen at 100, 115, 130, …: clearest at 130, the moment of its thumbnail.
+        let mut t = seen(1, 100, 100, 190, 0.1);
+        t.dets[2].quality = 0.95;
+        project.store_face_chunk(id, 0, frames, &tracks::encode(&[t]), &[]).unwrap();
+        project.finish_faces(id).unwrap();
+        let track = project.cast_tracks(TrackFilter::Unassigned).unwrap()[0].id;
+        project.cast_edit(&CastEdit::NewCharacter { tracks: vec![track], name: Some("Walter".into()) }).unwrap();
+        let track = i64::from(track);
+        let cover = |p: &Project| {
+            let c = p.cast().unwrap().characters.remove(0);
+            (c.cover.unwrap(), c.cover_small.unwrap())
+        };
+
+        // No portrait yet: the thumbnail stands in, and one is owed.
+        let (big, small) = cover(&project);
+        assert_eq!(big, small);
+        assert_eq!(small, project.thumb_path(id, track).display().to_string());
+        assert_eq!(project.missing_portraits().unwrap(), [track]);
+
+        // Named after its frame, box and size; once it exists the card shows it.
+        let plan = project.portrait_plans(&[track]).unwrap().pop().unwrap();
+        assert_eq!(plan.det.frame, 130);
+        let portrait = plan.path;
+        let name = format!("{track}-130-{}-450x600.jpg", box_tag(plan.det.bbox));
+        assert!(portrait.ends_with(&name), "{}", portrait.display());
+        std::fs::write(&portrait, b"jpeg").unwrap();
+        assert_eq!(cover(&project), (portrait.display().to_string(), small.clone()));
+        assert!(project.missing_portraits().unwrap().is_empty());
+        assert!(project.portrait_plans(&[9999]).unwrap().is_empty(), "no such track");
+
+        // A media that can't be decoded now owes none.
+        std::fs::remove_file(&portrait).unwrap();
+        project.db().set_media_status(id, MediaStatus::Missing, None).unwrap();
+        assert!(project.missing_portraits().unwrap().is_empty());
+        assert_eq!(cover(&project), (small.clone(), small));
+        // Nor does one whose portrait failed this session.
+        project.db().set_media_status(id, MediaStatus::Ready, None).unwrap();
+        assert_eq!(project.missing_portraits().unwrap(), [track]);
+        project.portraits.lock().failed.insert(portrait);
+        assert!(project.missing_portraits().unwrap().is_empty());
+    }
+
+    #[test]
+    fn box_tags_tell_faces_of_one_frame_apart() {
+        let (a, b) = ([0.1, 0.2, 0.3, 0.6], [0.5, 0.2, 0.7, 0.6]);
+        assert_eq!(box_tag(a), box_tag(a));
+        assert_ne!(box_tag(a), box_tag(b));
+        assert_eq!(box_tag(a).len(), 6);
     }
 
     #[test]

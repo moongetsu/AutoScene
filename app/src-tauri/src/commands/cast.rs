@@ -2,13 +2,12 @@
 //! and the user's decisions about them.
 
 use as_api::{Cast, CastEdit, CharacterShot, ClipRequest, FaceTrackItem, Presence, TrackFilter};
-use as_core::{CharacterId, MediaId, ProjectId};
+use as_core::{CancelToken, CharacterId, MediaId, ProjectId};
 use tauri::{AppHandle, State};
-use tauri_specta::Event;
 
 use crate::error::AppResult;
-use crate::events::CastChanged;
 use crate::state::{AppState, allow_asset_tree, blocking};
+use crate::work;
 
 #[tauri::command]
 #[specta::specta]
@@ -51,9 +50,36 @@ pub async fn cast_edit(
     edit: CastEdit,
 ) -> AppResult<Option<CharacterId>> {
     let lib = state.library.clone();
-    let created = blocking(move || Ok(lib.project(project_id)?.cast_edit(&edit)?)).await?;
-    let _ = CastChanged { project_id }.emit(&app);
-    Ok(created)
+    blocking(move || {
+        let p = lib.project(project_id)?;
+        let created = p.cast_edit(&edit)?;
+        work::cast_changed(&app, &p);
+        Ok(created)
+    })
+    .await
+}
+
+/// A face's portrait (3:4, sharp where a face is shown big), made now unless
+/// it exists. `None` when it can't be made now (the media is missing or being
+/// indexed): the thumbnail stands in.
+#[tauri::command]
+#[specta::specta]
+pub async fn cast_portrait(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    project_id: ProjectId,
+    track_id: u32,
+) -> AppResult<Option<String>> {
+    let lib = state.library.clone();
+    let tools = state.tools()?;
+    let (portrait, faces) = blocking(move || {
+        let p = lib.project(project_id)?;
+        let portrait = p.portrait(&tools, i64::from(track_id), &CancelToken::new())?;
+        Ok((portrait, p.faces_dir()))
+    })
+    .await?;
+    allow_asset_tree(&app, &faces);
+    Ok(portrait.path().map(|p| p.display().to_string()))
 }
 
 /// Where characters are on screen in one media (for the timeline).

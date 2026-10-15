@@ -58,6 +58,7 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::DynRuntime> {
             commands::cast::cast_get,
             commands::cast::cast_tracks,
             commands::cast::cast_edit,
+            commands::cast::cast_portrait,
             commands::cast::media_presence,
             commands::cast::character_clips,
             commands::cast::character_shots,
@@ -81,6 +82,7 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::DynRuntime> {
             events::ExportChanged,
             events::AnalysisChanged,
             events::CastChanged,
+            events::PortraitsChanged,
             updater::UpdateProgress,
         ])
 }

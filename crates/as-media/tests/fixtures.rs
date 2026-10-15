@@ -166,6 +166,221 @@ fn poster_extracts_the_exact_frame() {
     }
 }
 
+/// Portraits are a part of the exact frame, at exactly the size asked for.
+#[test]
+fn portraits_are_cut_from_the_exact_frame() {
+    let Some((tools, _)) = setup() else { return };
+    let work = tempfile::tempdir().unwrap();
+    for file in ["offset725_h264.mp4", "vfr_h264.mkv", "interlaced_h264.ts"] {
+        let path = fixtures_dir().join(file);
+        let info = probe(&tools, &path).unwrap();
+        let idx = build_frame_index(&tools, &path, &info, work.path(), &CancelToken::new(), |_| {}).unwrap();
+        let src = Source { path: &path, info: &info, index: &idx };
+        for f in [1u32, 300] {
+            // The whole frame as a "region": its barcode says which frame it is.
+            let whole = work.path().join(format!("{file}-{f}-whole.jpg"));
+            let face = work.path().join(format!("{file}-{f}-face.jpg"));
+            let outs = [
+                (StillSize::Region([0.0, 0.0, 1.0, 1.0], 640, 360), whole.as_path()),
+                (StillSize::Region([0.4, 0.2, 0.55, 0.6], 450, 600), face.as_path()),
+            ];
+            poster::extract_frame_jpegs(&tools, src, f, &outs, &CancelToken::new()).unwrap();
+            assert_eq!(barcodes(&tools, &whole)[0].map(|c| c.frame as u32), Some(f), "{file}: frame {f}");
+            assert_eq!(dimensions(&tools, &face), (450, 600), "{file}: a portrait is exactly its size");
+        }
+    }
+}
+
+/// Stills of an interlaced source are deinterlaced like everything else, not
+/// two fields woven together: neighbouring rows of a moving picture differ
+/// less than rows two apart (the same field) — combing turns that around.
+#[test]
+fn stills_of_interlaced_sources_are_not_combed() {
+    let Some((tools, _)) = setup() else { return };
+    let work = tempfile::tempdir().unwrap();
+    let path = fixtures_dir().join("interlaced_h264.ts");
+    let info = probe(&tools, &path).unwrap();
+    assert!(info.is_interlaced());
+    let idx = build_frame_index(&tools, &path, &info, work.path(), &CancelToken::new(), |_| {}).unwrap();
+    let src = Source { path: &path, info: &info, index: &idx };
+    let (w, h) = (info.video.width as usize, info.video.height as usize);
+    for f in [50u32, 100, 200, 300] {
+        let still = work.path().join(format!("{f}.jpg"));
+        let outs = [(StillSize::Region([0.0, 0.0, 1.0, 1.0], w as u32, h as u32), still.as_path())];
+        poster::extract_frame_jpegs(&tools, src, f, &outs, &CancelToken::new()).unwrap();
+        let out = tools
+            .ffmpeg()
+            .args(["-v", "error", "-i"])
+            .arg(&still)
+            .args(["-vf", "format=gray", "-f", "rawvideo", "-"])
+            .output()
+            .expect("ffmpeg");
+        let g = &out.stdout;
+        assert_eq!(g.len(), w * h);
+        let rows = |gap: usize| -> u64 {
+            (0..h - 2)
+                .flat_map(|y| (0..w).map(move |x| (y, x)))
+                .map(|(y, x)| g[y * w + x].abs_diff(g[(y + gap) * w + x]) as u64)
+                .sum()
+        };
+        let comb = rows(1) as f64 / rows(2).max(1) as f64;
+        assert!(comb < 0.85, "frame {f}: combed ({comb:.2})");
+    }
+}
+
+/// A region is the part it names — of the upright, square-pixel frame —
+/// and one reaching past an edge is moved inside.
+#[test]
+fn portrait_regions_are_where_they_say() {
+    let Some((tools, _)) = setup() else { return };
+    let work = tempfile::tempdir().unwrap();
+    // Red left half, blue right half; anamorphic too (64:45 makes 720×576 a 1024×576 picture).
+    for (size, sar) in [("640x360", "1/1"), ("720x576", "64/45")] {
+        let (w, h) = size.split_once('x').unwrap();
+        let half = w.parse::<u32>().unwrap() / 2;
+        let path = work.path().join(format!("{size}.mkv"));
+        let graph = format!(
+            "color=c=red:s={half}x{h}:r=25:d=1[a];color=c=blue:s={half}x{h}:r=25:d=1[b];[a][b]hstack,setsar={sar}[v]"
+        );
+        let status = tools
+            .ffmpeg()
+            .args(["-v", "error", "-y", "-filter_complex", &graph, "-map", "[v]"])
+            .args(["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p"])
+            .arg(&path)
+            .status()
+            .expect("ffmpeg");
+        assert!(status.success(), "{size}: test source");
+        let info = probe(&tools, &path).unwrap();
+        let idx = build_frame_index(&tools, &path, &info, work.path(), &CancelToken::new(), |_| {}).unwrap();
+        let src = Source { path: &path, info: &info, index: &idx };
+        let cases = [
+            ("left", [0.05, 0.1, 0.4, 0.9], [255, 0, 0]),
+            ("right", [0.6, 0.1, 0.95, 0.9], [0, 0, 255]),
+            ("past the right edge", [0.8, 0.1, 1.15, 0.9], [0, 0, 255]),
+            ("past the left edge", [-0.2, 0.1, 0.15, 0.9], [255, 0, 0]),
+        ];
+        for (name, region, rgb) in cases {
+            let out = work.path().join(format!("{size}-{name}.jpg"));
+            let outs = [(StillSize::Region(region, 90, 120), out.as_path())];
+            poster::extract_frame_jpegs(&tools, src, 5, &outs, &CancelToken::new()).unwrap();
+            assert_eq!(dimensions(&tools, &out), (90, 120), "{size} {name}");
+            let mean = mean_rgb(&tools, &out);
+            assert!(mean.iter().zip(rgb).all(|(&a, b)| a.abs_diff(b) < 40), "{size} {name}: {mean:?}");
+        }
+    }
+}
+
+/// Face boxes are fractions of the frames the face pass decodes: a region
+/// shows what the face pass saw there, whatever the source's pixel shape or
+/// rotation.
+#[test]
+fn portrait_regions_match_what_the_face_pass_sees() {
+    let Some((tools, _)) = setup() else { return };
+    let work = tempfile::tempdir().unwrap();
+    // Red, green / blue, white quadrants.
+    let quads = |size: &str, sar: &str, out: &Path| {
+        let (w, h) = size.split_once('x').unwrap();
+        let (w, h) = (w.parse::<u32>().unwrap() / 2, h.parse::<u32>().unwrap() / 2);
+        let c = |name: &str| format!("color=c={name}:s={w}x{h}:r=25:d=1");
+        let graph = format!(
+            "{}[a];{}[b];{}[c];{}[d];[a][b]hstack[top];[c][d]hstack[bottom];[top][bottom]vstack,setsar={sar}[v]",
+            c("red"),
+            c("lime"),
+            c("blue"),
+            c("white")
+        );
+        let status = tools
+            .ffmpeg()
+            .args(["-v", "error", "-y", "-filter_complex", &graph, "-map", "[v]"])
+            .args(["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p"])
+            .arg(out)
+            .status()
+            .expect("ffmpeg");
+        assert!(status.success(), "{size}: test source");
+    };
+    let plain = work.path().join("plain.mkv");
+    quads("640x360", "1/1", &plain);
+    let anamorphic = work.path().join("anamorphic.mkv");
+    quads("720x576", "64/45", &anamorphic);
+    // Stored sideways, shown upright (a phone video).
+    let stored = work.path().join("stored.mkv");
+    quads("640x360", "1/1", &stored);
+    let rotated = work.path().join("rotated.mp4");
+    let status = tools
+        .ffmpeg()
+        .args(["-v", "error", "-y", "-display_rotation", "90", "-i"])
+        .arg(&stored)
+        .args(["-c", "copy"])
+        .arg(&rotated)
+        .status()
+        .expect("ffmpeg");
+    assert!(status.success(), "rotated test source");
+
+    for path in [plain, anamorphic, rotated] {
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let info = probe(&tools, &path).unwrap();
+        assert_eq!(info.video.rotation.rem_euclid(180) == 90, name == "rotated.mp4", "{name}: rotation");
+        let idx = build_frame_index(&tools, &path, &info, work.path(), &CancelToken::new(), |_| {}).unwrap();
+        let src = Source { path: &path, info: &info, index: &idx };
+        // Frame 5 as the face pass decodes it.
+        let (w, h) = as_media::frames::sample_size(&info, (160, 160), 2);
+        let mut sample = Vec::new();
+        as_media::frames::decode_samples(&tools, src, 5, 1, (w, h), &CancelToken::new(), |_, rgb| {
+            sample = rgb.to_vec();
+            Ok(false)
+        })
+        .unwrap();
+        let (w, h) = (w as usize, h as usize);
+        let mean = |x0: usize, y0: usize| -> [u8; 3] {
+            let mut sum = [0usize; 3];
+            // The middle of the quadrant (away from the seams).
+            let (qw, qh) = (w / 2, h / 2);
+            let ys = y0 + qh / 4..y0 + 3 * qh / 4;
+            let xs = x0 + qw / 4..x0 + 3 * qw / 4;
+            let n = ys.len() * xs.len();
+            for y in ys {
+                for x in xs.clone() {
+                    for (c, s) in sum.iter_mut().enumerate() {
+                        *s += sample[(y * w + x) * 3 + c] as usize;
+                    }
+                }
+            }
+            sum.map(|s| (s / n) as u8)
+        };
+        for (qx, qy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+            let want = mean(qx * w / 2, qy * h / 2);
+            let (fx, fy) = (qx as f32 * 0.5, qy as f32 * 0.5);
+            let region = [fx + 0.125, fy + 0.125, fx + 0.375, fy + 0.375];
+            let out = work.path().join(format!("{name}-{qx}{qy}.jpg"));
+            poster::extract_frame_jpegs(
+                &tools,
+                src,
+                5,
+                &[(StillSize::Region(region, 60, 80), out.as_path())],
+                &CancelToken::new(),
+            )
+            .unwrap();
+            let got = mean_rgb(&tools, &out);
+            assert!(
+                got.iter().zip(want).all(|(&a, b)| a.abs_diff(b) < 40),
+                "{name} quadrant {qx},{qy}: {got:?} vs {want:?}"
+            );
+        }
+    }
+}
+
+/// The mean colour of a picture.
+fn mean_rgb(tools: &Tools, file: &Path) -> [u8; 3] {
+    let out = tools
+        .ffmpeg()
+        .args(["-v", "error", "-i"])
+        .arg(file)
+        .args(["-vf", "scale=1:1:flags=area", "-pix_fmt", "rgb24", "-f", "rawvideo", "-"])
+        .output()
+        .expect("ffmpeg");
+    out.stdout[..3].try_into().expect("one pixel")
+}
+
 /// `(width, height)` of a picture or video.
 fn dimensions(tools: &Tools, file: &Path) -> (u32, u32) {
     let out = tools

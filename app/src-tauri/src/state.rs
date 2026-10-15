@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use as_api::{AnalysisStage, MediaToolsStatus};
-use as_core::{AppPaths, MediaId};
+use as_core::{AppPaths, MediaId, ProjectId};
 use as_engine::{Engine, Launch};
 use as_jobs::{Class, JobEvent, JobRunner};
 use as_media::Tools;
@@ -45,6 +45,9 @@ pub struct AppState {
     pub models: ModelStore,
     /// Running analyses and the restarts they owe.
     pub analysis: Arc<parking_lot::Mutex<AnalysisRuns>>,
+    /// Projects with a portraits job queued or running, and whether their
+    /// cast changed since it last looked (see `work::queue_portraits`).
+    pub portraits: Arc<parking_lot::Mutex<HashMap<ProjectId, bool>>>,
     tools: Arc<OnceLock<Result<Arc<Tools>, String>>>,
     bundled_ffmpeg: Option<PathBuf>,
 }
@@ -92,6 +95,7 @@ impl AppState {
             engine,
             models,
             analysis: Arc::default(),
+            portraits: Arc::default(),
             tools: Arc::new(OnceLock::new()),
             bundled_ffmpeg,
         }

@@ -310,7 +310,8 @@ function Header({
   const [loading, setLoading] = useState(false)
   const { data: project } = useProject(pid)
   const { data: media } = useMediaList(pid)
-  const ambient = useAmbient(c?.cover)
+  // The backdrop is blurred: the small face does, and stays put when the portrait arrives.
+  const ambient = useAmbient(c?.coverSmall)
 
   const startExport = async () => {
     if (!c) return
@@ -327,12 +328,14 @@ function Header({
   }
 
   return (
-    <Hero path={c?.cover} ambient={ambient} blur className="min-h-[clamp(320px,44vh,460px)]">
+    <Hero path={c?.coverSmall} ambient={ambient} blur className="min-h-[clamp(320px,44vh,460px)]">
       <div className="flex flex-wrap items-end justify-between gap-8">
         <div className="flex min-w-0 items-end gap-7">
           <Artwork
+            key={c?.id}
             path={c?.cover}
             className="size-40 shrink-0 rounded-[28px] shadow-[0_30px_60px_-20px_rgb(0_0_0/0.8),inset_0_0_0_1px_rgb(255_255_255/0.12)]"
+            imgClassName="object-[50%_30%]"
             fallback={
               <div className="flex size-full items-center justify-center bg-white/[0.06] text-white/60 [&_svg]:size-14">
                 <User />
@@ -596,7 +599,7 @@ export function PickCharacter({
           <div className="flex flex-col gap-4">
             <div className="flex items-center gap-3">
               <span className="size-14 shrink-0 overflow-hidden rounded-full bg-inset picture-edge">
-                {pending.cover && <img src={assetUrl(pending.cover)} alt="" className="size-full object-cover" />}
+                {pending.coverSmall && <img src={assetUrl(pending.coverSmall)} alt="" className="size-full object-cover" />}
               </span>
               <div>
                 <p className="text-md font-medium text-fg-1">{asked.question}</p>
@@ -668,7 +671,7 @@ export function PickCharacter({
                   )}
                 >
                   <span className="size-10 shrink-0 overflow-hidden rounded-full bg-inset picture-edge">
-                    {c.cover && <img src={assetUrl(c.cover)} alt="" className="size-full object-cover" />}
+                    {c.coverSmall && <img src={assetUrl(c.coverSmall)} alt="" className="size-full object-cover" />}
                   </span>
                   <span className="min-w-0 flex-1">
                     <span className={cn("block truncate text-md font-medium", c.name ? "text-fg-1" : "text-fg-2")}>{c.label}</span>

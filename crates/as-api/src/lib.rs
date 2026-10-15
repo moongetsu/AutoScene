@@ -320,8 +320,12 @@ pub struct Character {
     pub media: u32,
     /// Time the character's face is on screen.
     pub screen_sec: f64,
-    /// Face thumbnail (absolute path).
+    /// Portrait for big places (cards, heroes): 3:4 from the exact frame at
+    /// full resolution once it is made, the face thumbnail until then
+    /// (absolute path).
     pub cover: Option<String>,
+    /// The same face as a small square thumbnail, for avatars and lists.
+    pub cover_small: Option<String>,
     /// Tracks that look like the character and wait for a decision.
     pub unsure: u32,
     /// Faces of the character in media waiting for or in a new analysis:
@@ -532,6 +536,8 @@ pub enum JobKind {
     Analyze,
     /// Posters of a project made again at the current sizes.
     Posters,
+    /// Sharp portraits of a project's characters, cut from the exact frames.
+    Portraits,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]

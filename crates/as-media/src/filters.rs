@@ -15,6 +15,15 @@ pub const TONEMAP_SDR: &str =
 /// - scale to `height` (never upscale) with even dimensions.
 pub fn display_chain(info: &MediaInfo, height: Option<u32>, tonemap: bool) -> Vec<String> {
     let mut f: Vec<String> = deinterlace(info).into_iter().collect();
+    f.extend(picture_chain(info, height, tonemap));
+    f
+}
+
+/// [`display_chain`] without the deinterlacing: for a chain that
+/// deinterlaces before it picks frames (a deinterlacer needs the frames
+/// around the one it makes).
+pub fn picture_chain(info: &MediaInfo, height: Option<u32>, tonemap: bool) -> Vec<String> {
+    let mut f = Vec::new();
     if tonemap && info.video.hdr != HdrKind::None {
         f.push(TONEMAP_SDR.to_string());
     }

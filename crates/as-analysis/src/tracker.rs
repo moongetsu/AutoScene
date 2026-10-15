@@ -168,11 +168,9 @@ impl Open {
         }
         let n = sum.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-6);
         let embedding = sum.iter().map(|x| x / n).collect();
-        let best = self
-            .obs
-            .iter()
-            .max_by(|a, b| a.det.quality.total_cmp(&b.det.quality).then(a.det.height().total_cmp(&b.det.height())))
-            .expect("tracks have observations");
+        // The same pick as `tracks::clearest`: a portrait made later from the
+        // stored detections shows the moment of this thumbnail.
+        let best = self.obs.iter().max_by(|a, b| a.det.clarity_cmp(&b.det)).expect("tracks have observations");
         let start = self.obs[0].det.frame;
         let end = (self.last_frame + stride).min(shot.end);
         FaceTrack {
@@ -269,6 +267,37 @@ mod tests {
             assert!((cosine(&t.embedding, &emb(who)) - 1.0).abs() < 1e-5);
         }
         assert_eq!((tracks[0].start, tracks[0].end), (0, 15));
+    }
+
+    #[test]
+    fn the_thumbnail_shows_the_clearest_detection() {
+        // One face over 8 samples; ties in quality go to the bigger face, and
+        // between equals to the last (what a portrait made later from the
+        // stored detections picks too).
+        let shot = FrameRange::new(0, 30);
+        let quality = [0.5, 0.9, 0.7, 0.9, 0.9, 0.3, 0.9, 0.9];
+        let samples = quality
+            .iter()
+            .enumerate()
+            .map(|(i, &q)| {
+                let f = i as FrameIdx * 3;
+                let mut o = obs(f, 0.3, 1, q);
+                // Sample 4 is a little bigger; 6 and 7 bigger still, and alike.
+                o.det.bbox[3] += match i {
+                    4 => 0.01,
+                    6 | 7 => 0.02,
+                    _ => 0.0,
+                };
+                o.thumb = vec![i as u8];
+                (f, vec![o])
+            })
+            .collect();
+        let tracks = track_shot(shot, samples, &TrackerParams::new(3));
+        assert_eq!(tracks.len(), 1);
+        let t = &tracks[0];
+        let clearest = crate::tracks::clearest(&t.dets).unwrap();
+        assert_eq!(t.thumb, [(clearest.frame / 3) as u8]);
+        assert_eq!(clearest.frame, 21, "the biggest face of the best quality, the last of equals");
     }
 
     #[test]

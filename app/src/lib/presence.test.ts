@@ -12,6 +12,7 @@ const who = (id: string, hidden = false): Character => ({
   media: 1,
   screenSec: 0,
   cover: null,
+  coverSmall: null,
   unsure: 0,
   waiting: 0,
 })
