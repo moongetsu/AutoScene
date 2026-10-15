@@ -10,10 +10,12 @@
 
 mod cast;
 mod library;
+mod pack;
 mod project;
 
 pub use cast::{CharacterRow, CharacterShotRow, EditKind, IdentityTrack, NewTrack, TrackEdit, TrackRow};
 pub use library::LibraryDb;
+pub use pack::PackRow;
 pub use project::{IngestRecord, NewExportItem, NewMedia, ProjectDb, ProjectStats, episode_label};
 
 use std::path::Path;

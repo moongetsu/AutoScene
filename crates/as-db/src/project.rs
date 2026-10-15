@@ -181,6 +181,30 @@ const STEPS: &[M<'static>] = &[
     M::up("ALTER TABLE media ADD COLUMN faces_model TEXT;"),
     // A small poster for small places (rail tiles, lists, cards).
     M::up("ALTER TABLE media ADD COLUMN poster_small TEXT;"),
+    // Scenepacks: per character, the filters last used (PackSpec and
+    // PackNaming JSON) and the shots picked or dropped by hand, keyed by the
+    // shot's start frame. A pack is never stored as a list of clips: it is
+    // made from the analysis each time, so it follows a new analysis.
+    M::up(
+        "CREATE TABLE packs (
+        character_id TEXT PRIMARY KEY REFERENCES characters(id) ON DELETE CASCADE,
+        spec         TEXT NOT NULL,
+        naming       TEXT,
+        updated_at   INTEGER NOT NULL
+    ) STRICT;
+
+    CREATE TABLE pack_overrides (
+        character_id TEXT NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+        media_id     TEXT NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+        shot         INTEGER NOT NULL,
+        include      INTEGER NOT NULL,  -- 1 picked, 0 dropped
+        updated_at   INTEGER NOT NULL,
+        PRIMARY KEY (character_id, media_id, shot)
+    ) STRICT;
+
+    -- Everyone in a shot (who else is on screen with a character).
+    CREATE INDEX tracks_by_shot ON tracks(media_id, shot);",
+    ),
 ];
 const MIGRATIONS: Migrations<'static> = Migrations::from_slice(STEPS);
 

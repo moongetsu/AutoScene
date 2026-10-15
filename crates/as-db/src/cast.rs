@@ -116,7 +116,7 @@ pub enum EditKind {
     Cover(CharacterId),
 }
 
-fn parse_id<T: std::str::FromStr>(s: &str) -> DbResult<T>
+pub(crate) fn parse_id<T: std::str::FromStr>(s: &str) -> DbResult<T>
 where
     T::Err: std::fmt::Display,
 {
@@ -901,6 +901,14 @@ impl ProjectDb {
                 "UPDATE characters SET name = (SELECT name FROM characters WHERE id = ?1) WHERE id = ?2 AND name IS NULL",
                 [&f, &i],
             )?;
+            // Their pack too: shots picked or dropped by hand (the one who
+            // stays decides where both did), and the filters if they had none.
+            tx.execute("UPDATE OR IGNORE pack_overrides SET character_id = ?2 WHERE character_id = ?1", [&f, &i])?;
+            tx.execute(
+                "INSERT OR IGNORE INTO packs (character_id, spec, naming, updated_at)
+                 SELECT ?2, spec, naming, updated_at FROM packs WHERE character_id = ?1",
+                [&f, &i],
+            )?;
             tx.execute("DELETE FROM characters WHERE id = ?1", [&f])?;
             bump_rev(tx)
         })
@@ -919,14 +927,14 @@ fn pin_anchors(tx: &Transaction, c: CharacterId, anchors: usize) -> DbResult<()>
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::project::tests::{info, new_media};
     use crate::{IngestRecord, ProjectDb};
     use as_api::ProxyState;
     use as_core::Rational;
 
-    fn ready_media(db: &ProjectDb, name: &str) -> MediaId {
+    pub(crate) fn ready_media(db: &ProjectDb, name: &str) -> MediaId {
         let id = db.add_media(&[new_media(name, Some(1), Some(1))]).unwrap()[0];
         db.record_ingest(
             id,
@@ -949,7 +957,7 @@ mod tests {
         id
     }
 
-    fn track(start: FrameIdx, quality: f32) -> NewTrack {
+    pub(crate) fn track(start: FrameIdx, quality: f32) -> NewTrack {
         NewTrack { start, end: start + 24, shot: start, quality, face_h: 0.3, dets: vec![0; 64], emb: vec![0; 1024] }
     }
 
