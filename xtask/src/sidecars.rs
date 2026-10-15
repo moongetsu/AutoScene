@@ -28,6 +28,7 @@ use sha2::{Digest, Sha256};
 /// What to take out of an archive.
 enum Pick {
     /// Every file in this folder ("" = top level), except ffplay.
+    #[cfg_attr(target_os = "linux", allow(dead_code, reason = "Linux bundles name their files"))]
     Dir(&'static str),
     /// These files: (path inside the archive, name in the bundle folder).
     Files(&'static [(&'static str, &'static str)]),
