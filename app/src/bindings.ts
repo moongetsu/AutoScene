@@ -476,7 +476,9 @@ export type JobInfo = {
 
 export type JobKind = "ingest" | "proxy" | "export" | 
 /**  AI analysis of a media: shots, then faces and characters. */
-"analyze";
+"analyze" | 
+/**  Posters of a project made again at the current sizes. */
+"posters";
 
 /**  Throttled progress for a running job (≤ 4 Hz per job). */
 export type JobProgress = {
@@ -543,7 +545,10 @@ export type MediaItem = {
 	/**  Audio stream ordinal used for playback and export (`None` = default track). */
 	audioOrdinal: number | null,
 	proxy: ProxyState,
+	/**  A still of the episode, 720p, for artwork (heroes, backdrops). */
 	poster: string | null,
+	/**  The same still small (covers 480×270), for cards, lists and tiles. */
+	posterSmall: string | null,
 	addedAt: number,
 	/**  Shot detection. */
 	shots: StageState,
@@ -613,8 +618,10 @@ export type ProjectSummary = {
 	mediaCount: number,
 	readyCount: number,
 	durationSec: number | null,
-	/**  Poster image of the first episode, once indexed. */
+	/**  Poster image of the first episode, once indexed (720p, for artwork). */
 	poster: string | null,
+	/**  The same picture small (covers 480×270), for rail tiles and lists. */
+	posterSmall: string | null,
 };
 
 /**

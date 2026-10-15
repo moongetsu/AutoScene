@@ -72,7 +72,7 @@ export function CommandPalette() {
     id: `project-${p.id}`,
     label: p.title,
     icon: p.kind === "movie" ? <FilmStrip /> : <Television />,
-    poster: p.poster,
+    poster: p.posterSmall ?? p.poster,
     hint: p.kind === "movie" ? "Movie" : `${p.mediaCount} ${p.mediaCount === 1 ? "episode" : "episodes"}`,
     run: () => a.goProject(p.id),
   }))

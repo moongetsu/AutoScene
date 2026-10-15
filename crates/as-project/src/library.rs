@@ -110,6 +110,7 @@ impl Library {
             ready_count: 0,
             duration_sec: 0.0,
             poster: None,
+            poster_small: None,
         };
         let project = Arc::new(Project::create(&summary)?);
         self.db.insert_project(&summary)?;
@@ -178,9 +179,15 @@ impl Library {
 
     /// Recompute the denormalised stats shown on the Library grid.
     pub fn refresh_stats(&self, project: &Project) -> ProjectResult<ProjectSummary> {
-        let s = project.db().stats()?;
-        self.db.update_stats(project.id, s.media_count, s.ready_count, s.duration_sec, s.poster.as_deref())?;
+        self.db.update_stats(project.id, &project.db().stats()?)?;
         self.summary(project.id)
+    }
+
+    /// Show a project's current posters on the Library grid, without moving it
+    /// to the front. Returns whether they changed.
+    pub fn refresh_posters(&self, project: &Project) -> ProjectResult<bool> {
+        let s = project.db().stats()?;
+        Ok(self.db.set_posters(project.id, s.poster.as_deref(), s.poster_small.as_deref())?)
     }
 
     // -- import -------------------------------------------------------------

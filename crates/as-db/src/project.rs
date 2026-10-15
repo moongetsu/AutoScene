@@ -179,6 +179,8 @@ const STEPS: &[M<'static>] = &[
     // Which face embedder made a media's tracks: embeddings of two models
     // can't be compared, so tracks of another one are found again.
     M::up("ALTER TABLE media ADD COLUMN faces_model TEXT;"),
+    // A small poster for small places (rail tiles, lists, cards).
+    M::up("ALTER TABLE media ADD COLUMN poster_small TEXT;"),
 ];
 const MIGRATIONS: Migrations<'static> = Migrations::from_slice(STEPS);
 
@@ -207,6 +209,7 @@ pub struct IngestRecord {
     pub interlaced: bool,
     pub proxy: ProxyState,
     pub poster: Option<String>,
+    pub poster_small: Option<String>,
     pub index_blob: Vec<u8>,
     /// Audio track for playback and export (`None` = the file has no audio).
     pub audio_ordinal: Option<u32>,
@@ -218,6 +221,7 @@ pub struct ProjectStats {
     pub ready_count: u32,
     pub duration_sec: f64,
     pub poster: Option<String>,
+    pub poster_small: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -234,7 +238,8 @@ const MEDIA_COLS: &str = "id, path, file_name, size_bytes, season, episode, stat
      fps_num, fps_den, vfr, interlaced, audio_ordinal, proxy, poster, added_at, shots, shots_error, \
      CASE WHEN shots = 'ready' THEN (SELECT COUNT(*) FROM segments s WHERE s.media_id = media.id AND s.kind = 'shot') END, \
      faces, faces_error, \
-     CASE WHEN faces = 'ready' THEN (SELECT COUNT(*) FROM tracks t WHERE t.media_id = media.id AND t.not_face = 0) END";
+     CASE WHEN faces = 'ready' THEN (SELECT COUNT(*) FROM tracks t WHERE t.media_id = media.id AND t.not_face = 0) END, \
+     poster_small";
 
 /// Episode order (same as `as_project::naming::episode_cmp`): numbered episodes by
 /// (season, episode), then the rest in the order they were added.
@@ -275,6 +280,7 @@ fn media_row(r: &Row, position: u32) -> DbResult<MediaItem> {
         audio_ordinal: r.get(15)?,
         proxy: enum_from_sql(&r.get::<_, String>(16)?)?,
         poster: r.get(17)?,
+        poster_small: r.get(25)?,
         added_at: r.get(18)?,
         shots: enum_from_sql(&r.get::<_, String>(19)?)?,
         shots_error: r.get(20)?,
@@ -417,7 +423,7 @@ impl ProjectDb {
             tx.execute(
                 "UPDATE media SET status = 'ready', error = NULL, info = ?2, frames = ?3, duration_sec = ?4,
                         fps_num = ?5, fps_den = ?6, vfr = ?7, interlaced = ?8, proxy = ?9, poster = ?10,
-                        audio_ordinal = ?11
+                        audio_ordinal = ?11, poster_small = ?12
                  WHERE id = ?1",
                 params![
                     id.to_string(),
@@ -431,6 +437,7 @@ impl ProjectDb {
                     enum_to_sql(rec.proxy),
                     rec.poster,
                     rec.audio_ordinal,
+                    rec.poster_small,
                 ],
             )?;
             tx.execute(
@@ -448,6 +455,17 @@ impl ProjectDb {
         self.0.read(|c| {
             Ok(c.query_row("SELECT data FROM frame_index WHERE media_id = ?1", [id.to_string()], |r| r.get(0))
                 .optional()?)
+        })
+    }
+
+    /// Point a media at newly made posters. `false` when the media is gone.
+    pub fn set_posters(&self, id: MediaId, poster: &str, poster_small: &str) -> DbResult<bool> {
+        self.0.write(|tx| {
+            let n = tx.execute(
+                "UPDATE media SET poster = ?2, poster_small = ?3 WHERE id = ?1",
+                params![id.to_string(), poster, poster_small],
+            )?;
+            Ok(n > 0)
         })
     }
 
@@ -568,11 +586,13 @@ impl ProjectDb {
     pub fn stats(&self) -> DbResult<ProjectStats> {
         let media = self.media_list()?;
         let ready: Vec<_> = media.iter().filter(|m| m.status == MediaStatus::Ready).collect();
+        let pictured = media.iter().find(|m| m.poster.is_some());
         Ok(ProjectStats {
             media_count: media.len() as u32,
             ready_count: ready.len() as u32,
             duration_sec: ready.iter().filter_map(|m| m.duration_sec).sum(),
-            poster: media.iter().find_map(|m| m.poster.clone()),
+            poster: pictured.and_then(|m| m.poster.clone()),
+            poster_small: pictured.and_then(|m| m.poster_small.clone()),
         })
     }
 
@@ -818,6 +838,7 @@ pub(crate) mod tests {
             interlaced: false,
             proxy: ProxyState::Pending,
             poster: Some("/thumbs/e1.jpg".into()),
+            poster_small: Some("/thumbs/e1-small.jpg".into()),
             index_blob: vec![1, 2, 3],
             audio_ordinal: Some(0),
         };
@@ -838,7 +859,21 @@ pub(crate) mod tests {
         let stats = db.stats().unwrap();
         assert_eq!(
             stats,
-            ProjectStats { media_count: 3, ready_count: 1, duration_sec: 10.01, poster: Some("/thumbs/e1.jpg".into()) }
+            ProjectStats {
+                media_count: 3,
+                ready_count: 1,
+                duration_sec: 10.01,
+                poster: Some("/thumbs/e1.jpg".into()),
+                poster_small: Some("/thumbs/e1-small.jpg".into()),
+            }
+        );
+
+        // Posters made again at new sizes.
+        assert!(db.set_posters(e1.id, "/thumbs/e1-720.jpg", "/thumbs/e1-270.jpg").unwrap());
+        let m = db.media(e1.id).unwrap().unwrap();
+        assert_eq!(
+            (m.poster.as_deref(), m.poster_small.as_deref()),
+            (Some("/thumbs/e1-720.jpg"), Some("/thumbs/e1-270.jpg"))
         );
 
         // A crash mid-ingest: back to the queue on next open.
@@ -847,6 +882,7 @@ pub(crate) mod tests {
 
         db.remove_media(e1.id).unwrap();
         assert!(db.frame_index_blob(e1.id).unwrap().is_none(), "frame index cascades");
+        assert!(!db.set_posters(e1.id, "/a.jpg", "/b.jpg").unwrap(), "a removed media gets no posters");
     }
 
     #[test]
@@ -864,6 +900,7 @@ pub(crate) mod tests {
             interlaced: false,
             proxy: ProxyState::NotNeeded,
             poster: None,
+            poster_small: None,
             index_blob: vec![1],
             audio_ordinal: None,
         };

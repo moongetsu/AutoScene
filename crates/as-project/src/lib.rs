@@ -16,4 +16,4 @@ pub use analysis::ShotsPlan;
 pub use cast::{FACE_CHUNK, FacesPlan};
 pub use error::{ProjectError, ProjectResult};
 pub use library::Library;
-pub use project::Project;
+pub use project::{Project, Recovery};

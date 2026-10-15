@@ -35,8 +35,9 @@ export function OverviewPage() {
   const { data: media } = useMediaList(pid)
   const { data: cast } = useCast(pid)
   const [renaming, setRenaming] = useState<ProjectSummary | null>(null)
-  const backdrop = project?.poster ?? media?.find((m) => m.poster)?.poster ?? null
-  const ambient = useAmbient(backdrop)
+  const pictured = project?.poster ? project : media?.find((m) => m.poster)
+  const backdrop = pictured?.poster ?? null
+  const ambient = useAmbient(pictured?.posterSmall ?? backdrop)
   const { shown } = splitHidden(cast)
   const live = project?.content !== "anime"
   const movie = project?.kind === "movie"

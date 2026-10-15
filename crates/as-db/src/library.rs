@@ -7,11 +7,12 @@ use as_core::ProjectId;
 use rusqlite::{OptionalExtension, Row, params};
 use rusqlite_migration::{M, Migrations};
 
-use crate::{Db, DbError, DbResult, enum_from_sql, enum_to_sql};
+use crate::{Db, DbError, DbResult, ProjectStats, enum_from_sql, enum_to_sql};
 
 /// Append-only: never edit a released migration, add a new one.
-const STEPS: &[M<'static>] = &[M::up(
-    "CREATE TABLE settings (
+const STEPS: &[M<'static>] = &[
+    M::up(
+        "CREATE TABLE settings (
         key   TEXT PRIMARY KEY,
         value TEXT NOT NULL
     ) STRICT;
@@ -30,13 +31,15 @@ const STEPS: &[M<'static>] = &[M::up(
         duration_sec REAL NOT NULL DEFAULT 0,
         poster       TEXT
     ) STRICT;",
-)];
+    ),
+    M::up("ALTER TABLE projects ADD COLUMN poster_small TEXT;"),
+];
 const MIGRATIONS: Migrations<'static> = Migrations::from_slice(STEPS);
 
 pub struct LibraryDb(Db);
 
-const PROJECT_COLS: &str =
-    "id, title, kind, content, dir, created_at, updated_at, media_count, ready_count, duration_sec, poster";
+const PROJECT_COLS: &str = "id, title, kind, content, dir, created_at, updated_at, media_count, ready_count, \
+     duration_sec, poster, poster_small";
 
 fn project_row(r: &Row) -> DbResult<ProjectSummary> {
     let id: String = r.get(0)?;
@@ -52,6 +55,7 @@ fn project_row(r: &Row) -> DbResult<ProjectSummary> {
         ready_count: r.get(8)?,
         duration_sec: r.get(9)?,
         poster: r.get(10)?,
+        poster_small: r.get(11)?,
     })
 }
 
@@ -83,7 +87,9 @@ impl LibraryDb {
     pub fn insert_project(&self, p: &ProjectSummary) -> DbResult<()> {
         self.0.write(|tx| {
             tx.execute(
-                &format!("INSERT INTO projects ({PROJECT_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"),
+                &format!(
+                    "INSERT INTO projects ({PROJECT_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)"
+                ),
                 params![
                     p.id.to_string(),
                     p.title,
@@ -96,6 +102,7 @@ impl LibraryDb {
                     p.ready_count,
                     p.duration_sec,
                     p.poster,
+                    p.poster_small,
                 ],
             )?;
             Ok(())
@@ -133,21 +140,37 @@ impl LibraryDb {
         })
     }
 
-    pub fn update_stats(
-        &self,
-        id: ProjectId,
-        media_count: u32,
-        ready_count: u32,
-        duration_sec: f64,
-        poster: Option<&str>,
-    ) -> DbResult<()> {
+    /// Store a project's stats; it counts as touched (moves to the front).
+    pub fn update_stats(&self, id: ProjectId, s: &ProjectStats) -> DbResult<()> {
         self.0.write(|tx| {
             tx.execute(
-                "UPDATE projects SET media_count = ?2, ready_count = ?3, duration_sec = ?4, poster = ?5, updated_at = ?6
+                "UPDATE projects SET media_count = ?2, ready_count = ?3, duration_sec = ?4, poster = ?5,
+                        poster_small = ?6, updated_at = ?7
                  WHERE id = ?1",
-                params![id.to_string(), media_count, ready_count, duration_sec, poster, now_ms()],
+                params![
+                    id.to_string(),
+                    s.media_count,
+                    s.ready_count,
+                    s.duration_sec,
+                    s.poster,
+                    s.poster_small,
+                    now_ms()
+                ],
             )?;
             Ok(())
+        })
+    }
+
+    /// Store a project's posters only. Returns whether they changed. Posters
+    /// made again in the background don't count as touching the project.
+    pub fn set_posters(&self, id: ProjectId, poster: Option<&str>, poster_small: Option<&str>) -> DbResult<bool> {
+        self.0.write(|tx| {
+            let n = tx.execute(
+                "UPDATE projects SET poster = ?2, poster_small = ?3
+                 WHERE id = ?1 AND (poster IS NOT ?2 OR poster_small IS NOT ?3)",
+                params![id.to_string(), poster, poster_small],
+            )?;
+            Ok(n > 0)
         })
     }
 
@@ -177,6 +200,7 @@ mod tests {
             ready_count: 0,
             duration_sec: 0.0,
             poster: None,
+            poster_small: None,
         }
     }
 
@@ -185,12 +209,26 @@ mod tests {
         let db = LibraryDb::memory();
         let a = sample("Frieren", "/lib/Frieren.autoscene");
         db.insert_project(&a).unwrap();
-        db.update_stats(a.id, 3, 2, 4200.5, Some("/p.jpg")).unwrap();
+        let stats = ProjectStats {
+            media_count: 3,
+            ready_count: 2,
+            duration_sec: 4200.5,
+            poster: Some("/p.jpg".into()),
+            poster_small: Some("/p-small.jpg".into()),
+        };
+        db.update_stats(a.id, &stats).unwrap();
         db.rename_project(a.id, "Frieren S1").unwrap();
         let got = db.project(a.id).unwrap().unwrap();
         assert_eq!((got.title.as_str(), got.media_count, got.ready_count), ("Frieren S1", 3, 2));
         assert_eq!(got.content, ContentKind::Anime);
-        assert_eq!(got.poster.as_deref(), Some("/p.jpg"));
+        assert_eq!((got.poster.as_deref(), got.poster_small.as_deref()), (Some("/p.jpg"), Some("/p-small.jpg")));
+
+        // New posters don't move the project to the front.
+        assert!(!db.set_posters(a.id, Some("/p.jpg"), Some("/p-small.jpg")).unwrap(), "unchanged");
+        assert!(db.set_posters(a.id, Some("/p-720.jpg"), Some("/p-270.jpg")).unwrap());
+        let after = db.project(a.id).unwrap().unwrap();
+        assert_eq!((after.poster.as_deref(), after.poster_small.as_deref()), (Some("/p-720.jpg"), Some("/p-270.jpg")));
+        assert_eq!(after.updated_at, got.updated_at);
         // Same folder twice is refused.
         assert!(db.insert_project(&sample("Other", "/lib/Frieren.autoscene")).is_err());
         db.delete_project(a.id).unwrap();

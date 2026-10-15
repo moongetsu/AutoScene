@@ -265,6 +265,7 @@ dependencies = [
  "as-testkit",
  "parking_lot",
  "regex",
+ "rusqlite",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",

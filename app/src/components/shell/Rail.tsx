@@ -231,7 +231,7 @@ function ProjectTile({ project: p, open }: { project: ProjectSummary; open: bool
           )}
         />
         <Artwork
-          path={p.poster}
+          path={p.posterSmall ?? p.poster}
           className={cn(
             "size-11 rounded-[14px] transition-[transform,box-shadow] duration-[var(--dur-med)] ease-out group-hover:scale-105",
             open

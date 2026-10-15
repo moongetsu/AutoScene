@@ -102,8 +102,10 @@ pub struct ProjectSummary {
     pub media_count: u32,
     pub ready_count: u32,
     pub duration_sec: f64,
-    /// Poster image of the first episode, once indexed.
+    /// Poster image of the first episode, once indexed (720p, for artwork).
     pub poster: Option<String>,
+    /// The same picture small (covers 480×270), for rail tiles and lists.
+    pub poster_small: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -188,7 +190,10 @@ pub struct MediaItem {
     /// Audio stream ordinal used for playback and export (`None` = default track).
     pub audio_ordinal: Option<u32>,
     pub proxy: ProxyState,
+    /// A still of the episode, 720p, for artwork (heroes, backdrops).
     pub poster: Option<String>,
+    /// The same still small (covers 480×270), for cards, lists and tiles.
+    pub poster_small: Option<String>,
     pub added_at: i64,
     /// Shot detection.
     pub shots: StageState,
@@ -525,6 +530,8 @@ pub enum JobKind {
     Export,
     /// AI analysis of a media: shots, then faces and characters.
     Analyze,
+    /// Posters of a project made again at the current sizes.
+    Posters,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]

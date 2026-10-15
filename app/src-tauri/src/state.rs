@@ -19,8 +19,9 @@ use crate::events::{JobChanged, JobProgressEvent};
 
 /// Concurrent jobs per resource class. Two decode-heavy jobs keep a GPU busy
 /// without starving the UI's preview; exports run one at a time so encoder
-/// sessions are never oversubscribed; the engine analyses one media at a time.
-const LIMITS: &[(Class, usize)] = &[(Class::Media, 2), (Class::Export, 1), (Class::Analysis, 1)];
+/// sessions are never oversubscribed; the engine analyses one media at a time;
+/// upkeep (one still at a time) runs beside all of them.
+const LIMITS: &[(Class, usize)] = &[(Class::Media, 2), (Class::Export, 1), (Class::Analysis, 1), (Class::Upkeep, 1)];
 
 /// Which media an analysis job is working on, and the restarts asked for
 /// meanwhile. Both change under one lock, so a restart is either handed to

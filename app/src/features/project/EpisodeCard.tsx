@@ -22,7 +22,7 @@ export function EpisodeCard({ pid, media: m, className }: { pid: string; media: 
       title={m.fileName}
     >
       <Artwork
-        path={m.poster}
+        path={m.posterSmall ?? m.poster}
         className="aspect-video rounded-xl picture-edge transition-[box-shadow,transform] duration-[var(--dur-med)] ease-out group-hover:-translate-y-1 group-hover:shadow-lift"
         imgClassName={cn("group-hover:scale-[1.04] duration-[600ms]", broken && "opacity-40 grayscale")}
         fallback={

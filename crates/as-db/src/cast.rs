@@ -908,6 +908,7 @@ mod tests {
                 interlaced: false,
                 proxy: ProxyState::NotNeeded,
                 poster: None,
+                poster_small: None,
                 index_blob: vec![1],
                 audio_ordinal: None,
             },

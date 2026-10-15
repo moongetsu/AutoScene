@@ -181,6 +181,7 @@ function media(
     audioOrdinal: null,
     proxy: ready ? "not_needed" : "unknown",
     poster: ready && poster ? `${FIXTURES}posters/${poster}.jpg` : null,
+    posterSmall: ready && poster ? `${FIXTURES}posters/${poster}.jpg` : null,
     addedAt: now,
     shots: ready ? "ready" : "pending",
     shotsError: null,
@@ -207,6 +208,7 @@ function project(title: string, kind: ProjectKind, content: ProjectSummary["cont
     readyCount: 0,
     durationSec: 0,
     poster: null,
+    posterSmall: null,
     media: items,
     exports: [],
   }
@@ -219,7 +221,9 @@ function refresh(p: MockProject) {
   p.mediaCount = p.media.length
   p.readyCount = p.media.filter((m) => m.status === "ready").length
   p.durationSec = p.media.reduce((s, m) => s + (m.status === "ready" ? (m.durationSec ?? 0) : 0), 0)
-  p.poster = p.media.find((m) => m.poster)?.poster ?? null
+  const pictured = p.media.find((m) => m.poster)
+  p.poster = pictured?.poster ?? null
+  p.posterSmall = pictured?.posterSmall ?? null
   p.updatedAt = Date.now()
 }
 
@@ -328,7 +332,7 @@ function startJob(
 function ingest(p: MockProject, m: MediaItem) {
   m.status = "indexing"
   startJob("ingest", `Indexing ${m.label ? `${m.label} · ` : ""}${m.fileName}`, p, 6000, { mediaId: m.id, stage: "Indexing frames" }, () => {
-    Object.assign(m, media(m.fileName, [m.season, m.episode], {}), { id: m.id, path: m.path, poster: null })
+    Object.assign(m, media(m.fileName, [m.season, m.episode], {}), { id: m.id, path: m.path, poster: null, posterSmall: null })
     m.shots = "pending"
     m.shotCount = null
     refresh(p)

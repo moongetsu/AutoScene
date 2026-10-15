@@ -184,7 +184,7 @@ function NotReady({ pid, media: m, error }: { pid: string; media?: MediaItem; er
     <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden">
       {m?.poster && (
         <img
-          src={assetUrl(m.poster)}
+          src={assetUrl(m.posterSmall ?? m.poster)}
           alt=""
           className="absolute inset-0 size-full scale-110 object-cover opacity-30 blur-2xl"
         />

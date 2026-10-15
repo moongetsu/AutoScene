@@ -120,7 +120,49 @@ fn import_preview_and_export_three_episodes() {
     });
     let summary = lib.refresh_stats(&project).unwrap();
     assert_eq!((summary.media_count, summary.ready_count), (3, 3));
-    assert!(summary.poster.is_some());
+    assert!(summary.poster.is_some() && summary.poster_small.is_some());
+
+    // Posters: 720p artwork and a small one, named after their sizes; an
+    // ingest leaves nothing to make again.
+    for m in project.media_list().unwrap() {
+        for (p, name) in [(&m.poster, format!("{}-720.jpg", m.id)), (&m.poster_small, format!("{}-480x270.jpg", m.id))]
+        {
+            let p = Path::new(p.as_deref().expect("poster"));
+            assert!(p.is_file() && p.file_name().unwrap() == name.as_str(), "{}: {name}", m.file_name);
+        }
+    }
+    assert!(project.recover().unwrap().posters.is_empty());
+
+    // A project from before the full-bleed artwork: a 360p poster under the
+    // old name and no small one. The next launch makes both again; the old
+    // file goes, and the Library card follows without moving to the front.
+    let first = project.media_list().unwrap().remove(0);
+    let old = project.thumbs_dir().join(format!("{}.jpg", first.id));
+    std::fs::rename(first.poster.as_deref().unwrap(), &old).unwrap();
+    std::fs::remove_file(first.poster_small.as_deref().unwrap()).unwrap();
+    rusqlite::Connection::open(project.dir.join("project.db"))
+        .unwrap()
+        .execute(
+            "UPDATE media SET poster = ?1, poster_small = NULL WHERE id = ?2",
+            (old.display().to_string(), first.id.to_string()),
+        )
+        .unwrap();
+    let before = lib.refresh_stats(&project).unwrap();
+    assert_eq!((before.poster, before.poster_small), (Some(old.display().to_string()), None));
+    assert_eq!(project.recover().unwrap().posters, vec![first.id]);
+
+    assert!(project.refresh_posters(&tools, first.id, &cancel).unwrap());
+    let m = project.media(first.id).unwrap();
+    assert_eq!((&m.poster, &m.poster_small), (&first.poster, &first.poster_small));
+    assert!([&m.poster, &m.poster_small].iter().all(|p| p.as_deref().is_some_and(|p| Path::new(p).is_file())));
+    assert!(!old.exists(), "the old poster is removed");
+    assert!(project.recover().unwrap().posters.is_empty());
+    assert!(!project.refresh_posters(&tools, first.id, &cancel).unwrap(), "nothing left to do");
+
+    assert!(lib.refresh_posters(&project).unwrap());
+    let after = lib.summary(project.id).unwrap();
+    assert_eq!((&after.poster, &after.poster_small), (&m.poster, &m.poster_small));
+    assert_eq!(after.updated_at, before.updated_at);
 
     // Preview: seeking the player to frame f shows exactly frame f, for direct
     // playback, a proxy of an MPEG-TS with a start offset, and a VFR proxy.

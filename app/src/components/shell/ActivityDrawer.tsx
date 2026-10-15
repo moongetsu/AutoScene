@@ -1,6 +1,6 @@
 import type * as React from "react"
 import { useNavigate } from "@tanstack/react-router"
-import { Check, Eye, FilmStrip, Prohibit, Queue, Scan, Scissors, Warning, X } from "@/components/icons"
+import { Check, Eye, FilmStrip, Image, Prohibit, Queue, Scan, Scissors, Warning, X } from "@/components/icons"
 import type { JobInfo } from "@/bindings"
 import { Button } from "@/components/ui/button"
 import { EmptyState } from "@/components/ui/empty-state"
@@ -18,6 +18,7 @@ const KIND_ICON: Record<JobInfo["kind"], React.ReactNode> = {
   proxy: <Eye />,
   export: <Scissors />,
   analyze: <Scan />,
+  posters: <Image />,
 }
 
 /** Global view of background work (indexing, previews, analysis, exports). */

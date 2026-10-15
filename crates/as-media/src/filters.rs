@@ -23,9 +23,14 @@ pub fn display_chain(info: &MediaInfo, height: Option<u32>, tonemap: bool) -> Ve
         f.push("scale=trunc(iw*sar/2)*2:ih,setsar=1".to_string());
     }
     if let Some(h) = height {
-        f.push(format!("scale=-2:'min({h},ih)':flags=bicubic"));
+        f.push(scale_to_height(h));
     }
     f
+}
+
+/// Scale to `h` pixels tall (never upscale) with an even width.
+pub fn scale_to_height(h: u32) -> String {
+    format!("scale=-2:'min({h},ih)':flags=bicubic")
 }
 
 /// One-frame-per-frame deinterlacing for interlaced sources (the canonical

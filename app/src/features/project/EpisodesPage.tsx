@@ -159,7 +159,7 @@ function EpisodeRow({
         ready && "hover:bg-white/[0.04]",
       )}
     >
-      <Artwork path={m.poster} className="aspect-video rounded-xl picture-edge" imgClassName={cn(!ready && "opacity-40 grayscale")}>
+      <Artwork path={m.posterSmall ?? m.poster} className="aspect-video rounded-xl picture-edge" imgClassName={cn(!ready && "opacity-40 grayscale")}>
         {ready && (
           <span className="absolute inset-0 flex items-center justify-center bg-black/35 opacity-0 transition-opacity group-hover:opacity-100">
             <span className="flex size-10 items-center justify-center rounded-full border border-white/20 bg-black/40 text-white backdrop-blur-md [&_svg]:size-4">

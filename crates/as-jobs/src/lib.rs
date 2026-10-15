@@ -29,6 +29,9 @@ pub enum Class {
     Export,
     /// AI analysis in the engine process (one GPU: one job at a time).
     Analysis,
+    /// Quiet upkeep of existing projects (posters made again at new sizes):
+    /// its own worker, so it never holds up new work.
+    Upkeep,
 }
 
 /// What to show for a job and what it belongs to.

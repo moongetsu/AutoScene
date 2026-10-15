@@ -182,6 +182,7 @@ pub(crate) mod tests {
             interlaced: false,
             proxy: ProxyState::NotNeeded,
             poster: None,
+            poster_small: None,
             index_blob: index.to_bytes(),
             audio_ordinal: None,
         };

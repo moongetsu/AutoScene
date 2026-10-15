@@ -5,6 +5,7 @@ use std::path::Path;
 use std::process::Stdio;
 
 use as_core::CancelToken;
+use as_media::poster::StillSize;
 use as_media::{Source, Tools, build_frame_index, idet, poster, probe, proxy};
 use as_testkit::{Truth, barcode, fixtures_dir, load_truth};
 
@@ -152,10 +153,63 @@ fn poster_extracts_the_exact_frame() {
         let idx = build_frame_index(&tools, &path, &info, work.path(), &CancelToken::new(), |_| {}).unwrap();
         for f in [0u32, 1, 199, 200, 300, 585] {
             let jpg = work.path().join(format!("{file}-{f}.jpg"));
-            poster::extract_frame_jpeg(&tools, Source { path: &path, info: &info, index: &idx }, f, 360, &jpg).unwrap();
-            let code = barcodes(&tools, &jpg)[0].expect("barcode in poster");
-            assert_eq!(code.frame as u32, f, "{file}: poster of frame {f}");
+            let small = work.path().join(format!("{file}-{f}-small.jpg"));
+            let src = Source { path: &path, info: &info, index: &idx };
+            let outs = [(StillSize::Height(720), jpg.as_path()), (StillSize::Cover(480, 270), small.as_path())];
+            poster::extract_frame_jpegs(&tools, src, f, &outs, &CancelToken::new()).unwrap();
+            for (out, size) in [(&jpg, (640, 360)), (&small, (480, 270))] {
+                assert_eq!(dimensions(&tools, out), size, "{file}: never upscaled, made to cover");
+                let code = barcodes(&tools, out)[0].expect("barcode in poster");
+                assert_eq!(code.frame as u32, f, "{file}: poster of frame {f}");
+            }
         }
+    }
+}
+
+/// `(width, height)` of a picture or video.
+fn dimensions(tools: &Tools, file: &Path) -> (u32, u32) {
+    let out = tools
+        .ffprobe()
+        .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0"])
+        .arg(file)
+        .output()
+        .expect("ffprobe");
+    let text = String::from_utf8_lossy(&out.stdout);
+    let (w, h) = text.trim().split_once(',').expect("width,height");
+    (w.parse().unwrap(), h.parse().unwrap())
+}
+
+/// Stills keep the picture's shape: square pixels, the height capped, a
+/// cover box filled whatever the aspect ratio.
+#[test]
+fn stills_keep_the_frame_shape() {
+    let Some((tools, _)) = setup() else { return };
+    let work = tempfile::tempdir().unwrap();
+    // (size, sample aspect) → (720p poster, small poster)
+    let cases = [
+        ("960x720", "1/1", (960, 720), (480, 360)),    // 4:3
+        ("1280x536", "1/1", (1280, 536), (644, 270)),  // scope
+        ("720x576", "64/45", (1024, 576), (480, 270)), // anamorphic PAL 16:9
+        ("2560x1440", "1/1", (1280, 720), (480, 270)), // larger than 720p
+    ];
+    for (size, sar, big, small) in cases {
+        let path = work.path().join(format!("{size}.mkv"));
+        let status = tools
+            .ffmpeg()
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i", &format!("testsrc2=size={size}:rate=25:duration=1")])
+            .args(["-vf", &format!("setsar={sar}"), "-c:v", "libx264", "-preset", "ultrafast"])
+            .arg(&path)
+            .status()
+            .expect("ffmpeg");
+        assert!(status.success(), "{size}: test source");
+        let info = probe(&tools, &path).unwrap();
+        let idx = build_frame_index(&tools, &path, &info, work.path(), &CancelToken::new(), |_| {}).unwrap();
+        let (a, b) = (work.path().join(format!("{size}-a.jpg")), work.path().join(format!("{size}-b.jpg")));
+        let outs = [(StillSize::Height(720), a.as_path()), (StillSize::Cover(480, 270), b.as_path())];
+        let src = Source { path: &path, info: &info, index: &idx };
+        poster::extract_frame_jpegs(&tools, src, 10, &outs, &CancelToken::new()).unwrap();
+        assert_eq!(dimensions(&tools, &a), big, "{size} poster");
+        assert_eq!(dimensions(&tools, &b), small, "{size} small poster");
     }
 }
 

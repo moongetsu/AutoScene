@@ -89,7 +89,8 @@ export function LibraryPage() {
 
 /** The project touched last, big: pick up where you left off. */
 function Featured({ project: p }: { project: ProjectSummary }) {
-  const ambient = useAmbient(p.poster)
+  // The colour of a picture is the same at any size: read it from the small one.
+  const ambient = useAmbient(p.posterSmall ?? p.poster)
   return (
     <Hero path={p.poster} ambient={ambient}>
       <div className="max-w-2xl">

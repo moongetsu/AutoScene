@@ -24,4 +24,5 @@ tracing.workspace = true
 
 [dev-dependencies]
 as-testkit.workspace = true
+rusqlite.workspace = true
 tempfile = "3.27"

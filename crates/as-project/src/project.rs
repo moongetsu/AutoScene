@@ -8,17 +8,32 @@ use as_api::{
 use as_core::{CancelToken, ExportId, FrameIndex, FrameRange, MediaId, ProjectId, Rational, Timecode};
 use as_db::{IngestRecord, NewExportItem, ProjectDb};
 use as_export::{ClipJob, ExportPreset, export_clip};
-use as_media::{MediaInfo, Source, Tools, build_frame_index, idet, poster, probe, proxy};
+use as_media::poster::{StillSize, extract_frame_jpegs};
+use as_media::{MediaInfo, MediaResult, Source, Tools, build_frame_index, idet, probe, proxy};
 use parking_lot::Mutex;
 
 use crate::naming::safe_component;
 use crate::{ProjectError, ProjectResult};
 
 pub(crate) const PROJECT_DB: &str = "project.db";
-const POSTER_HEIGHT: u32 = 720;
+/// Posters: 720p for full-bleed artwork, and a small one that covers a
+/// 480×270 tile (sharp in a 300 px card at 150 % display scaling).
+const POSTER: StillSize = StillSize::Height(720);
+const POSTER_SMALL: StillSize = StillSize::Cover(480, 270);
 
 /// Progress callback: `(stage, fraction 0..1)`.
 pub type Progress<'a> = &'a dyn Fn(&str, f64);
+
+/// Work a project still owes after a quit, a crash or an update.
+#[derive(Debug, Default)]
+pub struct Recovery {
+    /// Interrupted mid-ingest; back in `queued`.
+    pub ingest: Vec<MediaId>,
+    /// Still waiting for a playback proxy.
+    pub proxies: Vec<MediaId>,
+    /// Ready, with posters from before the current sizes.
+    pub posters: Vec<MediaId>,
+}
 
 /// An open project.
 pub struct Project {
@@ -31,6 +46,9 @@ pub struct Project {
     proxy_builds: Mutex<HashMap<MediaId, u64>>,
     /// One clustering of the cast at a time.
     pub(crate) clustering: Mutex<()>,
+    /// One poster decode at a time: an ingest and the poster upkeep of the
+    /// same media would write the same files.
+    posters: Mutex<()>,
 }
 
 impl Project {
@@ -55,6 +73,7 @@ impl Project {
             indexes: Mutex::default(),
             proxy_builds: Mutex::default(),
             clustering: Mutex::default(),
+            posters: Mutex::default(),
         };
         p.ensure_dirs()?;
         Ok(p)
@@ -69,6 +88,7 @@ impl Project {
             indexes: Mutex::default(),
             proxy_builds: Mutex::default(),
             clustering: Mutex::default(),
+            posters: Mutex::default(),
         };
         p.ensure_dirs()?;
         // Exports can't resume mid-way (M1): close them out.
@@ -96,6 +116,24 @@ impl Project {
     }
     pub fn tmp_dir(&self) -> PathBuf {
         self.dir.join("tmp")
+    }
+
+    /// Where a media's posters go: named after their sizes, so posters made
+    /// at new sizes get new names and the webview never shows a cached old one.
+    fn poster_paths(&self, id: MediaId) -> (PathBuf, PathBuf) {
+        let name = |size: StillSize| match size {
+            StillSize::Height(h) => format!("{id}-{h}.jpg"),
+            StillSize::Cover(w, h) => format!("{id}-{w}x{h}.jpg"),
+        };
+        (self.thumbs_dir().join(name(POSTER)), self.thumbs_dir().join(name(POSTER_SMALL)))
+    }
+
+    /// Write both posters of a media (a tenth of the way in) from one decode.
+    fn write_posters(&self, tools: &Tools, id: MediaId, src: Source, cancel: &CancelToken) -> MediaResult<()> {
+        let (big, small) = self.poster_paths(id);
+        let outs = [(POSTER, big.as_path()), (POSTER_SMALL, small.as_path())];
+        let _one = self.posters.lock();
+        extract_frame_jpegs(tools, src, src.index.len() / 10, &outs, cancel)
     }
 
     pub fn title(&self) -> ProjectResult<String> {
@@ -131,18 +169,63 @@ impl Project {
         let m = self.media(id)?;
         self.db.remove_media(id)?;
         self.indexes.lock().remove(&id);
-        if let Some(p) = m.poster {
-            let _ = std::fs::remove_file(p);
-        }
+        // Its pictures go: the ones it points at, and ones made under its
+        // names that it doesn't point at yet (a poster upkeep it raced).
+        self.remove_stale_posters(&m, [None, None]);
+        let (big, small) = self.poster_paths(id);
+        let _ = std::fs::remove_file(big);
+        let _ = std::fs::remove_file(small);
         self.remove_proxies(id, None);
         let _ = std::fs::remove_dir_all(self.faces_dir().join(id.to_string()));
         Ok(())
     }
 
     /// Media interrupted mid-ingest by a quit or crash go back to `queued`;
-    /// returns them (and media still waiting for a proxy) so the app can re-queue the work.
-    pub fn recover(&self) -> ProjectResult<(Vec<MediaId>, Vec<MediaId>)> {
-        Ok((self.db.requeue_interrupted()?, self.db.pending_proxies()?))
+    /// returns them, media still waiting for a proxy and media whose posters
+    /// are outdated, so the app can re-queue the work.
+    pub fn recover(&self) -> ProjectResult<Recovery> {
+        let ingest = self.db.requeue_interrupted()?;
+        let proxies = self.db.pending_proxies()?;
+        let posters = self.media_list()?.iter().filter(|m| self.posters_outdated(m)).map(|m| m.id).collect();
+        Ok(Recovery { ingest, proxies, posters })
+    }
+
+    fn posters_outdated(&self, m: &MediaItem) -> bool {
+        let (big, small) = self.poster_paths(m.id);
+        posters_outdated(m, &big, &small)
+    }
+
+    /// Make a ready media's posters again at the current sizes (the old
+    /// files go). `Ok(false)`: nothing to do (up to date, no longer ready,
+    /// or removed meanwhile).
+    pub fn refresh_posters(&self, tools: &Tools, id: MediaId, cancel: &CancelToken) -> ProjectResult<bool> {
+        let m = match self.media(id) {
+            Ok(m) if self.posters_outdated(&m) => m,
+            Ok(_) | Err(ProjectError::NotFound(_)) => return Ok(false),
+            Err(e) => return Err(e),
+        };
+        let (_, info, index) = self.ready_source(id)?;
+        let path = PathBuf::from(&m.path);
+        self.write_posters(tools, id, Source { path: &path, info: &info, index: &index }, cancel)?;
+        let (big, small) = self.poster_paths(id);
+        let (big_s, small_s) = (big.display().to_string(), small.display().to_string());
+        if !self.db.set_posters(id, &big_s, &small_s)? {
+            // Removed while we worked.
+            let _ = std::fs::remove_file(&big);
+            let _ = std::fs::remove_file(&small);
+            return Ok(false);
+        }
+        self.remove_stale_posters(&m, [Some(&big_s), Some(&small_s)]);
+        Ok(true)
+    }
+
+    /// Delete the poster files `before` pointed at that the media no longer
+    /// uses (`now`: its poster and small poster).
+    fn remove_stale_posters(&self, before: &MediaItem, now: [Option<&str>; 2]) {
+        let thumbs = self.thumbs_dir();
+        for p in stale_posters([before.poster.as_deref(), before.poster_small.as_deref()], now, &thumbs) {
+            let _ = std::fs::remove_file(p);
+        }
     }
 
     pub fn set_media_failed(&self, id: MediaId, message: &str) -> ProjectResult<()> {
@@ -230,14 +313,16 @@ impl Project {
             build_frame_index(tools, &path, &info, &self.tmp_dir(), cancel, |p| progress("Indexing frames", p * 0.95))?;
 
         progress("Creating poster", 0.96);
-        let poster_path = self.thumbs_dir().join(format!("{id}.jpg"));
-        let poster_frame = index.len() / 10;
         let src = Source { path: &path, info: &info, index: &index };
-        let poster = match poster::extract_frame_jpeg(tools, src, poster_frame, POSTER_HEIGHT, &poster_path) {
-            Ok(()) => Some(poster_path.display().to_string()),
+        let (poster, poster_small) = match self.write_posters(tools, id, src, cancel) {
+            Ok(()) => {
+                let (big, small) = self.poster_paths(id);
+                (Some(big.display().to_string()), Some(small.display().to_string()))
+            }
+            Err(e) if e.is_cancelled() => return Err(ProjectError::Cancelled),
             Err(e) => {
                 tracing::warn!(file = %m.file_name, error = %e, "poster failed");
-                None
+                (None, None)
             }
         };
 
@@ -256,10 +341,14 @@ impl Project {
             interlaced: info.is_interlaced(),
             proxy,
             poster,
+            poster_small,
             index_blob: index.to_bytes(),
             info,
         };
         self.db.record_ingest(id, &rec)?;
+        // Indexed again (a file that was missing): pictures it no longer
+        // uses go, also when no poster could be made this time.
+        self.remove_stale_posters(&m, [rec.poster.as_deref(), rec.poster_small.as_deref()]);
         self.indexes.lock().insert(id, Arc::new(index));
         self.media(id)
     }
@@ -556,6 +645,26 @@ impl Project {
     }
 }
 
+/// Does a media need its posters made again? A ready media does when either
+/// poster isn't the one of the current sizes (`big`, `small`) or its file is
+/// gone: the 360p posters from before the full-bleed artwork had other names
+/// and no small one. A media without a poster had it fail at ingest; that
+/// isn't retried on every launch.
+fn posters_outdated(m: &MediaItem, big: &Path, small: &Path) -> bool {
+    let current = |have: Option<&str>, want: &Path| have.is_some_and(|p| Path::new(p) == want && want.is_file());
+    m.status == MediaStatus::Ready
+        && m.poster.is_some()
+        && !(current(m.poster.as_deref(), big) && current(m.poster_small.as_deref(), small))
+}
+
+/// Poster files a media pointed at (`before`) that it no longer does (`now`):
+/// they can go. Only files in the project's `thumbs` folder: a stale path
+/// (say, of a project folder that was copied) never touches another copy.
+fn stale_posters<'a>(before: [Option<&'a str>; 2], now: [Option<&str>; 2], thumbs: &Path) -> Vec<&'a Path> {
+    let kept = |p: &Path| now.iter().flatten().any(|n| Path::new(n) == p);
+    before.into_iter().flatten().map(Path::new).filter(|p| p.parent() == Some(thumbs) && !kept(p)).collect()
+}
+
 /// The webview plays the file itself, frame-accurately, with the chosen audio track.
 fn plays_direct(info: &MediaInfo, index: &FrameIndex, audio_ordinal: Option<u32>) -> bool {
     let default_audio = info.default_audio().map(|a| a.ordinal);
@@ -603,5 +712,105 @@ mod tests {
         assert!(is_drop_frame(Rational::new(60000, 1001)));
         assert!(!is_drop_frame(Rational::new(24000, 1001)));
         assert!(!is_drop_frame(Rational::new(30, 1)));
+    }
+
+    fn media(status: MediaStatus, poster: Option<&Path>, poster_small: Option<&Path>) -> MediaItem {
+        let path = |p: Option<&Path>| p.map(|p| p.display().to_string());
+        MediaItem {
+            id: MediaId::new(),
+            path: "/s/Show - 01.mkv".into(),
+            file_name: "Show - 01.mkv".into(),
+            season: None,
+            episode: Some(1),
+            label: "E01".into(),
+            position: 0,
+            size_bytes: 1.0,
+            status,
+            error: None,
+            info: None,
+            frames: Some(240),
+            duration_sec: Some(10.0),
+            fps: Some(Rational::new(24, 1)),
+            vfr: false,
+            interlaced: false,
+            audio_ordinal: None,
+            proxy: ProxyState::NotNeeded,
+            poster: path(poster),
+            poster_small: path(poster_small),
+            added_at: 0,
+            shots: as_api::StageState::Pending,
+            shots_error: None,
+            shot_count: None,
+            faces: as_api::StageState::Pending,
+            faces_error: None,
+            face_count: None,
+        }
+    }
+
+    #[test]
+    fn posters_are_made_again_when_older_than_the_current_sizes() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = |name: &str| {
+            let p = dir.path().join(name);
+            std::fs::write(&p, b"jpeg").unwrap();
+            p
+        };
+        let (old, big, small) = (file("e1.jpg"), file("e1-720.jpg"), file("e1-480x270.jpg"));
+        let outdated = |m: &MediaItem| posters_outdated(m, &big, &small);
+        let ready = MediaStatus::Ready;
+
+        // A 360p poster from before the full-bleed artwork: no small one.
+        assert!(outdated(&media(ready, Some(&old), None)));
+        // An old poster next to a current small one is still old.
+        assert!(outdated(&media(ready, Some(&old), Some(&small))));
+        // Made at the current sizes.
+        assert!(!outdated(&media(ready, Some(&big), Some(&small))));
+
+        // Files that are gone are made again.
+        std::fs::remove_file(&small).unwrap();
+        assert!(outdated(&media(ready, Some(&big), Some(&small))));
+
+        // Only ready media: a missing source can't be decoded, and media
+        // being indexed get new posters anyway.
+        for status in [MediaStatus::Queued, MediaStatus::Indexing, MediaStatus::Failed, MediaStatus::Missing] {
+            assert!(!outdated(&media(status, Some(&old), None)), "{status:?}");
+        }
+        // A poster that failed at ingest isn't retried on every launch.
+        assert!(!outdated(&media(ready, None, None)));
+    }
+
+    #[test]
+    fn only_posters_no_longer_used_in_this_projects_folder_go() {
+        let thumbs = Path::new("/lib/Show.autoscene/thumbs");
+        let at = |name: &str| thumbs.join(name).display().to_string();
+        let (old, big, small) = (at("e1.jpg"), at("e1-720.jpg"), at("e1-480x270.jpg"));
+        let (old, big, small) = (old.as_str(), big.as_str(), small.as_str());
+        let stale = |before: [Option<&str>; 2], now: [Option<&str>; 2]| -> Vec<String> {
+            stale_posters(before, now, thumbs).iter().map(|p| p.display().to_string()).collect()
+        };
+
+        // Made again at the current sizes: the old one goes.
+        assert_eq!(stale([Some(old), None], [Some(big), Some(small)]), [old]);
+        // Same names (the same picture, indexed again): nothing goes.
+        assert!(stale([Some(big), Some(small)], [Some(big), Some(small)]).is_empty());
+        // No poster this time, or the media is removed: all of its pictures go.
+        assert_eq!(stale([Some(big), Some(small)], [None, None]), [big, small]);
+        assert!(stale([None, None], [None, None]).is_empty());
+
+        // A copied project still pointing into the original's folder, or a
+        // path outside any thumbs folder: never touched.
+        let other = Path::new("/lib/Show (copy).autoscene/thumbs/e1.jpg").display().to_string();
+        assert!(stale([Some(&other), None], [Some(big), Some(small)]).is_empty());
+        assert!(stale([Some("/home/me/Pictures/e1.jpg"), None], [None, None]).is_empty());
+
+        // Stored paths mix separators (the project folder joined with `\`).
+        #[cfg(windows)]
+        {
+            let thumbs = Path::new("C:/Lib/Show.autoscene/thumbs");
+            let mixed = r"C:/Lib/Show.autoscene\thumbs\e1.jpg";
+            assert_eq!(stale_posters([Some(mixed), None], [None, None], thumbs), [Path::new(mixed)]);
+            let same = r"C:\Lib\Show.autoscene\thumbs\e1.jpg";
+            assert!(stale_posters([Some(mixed), None], [Some(same), None], thumbs).is_empty());
+        }
     }
 }

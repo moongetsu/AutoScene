@@ -1,5 +1,5 @@
-//! Background work: ingest, playback proxies, analysis and exports, queued on
-//! `as-jobs` workers. Each job reports through `job:*` events and announces
+//! Background work: ingest, playback proxies, analysis, exports and upkeep,
+//! queued on `as-jobs` workers. Each job reports through `job:*` events and announces
 //! what it changed (`media:changed`, `analysis:changed`, `library:changed`,
 //! `export:changed`) so the UI refetches exactly what moved.
 
@@ -72,7 +72,7 @@ pub fn queue_ingest(app: &AppHandle, project: &Arc<Project>, media_id: MediaId) 
         media_changed(&app2, &project, Some(media_id));
         library_changed(&app2, &project);
         let m = result.map_err(job_error)?;
-        if let Some(poster) = &m.poster {
+        for poster in [&m.poster, &m.poster_small].into_iter().flatten() {
             crate::state::allow_asset(&app2, std::path::Path::new(poster));
         }
         if m.proxy == ProxyState::Pending {
@@ -415,6 +415,61 @@ pub fn queue_proxy(app: &AppHandle, project: &Arc<Project>, media_id: MediaId) {
     });
 }
 
+/// Make posters from before the current sizes again (sharp full-bleed
+/// artwork, small files for small places), one media at a time on the upkeep
+/// worker: it never holds up new work. Each media and the Library card show
+/// the new pictures as soon as they exist; until then the old ones stay.
+pub fn queue_posters(app: &AppHandle, project: &Arc<Project>, ids: Vec<MediaId>) {
+    let state = app.state::<AppState>();
+    if ids.is_empty() || state.jobs.is_active(|j| j.kind == JobKind::Posters && j.project_id == Some(project.id)) {
+        return;
+    }
+    let spec = JobSpec {
+        kind: JobKind::Posters,
+        class: Class::Upkeep,
+        title: "Sharpening posters".into(),
+        subtitle: project.title().ok(),
+        project_id: Some(project.id),
+        media_id: None,
+        export_id: None,
+    };
+    let (app2, project) = (app.clone(), project.clone());
+    state.jobs.submit(spec, move |ctx| {
+        let state = app2.state::<AppState>();
+        let tools = state.tools().map_err(|e| JobError::Failed(e.message))?;
+        for (i, &id) in ids.iter().enumerate() {
+            ctx.progress(&format!("Poster {} of {}", i + 1, ids.len()), i as f64 / ids.len() as f64);
+            match project.refresh_posters(&tools, id, &ctx.cancel) {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(ProjectError::Cancelled) => return Err(JobError::Cancelled),
+                // The old poster stays; the next launch tries again.
+                Err(e) => {
+                    log::warn!("poster of {id}: {}", e.detail());
+                    continue;
+                }
+            }
+            // The Library card first: the project refetched on `media:changed`
+            // must not show a picture that was just removed.
+            sync_library_posters(&app2, &project);
+            media_changed(&app2, &project, Some(id));
+        }
+        Ok(())
+    });
+}
+
+/// Show a project's current posters on its Library card, without moving it
+/// to the front.
+fn sync_library_posters(app: &AppHandle, project: &Project) {
+    match app.state::<AppState>().library.refresh_posters(project) {
+        Ok(true) => {
+            let _ = LibraryChanged { project_id: Some(project.id) }.emit(app);
+        }
+        Ok(false) => {}
+        Err(e) => log::warn!("refreshing project posters: {e}"),
+    }
+}
+
 /// Render an export created with `Project::create_export`.
 pub fn queue_export(app: &AppHandle, project: &Arc<Project>, export_id: ExportId, clips: usize) {
     let state = app.state::<AppState>();
@@ -457,7 +512,8 @@ pub fn queue_export(app: &AppHandle, project: &Arc<Project>, export_id: ExportId
     });
 }
 
-/// On launch: reopen every project, resume interrupted indexing and pending previews.
+/// On launch: reopen every project, resume interrupted indexing, pending
+/// previews and analyses, and make outdated posters again.
 pub fn recover_all(app: &AppHandle) {
     let state = app.state::<AppState>();
     let projects = match state.library.projects() {
@@ -476,17 +532,27 @@ pub fn recover_all(app: &AppHandle) {
             }
         };
         crate::state::allow_asset_dir(app, &project.thumbs_dir());
+        // A quit between a poster refresh and its Library card leaves the card
+        // on a removed picture; the project's own database knows better.
+        sync_library_posters(app, &project);
         match project.recover() {
-            Ok((ingest, proxies)) => {
-                if !ingest.is_empty() || !proxies.is_empty() {
-                    log::info!("resuming '{}': {} to index, {} previews", summary.title, ingest.len(), proxies.len());
+            Ok(r) => {
+                if !r.ingest.is_empty() || !r.proxies.is_empty() || !r.posters.is_empty() {
+                    log::info!(
+                        "resuming '{}': {} to index, {} previews, {} posters",
+                        summary.title,
+                        r.ingest.len(),
+                        r.proxies.len(),
+                        r.posters.len()
+                    );
                 }
-                for id in ingest {
+                for id in r.ingest {
                     queue_ingest(app, &project, id);
                 }
-                for id in proxies {
+                for id in r.proxies {
                     queue_proxy(app, &project, id);
                 }
+                queue_posters(app, &project, r.posters);
             }
             Err(e) => log::warn!("recovering '{}': {e}", summary.title),
         }
