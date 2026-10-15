@@ -6,6 +6,7 @@ import {
   FilePlus,
   FolderOpen,
   FolderPlus,
+  MagnifyingGlass,
   Play,
   Scissors,
   Trash,
@@ -44,8 +45,10 @@ import { addToProject, projectFacts } from "@/lib/projects"
 import { firstFailure, useMediaList, useProject } from "@/lib/queries"
 import { formatFps } from "@/lib/timecode"
 import { cn } from "@/lib/utils"
+import { MissingBanner } from "./MissingBanner"
 import { ProjectLoadError } from "./ProjectLoadError"
 import { ProjectNav } from "./ProjectNav"
+import { locateFile } from "./relink"
 import { RemoveMediaDialog } from "./RemoveMediaDialog"
 import { StatusCell } from "./StatusCell"
 
@@ -102,6 +105,7 @@ export function EpisodesPage() {
       </header>
 
       <div className="px-10 pb-16">
+        <MissingBanner pid={pid} media={media} movie={movie} className="mb-6" />
         {!isPending && media?.length === 0 ? (
           <EmptyState
             icon={<FolderPlus />}
@@ -262,7 +266,12 @@ function EpisodeRow({
             <DropdownMenuItem onSelect={() => void commands.revealPath(m.path).catch(() => toast.error("File not found"))}>
               <FolderOpen /> Show in folder
             </DropdownMenuItem>
-            {(m.status === "failed" || m.status === "missing") && (
+            {m.status === "missing" && (
+              <DropdownMenuItem onSelect={() => void locateFile(projectId, m)}>
+                <MagnifyingGlass /> Locate file…
+              </DropdownMenuItem>
+            )}
+            {m.status === "failed" && (
               <DropdownMenuItem onSelect={() => void commands.mediaRetry(projectId, m.id)}>
                 <ArrowCounterClockwise /> Index again
               </DropdownMenuItem>

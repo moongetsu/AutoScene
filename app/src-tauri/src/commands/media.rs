@@ -2,7 +2,9 @@
 
 use std::path::Path;
 
-use as_api::{AnalysisStage, FrameMap, JobKind, JobState, MediaItem, MediaStatus, ProxyState, Segment};
+use as_api::{
+    AnalysisStage, FrameMap, JobKind, JobState, MediaItem, MediaStatus, ProxyState, Relink, RelinkSummary, Segment,
+};
 use as_core::{MediaId, ProjectId};
 use tauri::{AppHandle, State};
 use tauri_specta::Event;
@@ -105,6 +107,68 @@ pub async fn media_retry(
     work::queue_ingest(&app, &project, media_id);
     crate::events::emit_media_changed(&app, project_id, Some(media_id));
     Ok(())
+}
+
+/// Point an episode whose file moved at `path`. The same file keeps
+/// everything; another copy is indexed again (and keeps its analysis when
+/// its frames are the same); another video comes back as `different`
+/// unless `force`.
+#[tauri::command]
+#[specta::specta]
+pub async fn media_relink(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    project_id: ProjectId,
+    media_id: MediaId,
+    path: String,
+    force: bool,
+) -> AppResult<Relink> {
+    let lib = state.library.clone();
+    let tools = state.tools()?;
+    let (project, relink) = blocking(move || {
+        let p = lib.project(project_id)?;
+        let r = p.relink(&tools, media_id, Path::new(&path), force)?;
+        Ok((p, r))
+    })
+    .await?;
+    match relink {
+        Relink::Different { .. } => return Ok(relink),
+        Relink::Reindex => work::queue_ingest(&app, &project, media_id),
+        Relink::Same => {}
+    }
+    work::library_changed(&app, &project);
+    crate::events::emit_media_changed(&app, project_id, Some(media_id));
+    // Its faces can be shown and made into portraits again.
+    work::cast_changed(&app, &project);
+    Ok(relink)
+}
+
+/// Look for every missing episode of a project in `dir` and its folders.
+#[tauri::command]
+#[specta::specta]
+pub async fn media_relink_folder(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    project_id: ProjectId,
+    dir: String,
+) -> AppResult<RelinkSummary> {
+    let lib = state.library.clone();
+    let tools = state.tools()?;
+    let (project, summary, reindex) = blocking(move || {
+        let p = lib.project(project_id)?;
+        let (summary, reindex) = p.relink_folder(&tools, Path::new(&dir))?;
+        Ok((p, summary, reindex))
+    })
+    .await?;
+    for id in reindex {
+        work::queue_ingest(&app, &project, id);
+    }
+    if summary.same + summary.reindex > 0 {
+        work::library_changed(&app, &project);
+        crate::events::emit_media_changed(&app, project_id, None);
+        work::cast_changed(&app, &project);
+    }
+    Ok(summary)
 }
 
 /// Build (or rebuild) the preview of a media that needs one.

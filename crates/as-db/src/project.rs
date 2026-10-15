@@ -443,9 +443,17 @@ impl ProjectDb {
         })
     }
 
-    /// Store a finished ingest (and its frame index) atomically; status becomes `ready`.
+    /// Store a finished ingest (and its frame index) atomically; status
+    /// becomes `ready`. A frame index that numbers the frames differently
+    /// starts the analysis over; the same frames (a file indexed again, or
+    /// found again as another copy) keep it.
     pub fn record_ingest(&self, id: MediaId, rec: &IngestRecord) -> DbResult<()> {
         self.0.write(|tx| {
+            let old: Option<Vec<u8>> = tx
+                .query_row("SELECT data FROM frame_index WHERE media_id = ?1", [id.to_string()], |r| r.get(0))
+                .optional()?;
+            let decoded = |b: &[u8]| as_core::FrameIndex::from_bytes(b).ok();
+            let same_frames = old.as_deref().and_then(decoded).is_some_and(|o| decoded(&rec.index_blob) == Some(o));
             tx.execute(
                 "UPDATE media SET status = 'ready', error = NULL, info = ?2, frames = ?3, duration_sec = ?4,
                         fps_num = ?5, fps_den = ?6, vfr = ?7, interlaced = ?8, proxy = ?9, poster = ?10,
@@ -471,8 +479,27 @@ impl ProjectDb {
                  ON CONFLICT(media_id) DO UPDATE SET data = excluded.data",
                 params![id.to_string(), rec.index_blob],
             )?;
-            // A new frame index may number frames differently: analysis starts over.
-            clear_shots(tx, id)?;
+            if !same_frames {
+                clear_shots(tx, id)?;
+            }
+            Ok(())
+        })
+    }
+
+    /// The media's file is at `path` now (found again after it moved).
+    pub fn relink_media(
+        &self,
+        id: MediaId,
+        path: &str,
+        file_name: &str,
+        size_bytes: u64,
+        mtime: Option<i64>,
+    ) -> DbResult<()> {
+        self.0.write(|tx| {
+            tx.execute(
+                "UPDATE media SET path = ?2, file_name = ?3, size_bytes = ?4, mtime = ?5 WHERE id = ?1",
+                params![id.to_string(), path, file_name, size_bytes as i64, mtime],
+            )?;
             Ok(())
         })
     }

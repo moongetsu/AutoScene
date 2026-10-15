@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use as_api::{
-    ClipRequest, ExportPlan, ExportRequest, ExportStatus, ExportSummary, FrameMap, MediaItem, MediaStatus, PresetSize,
-    ProjectSummary, ProxyState,
+    ClipRequest, ExportPlan, ExportRequest, ExportStatus, ExportSummary, FrameMap, ImportCandidate, MediaItem,
+    MediaStatus, PresetSize, ProjectKind, ProjectSummary, ProxyState, Relink, RelinkSummary,
 };
 use as_core::{CancelToken, ExportId, FrameIndex, FrameRange, MediaId, ProjectId};
 use as_db::{IngestRecord, NewExportItem, ProjectDb};
@@ -168,6 +168,97 @@ impl Project {
             m.status = MediaStatus::Missing;
         }
         Ok(m)
+    }
+
+    /// Point a media whose file moved at `path` (see [`Relink`]): the same
+    /// file keeps everything; another copy is indexed again (the caller
+    /// queues it) and keeps its analysis if its frames are the same; another
+    /// video is refused unless `force`.
+    pub fn relink(&self, tools: &Tools, id: MediaId, path: &Path, force: bool) -> ProjectResult<Relink> {
+        let m = self.db.media(id)?.ok_or_else(|| ProjectError::NotFound("This episode was removed.".into()))?;
+        if !path.is_file() {
+            return Err(ProjectError::NotFound("That file can't be found.".into()));
+        }
+        let new = path.display().to_string();
+        if same_path(&m.path, &new) && Path::new(&m.path).is_file() {
+            return Ok(Relink::Same);
+        }
+        if let Some(other) = self.db.media_list()?.into_iter().find(|x| x.id != id && same_path(&x.path, &new)) {
+            let name = if other.label.is_empty() { other.file_name } else { other.label };
+            return Err(ProjectError::Invalid(format!("That file is already in the project, as {name}.")));
+        }
+        let meta = std::fs::metadata(path)?;
+        let found = as_media::probe(tools, path)?;
+        // Never indexed: nothing to compare, nothing to lose.
+        let same = m.info.as_ref().map_or(Ok(()), |old| as_media::same_source(old, &found));
+        if let (Err(reason), false) = (&same, force) {
+            return Ok(Relink::Different { reason: reason.clone() });
+        }
+        let file_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let mtime = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as i64);
+        self.db.relink_media(id, &new, &file_name, meta.len(), mtime)?;
+        tracing::info!(media = %id, file = %file_name, "found again");
+        let unchanged = same.is_ok() && m.status == MediaStatus::Ready && meta.len() == m.size_bytes as u64;
+        if unchanged {
+            return Ok(Relink::Same);
+        }
+        self.indexes.lock().remove(&id);
+        Ok(Relink::Reindex)
+    }
+
+    /// Look for every missing media in `dir` (and its folders): by file name,
+    /// then size, then episode number — each candidate only if it is the
+    /// same video ([`Self::relink`]). Returns the summary and the media to
+    /// index again.
+    pub fn relink_folder(&self, tools: &Tools, dir: &Path) -> ProjectResult<(RelinkSummary, Vec<MediaId>)> {
+        let missing: Vec<MediaItem> =
+            self.media_list()?.into_iter().filter(|m| m.status == MediaStatus::Missing).collect();
+        let known = self.db.media_paths()?;
+        let found = crate::library::scan_paths(&[dir.display().to_string()], ProjectKind::Series, &known);
+        let mut used: HashSet<String> = HashSet::new();
+        let mut summary = RelinkSummary::default();
+        let mut reindex = Vec::new();
+        for m in &missing {
+            // By file name, then size, then episode number; a few at most.
+            let rank = |c: &ImportCandidate| {
+                if c.file_name.eq_ignore_ascii_case(&m.file_name) {
+                    Some(0)
+                } else if m.size_bytes > 0.0 && c.size_bytes == m.size_bytes {
+                    Some(1)
+                } else if m.episode.is_some() && (c.season, c.episode) == (m.season, m.episode) {
+                    Some(2)
+                } else {
+                    None
+                }
+            };
+            let mut tried: Vec<(u8, &ImportCandidate)> =
+                found.iter().filter(|c| !used.contains(&c.path)).filter_map(|c| Some((rank(c)?, c))).collect();
+            tried.sort_by_key(|(r, _)| *r);
+            let mut outcome = None;
+            for (_, c) in tried.into_iter().take(3) {
+                match self.relink(tools, m.id, Path::new(&c.path), false)? {
+                    Relink::Different { .. } => continue,
+                    r => {
+                        used.insert(c.path.clone());
+                        outcome = Some(r);
+                        break;
+                    }
+                }
+            }
+            match outcome {
+                Some(Relink::Same) => summary.same += 1,
+                Some(_) => {
+                    summary.reindex += 1;
+                    reindex.push(m.id);
+                }
+                None => summary.missing += 1,
+            }
+        }
+        Ok((summary, reindex))
     }
 
     pub fn remove_media(&self, id: MediaId) -> ProjectResult<()> {
@@ -742,6 +833,15 @@ fn unique_name(base: &str, taken: impl Fn(&str) -> bool) -> String {
         return base.to_string();
     }
     (2..).map(|i| format!("{base}_{i}")).find(|n| !taken(n)).expect("unbounded")
+}
+
+/// Two paths name the same file (on Windows whatever the case and slashes).
+fn same_path(a: &str, b: &str) -> bool {
+    let norm = |p: &str| {
+        let p = p.replace('\\', "/");
+        if cfg!(windows) { p.to_lowercase() } else { p }
+    };
+    norm(a) == norm(b)
 }
 
 #[cfg(test)]

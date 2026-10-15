@@ -448,6 +448,48 @@ pub enum CastEdit {
     },
 }
 
+impl CastEdit {
+    /// The decision changes who a face is (so other faces may follow it), not
+    /// just a name, a picture or what is shown.
+    pub fn moves_faces(&self) -> bool {
+        match self {
+            Self::Assign { .. }
+            | Self::NewCharacter { .. }
+            | Self::NotThem { .. }
+            | Self::NotAFace { .. }
+            | Self::Confirm { .. }
+            | Self::Merge { .. } => true,
+            Self::Rename { .. } | Self::SetHidden { .. } | Self::SetCover { .. } => false,
+        }
+    }
+}
+
+/// What became of a missing media pointed at a file.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Relink {
+    /// The same file: everything stays as it was.
+    Same,
+    /// Another copy of it: indexed again. Its analysis and the decisions on
+    /// it stay when its frames are the same.
+    Reindex,
+    /// Another video (`reason` says how). Taken anyway with `force`: it is
+    /// analysed again, the decisions on its faces are kept.
+    Different { reason: String },
+}
+
+/// Missing media looked for in a folder.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RelinkSummary {
+    /// Found as they were.
+    pub same: u32,
+    /// Found as another copy, being indexed again.
+    pub reindex: u32,
+    /// Still missing.
+    pub missing: u32,
+}
+
 /// Where characters are on screen in one media.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]

@@ -205,6 +205,12 @@ export async function pickVideoFiles(): Promise<string[]> {
   return picked ?? []
 }
 
+/** One video file. */
+export async function pickVideoFile(title?: string): Promise<string | null> {
+  const picked = await open({ multiple: false, title, filters: [{ name: "Video", extensions: VIDEO_EXTENSIONS }] })
+  return typeof picked === "string" ? picked : null
+}
+
 export async function pickFolder(title?: string): Promise<string | null> {
   const picked = await open({ directory: true, multiple: false, title })
   return typeof picked === "string" ? picked : null

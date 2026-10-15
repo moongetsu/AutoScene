@@ -27,6 +27,7 @@ import { addToProject, projectFacts } from "@/lib/projects"
 import { firstFailure, useCast, useMediaList, useProject } from "@/lib/queries"
 import { AnalysisStatus } from "./AnalysisStatus"
 import { EpisodeCard } from "./EpisodeCard"
+import { MissingBanner } from "./MissingBanner"
 import { ProjectLoadError } from "./ProjectLoadError"
 import { ProjectNav } from "./ProjectNav"
 
@@ -111,6 +112,7 @@ export function OverviewPage() {
       </Hero>
 
       <div className="flex flex-col gap-10 pb-16">
+        <MissingBanner pid={pid} media={media} movie={movie} className="mx-10" />
         {live && (
           <Section
             title="Cast"

@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use as_api::{AnalysisStage, ContentKind, JobKind, MediaItem, ProxyState, StageState};
+use as_api::{AnalysisStage, CastEdit, ContentKind, JobKind, MediaItem, ProxyState, StageState};
 use as_core::{ExportId, MediaId, ProjectId};
 use as_engine::{EngineError, FacesEvent, ShotsEvent};
 use as_jobs::{Class, JobCtx, JobError, JobSpec};
@@ -44,6 +44,44 @@ pub fn cast_changed(app: &AppHandle, project: &Arc<Project>) {
     let _ = CastChanged { project_id: project.id }.emit(app);
     let (app, project) = (app.clone(), project.clone());
     tauri::async_runtime::spawn_blocking(move || queue_portraits(&app, &project));
+}
+
+/// Decisions come in runs (the review answers a face per key press): the
+/// other faces are placed again once they pause this long.
+const PLACE_FACES_AFTER: std::time::Duration = std::time::Duration::from_millis(1200);
+
+/// The user decided about the cast. The UI shows the decision at once; when
+/// it changed who a face is, the other faces follow a moment after the last
+/// such decision ([`Project::reassign`]), and the UI refetches again.
+pub fn cast_edited(app: &AppHandle, project: &Arc<Project>, edit: &CastEdit) {
+    cast_changed(app, project);
+    if !edit.moves_faces() {
+        return;
+    }
+    let state = app.state::<AppState>();
+    let decision = {
+        let mut decisions = state.decisions.lock();
+        let n = decisions.entry(project.id).or_default();
+        *n += 1;
+        *n
+    };
+    let (app, project) = (app.clone(), project.clone());
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(PLACE_FACES_AFTER).await;
+        let latest = app.state::<AppState>().decisions.lock().get(&project.id).copied();
+        if latest != Some(decision) {
+            return;
+        }
+        let placed = {
+            let project = project.clone();
+            tauri::async_runtime::spawn_blocking(move || project.reassign()).await
+        };
+        match placed {
+            Ok(Ok(())) => cast_changed(&app, &project),
+            Ok(Err(e)) => log::warn!("placing faces after a decision: {}", e.detail()),
+            Err(e) => log::warn!("placing faces after a decision: {e}"),
+        }
+    });
 }
 
 /// Refresh the project's Library card after its media changed.

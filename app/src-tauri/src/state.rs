@@ -48,6 +48,8 @@ pub struct AppState {
     /// Projects with a portraits job queued or running, and whether their
     /// cast changed since it last looked (see `work::queue_portraits`).
     pub portraits: Arc<parking_lot::Mutex<HashMap<ProjectId, bool>>>,
+    /// Per project, the last decision that moved faces (see `work::cast_edited`).
+    pub decisions: Arc<parking_lot::Mutex<HashMap<ProjectId, u64>>>,
     tools: Arc<OnceLock<Result<Arc<Tools>, String>>>,
     bundled_ffmpeg: Option<PathBuf>,
 }
@@ -96,6 +98,7 @@ impl AppState {
             models,
             analysis: Arc::default(),
             portraits: Arc::default(),
+            decisions: Arc::default(),
             tools: Arc::new(OnceLock::new()),
             bundled_ffmpeg,
         }

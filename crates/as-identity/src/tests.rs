@@ -273,3 +273,108 @@ fn a_person_seen_once_per_episode_is_found_in_a_big_series() {
     assert!(c.is_some(), "the person is no character");
     assert!(o.tracks[first..].iter().all(|(a, _)| a.character() == c));
 }
+
+/// What identify made, as `reassign` takes it: each character's members.
+fn members_of(o: &Outcome) -> Vec<(CharKey, Vec<usize>)> {
+    (0..o.characters.len())
+        .map(|ci| {
+            let g = (0..o.tracks.len())
+                .filter(|&i| matches!(o.tracks[i], (Assign::Pinned(c), _) | (Assign::Auto(c), 1.0) if c == ci))
+                .collect();
+            (o.characters[ci].key.unwrap_or(ci as CharKey), g)
+        })
+        .collect()
+}
+
+#[test]
+fn reassigning_keeps_the_cast_and_places_everyone_else() {
+    let mut rng = Rng(21);
+    let (centers, mut tracks, truth) = cast(&mut rng, 4, 10);
+    // Weak faces of each person, and a stranger seen often (a group of its
+    // own, which only clustering may turn into a character).
+    let mut weak = Vec::new();
+    for (p, c) in centers.iter().enumerate() {
+        for k in 0..3u32 {
+            weak.push((tracks.len(), p));
+            tracks.push(track(1, 10_000 + (p as u32 * 3 + k) * 100, around(&mut rng, c, 0.75), 0.2));
+        }
+    }
+    let stranger = rng.unit();
+    let strangers: Vec<usize> = (0..6u32)
+        .map(|k| {
+            tracks.push(track(2, k * 100, around(&mut rng, &stranger, 0.8), 0.2));
+            tracks.len() - 1
+        })
+        .collect();
+    let o = identify(&tracks[..truth.len()], &Params::default());
+    let members = members_of(&o);
+    let r = reassign(&tracks, &members, &Params::default());
+
+    assert_eq!(r.characters.len(), 4, "no character made");
+    for (ci, (key, g)) in members.iter().enumerate() {
+        assert_eq!(r.characters[ci].key, Some(*key));
+        assert!(g.iter().all(|&i| r.tracks[i] == (Assign::Auto(ci), 1.0)), "members stay");
+    }
+    // Each weak face joins its person (characters keep their order).
+    let person = |p: usize| o.tracks[truth.iter().position(|&t| t == p).unwrap()].0.character().unwrap();
+    for &(i, p) in &weak {
+        assert_eq!(r.tracks[i].0, Assign::Auto(person(p)), "weak face {i}");
+    }
+    assert!(strangers.iter().all(|&i| r.tracks[i].0 == Assign::None));
+}
+
+#[test]
+fn not_them_on_a_member_takes_its_look_alikes_along() {
+    let mut rng = Rng(23);
+    let a = rng.unit();
+    let b = rng.unit();
+    // Character 7 is person a — and, by mistake, one face of person b.
+    let mut tracks: Vec<TrackIn> = (0..6u32).map(|k| track(0, k * 100, around(&mut rng, &a, 0.8), 0.9)).collect();
+    tracks.push(track(0, 600, around(&mut rng, &b, 0.9), 0.9));
+    let wrong = tracks.len() - 1;
+    // More faces of person b, nobody's yet.
+    let alikes: Vec<usize> = (0..4u32)
+        .map(|k| {
+            tracks.push(track(1, k * 100, around(&mut rng, &b, 0.9), 0.3));
+            tracks.len() - 1
+        })
+        .collect();
+    let members = vec![(7, (0..=wrong).collect::<Vec<_>>())];
+    let p = Params::default();
+    let before = reassign(&tracks, &members, &p);
+    assert!(alikes.iter().all(|&i| before.tracks[i].0 == Assign::Auto(0)), "they follow the wrong face");
+
+    tracks[wrong].forbid = vec![7];
+    let after = reassign(&tracks, &members, &p);
+    assert_eq!(after.tracks[wrong].0, Assign::None);
+    assert!(alikes.iter().all(|&i| after.tracks[i].0.character().is_none()), "look-alikes leave with it");
+    assert!((0..wrong).all(|i| after.tracks[i] == (Assign::Auto(0), 1.0)));
+}
+
+#[test]
+fn reassigning_never_moves_a_pin_or_breaks_a_forbid() {
+    let mut rng = Rng(29);
+    let (_, mut tracks, truth) = cast(&mut rng, 3, 8);
+    let o = identify(&tracks, &Params::default());
+    let members = members_of(&o);
+    // A face of person 0 the user put on person 1's character, and one they
+    // said isn't person 0's character.
+    let p0: Vec<usize> = (0..tracks.len()).filter(|&i| truth[i] == 0).collect();
+    let c0 = o.tracks[p0[2]].0.character().unwrap();
+    let c1 = o.tracks[(0..tracks.len()).find(|&i| truth[i] == 1).unwrap()].0.character().unwrap();
+    let (k0, k1) = (members[c0].0, members[c1].0);
+    tracks[p0[0]].pin = Some(k1);
+    tracks[p0[1]].forbid = vec![k0];
+    let mut members = members.clone();
+    for (key, g) in &mut members {
+        g.retain(|&i| i != p0[0] && i != p0[1]);
+        if *key == k1 {
+            g.push(p0[0]);
+        }
+    }
+    let r = reassign(&tracks, &members, &Params::default());
+    let at = |k: CharKey| r.characters.iter().position(|c| c.key == Some(k)).unwrap();
+    assert_eq!(r.tracks[p0[0]].0, Assign::Pinned(at(k1)));
+    assert_ne!(r.tracks[p0[1]].0.character(), Some(at(k0)));
+    assert!(!matches!(r.tracks[p0[1]].0, Assign::Unsure(c) if c == at(k0)));
+}

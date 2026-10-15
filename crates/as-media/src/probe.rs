@@ -123,6 +123,47 @@ impl MediaInfo {
     }
 }
 
+/// Whether `new` is very likely the file `old` was probed from — moved,
+/// copied or remuxed into the same kind of file: the same container,
+/// picture, frame rate, time base, start and length (within half a frame)
+/// and audio tracks. `Err` says, for people, what differs.
+pub fn same_source(old: &MediaInfo, new: &MediaInfo) -> Result<(), String> {
+    let (a, b) = (&old.video, &new.video);
+    if old.container != new.container {
+        return Err("It's another kind of video file.".into());
+    }
+    if a.codec != b.codec {
+        return Err(format!("Its picture is stored as {} instead of {}.", b.codec, a.codec));
+    }
+    if (a.width, a.height) != (b.width, b.height) || a.sar != b.sar {
+        return Err(format!("Its picture is {}×{} instead of {}×{}.", b.width, b.height, a.width, a.height));
+    }
+    if a.r_frame_rate != b.r_frame_rate || a.time_base != b.time_base {
+        return Err("It plays at another frame rate.".into());
+    }
+    let half_frame = 0.5 * a.r_frame_rate.den as f64 / a.r_frame_rate.num.max(1) as f64;
+    if (old.start_sec - new.start_sec).abs() > half_frame {
+        return Err("It starts at another moment.".into());
+    }
+    if let (Some(x), Some(y)) = (old.duration_sec, new.duration_sec)
+        && (x - y).abs() > half_frame
+    {
+        return Err(format!("It's {} long instead of {}.", clock(y), clock(x)));
+    }
+    let tracks = |i: &MediaInfo| i.audio.iter().map(|t| (t.codec.clone(), t.channels)).collect::<Vec<_>>();
+    if tracks(old) != tracks(new) {
+        return Err("Its audio tracks are different.".into());
+    }
+    Ok(())
+}
+
+/// 2531.4 → "42:11"; 3725 → "1:02:05".
+fn clock(sec: f64) -> String {
+    let s = sec.max(0.0).round() as u64;
+    let (h, m, r) = (s / 3600, s / 60 % 60, s % 60);
+    if h > 0 { format!("{h}:{m:02}:{r:02}") } else { format!("{m}:{r:02}") }
+}
+
 pub fn probe(tools: &Tools, path: &Path) -> MediaResult<MediaInfo> {
     let err = |message: String| MediaError::Probe { path: path.display().to_string(), message };
     let out = crate::proc::output(
@@ -349,6 +390,42 @@ mod tests {
             st["color_transfer"] = json!(t);
         }
         json!({ "format": { "format_name": "matroska,webm" }, "streams": [st] })
+    }
+
+    fn episode(container: &str, width: u32, duration: &str, audio: &[(&str, u32)]) -> MediaInfo {
+        let mut streams = vec![json!({
+            "index": 0, "codec_type": "video", "codec_name": "h264", "pix_fmt": "yuv420p",
+            "width": width, "height": width * 9 / 16, "r_frame_rate": "24000/1001", "time_base": "1/1000"
+        })];
+        for (i, (codec, channels)) in audio.iter().enumerate() {
+            streams.push(json!({
+                "index": i + 1, "codec_type": "audio", "codec_name": codec, "channels": channels,
+                "sample_rate": "48000"
+            }));
+        }
+        let v = json!({
+            "format": { "format_name": container, "duration": duration, "start_time": "0.000000" },
+            "streams": streams
+        });
+        parse(&v).unwrap()
+    }
+
+    #[test]
+    fn a_moved_copy_is_the_same_source_another_video_is_not() {
+        let old = episode("matroska,webm", 1920, "2531.400", &[("dts", 6), ("ac3", 2)]);
+        assert_eq!(same_source(&old, &old), Ok(()));
+        // Within half a frame (about 0.02 s at 23.976).
+        assert_eq!(same_source(&old, &episode("matroska,webm", 1920, "2531.410", &[("dts", 6), ("ac3", 2)])), Ok(()));
+        let differs = |new: MediaInfo| same_source(&old, &new).unwrap_err();
+        assert_eq!(
+            differs(episode("matroska,webm", 1920, "2400.000", &[("dts", 6), ("ac3", 2)])),
+            "It's 40:00 long instead of 42:11."
+        );
+        assert!(differs(episode("matroska,webm", 1280, "2531.400", &[("dts", 6), ("ac3", 2)])).contains("1280×720"));
+        assert!(
+            differs(episode("mov,mp4,m4a,3gp,3g2,mj2", 1920, "2531.400", &[("dts", 6), ("ac3", 2)])).contains("kind")
+        );
+        assert!(differs(episode("matroska,webm", 1920, "2531.400", &[("dts", 6)])).contains("audio"));
     }
 
     #[test]

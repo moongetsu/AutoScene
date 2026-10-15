@@ -265,7 +265,7 @@ fn remove_dir_with_retry(dir: &Path) -> std::io::Result<()> {
     Err(last.expect("loop ran"))
 }
 
-fn scan_paths(paths: &[String], kind: ProjectKind, known: &HashSet<String>) -> Vec<ImportCandidate> {
+pub(crate) fn scan_paths(paths: &[String], kind: ProjectKind, known: &HashSet<String>) -> Vec<ImportCandidate> {
     let mut files: Vec<PathBuf> = Vec::new();
     for p in paths {
         let p = PathBuf::from(p);

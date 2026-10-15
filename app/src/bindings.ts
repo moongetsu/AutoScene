@@ -43,6 +43,15 @@ export const commands = {
 	mediaRemove: (projectId: ProjectId, mediaId: MediaId) => __TAURI_INVOKE<null>("media_remove", { projectId, mediaId }),
 	/**  Index a media again (after a failure, or once a missing file is back). */
 	mediaRetry: (projectId: ProjectId, mediaId: MediaId) => __TAURI_INVOKE<null>("media_retry", { projectId, mediaId }),
+	/**
+	 *  Point an episode whose file moved at `path`. The same file keeps
+	 *  everything; another copy is indexed again (and keeps its analysis when
+	 *  its frames are the same); another video comes back as `different`
+	 *  unless `force`.
+	 */
+	mediaRelink: (projectId: ProjectId, mediaId: MediaId, path: string, force: boolean) => __TAURI_INVOKE<Relink>("media_relink", { projectId, mediaId, path, force }),
+	/**  Look for every missing episode of a project in `dir` and its folders. */
+	mediaRelinkFolder: (projectId: ProjectId, dir: string) => __TAURI_INVOKE<RelinkSummary>("media_relink_folder", { projectId, dir }),
 	/**  Build (or rebuild) the preview of a media that needs one. */
 	mediaPreparePreview: (projectId: ProjectId, mediaId: MediaId) => __TAURI_INVOKE<null>("media_prepare_preview", { projectId, mediaId }),
 	/**  Choose the audio track for playback and export (`None` = the file's default). */
@@ -825,6 +834,31 @@ export type ProxyState =
 export type Rational = {
 	num: number,
 	den: number,
+};
+
+/**  What became of a missing media pointed at a file. */
+export type Relink = 
+/**  The same file: everything stays as it was. */
+{ kind: "same" } | 
+/**
+ *  Another copy of it: indexed again. Its analysis and the decisions on
+ *  it stay when its frames are the same.
+ */
+{ kind: "reindex" } | 
+/**
+ *  Another video (`reason` says how). Taken anyway with `force`: it is
+ *  analysed again, the decisions on its faces are kept.
+ */
+{ kind: "different"; reason: string };
+
+/**  Missing media looked for in a folder. */
+export type RelinkSummary = {
+	/**  Found as they were. */
+	same: number,
+	/**  Found as another copy, being indexed again. */
+	reindex: number,
+	/**  Still missing. */
+	missing: number,
 };
 
 /**

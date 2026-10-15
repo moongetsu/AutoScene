@@ -53,7 +53,7 @@ pub async fn cast_edit(
     blocking(move || {
         let p = lib.project(project_id)?;
         let created = p.cast_edit(&edit)?;
-        work::cast_changed(&app, &p);
+        work::cast_edited(&app, &p, &edit);
         Ok(created)
     })
     .await

@@ -1,6 +1,7 @@
 import { useEffect } from "react"
 import { Outlet } from "@tanstack/react-router"
 import { NewProjectDialog } from "@/features/library/NewProjectDialog"
+import { RelinkDialog } from "@/features/project/RelinkDialog"
 import { useGlobalBindings } from "@/lib/actions"
 import { startEventBridge } from "@/lib/events"
 import { useLayerSafetyNet } from "@/lib/layers"
@@ -39,6 +40,7 @@ export function AppShell() {
       <ActivityDrawer />
       <UpdateDialog />
       <NewProjectDialog />
+      <RelinkDialog />
       <DropZone />
     </div>
   )

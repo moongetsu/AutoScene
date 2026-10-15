@@ -41,6 +41,8 @@ pub struct IdentityTrack {
     pub emb: Vec<u8>,
     pub character_id: Option<CharacterId>,
     pub assign: TrackAssign,
+    /// Similarity behind the assignment; 1 for pins and clustered tracks.
+    pub score: f32,
     pub forbids: Vec<CharacterId>,
 }
 
@@ -342,9 +344,22 @@ impl ProjectDb {
         })
     }
 
+    /// The tracks a new chunk `start..end` replaces (a face pass resumed
+    /// over a chunk it had stored before).
+    pub fn chunk_tracks(&self, id: MediaId, start: FrameIdx, end: FrameIdx) -> DbResult<Vec<i64>> {
+        self.0.read(|c| {
+            let mut st = c.prepare("SELECT id FROM tracks WHERE media_id = ?1 AND shot >= ?2 AND shot < ?3")?;
+            let rows = st.query_map(params![id.to_string(), start, end], |r| r.get(0))?;
+            Ok(rows.collect::<Result<_, _>>()?)
+        })
+    }
+
     /// Store the tracks of chunk `start..end`, its shots' sprites `(shot,
     /// end, cells)` and the chunk itself, atomically. `files(ids)` runs before
-    /// the commit (thumbnails, sprites); its error rolls back.
+    /// the commit (thumbnails, sprites); its error rolls back. Track ids are
+    /// never handed out twice — not even ids of tracks deleted since: files
+    /// named after a track (and the webview's cache of them) never show
+    /// another face.
     pub fn put_face_chunk(
         &self,
         id: MediaId,
@@ -363,15 +378,28 @@ impl ProjectDb {
                 st.execute(params![m, shot, end, cells])?;
             }
             drop(st);
+            let mut last: i64 = tx.query_row(
+                "SELECT MAX(COALESCE((SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'track_seq'), 0),
+                            COALESCE((SELECT MAX(id) FROM tracks), 0))",
+                [],
+                |r| r.get(0),
+            )?;
             let mut st = tx.prepare(
-                "INSERT INTO tracks (media_id, start, end, shot, quality, face_h, dets, emb)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                "INSERT INTO tracks (id, media_id, start, end, shot, quality, face_h, dets, emb)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             )?;
             let mut ids = Vec::with_capacity(tracks.len());
             for t in tracks {
-                st.execute(params![m, t.start, t.end, t.shot, t.quality as f64, t.face_h as f64, t.dets, t.emb])?;
-                ids.push(tx.last_insert_rowid());
+                last += 1;
+                st.execute(params![last, m, t.start, t.end, t.shot, t.quality as f64, t.face_h as f64, t.dets, t.emb])?;
+                ids.push(last);
             }
+            drop(st);
+            tx.execute(
+                "INSERT INTO meta (key, value) VALUES ('track_seq', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [last.to_string()],
+            )?;
             tx.execute(
                 "INSERT INTO face_chunks (media_id, start, end) VALUES (?1, ?2, ?3)
                  ON CONFLICT(media_id, start) DO UPDATE SET end = excluded.end",
@@ -542,7 +570,7 @@ impl ProjectDb {
                 }
             }
             let mut st = c.prepare(
-                "SELECT id, media_id, start, end, quality, length(dets) / 32, emb, character_id, assign, dets
+                "SELECT id, media_id, start, end, quality, length(dets) / 32, emb, character_id, assign, dets, score
                    FROM tracks WHERE not_face = 0 AND media_id IN (SELECT id FROM media WHERE faces = 'ready')
                   ORDER BY media_id, start, id",
             )?;
@@ -561,6 +589,7 @@ impl ProjectDb {
                     character_id: opt_id(r.get(7)?)?,
                     assign: enum_from_sql(&r.get::<_, String>(8)?)?,
                     det_bytes: r.get(9)?,
+                    score: r.get::<_, f64>(10)? as f32,
                     forbids: forbids.remove(&id).unwrap_or_default(),
                 });
             }
@@ -962,6 +991,25 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn track_ids_are_never_handed_out_twice() {
+        let db = ProjectDb::memory();
+        let m = ready_media(&db, "/v/a.mkv");
+        let first = db.put_face_chunk(m, 0, 500, &[track(10, 0.9), track(300, 0.5)], &[], |_| Ok(())).unwrap();
+        // The chunk stored again (a resumed pass): what it replaces is named first.
+        assert_eq!(db.chunk_tracks(m, 0, 500).unwrap(), first);
+        let again = db.put_face_chunk(m, 0, 500, &[track(10, 0.9), track(300, 0.5)], &[], |_| Ok(())).unwrap();
+        assert!(again.iter().all(|t| *t > first[1]), "{again:?} after {first:?}");
+        // Faces forgotten (the newest ids gone): still never again.
+        db.reset_faces(m).unwrap();
+        let after = db.put_face_chunk(m, 0, 500, &[track(10, 0.9)], &[], |_| Ok(())).unwrap();
+        assert!(after[0] > again[1], "{after:?} after {again:?}");
+        // A rolled-back chunk hands out nothing.
+        assert!(db.put_face_chunk(m, 500, 1000, &[track(600, 0.9)], &[], |_| Err("disk full".into())).is_err());
+        let next = db.put_face_chunk(m, 500, 1000, &[track(600, 0.9)], &[], |_| Ok(())).unwrap();
+        assert_eq!(next[0], after[0] + 1);
+    }
+
+    #[test]
     fn chunks_tracks_and_resume() {
         let db = ProjectDb::memory();
         let m = ready_media(&db, "/v/a.mkv");
@@ -1044,9 +1092,9 @@ pub(crate) mod tests {
         for k in [(10, EditKind::Pin(a)), (10, EditKind::Cover(a)), (200, EditKind::NotFace)] {
             assert!(kinds.contains(&k), "{k:?} waits");
         }
-        // The new pass hands out the old track ids again: no stale cover meanwhile.
+        // The new pass gets new track ids, and no stale cover meanwhile.
         let new = db.put_face_chunk(m, 0, 1000, &[track(200, 0.7), track(10, 0.9)], &[], |_| Ok(())).unwrap();
-        assert_eq!(new[0], ids[0], "track ids are reused");
+        assert!(new.iter().all(|t| !ids.contains(t)), "track ids are never handed out twice");
         assert_eq!(db.characters().unwrap()[0].cover, None);
         db.reanchor_edits(m, &[(new[1], EditKind::Pin(a)), (new[1], EditKind::Cover(a)), (new[0], EditKind::NotFace)])
             .unwrap();

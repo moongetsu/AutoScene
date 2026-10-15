@@ -8,13 +8,13 @@ use as_analysis::FaceDet;
 use as_analysis::tracks::{self, FaceTrack};
 use as_api::{
     AppSettings, CastEdit, ClipRequest, ContentKind, ExportRequest, ExportStatus, FrameMap, MediaStatus, NewProject,
-    ProjectKind, ProxyState, TrackFilter,
+    ProjectKind, ProxyState, Relink, RelinkSummary, TrackFilter,
 };
 use as_core::{AppPaths, CancelToken};
 use as_export::builtin_presets;
 use as_export::preset::{EncoderPref, Gop, VideoCodec};
 use as_media::Tools;
-use as_project::{Library, Portrait};
+use as_project::{Library, Portrait, Project};
 use as_testkit::{barcode, fixtures_dir, load_truth};
 
 const FILES: [&str; 3] = ["cfr24_h264.mp4", "transport_h264.ts", "vfr_h264.mkv"];
@@ -372,4 +372,92 @@ fn covers_get_portraits_from_the_exact_frame() {
     assert_eq!(project.media(m.id).unwrap().status, MediaStatus::Missing);
     assert_eq!(project.portrait(&tools, track, &cancel).unwrap(), Portrait::Unavailable);
     assert!(project.missing_portraits().unwrap().is_empty());
+}
+
+#[test]
+fn a_moved_episode_keeps_its_analysis() {
+    let Some(_truth) = load_truth() else { return };
+    let tools = Tools::locate(None).expect("ffmpeg on PATH");
+    let tmp = tempfile::tempdir().unwrap();
+    let lib = Library::open(&AppPaths::at(tmp.path().join("data"))).unwrap();
+    lib.update_settings(&AppSettings {
+        library_root: tmp.path().join("Library").display().to_string(),
+        export_preset_id: "prores-hq".into(),
+        audio_language: "eng".into(),
+    })
+    .unwrap();
+    let file = tmp.path().join("Show - 01.mp4");
+    std::fs::copy(fixtures_dir().join("cfr24_h264.mp4"), &file).unwrap();
+    let (_, project, added) = lib
+        .create_project(&NewProject {
+            title: "Moves".into(),
+            kind: ProjectKind::Series,
+            content: ContentKind::Live,
+            files: vec![file.display().to_string()],
+        })
+        .unwrap();
+    let id = added[0];
+    let cancel = CancelToken::new();
+    let m = project.ingest(&tools, id, "eng", &cancel, &|_, _| {}).unwrap();
+
+    // A face and a decision about it.
+    let det = |frame| FaceDet { frame, bbox: [0.4, 0.3, 0.55, 0.6], score: 0.9, norm: 22.0, quality: 0.8 };
+    let mut embedding = vec![0.0; tracks::DIM];
+    embedding[0] = 1.0;
+    let face = FaceTrack {
+        start: 10,
+        end: 40,
+        shot: 0,
+        dets: vec![det(10), det(25)],
+        embedding,
+        quality: 0.8,
+        thumb: vec![0xFF, 0xD8, 0xFF, 0xD9],
+    };
+    project.store_face_chunk(id, 0, m.frames.unwrap(), &tracks::encode(&[face]), &[]).unwrap();
+    project.finish_faces(id).unwrap();
+    let track = project.cast_tracks(TrackFilter::Unassigned).unwrap()[0].id;
+    let walter = project
+        .cast_edit(&CastEdit::NewCharacter { tracks: vec![track], name: Some("Walter".into()) })
+        .unwrap()
+        .unwrap();
+    let walters = |p: &Project| p.cast_tracks(TrackFilter::Character(walter)).unwrap().len();
+    assert_eq!(walters(&project), 1);
+
+    // The folder was renamed: missing, then found again where it went.
+    let moved = tmp.path().join("Moved");
+    std::fs::create_dir(&moved).unwrap();
+    let there = moved.join("Show - 01.mp4");
+    std::fs::rename(&file, &there).unwrap();
+    assert_eq!(project.media(id).unwrap().status, MediaStatus::Missing);
+    let (summary, reindex) = project.relink_folder(&tools, &moved).unwrap();
+    assert_eq!(summary, RelinkSummary { same: 1, reindex: 0, missing: 0 });
+    assert!(reindex.is_empty());
+    let m = project.media(id).unwrap();
+    assert_eq!((m.status, m.path.as_str()), (MediaStatus::Ready, there.display().to_string().as_str()));
+    assert_eq!(walters(&project), 1);
+
+    // Another video is refused unless taken anyway, and changes nothing.
+    let other = tmp.path().join("Other.mkv");
+    std::fs::copy(fixtures_dir().join("vfr_h264.mkv"), &other).unwrap();
+    let r = project.relink(&tools, id, &other, false).unwrap();
+    assert!(matches!(r, Relink::Different { .. }), "{r:?}");
+    assert_eq!(project.media(id).unwrap().path, there.display().to_string());
+
+    // A remuxed copy (another size, the same frames) is indexed again and
+    // keeps its analysis.
+    let copy = tmp.path().join("Show - 01 copy.mp4");
+    let remux = tools
+        .ffmpeg()
+        .args(["-v", "error", "-i"])
+        .arg(&there)
+        .args(["-map", "0", "-c", "copy", "-metadata", "comment=A copy of the episode"])
+        .arg(&copy)
+        .status()
+        .unwrap();
+    assert!(remux.success());
+    assert_ne!(std::fs::metadata(&copy).unwrap().len(), std::fs::metadata(&there).unwrap().len());
+    assert_eq!(project.relink(&tools, id, &copy, false).unwrap(), Relink::Reindex);
+    project.ingest(&tools, id, "eng", &cancel, &|_, _| {}).unwrap();
+    assert_eq!(walters(&project), 1, "the same frames keep their analysis");
+    assert_eq!(project.cast().unwrap().characters[0].name.as_deref(), Some("Walter"));
 }

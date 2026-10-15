@@ -6,6 +6,7 @@ import {
   PLAYER_SHORTCUTS,
   REVIEW_SHORTCUTS,
   SHORTCUT_GROUPS,
+  digitOf,
   matchShortcut,
   useShortcuts,
 } from "./shortcuts"
@@ -43,6 +44,9 @@ describe("matching", () => {
     expect(matchShortcut(REVIEW_SHORTCUTS, e("3", { code: "Numpad3" }))).toBe("pick")
     // The number pad without Num Lock moves instead.
     expect(matchShortcut(REVIEW_SHORTCUTS, e("End", { code: "Numpad1" }))).toBeNull()
+    // And the handler reads the same digit the binding matched.
+    expect(digitOf(e("&", { code: "Digit1" }))).toBe("1")
+    expect(digitOf(e("End", { code: "Numpad1" }))).toBeNull()
   })
 
   it("never gives one key press two meanings in the same place", () => {

@@ -10,6 +10,7 @@ import {
   CaretRight,
   CircleNotch,
   FolderOpen,
+  MagnifyingGlass,
   Pause,
   Play,
   Scissors,
@@ -32,6 +33,7 @@ import { Select } from "@/components/ui/select"
 import { TopBar } from "@/components/ui/topbar"
 import { Tooltip } from "@/components/ui/tooltip"
 import { ExportDialog, type ExportClip } from "@/features/export/ExportDialog"
+import { locateFile } from "@/features/project/relink"
 import { COPY_TIMECODES_REQUEST, EXPORT_REQUEST, REVEAL_REQUEST } from "@/lib/actions"
 import { FrameClock } from "@/lib/frame-clock"
 import { formatDuration, formatPercent } from "@/lib/format"
@@ -191,7 +193,7 @@ function NotReady({
     body = m.error
   } else if (m?.status === "missing") {
     title = "File not found"
-    body = m.path
+    body = `${m.path} isn't there any more. Moved it? Show AutoScene where it is: its analysis and your decisions stay.`
   } else if (needsPreview) {
     title = job ? "Preparing preview" : m?.proxy === "failed" ? "Preview failed" : "Preview not prepared"
     body = job
@@ -201,7 +203,7 @@ function NotReady({
     title = "Can't play this file"
     body = errorMessage(error)
   }
-  const retryable = m && (m.status === "failed" || m.status === "missing")
+  const retryable = m?.status === "failed"
   return (
     <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden">
       {m?.poster && (
@@ -243,6 +245,11 @@ function NotReady({
             <Link to="/p/$pid/episodes" params={{ pid }}>
               <ArrowLeft /> Back to the episodes
             </Link>
+          </Button>
+        )}
+        {m?.status === "missing" && (
+          <Button className="mt-6" variant="primary" onClick={() => void locateFile(pid, m)}>
+            <MagnifyingGlass /> Locate file…
           </Button>
         )}
         {!job && retryable && (

@@ -16,7 +16,7 @@ use as_api::{
 };
 use as_core::{CancelToken, CharacterId, FrameIdx, FrameRange, MediaId};
 use as_db::{EditKind, IdentityTrack, NewTrack, TrackRow};
-use as_identity::{Assign, CharKey, Params, TrackIn, identify};
+use as_identity::{Assign, CharKey, Outcome, Params, TrackIn, identify};
 use as_media::poster::{StillSize, extract_frame_jpegs};
 use as_media::{Source, Tools};
 use parking_lot::Mutex;
@@ -181,6 +181,50 @@ fn box_iou(a: &[f32; 4], b: &[f32; 4]) -> f32 {
     let inter = iw * ih;
     let union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter;
     if union <= 0.0 { 0.0 } else { inter / union }
+}
+
+/// The project's tracks as the identity step takes them.
+struct IdentityInput {
+    tracks: Vec<TrackIn>,
+    /// Per input track, its row (rows without a readable embedding are left out).
+    rows: Vec<usize>,
+    /// Existing characters; a character's key is its index here.
+    existing: Vec<CharacterId>,
+    key: HashMap<CharacterId, CharKey>,
+}
+
+impl IdentityInput {
+    fn new(rows: &[IdentityTrack], existing: Vec<CharacterId>) -> Self {
+        let face = FaceParams::default();
+        let max_gap = TrackerParams::new(face.stride).max_gap;
+        let key: HashMap<CharacterId, CharKey> = existing.iter().enumerate().map(|(i, c)| (*c, i as CharKey)).collect();
+        let mut media: HashMap<MediaId, u32> = HashMap::new();
+        let mut tracks = Vec::with_capacity(rows.len());
+        let mut kept = Vec::with_capacity(rows.len());
+        for (row, r) in rows.iter().enumerate() {
+            let Some(embedding) = tracks::embedding_from_bytes(&r.emb) else { continue };
+            let m = media.len() as u32;
+            let m = *media.entry(r.media_id).or_insert(m);
+            let assigned = r.character_id.and_then(|c| key.get(&c).copied());
+            let spans = tracks::dets_from_bytes(&r.det_bytes)
+                .map(|d| tracks::presence_spans(&d, r.end, face.stride, max_gap))
+                .unwrap_or_default();
+            tracks.push(TrackIn {
+                media: m,
+                start: r.start,
+                end: r.end,
+                spans,
+                embedding,
+                quality: r.quality,
+                dets: r.dets,
+                pin: (r.assign == TrackAssign::Pinned).then_some(assigned).flatten(),
+                forbid: r.forbids.iter().filter_map(|c| key.get(c).copied()).collect(),
+                previous: matches!(r.assign, TrackAssign::Auto | TrackAssign::Pinned).then_some(assigned).flatten(),
+            });
+            kept.push(row);
+        }
+        Self { tracks, rows: kept, existing, key }
+    }
 }
 
 pub(crate) fn track_id(id: i64) -> u32 {
@@ -403,6 +447,7 @@ impl Project {
         let sprites: Vec<&ShotSprite> = sprites.iter().filter(|s| (start..end).contains(&s.shot)).collect();
         let cells: Vec<(FrameIdx, FrameIdx, u32)> = sprites.iter().map(|s| (s.shot, s.end, s.cells)).collect();
         let shots_dir = self.media_faces_dir(id).join("shots");
+        let replaced = self.db().chunk_tracks(id, start, end)?;
         self.db().put_face_chunk(id, start, end, &rows, &cells, |ids| {
             std::fs::create_dir_all(&shots_dir).map_err(|e| format!("{}: {e}", shots_dir.display()))?;
             for (track, t) in ids.iter().zip(&found) {
@@ -415,7 +460,27 @@ impl Project {
             }
             Ok(())
         })?;
+        self.remove_track_pictures(id, &replaced);
         Ok(found.len())
+    }
+
+    /// The thumbnails and portraits of tracks that are gone (their ids are
+    /// never handed out again, so this only frees the disk).
+    fn remove_track_pictures(&self, media: MediaId, tracks: &[i64]) {
+        if tracks.is_empty() {
+            return;
+        }
+        let gone: HashSet<String> = tracks.iter().map(i64::to_string).collect();
+        let Ok(entries) = std::fs::read_dir(self.media_faces_dir(media)) else { return };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            // `<track>.jpg` and `<track>-<frame>-<box>-<size>.jpg`.
+            let track = name.split(['.', '-']).next().unwrap_or_default();
+            if gone.contains(track) && entry.path().is_file() {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
     }
 
     pub fn set_faces_state(&self, id: MediaId, state: StageState, error: Option<&str>) -> ProjectResult<()> {
@@ -506,61 +571,88 @@ impl Project {
         // The revision first: anything decided after it makes it stale.
         let rev = self.db().cast_rev()?;
         let rows: Vec<IdentityTrack> = self.db().identity_tracks()?;
-        let face = FaceParams::default();
-        let max_gap = TrackerParams::new(face.stride).max_gap;
-        let existing: Vec<CharacterId> = self.db().characters()?.into_iter().map(|c| c.id).collect();
-        let key: HashMap<CharacterId, CharKey> = existing.iter().enumerate().map(|(i, c)| (*c, i as CharKey)).collect();
-        let mut media: HashMap<MediaId, u32> = HashMap::new();
-        let mut input = Vec::with_capacity(rows.len());
-        let mut kept = Vec::with_capacity(rows.len());
-        for r in &rows {
-            let Some(embedding) = tracks::embedding_from_bytes(&r.emb) else { continue };
-            let m = media.len() as u32;
-            let m = *media.entry(r.media_id).or_insert(m);
-            let assigned = r.character_id.and_then(|c| key.get(&c).copied());
-            let spans = tracks::dets_from_bytes(&r.det_bytes)
-                .map(|d| tracks::presence_spans(&d, r.end, face.stride, max_gap))
-                .unwrap_or_default();
-            input.push(TrackIn {
-                media: m,
-                start: r.start,
-                end: r.end,
-                spans,
-                embedding,
-                quality: r.quality,
-                dets: r.dets,
-                pin: (r.assign == TrackAssign::Pinned).then_some(assigned).flatten(),
-                forbid: r.forbids.iter().filter_map(|c| key.get(c).copied()).collect(),
-                previous: matches!(r.assign, TrackAssign::Auto | TrackAssign::Pinned).then_some(assigned).flatten(),
-            });
-            kept.push(r.id);
+        let cast = IdentityInput::new(&rows, self.db().characters()?.into_iter().map(|c| c.id).collect());
+        let started = std::time::Instant::now();
+        let out = identify(&cast.tracks, &Params::default());
+        let Some(characters) = self.store_identity(rev, &rows, &cast, &out)? else { return Ok(None) };
+        let ms = started.elapsed().as_millis() as u64;
+        tracing::info!(tracks = cast.tracks.len(), characters, ms, "cast clustered");
+        Ok(Some(characters))
+    }
+
+    /// The cast after a decision: every character keeps its members (pins
+    /// and the tracks clustered into it) and every other face goes to whom
+    /// it resembles now ([`as_identity::reassign`]) — at once, without
+    /// grouping everything again. Like [`Self::recluster`], a decision made
+    /// meanwhile is never overwritten.
+    pub fn reassign(&self) -> ProjectResult<()> {
+        let _one = self.clustering.lock();
+        for attempt in 1..=CLUSTER_ATTEMPTS {
+            if self.reassign_once()? {
+                return Ok(());
+            }
+            tracing::info!(attempt, "the cast changed while placing faces; placing them again");
+        }
+        Err(ProjectError::NotReady("The cast kept changing while it was being grouped. Try again.".into()))
+    }
+
+    fn reassign_once(&self) -> ProjectResult<bool> {
+        let rev = self.db().cast_rev()?;
+        let rows: Vec<IdentityTrack> = self.db().identity_tracks()?;
+        let cast = IdentityInput::new(&rows, self.db().characters()?.into_iter().map(|c| c.id).collect());
+        let mut members: Vec<(CharKey, Vec<usize>)> =
+            (0..cast.existing.len()).map(|k| (k as CharKey, Vec::new())).collect();
+        for (i, &row) in cast.rows.iter().enumerate() {
+            let r = &rows[row];
+            // A clustered track has a score of exactly 1, like a pin.
+            let member = r.assign == TrackAssign::Pinned || (r.assign == TrackAssign::Auto && r.score >= 1.0);
+            if let (true, Some(k)) = (member, r.character_id.and_then(|c| cast.key.get(&c))) {
+                members[*k as usize].1.push(i);
+            }
         }
         let started = std::time::Instant::now();
-        let out = identify(&input, &Params::default());
+        let out = as_identity::reassign(&cast.tracks, &members, &Params::default());
+        if self.store_identity(rev, &rows, &cast, &out)?.is_none() {
+            return Ok(false);
+        }
+        tracing::info!(tracks = cast.tracks.len(), ms = started.elapsed().as_millis() as u64, "faces placed again");
+        Ok(true)
+    }
+
+    /// Store an identity outcome made at cast revision `rev`, new characters
+    /// included. The number of characters, or `None` when the cast changed
+    /// since (nothing is stored then).
+    fn store_identity(
+        &self,
+        rev: i64,
+        rows: &[IdentityTrack],
+        cast: &IdentityInput,
+        out: &Outcome,
+    ) -> ProjectResult<Option<usize>> {
         let ids: Vec<CharacterId> =
-            out.characters.iter().map(|c| c.key.map_or_else(CharacterId::new, |k| existing[k as usize])).collect();
+            out.characters.iter().map(|c| c.key.map_or_else(CharacterId::new, |k| cast.existing[k as usize])).collect();
         let new: Vec<CharacterId> =
             out.characters.iter().zip(&ids).filter(|(c, _)| c.key.is_none()).map(|(_, id)| *id).collect();
-        let updates: Vec<(i64, Option<CharacterId>, TrackAssign, f32)> = kept
+        let updates: Vec<(i64, Option<CharacterId>, TrackAssign, f32)> = cast
+            .rows
             .iter()
             .zip(&out.tracks)
-            .map(|(&t, &(a, score))| match a {
-                Assign::Auto(c) => (t, Some(ids[c]), TrackAssign::Auto, score),
-                Assign::Pinned(c) => (t, Some(ids[c]), TrackAssign::Pinned, score),
-                Assign::Unsure(c) => (t, Some(ids[c]), TrackAssign::Unsure, score),
-                Assign::None => (t, None, TrackAssign::None, score),
+            .map(|(&row, &(a, score))| {
+                let t = rows[row].id;
+                match a {
+                    Assign::Auto(c) => (t, Some(ids[c]), TrackAssign::Auto, score),
+                    Assign::Pinned(c) => (t, Some(ids[c]), TrackAssign::Pinned, score),
+                    Assign::Unsure(c) => (t, Some(ids[c]), TrackAssign::Unsure, score),
+                    Assign::None => (t, None, TrackAssign::None, score),
+                }
             })
             .collect();
         if !self.db().apply_identity(rev, &new, &updates)? {
             return Ok(None);
         }
-        tracing::info!(
-            tracks = kept.len(),
-            characters = ids.len(),
-            new = new.len(),
-            ms = started.elapsed().as_millis() as u64,
-            "cast clustered"
-        );
+        if !new.is_empty() {
+            tracing::info!(new = new.len(), "new characters");
+        }
         Ok(Some(ids.len()))
     }
 
@@ -898,6 +990,53 @@ pub(crate) mod tests {
         assert!(spans(walter).iter().all(|s| s.0 != 200));
         let extra = project.db().identity_tracks().unwrap().into_iter().find(|t| t.start == 200).unwrap();
         assert_eq!(extra.forbids, [walter]);
+    }
+
+    #[test]
+    fn naming_one_face_brings_the_look_alikes_at_once() {
+        let frames = 2000;
+        let (_dir, project, id) = project_with_media(frames);
+        let segments: Vec<Segment> = (0..frames)
+            .step_by(100)
+            .map(|s| Segment { start: s, end: s + 100, kind: SegmentKind::Shot, tiny: false })
+            .collect();
+        project.db().store_segments(id, &segments).unwrap();
+        project.faces_plan(id, MODEL).unwrap();
+        // People 1 and 2 clearly, taking turns; person 3 only blurry, in the
+        // first four shots: not a character of their own.
+        let mut found: Vec<FaceTrack> = (0..20).map(|k| face(1 + k % 2, k as u32 * 100, 0.1, 0.9)).collect();
+        found.extend((0..4).map(|k| face(3, k * 100, 0.6, 0.2)));
+        project.store_face_chunk(id, 0, frames, &tracks::encode(&found), &[]).unwrap();
+        project.finish_faces(id).unwrap();
+        assert_eq!(project.recluster().unwrap(), 2);
+        let blurry = project.cast_tracks(TrackFilter::Unassigned).unwrap();
+        assert_eq!(blurry.len(), 4);
+        let before: Vec<(CharacterId, u32)> =
+            project.cast().unwrap().characters.iter().map(|c| (c.id, c.tracks)).collect();
+
+        // One of them named: the others follow at once, nobody else moves.
+        let jesse = project
+            .cast_edit(&CastEdit::NewCharacter { tracks: vec![blurry[0].id], name: Some("Jesse".into()) })
+            .unwrap()
+            .unwrap();
+        let theirs = |c| project.cast_tracks(TrackFilter::Character(c)).unwrap();
+        assert_eq!(theirs(jesse).len(), 1, "the decision alone");
+        project.reassign().unwrap();
+        assert_eq!(theirs(jesse).len(), 4);
+        let cast = project.cast().unwrap();
+        assert_eq!(cast.characters.len(), 3, "no character made by placing faces");
+        for (c, tracks) in before {
+            assert_eq!(cast.characters.iter().find(|x| x.id == c).unwrap().tracks, tracks);
+        }
+
+        // "Not Jesse" on one: it leaves, and stays out when faces are placed again.
+        let wrong = theirs(jesse).iter().find(|t| t.id != blurry[0].id).unwrap().id;
+        project.cast_edit(&CastEdit::NotThem { tracks: vec![wrong], character_id: jesse }).unwrap();
+        project.reassign().unwrap();
+        let now = theirs(jesse);
+        assert_eq!(now.len(), 3);
+        assert!(now.iter().all(|t| t.id != wrong));
+        assert!(now.iter().any(|t| t.id == blurry[0].id && t.assign == TrackAssign::Pinned));
     }
 
     #[test]

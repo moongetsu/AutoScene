@@ -134,7 +134,7 @@ export function shortcutKeys(id: GlobalId): string[] {
  * AZERTY types "&" there and needs Shift for the 1; the number pad counts
  * while it types digits.
  */
-function digitOf(e: KeyboardEvent): string | null {
+export function digitOf(e: KeyboardEvent): string | null {
   const row = /^Digit([0-9])$/.exec(e.code)
   if (row) return row[1]
   return /^[0-9]$/.test(e.key) ? e.key : null

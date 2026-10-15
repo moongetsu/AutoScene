@@ -180,7 +180,7 @@ function media(
   const { infoArgs, ...rest } = extra
   return {
     id: id(),
-    path: String.raw`D:\Video\${file}`,
+    path: `D:\\Video\\${file}`,
     fileName: file,
     season,
     episode,
@@ -508,8 +508,10 @@ const handlers: Record<string, Handler> = {
     return null
   },
   import_scan: ({ paths, kind }) => scan(paths as string[], kind as ProjectKind),
-  media_list: ({ projectId }) => find(projectId).media,
-  media_get: ({ projectId, mediaId }) => findMedia(find(projectId), mediaId),
+  // Copies, like the real backend's answers: a change made here later must
+  // reach the views as new data.
+  media_list: ({ projectId }) => find(projectId).media.map((m) => ({ ...m })),
+  media_get: ({ projectId, mediaId }) => ({ ...findMedia(find(projectId), mediaId) }),
   media_add: ({ projectId, files }) => {
     const p = find(projectId)
     const items = scan(files as string[], p.kind).map((c) => media(c.fileName, [c.season, c.episode], { status: "queued", path: c.path }))
@@ -531,6 +533,29 @@ const handlers: Record<string, Handler> = {
     ingest(p, findMedia(p, mediaId))
     void emit("media:changed", { projectId: p.id, mediaId })
     return null
+  },
+  // A file whose name says "Other" plays the part of another video.
+  media_relink: ({ projectId, mediaId, path, force }) => {
+    const p = find(projectId)
+    const m = findMedia(p, mediaId)
+    const file = String(path)
+    if (!force && /other/i.test(file)) return { kind: "different", reason: "It's 40:00 long instead of 52:11." }
+    m.path = file
+    m.fileName = file.split(/[\\/]/).pop() ?? m.fileName
+    m.status = "ready"
+    void emit("media:changed", { projectId: p.id, mediaId })
+    void emit("library:changed", { projectId: p.id })
+    return { kind: force ? "reindex" : "same" }
+  },
+  media_relink_folder: ({ projectId, dir }) => {
+    const p = find(projectId)
+    const missing = p.media.filter((m) => m.status === "missing")
+    for (const m of missing) {
+      m.path = `${String(dir)}\\${m.fileName}`
+      m.status = "ready"
+    }
+    if (missing.length > 0) void emit("media:changed", { projectId: p.id, mediaId: null })
+    return { same: missing.length, reindex: 0, missing: 0 }
   },
   media_prepare_preview: () => null,
   media_set_audio: ({ projectId, mediaId, ordinal }) => {
@@ -638,9 +663,10 @@ const handlers: Record<string, Handler> = {
   update_relaunch: () => false,
   // Dialog plugin: pretend the user picked something sensible.
   "plugin:dialog|open": ({ options }) => {
-    const o = (options ?? {}) as { directory?: boolean; multiple?: boolean }
+    const o = (options ?? {}) as { directory?: boolean; multiple?: boolean; title?: string }
     if (o.directory) return String.raw`D:\Video\Spy x Family\Season 1`
-    return [String.raw`D:\Video\Spy x Family - 01 [1080p].mkv`, String.raw`D:\Video\Spy x Family - 02 [1080p].mkv`]
+    const files = [String.raw`D:\Video\Spy x Family - 01 [1080p].mkv`, String.raw`D:\Video\Spy x Family - 02 [1080p].mkv`]
+    return o.multiple ? files : files[0]
   },
 }
 

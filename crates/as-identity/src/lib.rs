@@ -14,6 +14,9 @@
 //!    character most of its tracks belonged to before, so names and edits
 //!    stay put when episodes are added.
 //!
+//! After a decision the cast needn't be grouped again: [`reassign`] keeps
+//! every character's members and runs step 3 for the other tracks.
+//!
 //! Pure computation; the project layer loads tracks and stores the result.
 
 mod ahc;
@@ -239,7 +242,42 @@ pub fn identify(tracks: &[TrackIn], p: &Params) -> Outcome {
         }
     }
 
-    // 3. Members, prototypes, and everyone else.
+    place(tracks, &chars, loose, p)
+}
+
+/// The user decided about some faces: let the others follow at once,
+/// without grouping everything again. `members` are the tracks that define
+/// each existing character (its pins and the tracks clustered into it);
+/// every other track joins the character it clearly resembles now. No
+/// character is made or merged, and a pin never moves. A member the user
+/// said isn't them stops shaping the character, so faces that only
+/// resembled that one leave with it.
+pub fn reassign(tracks: &[TrackIn], members: &[(CharKey, Vec<usize>)], p: &Params) -> Outcome {
+    let n = tracks.len();
+    let mut member = vec![false; n];
+    let mut chars: Vec<(Vec<usize>, Option<CharKey>)> = Vec::with_capacity(members.len());
+    for (key, group) in members {
+        // As in `identify`: a track the user said "not them" about defines
+        // no one (unless pinned).
+        let g: Vec<usize> = group
+            .iter()
+            .copied()
+            .filter(|&i| i < n && !member[i] && (tracks[i].pin == Some(*key) || tracks[i].forbid.is_empty()))
+            .collect();
+        if g.is_empty() {
+            continue;
+        }
+        g.iter().for_each(|&i| member[i] = true);
+        chars.push((g, Some(*key)));
+    }
+    let loose = (0..n).filter(|&i| !member[i]).collect();
+    place(tracks, &chars, loose, p)
+}
+
+/// Step 3: characters from their members (prototypes, where they are on
+/// screen), then every `loose` track, most similar first.
+fn place(tracks: &[TrackIn], chars: &[(Vec<usize>, Option<CharKey>)], loose: Vec<usize>, p: &Params) -> Outcome {
+    let n = tracks.len();
     let mut out = vec![(Assign::None, 0f32); n];
     let mut characters = Vec::with_capacity(chars.len());
     let mut protos: Vec<Vec<Vec<f32>>> = Vec::with_capacity(chars.len());
@@ -260,18 +298,7 @@ pub fn identify(tracks: &[TrackIn], p: &Params) -> Outcome {
     // Every other track, most similar first: a character already on screen
     // in a frame (a member, or a closer look-alike placed before) can't take
     // a second face there. A forbidden character never gets a track.
-    let mut loose: Vec<(usize, Vec<(f32, usize)>)> = loose
-        .into_iter()
-        .map(|i| {
-            let t = &tracks[i];
-            let mut scores: Vec<(f32, usize)> = (0..characters.len())
-                .filter(|&ci| characters[ci].key.is_none_or(|k| !t.forbid.contains(&k)))
-                .map(|ci| (proto::similarity(&t.embedding, &protos[ci]), ci))
-                .collect();
-            scores.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
-            (i, scores)
-        })
-        .collect();
+    let mut loose = scored(tracks, loose, &characters, &protos);
     let top = |s: &[(f32, usize)]| s.first().map_or(f32::NEG_INFINITY, |x| x.0);
     loose.sort_by(|a, b| top(&b.1).total_cmp(&top(&a.1)).then(a.0.cmp(&b.0)));
     for (i, scores) in loose {
@@ -300,6 +327,37 @@ pub fn identify(tracks: &[TrackIn], p: &Params) -> Outcome {
         }
     }
     Outcome { characters, tracks: out }
+}
+
+/// How much each of `loose` resembles each character it may be (best
+/// first), on all cores: a big series has tens of thousands of faces.
+fn scored(
+    tracks: &[TrackIn],
+    loose: Vec<usize>,
+    characters: &[CharacterOut],
+    protos: &[Vec<Vec<f32>>],
+) -> Vec<(usize, Vec<(f32, usize)>)> {
+    let score = |i: usize| {
+        let t = &tracks[i];
+        let mut scores: Vec<(f32, usize)> = (0..characters.len())
+            .filter(|&ci| characters[ci].key.is_none_or(|k| !t.forbid.contains(&k)))
+            .map(|ci| (proto::similarity(&t.embedding, &protos[ci]), ci))
+            .collect();
+        scores.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+        (i, scores)
+    };
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(16);
+    if threads < 2 || loose.len() * characters.len() < 20_000 {
+        return loose.into_iter().map(score).collect();
+    }
+    let chunk = loose.len().div_ceil(threads);
+    std::thread::scope(|s| {
+        let parts: Vec<_> = loose
+            .chunks(chunk)
+            .map(|part| s.spawn(move || part.iter().map(|&i| score(i)).collect::<Vec<_>>()))
+            .collect();
+        parts.into_iter().flat_map(|h| h.join().expect("scoring never panics")).collect()
+    })
 }
 
 #[cfg(test)]

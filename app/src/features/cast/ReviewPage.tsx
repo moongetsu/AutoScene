@@ -12,7 +12,7 @@ import { ProjectLoadError } from "@/features/project/ProjectLoadError"
 import { assetUrl } from "@/lib/media"
 import { firstFailure, portraitQuery, queryClient, useCast, useCastTracks, useMediaList, usePortrait } from "@/lib/queries"
 import { timecode } from "@/lib/timecode"
-import { REVIEW_SHORTCUTS, useShortcuts } from "@/lib/shortcuts"
+import { REVIEW_SHORTCUTS, digitOf, useShortcuts } from "@/lib/shortcuts"
 import { cn } from "@/lib/utils"
 import { castEdit, plural } from "./cast"
 
@@ -42,7 +42,13 @@ export function ReviewPage() {
   if (pickIds === null && cast) setPickIds(cast.characters.filter((x) => !x.hidden).slice(0, 9).map((x) => x.id))
 
   const items = (queue.data ?? []).filter((t) => !answered.has(t.id))
-  const current = items.find((t) => !skipped.has(t.id))
+  // The face on screen stays until it is answered or skipped: a decision
+  // places other faces again a moment later, and the list that comes back
+  // may start elsewhere.
+  const [currentId, setCurrentId] = useState<number | null>(null)
+  const current =
+    items.find((t) => t.id === currentId && !skipped.has(t.id)) ?? items.find((t) => !skipped.has(t.id))
+  if ((current?.id ?? null) !== currentId) setCurrentId(current?.id ?? null)
   const byId = useMemo(() => new Map((cast?.characters ?? []).map((x) => [x.id, x])), [cast])
   const suggestion = current?.characterId ? byId.get(current.characterId) : undefined
   // A pick merged away meanwhile leaves its number empty.
@@ -99,7 +105,7 @@ export function ReviewPage() {
         setSkipped((s) => new Set(s).add(current.id))
       },
       pick: (e) => {
-        const target = picks[Number(e.key) - 1]
+        const target = picks[Number(digitOf(e)) - 1]
         if (!current || !target) return false
         void answer(current.id, () => castEdit(pid, { op: "assign", tracks: [current.id], characterId: target.id }))
       },
