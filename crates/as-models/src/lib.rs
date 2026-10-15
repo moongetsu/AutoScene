@@ -57,18 +57,24 @@ pub struct Model {
 
 #[derive(Debug, Deserialize)]
 struct Manifest {
+    /// Files of models a better one replaced.
+    #[serde(default)]
+    retired: Vec<String>,
     model: Vec<Model>,
 }
 
-static MANIFEST: LazyLock<Vec<Model>> = LazyLock::new(|| {
-    toml::from_str::<Manifest>(include_str!("../../../models/manifest.toml"))
-        .expect("models/manifest.toml is valid")
-        .model
+static MANIFEST: LazyLock<Manifest> = LazyLock::new(|| {
+    toml::from_str::<Manifest>(include_str!("../../../models/manifest.toml")).expect("models/manifest.toml is valid")
 });
 
 /// Every model AutoScene knows about.
 pub fn manifest() -> &'static [Model] {
-    &MANIFEST
+    &MANIFEST.model
+}
+
+/// Files of models AutoScene no longer uses (see [`ModelStore::prune`]).
+pub fn retired() -> &'static [String] {
+    &MANIFEST.retired
 }
 
 pub fn model(id: &str) -> ModelResult<&'static Model> {
@@ -79,7 +85,9 @@ pub fn model(id: &str) -> ModelResult<&'static Model> {
 pub mod ids {
     pub const TRANSNET: &str = "transnetv2";
     pub const SCRFD: &str = "scrfd-10g";
-    pub const ARCFACE: &str = "arcface-w600k-r50";
+    /// The face embedder. Media whose faces another one found are found
+    /// again (`Project::refresh_outdated_faces`).
+    pub const ARCFACE: &str = "arcface-glintr100";
     /// What the face pass needs.
     pub const FACES: [&str; 2] = [SCRFD, ARCFACE];
 }
@@ -211,6 +219,42 @@ impl ModelStore {
         tracing::info!(model = id, "model installed");
         Ok(path)
     }
+
+    /// Delete the files of models a better one replaced (the manifest's
+    /// `retired` list), with their `.verified` markers and unfinished
+    /// `.part` downloads — nothing else in the folder. Returns the bytes
+    /// freed.
+    pub fn prune(&self) -> ModelResult<u64> {
+        let retired: Vec<&str> = retired().iter().map(String::as_str).collect();
+        self.prune_files(&retired)
+    }
+
+    fn prune_files(&self, retired: &[&str]) -> ModelResult<u64> {
+        let entries = match fs::read_dir(&self.dir) {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(e) => return Err(e.into()),
+        };
+        let mut freed = 0;
+        for entry in entries {
+            let entry = entry?;
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            let file = name.strip_suffix(".verified").or_else(|| name.strip_suffix(".part")).unwrap_or(name);
+            if !retired.contains(&file) || manifest().iter().any(|m| m.file == file) || !entry.file_type()?.is_file() {
+                continue;
+            }
+            let len = entry.metadata().map_or(0, |m| m.len());
+            match fs::remove_file(entry.path()) {
+                Ok(()) => {
+                    freed += len;
+                    tracing::info!(file = name, "removed a model that is no longer used");
+                }
+                Err(e) => tracing::warn!(file = name, "removing a model that is no longer used: {e}"),
+            }
+        }
+        Ok(freed)
+    }
 }
 
 fn sha256(path: &Path) -> std::io::Result<String> {
@@ -243,6 +287,36 @@ mod tests {
             assert!(model(id).is_ok(), "{id}");
         }
         assert!(matches!(model("nope"), Err(ModelError::Unknown(_))));
+    }
+
+    #[test]
+    fn prune_removes_only_retired_models() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ModelStore::new(dir.path());
+        let current = &model(ids::TRANSNET).unwrap().file;
+        // A model of someone's own (a bench export) is not ours to delete.
+        let keep = [
+            current.clone(),
+            format!("{current}.verified"),
+            format!("{current}.part"),
+            "notes.txt".into(),
+            "bench_export.onnx".into(),
+        ];
+        let gone = ["old_model.onnx", "old_model.onnx.verified", "older.onnx.part"];
+        for f in keep.iter().map(String::as_str).chain(gone) {
+            fs::write(dir.path().join(f), b"1234").unwrap();
+        }
+        fs::create_dir(dir.path().join("folder.onnx")).unwrap();
+        assert_eq!(store.prune_files(&["old_model.onnx", "older.onnx", "folder.onnx"]).unwrap(), 12);
+        for f in &keep {
+            assert!(dir.path().join(f).exists(), "{f} kept");
+        }
+        for f in gone {
+            assert!(!dir.path().join(f).exists(), "{f} removed");
+        }
+        assert!(dir.path().join("folder.onnx").is_dir());
+        // A store that was never used has nothing to prune.
+        assert_eq!(ModelStore::new(dir.path().join("missing")).prune().unwrap(), 0);
     }
 
     #[test]

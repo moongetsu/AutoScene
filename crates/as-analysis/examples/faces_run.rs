@@ -4,6 +4,10 @@
 //! Writes `<out_prefix>.tracks` (as_analysis::tracks::encode of all tracks),
 //! `<out_prefix>.chunks` (one `start end tracks` line per chunk) and the
 //! shot sprites as `<out_prefix>.sprites/<shot>.jpg`.
+//! `EMBEDDER=<model.onnx>` embeds with another model than
+//! `arcface_glintr100.onnx` (in `<models_dir>`, next to `det_10g.onnx`);
+//! `NORMS=<floor>,<full>` sets the embedding lengths quality is read from,
+//! `MIN_TRACK_Q=<q>` the quality below which tracks are dropped.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -31,10 +35,18 @@ fn main() {
         .collect();
     let tools = Tools::locate(Some(Path::new(ffmpeg))).unwrap();
     let rt = Runtime::load(Path::new(ort), true).unwrap();
-    let params = as_analysis::FaceParams::default();
+    let mut params = as_analysis::FaceParams::default();
+    if let Ok(v) = std::env::var("NORMS") {
+        let (floor, full) = v.split_once(',').expect("NORMS=<floor>,<full>");
+        (params.norm_floor, params.norm_full) = (floor.parse().unwrap(), full.parse().unwrap());
+    }
+    if let Ok(v) = std::env::var("MIN_TRACK_Q") {
+        params.min_track_quality = v.parse().expect("MIN_TRACK_Q=<quality>");
+    }
+    let embedder = std::env::var("EMBEDDER").map_or_else(|_| models.join("arcface_glintr100.onnx"), PathBuf::from);
     let (_, det_size) = as_analysis::frame_sizes(&info, &params);
     let mut det = Scrfd::load(&rt, &models.join("det_10g.onnx"), det_size, as_analysis::DETECT_BATCH).unwrap();
-    let mut rec = ArcFace::load(&rt, &models.join("w600k_r50.onnx"), 32).unwrap();
+    let mut rec = ArcFace::load(&rt, &embedder, 32).unwrap();
     let t0 = Instant::now();
     let mut all = Vec::new();
     let mut chunks = std::fs::File::create(format!("{out}.chunks")).unwrap();

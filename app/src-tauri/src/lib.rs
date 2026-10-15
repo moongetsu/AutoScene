@@ -14,6 +14,7 @@ mod keep_awake;
 mod mac_menu;
 mod state;
 mod updater;
+mod window;
 mod work;
 
 use as_core::AppPaths;
@@ -21,6 +22,7 @@ use as_project::Library;
 use tauri::Manager;
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use tauri_plugin_log::{RotationStrategy, Target, TargetKind};
+use tauri_plugin_window_state::StateFlags;
 use tauri_specta::{collect_commands, collect_events};
 
 /// Single source of truth for the IPC surface. Also used by the
@@ -125,7 +127,13 @@ pub fn run() {
             }
         }))
         .plugin(log_plugin)
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        // Size and place come back, never the frame: the window's chrome is ours
+        // (a state saved by an older, framed build would double the title bar).
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(StateFlags::all() - StateFlags::DECORATIONS)
+                .build(),
+        )
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
@@ -159,9 +167,15 @@ pub fn run() {
             };
             let handle = app.handle().clone();
             app.manage(state::AppState::new(&handle, library, &paths));
+            // After the state: the page calls commands as soon as it loads.
+            window::create_main(app)?;
             // Resume interrupted indexing and previews; locate ffmpeg and probe
             // the hardware off the UI thread so the first job starts warm.
             std::thread::spawn(move || {
+                // Models a better one replaced (their media are found again below).
+                if let Err(e) = handle.state::<state::AppState>().models.prune() {
+                    log::warn!("removing unused models: {}", e.detail());
+                }
                 work::recover_all(&handle);
                 if let Ok(tools) = handle.state::<state::AppState>().tools() {
                     let _ = tools.caps();

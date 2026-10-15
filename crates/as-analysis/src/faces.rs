@@ -40,6 +40,9 @@ pub struct FaceParams {
     pub norm_full: f32,
     /// Face height (fraction of the frame) from which size stops limiting quality.
     pub full_height: f32,
+    /// Tracks whose clearest face is below this quality say nothing about
+    /// anyone and are dropped (the tracker's `min_track_quality`).
+    pub min_track_quality: f32,
     /// Shot sprites: frames per shot, cell width, JPEG quality.
     pub sprite_cells: u32,
     pub sprite_width: usize,
@@ -58,6 +61,7 @@ impl Default for FaceParams {
             norm_floor: 14.0,
             norm_full: 22.0,
             full_height: 0.12,
+            min_track_quality: 0.05,
             sprite_cells: 8,
             sprite_width: 240,
             sprite_quality: 72,
@@ -469,7 +473,7 @@ pub fn face_tracks(
             .map_err(|e| AnalysisError::Internal(format!("starting the face detector: {e}")))?;
         let mut pass = Pass {
             params,
-            tracker: TrackerParams::new(stride),
+            tracker: TrackerParams { min_track_quality: params.min_track_quality, ..TrackerParams::new(stride) },
             embedder,
             shots,
             size,

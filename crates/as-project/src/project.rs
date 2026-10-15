@@ -15,7 +15,7 @@ use crate::naming::safe_component;
 use crate::{ProjectError, ProjectResult};
 
 pub(crate) const PROJECT_DB: &str = "project.db";
-const POSTER_HEIGHT: u32 = 360;
+const POSTER_HEIGHT: u32 = 720;
 
 /// Progress callback: `(stage, fraction 0..1)`.
 pub type Progress<'a> = &'a dyn Fn(&str, f64);

@@ -15,6 +15,17 @@
 //!    face pass.
 //! 4. `identity_bench score <file.tracks> <labels.tsv> [link] [assign]`
 //!    clusters again and scores.
+//!
+//! `identity_bench separation <file.tracks> <labels.tsv>` measures the
+//! embedder alone, without clustering: how well track similarity tells the
+//! same named person from two different ones (AUC, and how many same-person
+//! pairs pass at the similarity where 1 % / 0.1 % of different-person pairs
+//! do), overall and by the quality of the blurrier track of a pair.
+//!
+//! `identity_bench norms <reference.tracks> <other.tracks> <floor> <full>`
+//! carries the embedding lengths quality is read from (`FaceParams::
+//! norm_floor`, `norm_full`) over to another embedder: the lengths at the
+//! same share of all faces.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -198,8 +209,8 @@ fn read_labels(path: &str) -> Vec<Label> {
         .collect()
 }
 
-fn score(tracks: &[FaceTrack], labels_path: &str, p: &Params, detail: bool) {
-    let labels = read_labels(labels_path);
+/// The name each track takes from the labels (`None`: no label fits).
+fn names_of<'a>(tracks: &[FaceTrack], labels: &'a [Label]) -> Vec<Option<&'a str>> {
     // Each track takes the name of the labels it shares most of the shorter
     // of the two with: the one most of its frames are, among labels whose
     // face is where the track's face is during the frames they share. Tracks
@@ -222,6 +233,61 @@ fn score(tracks: &[FaceTrack], labels_path: &str, p: &Params, detail: bool) {
         }
         truth_name[i] = votes.into_iter().max_by_key(|&(n, v)| (v, std::cmp::Reverse(n))).map(|(n, _)| n);
     }
+    truth_name
+}
+
+/// Embedder alone: same-person vs different-person track similarity.
+fn separation(tracks: &[FaceTrack], labels_path: &str) {
+    let labels = read_labels(labels_path);
+    let names = names_of(tracks, &labels);
+    let named: Vec<usize> = (0..tracks.len()).filter(|&i| names[i].is_some_and(|n| n != "?" && n != "x")).collect();
+    let mut same: Vec<(f32, f32)> = Vec::new();
+    let mut diff: Vec<(f32, f32)> = Vec::new();
+    for (k, &i) in named.iter().enumerate() {
+        for &j in &named[k + 1..] {
+            let cos = as_vision::arcface::cosine(&tracks[i].embedding, &tracks[j].embedding);
+            let q = tracks[i].quality.min(tracks[j].quality);
+            if names[i] == names[j] { same.push((cos, q)) } else { diff.push((cos, q)) }
+        }
+    }
+    println!("{} named tracks: {} same-person pairs, {} different-person pairs", named.len(), same.len(), diff.len());
+    let report = |what: &str, lo: f32, hi: f32| {
+        let pick = |v: &[(f32, f32)]| -> Vec<f32> {
+            let mut x: Vec<f32> = v.iter().filter(|p| (lo..hi).contains(&p.1)).map(|p| p.0).collect();
+            x.sort_by(f32::total_cmp);
+            x
+        };
+        let (s, d) = (pick(&same), pick(&diff));
+        if s.is_empty() || d.is_empty() {
+            return;
+        }
+        // AUC: the chance a same-person pair is more alike than a different-person pair.
+        let mut below = 0u64;
+        for &x in &s {
+            below += d.partition_point(|&y| y < x) as u64;
+        }
+        let auc = below as f64 / (s.len() as f64 * d.len() as f64);
+        let tar = |far: f64| {
+            let t = d[((1.0 - far) * d.len() as f64) as usize % d.len()];
+            (s.len() - s.partition_point(|&x| x < t)) as f64 / s.len() as f64
+        };
+        println!(
+            "  {what:22} {:6} same / {:7} diff: AUC {auc:.4}, pass at FAR 1% {:.3}, at 0.1% {:.3}",
+            s.len(),
+            d.len(),
+            tar(0.01),
+            tar(0.001)
+        );
+    };
+    report("all", f32::NEG_INFINITY, f32::INFINITY);
+    report("blurrier quality < 0.3", f32::NEG_INFINITY, 0.3);
+    report("blurrier 0.3 .. 0.6", 0.3, 0.6);
+    report("blurrier >= 0.6", 0.6, f32::INFINITY);
+}
+
+fn score(tracks: &[FaceTrack], labels_path: &str, p: &Params, detail: bool) {
+    let labels = read_labels(labels_path);
+    let truth_name = names_of(tracks, &labels);
     let matched = truth_name.iter().filter(|n| n.is_some()).count();
     // Scored: tracks with a label that isn't "can't tell".
     let keep: Vec<usize> = (0..tracks.len()).filter(|&i| truth_name[i].is_some_and(|n| n != "x")).collect();
@@ -275,6 +341,7 @@ fn score(tracks: &[FaceTrack], labels_path: &str, p: &Params, detail: bool) {
     );
     show("main cast (>= 30 s)", &|i| main(truth[i]));
     show("everyone named", &|i| named.contains_key(&truth[i]));
+    found_faces(tracks, &labels, &truth_name, &got);
     // Per main character: where its tracks went.
     let mut mains: Vec<usize> = named.keys().copied().filter(|&k| main(k)).collect();
     mains.sort_by_key(|k| std::cmp::Reverse(screen[k]));
@@ -323,10 +390,97 @@ fn score(tracks: &[FaceTrack], labels_path: &str, p: &Params, detail: bool) {
     }
 }
 
+/// End to end, over the labels rather than the tracks (BCubed only sees
+/// faces that became a track): the share of the main cast's labelled faces
+/// a track still holds, and the share held by a track of the character
+/// named like them (the name most of a character's frames have).
+fn found_faces(tracks: &[FaceTrack], labels: &[Label], truth_name: &[Option<&str>], got: &[Option<usize>]) {
+    let mut frames_of: HashMap<(usize, &str), u32> = HashMap::new();
+    for (i, t) in tracks.iter().enumerate() {
+        if let (Some(c), Some(n)) = (got[i], truth_name[i])
+            && n != "?"
+            && n != "x"
+        {
+            *frames_of.entry((c, n)).or_default() += t.end - t.start;
+        }
+    }
+    let mut char_name: HashMap<usize, (&str, u32)> = HashMap::new();
+    for (&(c, n), &f) in &frames_of {
+        let e = char_name.entry(c).or_insert((n, 0));
+        if (f, std::cmp::Reverse(n)) > (e.1, std::cmp::Reverse(e.0)) {
+            *e = (n, f);
+        }
+    }
+    let mut screen: HashMap<&str, u32> = HashMap::new();
+    for l in labels {
+        *screen.entry(l.name.as_str()).or_default() += l.span.1 - l.span.0;
+    }
+    let main = |n: &str| n != "?" && n != "x" && screen[n] as f64 / FPS >= 30.0;
+    let mut at: HashMap<u32, Vec<(usize, [f32; 4])>> = HashMap::new();
+    for (i, t) in tracks.iter().enumerate() {
+        for d in &t.dets {
+            at.entry(d.frame).or_default().push((i, d.bbox));
+        }
+    }
+    let (mut all, mut held, mut theirs) = (0u32, 0u32, 0u32);
+    for l in labels.iter().filter(|l| main(&l.name)) {
+        for (frame, b) in &l.boxes {
+            all += 1;
+            let best = at
+                .get(frame)
+                .into_iter()
+                .flatten()
+                .map(|&(i, bb)| (i, box_iou(b, &bb)))
+                .filter(|&(_, iou)| iou >= 0.5)
+                .max_by(|x, y| x.1.total_cmp(&y.1));
+            if let Some((i, _)) = best {
+                held += 1;
+                theirs += u32::from(got[i].and_then(|c| char_name.get(&c)).is_some_and(|&(n, _)| n == l.name));
+            }
+        }
+    }
+    println!(
+        "main cast faces (labels)     in a track {:.3} | on their character {:.3}",
+        held as f64 / all as f64,
+        theirs as f64 / all as f64
+    );
+}
+
+/// The share of `sorted` below `v`, and the value at share `q`.
+fn share_below(sorted: &[f32], v: f32) -> f32 {
+    sorted.partition_point(|&x| x < v) as f32 / sorted.len() as f32
+}
+
+fn at_share(sorted: &[f32], q: f32) -> f32 {
+    sorted[((q * sorted.len() as f32) as usize).min(sorted.len() - 1)]
+}
+
+fn norms(reference: &[FaceTrack], other: &[FaceTrack], floor: f32, full: f32) {
+    let sorted = |t: &[FaceTrack]| {
+        let mut v: Vec<f32> = t.iter().flat_map(|t| t.dets.iter().map(|d| d.norm)).collect();
+        v.sort_by(f32::total_cmp);
+        v
+    };
+    let (r, o) = (sorted(reference), sorted(other));
+    for q in [0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95] {
+        println!("{:3.0}%: {:6.2} | {:6.2}", q * 100.0, at_share(&r, q), at_share(&o, q));
+    }
+    let (qf, qu) = (share_below(&r, floor), share_below(&r, full));
+    println!(
+        "floor {floor} is at {:.1}% → {:.2}; full {full} at {:.1}% → {:.2}",
+        qf * 100.0,
+        at_share(&o, qf),
+        qu * 100.0,
+        at_share(&o, qu)
+    );
+}
+
 fn main() {
     let a: Vec<String> = std::env::args().skip(1).collect();
     let tracks = read_tracks(&a[1]);
     match a[0].as_str() {
+        "separation" => separation(&tracks, &a[2]),
+        "norms" => norms(&tracks, &read_tracks(&a[2]), a[3].parse().unwrap(), a[4].parse().unwrap()),
         "sheets" => sheets(&tracks, Path::new(&a[2])),
         "labels" => labels(&tracks, Path::new(&a[2]), &a[3], &a[4]),
         "score" => {

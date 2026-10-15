@@ -1,6 +1,7 @@
-//! ArcFace (Deng et al. 2019; InsightFace `w600k_r50`, ResNet-50 trained on
-//! WebFace600K): a 512-d identity embedding of a face aligned to 112×112 by
-//! its five landmarks. Two faces of one person point the same way, so cosine
+//! ArcFace (Deng et al. 2019; InsightFace `glintr100`, ResNet-100 trained
+//! on Glint360K — any InsightFace-style recognition graph runs here): a
+//! 512-d identity embedding of a face aligned to 112×112 by its five
+//! landmarks. Two faces of one person point the same way, so cosine
 //! similarity is the identity score.
 //!
 //! The graph's batch dimension is free, so faces are embedded in fixed-size

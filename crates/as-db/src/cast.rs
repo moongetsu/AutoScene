@@ -112,6 +112,8 @@ pub enum EditKind {
     /// out there, so the next clustering keeps the character (its number,
     /// its place in the cast) instead of making a new one.
     Was(CharacterId),
+    /// The user chose this face as the character's picture.
+    Cover(CharacterId),
 }
 
 fn parse_id<T: std::str::FromStr>(s: &str) -> DbResult<T>
@@ -134,6 +136,14 @@ fn marks(n: usize) -> String {
 /// clustering said they were — in `track_edits` for the next face pass to
 /// re-anchor.
 pub(crate) fn clear_faces(tx: &Transaction, id: MediaId) -> DbResult<()> {
+    forget_tracks(tx, id)?;
+    tx.execute("UPDATE media SET faces = 'pending', faces_error = NULL WHERE id = ?1", [id.to_string()])?;
+    bump_rev(tx)
+}
+
+/// Delete a media's tracks, sprites and checkpoints, keeping the decisions
+/// on its tracks (and who clustering said they were) in `track_edits`.
+fn forget_tracks(tx: &Transaction, id: MediaId) -> DbResult<()> {
     let m = id.to_string();
     tx.execute(
         "INSERT INTO track_edits (media_id, start, end, dets, kind, character_id)
@@ -146,14 +156,18 @@ pub(crate) fn clear_faces(tx: &Transaction, id: MediaId) -> DbResult<()> {
          SELECT media_id, start, end, dets, 'not_face', NULL FROM tracks WHERE media_id = ?1 AND not_face = 1
          UNION ALL
          SELECT media_id, start, end, dets, 'was', character_id FROM tracks
-          WHERE media_id = ?1 AND assign = 'auto' AND character_id IS NOT NULL AND not_face = 0",
+          WHERE media_id = ?1 AND assign = 'auto' AND character_id IS NOT NULL AND not_face = 0
+         UNION ALL
+         SELECT t.media_id, t.start, t.end, t.dets, 'cover', c.id FROM characters c JOIN tracks t ON t.id = c.cover
+          WHERE t.media_id = ?1",
         [&m],
     )?;
+    // Track ids are handed out again: a cover must not point at someone else's face.
+    tx.execute("UPDATE characters SET cover = NULL WHERE cover IN (SELECT id FROM tracks WHERE media_id = ?1)", [&m])?;
     tx.execute("DELETE FROM tracks WHERE media_id = ?1", [&m])?;
     tx.execute("DELETE FROM sprites WHERE media_id = ?1", [&m])?;
     tx.execute("DELETE FROM face_chunks WHERE media_id = ?1", [&m])?;
-    tx.execute("UPDATE media SET faces = 'pending', faces_error = NULL WHERE id = ?1", [&m])?;
-    bump_rev(tx)
+    Ok(())
 }
 
 /// A decision (or a stored clustering) changed the cast.
@@ -242,6 +256,65 @@ impl ProjectDb {
         })
     }
 
+    /// The embedder a media's stored tracks (finished or not) come from;
+    /// `None` before models were recorded.
+    pub fn faces_model(&self, id: MediaId) -> DbResult<Option<String>> {
+        self.0.read(|c| {
+            Ok(c.query_row("SELECT faces_model FROM media WHERE id = ?1", [id.to_string()], |r| r.get(0))
+                .optional()?
+                .flatten())
+        })
+    }
+
+    /// The tracks of `id` are to come from `model`: what another one stored
+    /// (tracks, sprites, checkpoints) goes, decisions on it wait in
+    /// `track_edits`, and the pass starts over. Returns whether it did.
+    pub fn use_faces_model(&self, id: MediaId, model: &str) -> DbResult<bool> {
+        self.0.write(|tx| {
+            let m = id.to_string();
+            let old: Option<String> =
+                tx.query_row("SELECT faces_model FROM media WHERE id = ?1", [&m], |r| r.get(0)).optional()?.flatten();
+            if old.as_deref() == Some(model) {
+                return Ok(false);
+            }
+            forget_tracks(tx, id)?;
+            tx.execute("UPDATE media SET faces_model = ?2 WHERE id = ?1", params![m, model])?;
+            bump_rev(tx)?;
+            Ok(true)
+        })
+    }
+
+    /// Media whose faces are found by another embedder than `model` (or one
+    /// not recorded), left as they are.
+    pub fn faces_by_other_model(&self, model: &str) -> DbResult<Vec<MediaId>> {
+        self.0.read(|c| {
+            let mut st = c.prepare(
+                "SELECT id FROM media WHERE faces = 'ready' AND (faces_model IS NULL OR faces_model <> ?1) ORDER BY position",
+            )?;
+            let ids: Vec<String> = st.query_map([model], |r| r.get(0))?.collect::<Result<_, _>>()?;
+            ids.iter().map(|s| parse_id(s)).collect()
+        })
+    }
+
+    /// Media whose faces are found, by another embedder than `model` (or
+    /// one not recorded): their faces are forgotten — the user's decisions
+    /// and who clustering said they were wait in `track_edits` — so the
+    /// face pass runs again. Returns them.
+    pub fn outdated_faces(&self, model: &str) -> DbResult<Vec<MediaId>> {
+        self.0.write(|tx| {
+            let ids: Vec<String> = {
+                let mut st = tx.prepare(
+                    "SELECT id FROM media WHERE faces = 'ready' AND (faces_model IS NULL OR faces_model <> ?1)",
+                )?;
+                st.query_map([model], |r| r.get(0))?.collect::<Result<_, _>>()?
+            };
+            for id in &ids {
+                clear_faces(tx, parse_id(id)?)?;
+            }
+            ids.iter().map(|s| parse_id(s)).collect()
+        })
+    }
+
     /// Finished chunks `(start, end)` of the face pass, in order.
     pub fn face_chunks(&self, id: MediaId) -> DbResult<Vec<(FrameIdx, FrameIdx)>> {
         self.0.read(|c| {
@@ -316,6 +389,7 @@ impl ProjectDb {
                     ("forbid", Some(c)) => EditKind::Forbid(c),
                     ("not_face", _) => EditKind::NotFace,
                     ("was", Some(c)) => EditKind::Was(c),
+                    ("cover", Some(c)) => EditKind::Cover(c),
                     _ => continue,
                 };
                 out.push(TrackEdit { start: r.get(0)?, end: r.get(1)?, dets: r.get(2)?, kind });
@@ -363,7 +437,7 @@ impl ProjectDb {
                             [track],
                         )?;
                     }
-                    EditKind::Was(_) => {}
+                    EditKind::Was(_) | EditKind::Cover(_) => {}
                 }
             }
             for &(track, kind) in matched {
@@ -373,6 +447,17 @@ impl ProjectDb {
                           WHERE id = ?1 AND assign = 'none' AND not_face = 0
                             AND EXISTS (SELECT 1 FROM characters WHERE id = ?2)
                             AND NOT EXISTS (SELECT 1 FROM track_forbids f WHERE f.track_id = ?1 AND f.character_id = ?2)",
+                        params![track, c.to_string()],
+                    )?;
+                }
+            }
+            // The chosen picture comes back once its face is the character's again.
+            for &(track, kind) in matched {
+                if let EditKind::Cover(c) = kind {
+                    tx.execute(
+                        "UPDATE characters SET cover = ?1 WHERE id = ?2
+                            AND EXISTS (SELECT 1 FROM tracks WHERE id = ?1 AND character_id = ?2
+                                          AND assign IN ('auto', 'pinned') AND not_face = 0)",
                         params![track, c.to_string()],
                     )?;
                 }
@@ -492,7 +577,9 @@ impl ProjectDb {
         self.0.read(|c| {
             let mut st = c.prepare(
                 "SELECT c.id, c.number, c.name, c.hidden,
-                        COALESCE(c.cover, (SELECT b.id FROM tracks b WHERE b.character_id = c.id AND b.assign IN ('auto', 'pinned')
+                        COALESCE((SELECT x.id FROM tracks x WHERE x.id = c.cover AND x.character_id = c.id
+                                    AND x.assign IN ('auto', 'pinned') AND x.not_face = 0),
+                                 (SELECT b.id FROM tracks b WHERE b.character_id = c.id AND b.assign IN ('auto', 'pinned')
                                               AND b.not_face = 0
                                             ORDER BY b.face_h >= 0.12 DESC, b.quality DESC, b.face_h DESC LIMIT 1)),
                         COUNT(t.id),
@@ -906,16 +993,24 @@ mod tests {
         db.mark_not_face(&[ids[2]]).unwrap();
         assert_eq!(db.identity_tracks().unwrap().len(), 2);
         assert_eq!(db.cast_counts().unwrap(), (1, 0, 1, 1));
+        db.set_character_cover(a, ids[0]).unwrap();
 
         // Re-analysis: the decisions wait in track_edits for the new tracks.
         db.reset_faces(m).unwrap();
         assert!(db.identity_tracks().unwrap().is_empty());
         let edits = db.track_edits(m).unwrap();
-        let mut kinds: Vec<_> = edits.iter().map(|e| (e.start, e.kind)).collect();
-        kinds.sort_by_key(|k| k.0);
-        assert_eq!(kinds, [(10, EditKind::Pin(a)), (200, EditKind::NotFace)]);
-        let new = db.put_face_chunk(m, 0, 1000, &[track(10, 0.9), track(200, 0.7)], &[], |_| Ok(())).unwrap();
-        db.reanchor_edits(m, &[(new[0], EditKind::Pin(a)), (new[1], EditKind::NotFace)]).unwrap();
+        let kinds: Vec<_> = edits.iter().map(|e| (e.start, e.kind)).collect();
+        assert_eq!(kinds.len(), 3);
+        for k in [(10, EditKind::Pin(a)), (10, EditKind::Cover(a)), (200, EditKind::NotFace)] {
+            assert!(kinds.contains(&k), "{k:?} waits");
+        }
+        // The new pass hands out the old track ids again: no stale cover meanwhile.
+        let new = db.put_face_chunk(m, 0, 1000, &[track(200, 0.7), track(10, 0.9)], &[], |_| Ok(())).unwrap();
+        assert_eq!(new[0], ids[0], "track ids are reused");
+        assert_eq!(db.characters().unwrap()[0].cover, None);
+        db.reanchor_edits(m, &[(new[1], EditKind::Pin(a)), (new[1], EditKind::Cover(a)), (new[0], EditKind::NotFace)])
+            .unwrap();
+        assert_eq!(db.characters().unwrap()[0].cover.map(|c| c.0), Some(new[1]), "the chosen picture is back");
         db.set_faces_state(m, StageState::Ready, None).unwrap();
         assert!(db.track_edits(m).unwrap().is_empty());
         assert_eq!(db.tracks(TrackFilter::Character(a)).unwrap().len(), 1);
@@ -1036,6 +1131,36 @@ mod tests {
         db.reanchor_edits(m, &[]).unwrap();
         db.apply_identity(db.cast_rev().unwrap(), &[], &[]).unwrap();
         assert!(!db.character_exists(a).unwrap());
+    }
+
+    #[test]
+    fn faces_of_another_model_are_found_again() {
+        let db = ProjectDb::memory();
+        let m = ready_media(&db, "/v/a.mkv");
+        // Found before models were recorded, a character made of them.
+        assert!(db.use_faces_model(m, "old").unwrap());
+        assert!(!db.use_faces_model(m, "old").unwrap(), "same model: nothing to drop");
+        let ids = db.put_face_chunk(m, 0, 1000, &[track(10, 0.9), track(100, 0.8)], &[], |_| Ok(())).unwrap();
+        db.set_faces_state(m, StageState::Ready, None).unwrap();
+        let a = CharacterId::new();
+        db.apply_identity(
+            db.cast_rev().unwrap(),
+            &[a],
+            &ids.iter().map(|&t| (t, Some(a), TrackAssign::Auto, 0.9)).collect::<Vec<_>>(),
+        )
+        .unwrap();
+        // The app now embeds with "new": the media is found again, its character waits.
+        assert!(db.outdated_faces("old").unwrap().is_empty());
+        assert_eq!(db.outdated_faces("new").unwrap(), [m]);
+        assert_eq!(db.pending_faces().unwrap(), [m]);
+        assert!(db.character_exists(a).unwrap());
+        assert_eq!(db.track_edits(m).unwrap().len(), 2);
+        // A pass of the old model half done when the app changed starts over.
+        db.put_face_chunk(m, 0, 500, &[track(10, 0.9)], &[], |_| Ok(())).unwrap();
+        assert!(db.use_faces_model(m, "new").unwrap());
+        assert!(db.face_chunks(m).unwrap().is_empty());
+        assert_eq!(db.faces_model(m).unwrap().as_deref(), Some("new"));
+        assert_eq!(db.track_edits(m).unwrap().len(), 2, "decisions still wait");
     }
 
     #[test]

@@ -176,6 +176,9 @@ const STEPS: &[M<'static>] = &[
     CREATE INDEX track_edits_by_character ON track_edits(character_id);
     CREATE INDEX track_edits_by_media ON track_edits(media_id);",
     ),
+    // Which face embedder made a media's tracks: embeddings of two models
+    // can't be compared, so tracks of another one are found again.
+    M::up("ALTER TABLE media ADD COLUMN faces_model TEXT;"),
 ];
 const MIGRATIONS: Migrations<'static> = Migrations::from_slice(STEPS);
 

@@ -256,17 +256,14 @@ fn characters_keep_their_identity_when_they_grow() {
 fn a_person_seen_once_per_episode_is_found_in_a_big_series() {
     // More clear tracks than one clustering level takes: a person with one
     // track per episode is a single track in each episode's first level.
+    // Strangers are random directions in the embedding's 512 dimensions
+    // (in fewer, chance alone makes them look alike).
     let mut rng = Rng(37);
-    let unit = |rng: &mut Rng| {
-        let mut v: Vec<f32> = (0..96).map(|_| rng.gauss()).collect();
-        proto_normalize(&mut v);
-        v
-    };
-    let person = unit(&mut rng);
-    let mut tracks: Vec<TrackIn> = (0..4100u32).map(|i| track(i % 8, (i / 8) * 100, unit(&mut rng), 0.9)).collect();
+    let person = rng.unit();
+    let mut tracks: Vec<TrackIn> = (0..4100u32).map(|i| track(i % 8, (i / 8) * 100, rng.unit(), 0.9)).collect();
     let first = tracks.len();
     for m in 0..8u32 {
-        let noise = unit(&mut rng);
+        let noise = rng.unit();
         let mut e: Vec<f32> = person.iter().zip(&noise).map(|(c, n)| 0.9 * c + 0.436 * n).collect();
         proto_normalize(&mut e);
         tracks.push(track(m, 1_000_000, e, 0.6));

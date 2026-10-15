@@ -102,6 +102,7 @@ fn resolve(mut found: Vec<(u32, i64, EditKind)>) -> Vec<(i64, EditKind)> {
                 .filter(|&&(_, c)| !matches!(decided, Some(&(_, _, EditKind::Pin(p))) if p == c))
                 .map(|&(_, c)| (track, EditKind::Forbid(c))),
         );
+        out.extend(group.iter().filter(|e| matches!(e.2, EditKind::Cover(_))).map(|&(_, _, k)| (track, k)));
         match decided {
             Some(&(_, _, k)) => out.push((track, k)),
             None => {
@@ -152,13 +153,16 @@ impl Project {
 
     // -- face pass ----------------------------------------------------------
 
-    /// Where the face pass of `id` resumes. Checkpoints that don't line up
-    /// are dropped with everything after them; a fresh start clears old
-    /// thumbnails.
-    pub fn faces_plan(&self, id: MediaId) -> ProjectResult<FacesPlan> {
+    /// Where the face pass of `id` with embedder `model` resumes.
+    /// Checkpoints of another embedder, or that don't line up, are dropped
+    /// with everything after them; a fresh start clears old thumbnails.
+    pub fn faces_plan(&self, id: MediaId, model: &str) -> ProjectResult<FacesPlan> {
         let (m, info, index) = self.ready_source(id)?;
         if m.shots != StageState::Ready {
             return Err(ProjectError::NotReady("Shots of this media aren't found yet.".into()));
+        }
+        if self.db().use_faces_model(id, model)? {
+            tracing::info!(file = %m.file_name, model, "faces are found with a new model");
         }
         let frames = index.len();
         let shots: Vec<(FrameIdx, FrameIdx)> =
@@ -256,10 +260,13 @@ impl Project {
                 let span = FrameRange::new(e.start, e.end);
                 let dets = tracks::dets_from_bytes(&e.dets).unwrap_or_default();
                 let before = found.len();
-                for (t, r, new_dets) in &new {
-                    if let Some(shared) = same_face((span, &dets), (*r, new_dets)) {
-                        found.push((shared, *t, e.kind));
-                    }
+                let matches =
+                    new.iter().filter_map(|(t, r, d)| same_face((span, &dets), (*r, d)).map(|s| (s, *t, e.kind)));
+                if matches!(e.kind, EditKind::Cover(_)) {
+                    // A picture is one face: the new track sharing most of it.
+                    found.extend(matches.max_by_key(|&(s, t, _)| (s, std::cmp::Reverse(t))));
+                } else {
+                    found.extend(matches);
                 }
                 kept += usize::from(found.len() > before);
             }
@@ -268,6 +275,21 @@ impl Project {
             self.db().reanchor_edits(id, &matched)?;
         }
         Ok(self.db().set_faces_state(id, StageState::Ready, None)?)
+    }
+
+    /// Media whose faces another embedder than `model` found, untouched.
+    pub fn faces_by_other_model(&self, model: &str) -> ProjectResult<Vec<MediaId>> {
+        Ok(self.db().faces_by_other_model(model)?)
+    }
+
+    /// Media whose faces another embedder than `model` found: their faces
+    /// are forgotten (decisions are kept) so they are found again.
+    pub fn refresh_outdated_faces(&self, model: &str) -> ProjectResult<Vec<MediaId>> {
+        let ids = self.db().outdated_faces(model)?;
+        for &id in &ids {
+            let _ = std::fs::remove_dir_all(self.media_faces_dir(id));
+        }
+        Ok(ids)
     }
 
     /// Forget the faces of `id` (decisions are kept for the next pass).
@@ -506,6 +528,8 @@ mod tests {
     use super::*;
     use crate::analysis::tests::project_with_media;
 
+    const MODEL: &str = "test-embedder";
+
     /// A face of person `who` (a direction in embedding space) in shot `shot`.
     fn face(who: usize, shot: FrameIdx, x: f32, quality: f32) -> FaceTrack {
         let mut embedding = vec![0.02f32; tracks::DIM];
@@ -656,7 +680,7 @@ mod tests {
             .map(|s| Segment { start: s, end: s + 100, kind: SegmentKind::Shot, tiny: false })
             .collect();
         project.db().store_segments(id, &segments).unwrap();
-        let plan = project.faces_plan(id).unwrap();
+        let plan = project.faces_plan(id, MODEL).unwrap();
         assert_eq!((plan.resume, plan.shots.len(), plan.frames), (0, 20, frames));
 
         // Two people, one in the even shots and one in the odd shots (both in shot 0).
@@ -670,7 +694,7 @@ mod tests {
         let sprite = |shot| ShotSprite { shot, end: shot + 100, cells: 8, jpeg: vec![0xFF, 0xD8, 1] };
         // A sprite outside the chunk is not this chunk's.
         assert_eq!(project.store_face_chunk(id, 0, 1000, &tracks::encode(&a), &[sprite(0), sprite(1000)]).unwrap(), 11);
-        assert_eq!(project.faces_plan(id).unwrap().resume, 1000);
+        assert_eq!(project.faces_plan(id, MODEL).unwrap().resume, 1000);
         project.store_face_chunk(id, 1000, frames, &tracks::encode(&b), &[]).unwrap();
         project.finish_faces(id).unwrap();
         assert!(project.pending_faces().unwrap().is_empty());
@@ -699,6 +723,14 @@ mod tests {
         let wrong = tracks.iter().find(|t| t.start == 300).unwrap().id;
         project.cast_edit(&CastEdit::NotThem { tracks: vec![wrong], character_id: walter.id }).unwrap();
         assert_eq!(project.cast_tracks(TrackFilter::Character(walter.id)).unwrap().len(), 10);
+        let picture = tracks.iter().find(|t| t.start == 500).unwrap().id;
+        project.cast_edit(&CastEdit::SetCover { character_id: walter.id, track: picture }).unwrap();
+        let cover_start = |p: &Project| {
+            let rows = p.db().characters().unwrap();
+            let (t, _) = rows.iter().find(|c| c.id == walter.id).unwrap().cover.unwrap();
+            p.db().tracks_by_id(&[t]).unwrap()[0].start
+        };
+        assert_eq!(cover_start(&project), 500);
 
         // Re-analysis: tracks are replaced (slightly moved boxes), the name and the decision stay.
         project.reset_faces(id).unwrap();
@@ -721,6 +753,7 @@ mod tests {
         let mine = project.cast_tracks(TrackFilter::Character(w.id)).unwrap();
         assert_eq!(mine.len(), 10, "the 'not them' decision survived");
         assert!(mine.iter().all(|t| t.start != 300));
+        assert_eq!(cover_start(&project), 500, "the chosen picture survived");
         // The character nobody named or touched is still the same one.
         let o = cast.characters.iter().find(|c| c.id == other.id).expect("the unnamed character survived");
         assert_eq!((o.label.as_str(), o.tracks), (other.label.as_str(), other.tracks));

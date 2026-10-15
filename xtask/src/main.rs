@@ -38,6 +38,10 @@ fn main() -> Result<()> {
                 let path = store.install(&m.id, &cancel, |_, _| {}).map_err(|e| anyhow::anyhow!(e.detail()))?;
                 println!("{} ready: {}", m.id, path.display());
             }
+            let freed = store.prune().map_err(|e| anyhow::anyhow!(e.detail()))?;
+            if freed > 0 {
+                println!("removed models no longer in the manifest ({} MB)", freed / 1_000_000);
+            }
             Ok(())
         }
         "" | "help" | "--help" => {

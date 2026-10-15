@@ -32,8 +32,8 @@ fn main() {
     let det_model = models.join("det_10g.onnx");
     let mut det = Scrfd::load(&rt, &det_model, det_size, batch).unwrap();
     let mut det1 = Scrfd::load(&rt, &det_model, det_size, 1).unwrap();
-    let mut rec = ArcFace::load(&rt, &models.join("w600k_r50.onnx"), 32).unwrap();
-    let mut rec1 = ArcFace::load(&rt, &models.join("w600k_r50.onnx"), 1).unwrap();
+    let mut rec = ArcFace::load(&rt, &models.join("arcface_glintr100.onnx"), 32).unwrap();
+    let mut rec1 = ArcFace::load(&rt, &models.join("arcface_glintr100.onnx"), 1).unwrap();
     println!(
         "sessions {:.2?} on {:?}/{:?}; decode {w}x{h}, detect {det_size:?} in batches of {batch}",
         t.elapsed(),

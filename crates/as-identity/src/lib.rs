@@ -76,16 +76,18 @@ pub struct Params {
 
 impl Default for Params {
     fn default() -> Self {
+        // For ArcFace glintr100, set on bench/identity: precision 0.984,
+        // recall 0.873 for the main cast (per track).
         Self {
-            link: 0.36,
+            link: 0.30,
             core_quality: 0.45,
             core_dets: 2,
             min_tracks: 3,
             min_frames: 96,
             min_cohesion: 0.5,
-            assign: 0.5,
+            assign: 0.45,
             margin: 0.08,
-            unsure: 0.35,
+            unsure: 0.30,
             prototypes: 12,
             inherit: 0.3,
         }

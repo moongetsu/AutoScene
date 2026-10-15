@@ -55,4 +55,9 @@ tauri-plugin-window-state = "=3.0.0-alpha.2"
 
 [target.'cfg(windows)'.dependencies]
 # Keep the PC awake while analysis runs.
-windows-sys = { version = "0.61.2", features = ["Win32_System_Power"] }
+windows-sys = { version = "0.61.2", features = [
+    "Win32_System_Power",
+    # The Windows build, for Mica (window.rs).
+    "Wdk_System_SystemServices",
+    "Win32_System_SystemInformation",
+] }

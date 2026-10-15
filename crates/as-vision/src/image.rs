@@ -73,8 +73,14 @@ pub fn shrink_into(
 pub fn face_thumb(rgb: &[u8], w: usize, h: usize, bbox: [f32; 4], context: f32, size: usize) -> Vec<u8> {
     let (cx, cy) = ((bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0);
     let side = (bbox[2] - bbox[0]).max(bbox[3] - bbox[1]) * context;
-    // Faces sit a little above the box centre in a portrait crop.
-    let (x0, y0) = (cx - side / 2.0, cy - side * 0.45);
+    // The square stays inside the frame where it fits: a face at the edge sits
+    // off-centre rather than next to black. Faces sit a little above the box
+    // centre in a portrait crop.
+    let fit = |origin: f32, len: usize| {
+        let len = len as f32;
+        if side <= len { origin.clamp(0.0, len - side) } else { (len - side) / 2.0 }
+    };
+    let (x0, y0) = (fit(cx - side / 2.0, w), fit(cy - side * 0.45, h));
     let step = side / size as f32;
     let mut out = vec![0u8; size * size * 3];
     if step <= 1.0 {
@@ -153,9 +159,10 @@ mod tests {
         let t = face_thumb(&rgb, w, h, [10.0, 11.0, 30.0, 31.0], 1.0, 10);
         assert_eq!(t[0], 255);
         assert_eq!(t[9 * 3], 0);
-        // A box reaching past the top edge: black above the frame.
-        let t = face_thumb(&rgb, w, h, [0.0, -20.0, 20.0, 0.0], 1.0, 10);
+        // A crop bigger than the frame: centred, black beyond its edges.
+        let t = face_thumb(&rgb, w, h, [0.0, 0.0, 40.0, 40.0], 1.5, 10);
         assert_eq!(&t[..3], &[0, 0, 0]);
+        assert_eq!(t[(5 * 10 + 3) * 3], 255, "the frame's white half inside");
     }
 
     #[test]
@@ -172,6 +179,16 @@ mod tests {
         assert_eq!(&out[9..12], &[0, 0, 180]);
         assert_eq!(&out[12..15], &[7, 7, 7], "right of the cell untouched");
         assert_eq!(&out[15 + 3..15 + 6], &[200, 0, 0], "second row");
+    }
+
+    #[test]
+    fn thumbs_of_faces_at_the_edge_stay_inside_the_frame() {
+        let (w, h) = (64, 48);
+        let rgb: Vec<u8> = (0..w * h).flat_map(|i| [(i % w * 4) as u8, 50 + (i / w) as u8, 90]).collect();
+        // A face in the top-left corner: its crop would reach past both edges.
+        let t = face_thumb(&rgb, w, h, [0.0, 0.0, 12.0, 12.0], 1.7, 16);
+        assert!(t.chunks(3).all(|p| p[2] == 90), "no black from outside the frame");
+        assert_eq!(&t[..3], &rgb[..3], "the crop starts at the frame's corner");
     }
 
     #[test]
