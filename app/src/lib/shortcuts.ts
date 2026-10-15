@@ -40,6 +40,7 @@ export const GLOBAL_SHORTCUTS: Shortcut<GlobalId>[] = [
 
 export type PlayerId =
   | "playPause"
+  | "shuttle"
   | "frame"
   | "second"
   | "shot"
@@ -50,11 +51,20 @@ export type PlayerId =
   | "clearMarks"
   | "goTo"
   | "mute"
+  | "zoomIn"
+  | "zoomOut"
+  | "zoomFit"
   | "export"
 
 /** While an episode is open. */
 export const PLAYER_SHORTCUTS: Shortcut<PlayerId>[] = [
-  { id: "playPause", label: "Play / pause", keys: ["Space"], bindings: [key(" "), key("k")] },
+  { id: "playPause", label: "Play / pause", keys: ["Space"], bindings: [key(" ")] },
+  {
+    id: "shuttle",
+    label: "Backwards / stop / forwards (again: faster; K held: a frame)",
+    keys: ["J", "K", "L"],
+    bindings: [key("j"), key("k"), key("l")],
+  },
   { id: "frame", label: "Previous / next frame", keys: ["←", "→"], bindings: [key("arrowleft"), key("arrowright")] },
   {
     id: "second",
@@ -75,6 +85,20 @@ export const PLAYER_SHORTCUTS: Shortcut<PlayerId>[] = [
   { id: "clearMarks", label: "Clear in and out", keys: ["Alt", "X"], bindings: [key("x", { alt: true })] },
   { id: "goTo", label: "Go to a timecode", keys: [modKey, "G"], bindings: [key("g", { mod: true })] },
   { id: "mute", label: "Mute", keys: ["M"], bindings: [key("m")] },
+  {
+    id: "zoomIn",
+    label: "Zoom the timeline in",
+    keys: ["+"],
+    // "+" has its own key on many layouts; on US ones it's Shift+"=".
+    bindings: [key("+"), key("+", { shift: true }), key("="), key("=", { shift: true })],
+  },
+  { id: "zoomOut", label: "Zoom the timeline out", keys: ["−"], bindings: [key("-")] },
+  {
+    id: "zoomFit",
+    label: "The whole episode on the timeline",
+    keys: ["Shift", "Z"],
+    bindings: [key("z", { shift: true }), key("\\")],
+  },
   { id: "export", label: "Export the marked clip", keys: [modKey, "E"], bindings: [key("e", { mod: true })] },
 ]
 

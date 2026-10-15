@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { FrameClock } from "@/lib/frame-clock"
+import { FrameStore } from "./frame-store"
+import { type ShuttleKey, nextRate, reverseFrames } from "./shuttle"
 
 type VideoFrameMeta = { mediaTime: number }
 type RvfcVideo = HTMLVideoElement & {
@@ -12,14 +14,21 @@ type RvfcVideo = HTMLVideoElement & {
  *
  * The displayed frame comes from `requestVideoFrameCallback` (the timestamp of
  * the frame actually composited), never from `currentTime`, which runs ahead
- * of the picture during playback. Seeks target the middle of a frame.
+ * of the picture during playback. Seeks target the middle of a frame. The
+ * frame lives in a `FrameStore`, not in React state: only what shows it draws
+ * again on every video frame.
+ *
+ * `rate` is the shuttle's: 0 stopped, 1 playing, 2 or 4 fast, below 0
+ * backwards — played as a run of seeks, smooth on intra-frame previews and
+ * slower on long-GOP files played directly.
  */
 export function usePlayer(clock: FrameClock | null) {
   const videoRef = useRef<RvfcVideo | null>(null)
-  const [frame, setFrame] = useState(0)
-  const [playing, setPlaying] = useState(false)
+  const store = useMemo(() => new FrameStore(), [])
+  const [rate, setRate] = useState(0)
   const [ready, setReady] = useState(false)
   const target = useRef<number | null>(null)
+  const backwards = useRef<{ frame: number; carry: number } | null>(null)
 
   // Track the presented frame.
   useEffect(() => {
@@ -33,7 +42,7 @@ export function usePlayer(clock: FrameClock | null) {
         // While a seek is pending, ignore frames from before it.
         if (target.current == null || target.current === f) {
           target.current = null
-          setFrame(f)
+          store.set(f)
         }
         handle = v.requestVideoFrameCallback!(onFrame)
       }
@@ -42,32 +51,46 @@ export function usePlayer(clock: FrameClock | null) {
     }
     // Fallback (no rVFC): sample currentTime once per animation frame.
     const tick = () => {
-      if (target.current == null) setFrame(clock.frameAt(v.currentTime))
+      if (target.current == null) store.set(clock.frameAt(v.currentTime))
       raf = requestAnimationFrame(tick)
     }
     raf = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(raf)
-  }, [clock])
+  }, [clock, store])
+
+  const go = useCallback(
+    (f: number) => {
+      const v = videoRef.current
+      if (!v || !clock) return
+      const c = clock.clamp(f)
+      target.current = c
+      store.set(c)
+      v.currentTime = clock.seekTime(c)
+    },
+    [clock, store],
+  )
 
   useEffect(() => {
     const v = videoRef.current
     if (!v) return
-    const onPlay = () => setPlaying(true)
+    const onPlay = () => setRate((r) => (r > 0 ? r : 1))
     const onPause = () => {
-      setPlaying(false)
+      // Playing backwards is a run of seeks on a paused video.
+      if (backwards.current) return
+      setRate(0)
       // rVFC can lag behind (throttled tabs) and doesn't fire on pause: snap
       // to the frame actually on screen so stepping continues from there.
       if (!clock || target.current != null) return
       const f = clock.frameAt(v.currentTime)
       target.current = f
-      setFrame(f)
+      store.set(f)
       v.currentTime = clock.seekTime(f)
     }
     const onReady = () => setReady(true)
     const onSeeked = () => {
       // rVFC may not fire for a seek that lands on the frame already shown.
       if (target.current != null && clock) {
-        setFrame(target.current)
+        store.set(target.current)
         target.current = null
       }
     }
@@ -84,41 +107,103 @@ export function usePlayer(clock: FrameClock | null) {
       v.removeEventListener("loadeddata", onReady)
       v.removeEventListener("seeked", onSeeked)
     }
-  }, [clock])
+  }, [clock, store])
+
+  // Backwards: a frame (or more, faster) back as often as the rate asks,
+  // each once the previous one is on screen.
+  useEffect(() => {
+    if (rate >= 0 || !clock) return
+    const v = videoRef.current
+    if (!v) return
+    const fps = 1 / Math.max(1e-6, clock.duration(store.get()))
+    backwards.current = { frame: store.get(), carry: 0 }
+    let last = performance.now()
+    let raf = 0
+    const tick = (now: number) => {
+      const b = backwards.current
+      if (!b) return
+      const r = reverseFrames(b.carry, (now - last) / 1000, fps, rate)
+      last = now
+      b.carry = r.carry
+      if (r.frames > 0 && target.current == null && !v.seeking) {
+        b.frame = Math.max(0, store.get() - r.frames)
+        go(b.frame)
+        if (b.frame === 0) {
+          backwards.current = null
+          setRate(0)
+          return
+        }
+      }
+      raf = requestAnimationFrame(tick)
+    }
+    v.pause()
+    raf = requestAnimationFrame(tick)
+    return () => {
+      cancelAnimationFrame(raf)
+      backwards.current = null
+    }
+  }, [rate, clock, store, go])
+
+  const stop = useCallback(() => {
+    backwards.current = null
+    setRate(0)
+    const v = videoRef.current
+    if (v) {
+      v.playbackRate = 1
+      v.pause()
+    }
+  }, [])
 
   const seek = useCallback(
     (f: number) => {
-      const v = videoRef.current
-      if (!v || !clock) return
-      const c = clock.clamp(f)
-      target.current = c
-      setFrame(c)
-      v.currentTime = clock.seekTime(c)
+      if (backwards.current) stop()
+      go(f)
     },
-    [clock],
+    [go, stop],
   )
 
-  const pause = useCallback(() => videoRef.current?.pause(), [])
+  const pause = stop
+
+  const play = useCallback(
+    (at: number) => {
+      const v = videoRef.current
+      if (!v || !clock) return
+      backwards.current = null
+      // Restart from the top when parked on the last frame.
+      if (store.get() >= clock.frames - 1) go(0)
+      v.playbackRate = at
+      setRate(at)
+      void v.play()
+    },
+    [clock, store, go],
+  )
 
   const toggle = useCallback(() => {
-    const v = videoRef.current
-    if (!v || !clock) return
-    if (!v.paused) {
-      v.pause()
-      return
-    }
-    // Restart from the top when parked on the last frame.
-    if (frame >= clock.frames - 1) seek(0)
-    void v.play()
-  }, [clock, frame, seek])
+    if (rate !== 0) stop()
+    else play(1)
+  }, [rate, stop, play])
 
   const step = useCallback(
     (delta: number) => {
-      videoRef.current?.pause()
-      seek((target.current ?? frame) + delta)
+      stop()
+      go((target.current ?? store.get()) + delta)
     },
-    [frame, seek],
+    [stop, go, store],
   )
 
-  return { videoRef, frame, playing, ready, seek, step, toggle, pause }
+  /** J, K or L pressed. */
+  const shuttle = useCallback(
+    (key: ShuttleKey) => {
+      const next = nextRate(rate, key)
+      if (next === 0) stop()
+      else if (next > 0) play(next)
+      else {
+        videoRef.current?.pause()
+        setRate(next)
+      }
+    },
+    [rate, stop, play],
+  )
+
+  return { videoRef, store, rate, playing: rate !== 0, ready, seek, step, toggle, pause, shuttle }
 }

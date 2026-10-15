@@ -103,8 +103,11 @@ Rules:
   hand and Export as the white pill; the export dialog names the files from a template with name-part buttons.
 - **Review:** one face against the suggestion, both big, the face lighting the room; answers on the keyboard.
 - **Player:** a dark room — the picture on a rounded screen with its own ambilight, a large timecode and a white
-  play button, the timeline in one card (scrubber, shots, character lanes), details on the right (shown or
-  hidden from the top bar).
+  play button, the timeline in one card (ruler, scrubber, shots, character lanes), details on the right (shown or
+  hidden from the top bar). The timeline zooms (Ctrl/⌘ + wheel, pinch, + and −, Shift+Z for the whole episode)
+  and scrolls with the wheel; zoomed in, a thin overview of the episode shows the part in view. J/K/L shuttle
+  like an editing suite (a gold chip shows the speed). Only the timecode, the playhead and the glow follow every
+  video frame; shots and lanes are drawn on canvases.
 
 ## Copy
 
