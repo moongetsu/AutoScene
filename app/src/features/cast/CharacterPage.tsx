@@ -479,7 +479,10 @@ function Maybe({
               <UserFocus /> Review one by one
             </Link>
           </Button>
-          <Button variant="accent" onClick={() => void castEdit(pid, { op: "confirm", tracks: tracks.map((t) => t.id) })}>
+          <Button
+            variant="accent"
+            onClick={() => void castEdit(pid, { op: "assign", tracks: tracks.map((t) => t.id), characterId: c.id })}
+          >
             <Check weight="bold" /> All are {c.label}
           </Button>
         </div>
@@ -497,7 +500,7 @@ function Maybe({
             />
             <div className="absolute inset-x-1 bottom-1 flex justify-between gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
               <button
-                onClick={() => void castEdit(pid, { op: "confirm", tracks: [t.id] })}
+                onClick={() => void castEdit(pid, { op: "assign", tracks: [t.id], characterId: c.id })}
                 aria-label={`Yes, ${c.label}`}
                 className="flex h-7 flex-1 items-center justify-center rounded-lg bg-black/60 text-white backdrop-blur-md hover:bg-accent hover:text-on-accent"
               >

@@ -13,5 +13,6 @@ describe("looking for missing episodes in a folder", () => {
       description: "2 episodes still can't be found.",
     })
     expect(folderResult({ same: 0, reindex: 0, missing: 2 }, 2).title).toBe("None of them are in that folder")
+    expect(folderResult({ same: 1, reindex: 0, missing: 1 }, 2, true).title).toBe("Found 1 of 2 files")
   })
 })

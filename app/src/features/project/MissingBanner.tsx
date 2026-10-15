@@ -1,4 +1,5 @@
-import { FolderOpen, Warning } from "@/components/icons"
+import { useState } from "react"
+import { CircleNotch, FolderOpen, Warning } from "@/components/icons"
 import type { MediaItem } from "@/bindings"
 import { Button } from "@/components/ui/button"
 import { plural } from "@/features/cast/cast"
@@ -22,6 +23,8 @@ export function MissingBanner({
   className?: string
 }) {
   const missing = media?.filter((m) => m.status === "missing").length ?? 0
+  // Looking probes a few files per episode: one search at a time.
+  const [looking, setLooking] = useState(false)
   if (missing === 0) return null
   const what = movie ? plural(missing, "file") : plural(missing, "episode")
   return (
@@ -41,8 +44,15 @@ export function MissingBanner({
           Moved, renamed or on a drive that isn't connected? Their analysis and your decisions wait for them.
         </p>
       </div>
-      <Button variant="secondary" onClick={() => void locateFolder(pid, missing)}>
-        <FolderOpen /> Locate folder…
+      <Button
+        variant="secondary"
+        disabled={looking}
+        onClick={() => {
+          setLooking(true)
+          void locateFolder(pid, missing, movie).finally(() => setLooking(false))
+        }}
+      >
+        {looking ? <CircleNotch className="animate-spin" /> : <FolderOpen />} Locate folder…
       </Button>
     </div>
   )

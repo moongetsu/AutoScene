@@ -93,7 +93,8 @@ pub struct CharacterShotRow {
 }
 
 /// `(track, start, end, dets)`.
-pub type TrackDets = (i64, FrameIdx, FrameIdx, Vec<u8>);
+/// A track as decisions are re-anchored to it: id, range, detections, embedding.
+pub type TrackDets = (i64, FrameIdx, FrameIdx, Vec<u8>, Vec<u8>);
 
 /// A user decision — or the character clustering gave it — on a track that
 /// was deleted for a re-analysis.
@@ -103,6 +104,10 @@ pub struct TrackEdit {
     pub end: FrameIdx,
     pub dets: Vec<u8>,
     pub kind: EditKind,
+    /// The face's embedding and the model that made it (decisions made
+    /// before they were kept have neither).
+    pub emb: Option<Vec<u8>>,
+    pub model: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -156,20 +161,22 @@ pub(crate) fn clear_faces(tx: &Transaction, id: MediaId) -> DbResult<()> {
 fn forget_tracks(tx: &Transaction, id: MediaId) -> DbResult<()> {
     let m = id.to_string();
     tx.execute(
-        "INSERT INTO track_edits (media_id, start, end, dets, kind, character_id)
-         SELECT media_id, start, end, dets, 'pin', character_id FROM tracks
-          WHERE media_id = ?1 AND assign = 'pinned' AND character_id IS NOT NULL
-         UNION ALL
-         SELECT t.media_id, t.start, t.end, t.dets, 'forbid', f.character_id
-           FROM tracks t JOIN track_forbids f ON f.track_id = t.id WHERE t.media_id = ?1
-         UNION ALL
-         SELECT media_id, start, end, dets, 'not_face', NULL FROM tracks WHERE media_id = ?1 AND not_face = 1
-         UNION ALL
-         SELECT media_id, start, end, dets, 'was', character_id FROM tracks
-          WHERE media_id = ?1 AND assign = 'auto' AND character_id IS NOT NULL AND not_face = 0
-         UNION ALL
-         SELECT t.media_id, t.start, t.end, t.dets, 'cover', c.id FROM characters c JOIN tracks t ON t.id = c.cover
-          WHERE t.media_id = ?1",
+        "INSERT INTO track_edits (media_id, start, end, dets, kind, character_id, emb, model)
+         SELECT e.*, (SELECT faces_model FROM media WHERE id = ?1) FROM (
+           SELECT media_id, start, end, dets, 'pin', character_id, emb FROM tracks
+            WHERE media_id = ?1 AND assign = 'pinned' AND character_id IS NOT NULL
+           UNION ALL
+           SELECT t.media_id, t.start, t.end, t.dets, 'forbid', f.character_id, t.emb
+             FROM tracks t JOIN track_forbids f ON f.track_id = t.id WHERE t.media_id = ?1
+           UNION ALL
+           SELECT media_id, start, end, dets, 'not_face', NULL, emb FROM tracks WHERE media_id = ?1 AND not_face = 1
+           UNION ALL
+           SELECT media_id, start, end, dets, 'was', character_id, emb FROM tracks
+            WHERE media_id = ?1 AND assign = 'auto' AND character_id IS NOT NULL AND not_face = 0
+           UNION ALL
+           SELECT t.media_id, t.start, t.end, t.dets, 'cover', c.id, t.emb FROM characters c JOIN tracks t ON t.id = c.cover
+            WHERE t.media_id = ?1
+         ) e",
         [&m],
     )?;
     // Track ids are handed out again: a cover must not point at someone else's face.
@@ -371,6 +378,13 @@ impl ProjectDb {
     ) -> DbResult<Vec<i64>> {
         self.0.write(|tx| {
             let m = id.to_string();
+            // Before the chunk's own tracks go: their ids count as handed out.
+            let mut last: i64 = tx.query_row(
+                "SELECT MAX(COALESCE((SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'track_seq'), 0),
+                            COALESCE((SELECT MAX(id) FROM tracks), 0))",
+                [],
+                |r| r.get(0),
+            )?;
             tx.execute("DELETE FROM tracks WHERE media_id = ?1 AND shot >= ?2 AND shot < ?3", params![m, start, end])?;
             tx.execute("DELETE FROM sprites WHERE media_id = ?1 AND shot >= ?2 AND shot < ?3", params![m, start, end])?;
             let mut st = tx.prepare("INSERT INTO sprites (media_id, shot, end, cells) VALUES (?1, ?2, ?3, ?4)")?;
@@ -378,12 +392,6 @@ impl ProjectDb {
                 st.execute(params![m, shot, end, cells])?;
             }
             drop(st);
-            let mut last: i64 = tx.query_row(
-                "SELECT MAX(COALESCE((SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'track_seq'), 0),
-                            COALESCE((SELECT MAX(id) FROM tracks), 0))",
-                [],
-                |r| r.get(0),
-            )?;
             let mut st = tx.prepare(
                 "INSERT INTO tracks (id, media_id, start, end, shot, quality, face_h, dets, emb)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
@@ -413,8 +421,9 @@ impl ProjectDb {
     /// Edits waiting to be re-anchored on the media's new tracks.
     pub fn track_edits(&self, id: MediaId) -> DbResult<Vec<TrackEdit>> {
         self.0.read(|c| {
-            let mut st =
-                c.prepare("SELECT start, end, dets, kind, character_id FROM track_edits WHERE media_id = ?1")?;
+            let mut st = c.prepare(
+                "SELECT start, end, dets, kind, character_id, emb, model FROM track_edits WHERE media_id = ?1",
+            )?;
             let mut rows = st.query([id.to_string()])?;
             let mut out = Vec::new();
             while let Some(r) = rows.next()? {
@@ -428,7 +437,14 @@ impl ProjectDb {
                     ("cover", Some(c)) => EditKind::Cover(c),
                     _ => continue,
                 };
-                out.push(TrackEdit { start: r.get(0)?, end: r.get(1)?, dets: r.get(2)?, kind });
+                out.push(TrackEdit {
+                    start: r.get(0)?,
+                    end: r.get(1)?,
+                    dets: r.get(2)?,
+                    kind,
+                    emb: r.get(5)?,
+                    model: r.get(6)?,
+                });
             }
             Ok(out)
         })
@@ -479,7 +495,9 @@ impl ProjectDb {
             for &(track, kind) in matched {
                 if let EditKind::Was(c) = kind {
                     tx.execute(
-                        "UPDATE tracks SET character_id = ?2, assign = 'auto', score = 1
+                        // Below 1: not a member that shapes the character
+                        // until clustering says so again (see reassign).
+                        "UPDATE tracks SET character_id = ?2, assign = 'auto', score = 0.99
                           WHERE id = ?1 AND assign = 'none' AND not_face = 0
                             AND EXISTS (SELECT 1 FROM characters WHERE id = ?2)
                             AND NOT EXISTS (SELECT 1 FROM track_forbids f WHERE f.track_id = ?1 AND f.character_id = ?2)",
@@ -524,8 +542,10 @@ impl ProjectDb {
     /// Every track of a media with its detections (for re-anchoring edits).
     pub fn media_track_dets(&self, id: MediaId) -> DbResult<Vec<TrackDets>> {
         self.0.read(|c| {
-            let mut st = c.prepare("SELECT id, start, end, dets FROM tracks WHERE media_id = ?1 ORDER BY start")?;
-            let rows = st.query_map([id.to_string()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+            let mut st =
+                c.prepare("SELECT id, start, end, dets, emb FROM tracks WHERE media_id = ?1 ORDER BY start")?;
+            let rows =
+                st.query_map([id.to_string()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?;
             Ok(rows.collect::<Result<_, _>>()?)
         })
     }

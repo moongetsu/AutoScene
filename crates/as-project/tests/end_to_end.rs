@@ -460,4 +460,27 @@ fn a_moved_episode_keeps_its_analysis() {
     project.ingest(&tools, id, "eng", &cancel, &|_, _| {}).unwrap();
     assert_eq!(walters(&project), 1, "the same frames keep their analysis");
     assert_eq!(project.cast().unwrap().characters[0].name.as_deref(), Some("Walter"));
+
+    // As long, the same kind of file — but another picture: asked about first.
+    let info = project.media(id).unwrap().info.unwrap();
+    let timescale = info.video.time_base.den.to_string();
+    let other = tmp.path().join("Show - 01 other.mp4");
+    let encode = tools
+        .ffmpeg()
+        .args(["-v", "error", "-i"])
+        .arg(&copy)
+        .args(["-map", "0", "-vf", "negate", "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "copy"])
+        .args(["-video_track_timescale", &timescale])
+        .arg(&other)
+        .status()
+        .unwrap();
+    assert!(encode.success());
+    let r = project.relink(&tools, id, &other, false).unwrap();
+    assert_eq!(r, Relink::Different { reason: "At the same moment it shows another picture.".into() });
+    // Taken anyway: analysed again; the decision waits for a face like Walter's.
+    assert_eq!(project.relink(&tools, id, &other, true).unwrap(), Relink::Reindex);
+    assert_eq!(project.media(id).unwrap().status, MediaStatus::Queued, "not cut on the old index meanwhile");
+    project.ingest(&tools, id, "eng", &cancel, &|_, _| {}).unwrap();
+    assert_eq!(walters(&project), 0);
+    assert_eq!(project.cast().unwrap().characters[0].name.as_deref(), Some("Walter"));
 }

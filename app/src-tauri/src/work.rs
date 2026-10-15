@@ -65,19 +65,22 @@ pub fn cast_edited(app: &AppHandle, project: &Arc<Project>, edit: &CastEdit) {
         *n += 1;
         *n
     };
-    let (app, project) = (app.clone(), project.clone());
+    // Only the id waits: a project closed or deleted meanwhile isn't held open.
+    let (app, id) = (app.clone(), project.id);
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(PLACE_FACES_AFTER).await;
-        let latest = app.state::<AppState>().decisions.lock().get(&project.id).copied();
-        if latest != Some(decision) {
+        let state = app.state::<AppState>();
+        if state.decisions.lock().get(&id).copied() != Some(decision) {
             return;
         }
-        let placed = {
-            let project = project.clone();
-            tauri::async_runtime::spawn_blocking(move || project.reassign()).await
-        };
+        let lib = state.library.clone();
+        let placed = tauri::async_runtime::spawn_blocking(move || {
+            let project = lib.project(id)?;
+            project.reassign().map(|()| project)
+        })
+        .await;
         match placed {
-            Ok(Ok(())) => cast_changed(&app, &project),
+            Ok(Ok(project)) => cast_changed(&app, &project),
             Ok(Err(e)) => log::warn!("placing faces after a decision: {}", e.detail()),
             Err(e) => log::warn!("placing faces after a decision: {e}"),
         }
@@ -134,8 +137,9 @@ pub fn queue_ingest(app: &AppHandle, project: &Arc<Project>, media_id: MediaId) 
             queue_proxy(&app2, &project, media_id);
         }
         queue_analysis(&app2, &project, media_id);
-        // A file that was missing is back: its faces' covers can get portraits.
-        queue_portraits(&app2, &project);
+        // A file that was missing is back (its faces' covers can get
+        // portraits), or its analysis went with a new frame index.
+        cast_changed(&app2, &project);
         Ok(())
     });
 }
@@ -750,6 +754,12 @@ pub fn recover_all(app: &AppHandle) {
                 }
             }
             Ok(ids)
+        });
+        // Files that aren't there wait (pending) instead of failing.
+        let pending = pending.map(|ids| {
+            ids.into_iter()
+                .filter(|&id| project.media(id).is_ok_and(|m| m.status != as_api::MediaStatus::Missing))
+                .collect::<Vec<_>>()
         });
         match pending {
             Ok(ids) => {

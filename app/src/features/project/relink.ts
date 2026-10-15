@@ -26,7 +26,9 @@ export async function locateFile(pid: string, m: MediaItem) {
 export async function relinkAnyway(pid: string, m: MediaItem, path: string) {
   try {
     await commands.mediaRelink(pid, m.id, path, true)
-    toast(`Using it for ${mediaTitle(m)}`, { description: "It's analysed again; your decisions about its faces are kept." })
+    toast(`Using it for ${mediaTitle(m)}`, {
+      description: "It's analysed again; your decisions go back onto the faces that look like theirs.",
+    })
   } catch (e) {
     toast.error("Couldn't use that file", { description: errorMessage(e) })
   }
@@ -39,27 +41,32 @@ function relinked(r: Relink, title: string) {
   )
 }
 
-/** Look for every missing episode in one folder (and the folders inside it). */
-export async function locateFolder(pid: string, missing: number) {
-  const dir = await pickFolder("Where are the episodes now?")
-  if (!dir) return
+/**
+ * Look for every missing episode in one folder (and the folders inside it).
+ * Resolves once done; `false` when nothing was looked for.
+ */
+export async function locateFolder(pid: string, missing: number, movie = false): Promise<boolean> {
+  const dir = await pickFolder(movie ? "Where are the files now?" : "Where are the episodes now?")
+  if (!dir) return false
   try {
     const s = await commands.mediaRelinkFolder(pid, dir)
-    const { title, description } = folderResult(s, missing)
+    const { title, description } = folderResult(s, missing, movie)
     if (s.same + s.reindex === 0) toast.error(title, { description })
     else toast(title, { description })
   } catch (e) {
     toast.error("Couldn't look in that folder", { description: errorMessage(e) })
   }
+  return true
 }
 
-export function folderResult(s: RelinkSummary, missing: number): { title: string; description?: string } {
+export function folderResult(s: RelinkSummary, missing: number, movie = false): { title: string; description?: string } {
+  const what = movie ? "file" : "episode"
   const found = s.same + s.reindex
   const checking = s.reindex > 0 ? `${plural(s.reindex, "is another copy", "are other copies")}, indexed again.` : undefined
-  if (found === 0) return { title: "None of them are in that folder", description: "Pick the folder the episodes are in now." }
+  if (found === 0) return { title: "None of them are in that folder", description: `Pick the folder the ${what}s are in now.` }
   if (s.missing === 0) {
-    return { title: found === 1 ? "Found the episode" : `Found all ${found} episodes`, description: checking }
+    return { title: found === 1 ? `Found the ${what}` : `Found all ${found} ${what}s`, description: checking }
   }
-  const still = `${plural(s.missing, "episode")} still can't be found.`
-  return { title: `Found ${found} of ${missing} episodes`, description: checking ? `${checking} ${still}` : still }
+  const still = `${plural(s.missing, what)} still can't be found.`
+  return { title: `Found ${found} of ${missing} ${what}s`, description: checking ? `${checking} ${still}` : still }
 }

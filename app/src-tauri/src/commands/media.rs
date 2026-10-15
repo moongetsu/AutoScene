@@ -125,6 +125,9 @@ pub async fn media_relink(
 ) -> AppResult<Relink> {
     let lib = state.library.clone();
     let tools = state.tools()?;
+    // Nothing goes on reading the file it was (an analysis on a drive that
+    // left, an ingest of the old path).
+    state.jobs.cancel_where(|j| j.media_id == Some(media_id));
     let (project, relink) = blocking(move || {
         let p = lib.project(project_id)?;
         let r = p.relink(&tools, media_id, Path::new(&path), force)?;
@@ -133,13 +136,16 @@ pub async fn media_relink(
     .await?;
     match relink {
         Relink::Different { .. } => return Ok(relink),
+        // Indexed again; the ingest queues the analysis and tells the cast.
         Relink::Reindex => work::queue_ingest(&app, &project, media_id),
-        Relink::Same => {}
+        Relink::Same => {
+            work::queue_analysis(&app, &project, media_id);
+            // Its faces can be shown and made into portraits again.
+            work::cast_changed(&app, &project);
+        }
     }
     work::library_changed(&app, &project);
     crate::events::emit_media_changed(&app, project_id, Some(media_id));
-    // Its faces can be shown and made into portraits again.
-    work::cast_changed(&app, &project);
     Ok(relink)
 }
 
@@ -154,16 +160,31 @@ pub async fn media_relink_folder(
 ) -> AppResult<RelinkSummary> {
     let lib = state.library.clone();
     let tools = state.tools()?;
+    let missing: Vec<MediaId> = {
+        let lib = state.library.clone();
+        blocking(move || {
+            let p = lib.project(project_id)?;
+            Ok(p.media_list()?.into_iter().filter(|m| m.status == MediaStatus::Missing).map(|m| m.id).collect())
+        })
+        .await?
+    };
+    state.jobs.cancel_where(|j| j.media_id.is_some_and(|m| missing.contains(&m)));
     let (project, summary, reindex) = blocking(move || {
         let p = lib.project(project_id)?;
         let (summary, reindex) = p.relink_folder(&tools, Path::new(&dir))?;
         Ok((p, summary, reindex))
     })
     .await?;
-    for id in reindex {
+    for &id in &reindex {
         work::queue_ingest(&app, &project, id);
     }
     if summary.same + summary.reindex > 0 {
+        // Those found as they were: what waited for them can run.
+        for m in project.media_list().unwrap_or_default() {
+            if m.status == MediaStatus::Ready && !reindex.contains(&m.id) {
+                work::queue_analysis(&app, &project, m.id);
+            }
+        }
         work::library_changed(&app, &project);
         crate::events::emit_media_changed(&app, project_id, None);
         work::cast_changed(&app, &project);

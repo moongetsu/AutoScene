@@ -117,6 +117,28 @@ pub fn extract_frame_jpegs(
     result
 }
 
+/// How alike two pictures are: the structural similarity (SSIM) of their
+/// greys at a small common size, 0..1 — the same frame scores above 0.9
+/// whatever its size or JPEG, another picture far lower.
+pub fn picture_similarity(tools: &Tools, a: &Path, b: &Path) -> MediaResult<f64> {
+    let out = crate::proc::output(
+        tools.ffmpeg().args(["-hide_banner", "-nostats", "-v", "info", "-i"]).arg(a).arg("-i").arg(b).args([
+            "-filter_complex",
+            "[0:v]scale=320:180,format=gray[a];[1:v]scale=320:180,format=gray[b];[a][b]ssim",
+            "-frames:v",
+            "1",
+            "-f",
+            "null",
+            "-",
+        ]),
+    )?;
+    let log = String::from_utf8_lossy(&out.stderr);
+    log.lines()
+        .rev()
+        .find_map(|l| l.split("All:").nth(1)?.split_whitespace().next()?.parse::<f64>().ok())
+        .ok_or_else(|| MediaError::Ffmpeg(format!("no SSIM in ffmpeg's output: {}", log.trim())))
+}
+
 /// Windows can hold a just-written file for a moment (antivirus, the
 /// indexer, the webview reading the picture it replaces); retry briefly.
 fn rename_with_retry(from: &Path, to: &Path) -> std::io::Result<()> {

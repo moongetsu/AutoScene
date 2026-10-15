@@ -207,6 +207,16 @@ const STEPS: &[M<'static>] = &[
     ),
     // What an export is ("Walter · scenepack"), for the export history.
     M::up("ALTER TABLE exports ADD COLUMN label TEXT;"),
+    // 10: a decision waiting for a new face pass remembers the face itself
+    // (its embedding and the model that made it), so it only lands on a
+    // face that looks like it; track ids continue from the highest ever.
+    M::up(
+        "ALTER TABLE track_edits ADD COLUMN emb BLOB;
+         ALTER TABLE track_edits ADD COLUMN model TEXT;
+         INSERT INTO meta (key, value)
+           SELECT 'track_seq', CAST(COALESCE((SELECT MAX(id) FROM tracks), 0) AS TEXT)
+            WHERE NOT EXISTS (SELECT 1 FROM meta WHERE key = 'track_seq');",
+    ),
 ];
 const MIGRATIONS: Migrations<'static> = Migrations::from_slice(STEPS);
 
@@ -632,6 +642,23 @@ impl ProjectDb {
     }
 
     /// Forget a media's shot analysis (signals and segments).
+    /// Analysis stages of a media that failed go back to pending (its file
+    /// was found again: what failed for want of it can run now).
+    pub fn retry_failed_analysis(&self, id: MediaId) -> DbResult<()> {
+        self.0.write(|tx| {
+            let m = id.to_string();
+            tx.execute(
+                "UPDATE media SET shots = 'pending', shots_error = NULL WHERE id = ?1 AND shots = 'failed'",
+                [&m],
+            )?;
+            tx.execute(
+                "UPDATE media SET faces = 'pending', faces_error = NULL WHERE id = ?1 AND faces = 'failed'",
+                [&m],
+            )?;
+            Ok(())
+        })
+    }
+
     pub fn reset_shots(&self, id: MediaId) -> DbResult<()> {
         self.0.write(|tx| clear_shots(tx, id))
     }

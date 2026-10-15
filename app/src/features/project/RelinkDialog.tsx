@@ -12,14 +12,14 @@ export function RelinkDialog() {
   const close = useRelink((s) => s.close)
   const [busy, setBusy] = useState(false)
   return (
-    <Dialog open={question != null} onOpenChange={(o) => !o && close()}>
+    <Dialog open={question != null} onOpenChange={(o) => !o && !busy && close()}>
       {question && (
         <DialogContent
           title={`Use “${baseName(question.path)}” for ${mediaTitle(question.media)}?`}
-          description={`It doesn't look like the same episode. ${question.reason} If you use it anyway, it's analysed again; your decisions about its faces are kept.`}
+          description={`It doesn't look like the same episode. ${question.reason} If you use it anyway, it's analysed again, and your decisions go back onto the faces that look like theirs.`}
         >
           <DialogFooter>
-            <Button variant="ghost" onClick={close}>
+            <Button variant="ghost" disabled={busy} onClick={close}>
               Cancel
             </Button>
             <Button
@@ -29,7 +29,8 @@ export function RelinkDialog() {
                 setBusy(true)
                 void relinkAnyway(question.pid, question.media, question.path).finally(() => {
                   setBusy(false)
-                  close()
+                  // Only this question: another may have come meanwhile.
+                  if (useRelink.getState().question === question) close()
                 })
               }}
             >

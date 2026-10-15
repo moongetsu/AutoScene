@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router"
 import { Check, Checks, Play } from "@/components/icons"
 import type { Character } from "@/bindings"
@@ -21,6 +21,9 @@ import { castEdit, plural } from "./cast"
  * suggestion, reject it, call it not a face, or give it to someone else.
  * Every answer is a pin or a forbid, so it survives any later analysis.
  */
+/** How long a key waits after the face (or its suggestion) on screen changed. */
+const SETTLE_MS = 350
+
 export function ReviewPage() {
   const { pid } = useParams({ from: "/p/$pid/cast/review" })
   const { c } = useSearch({ from: "/p/$pid/cast/review" })
@@ -51,6 +54,16 @@ export function ReviewPage() {
   if ((current?.id ?? null) !== currentId) setCurrentId(current?.id ?? null)
   const byId = useMemo(() => new Map((cast?.characters ?? []).map((x) => [x.id, x])), [cast])
   const suggestion = current?.characterId ? byId.get(current.characterId) : undefined
+  // Faces are placed again a moment after each decision: what is on screen
+  // can change under a finger. A key meant for what was there before
+  // doesn't answer what came instead, and every answer names the character
+  // that was shown (not whatever the face's suggestion is by then).
+  const shown = `${current?.id ?? ""}:${suggestion?.id ?? ""}`
+  const shownAt = useRef(0)
+  useEffect(() => {
+    shownAt.current = performance.now()
+  }, [shown])
+  const settled = () => performance.now() - shownAt.current > SETTLE_MS
   // A pick merged away meanwhile leaves its number empty.
   const picks = (pickIds ?? []).map((id) => byId.get(id))
   const m = current ? media?.find((x) => x.id === current.mediaId) : undefined
@@ -90,14 +103,17 @@ export function ReviewPage() {
     {
       yes: () => {
         if (!current || !suggestion) return false
-        void answer(current.id, () => castEdit(pid, { op: "confirm", tracks: [current.id] }))
+        if (!settled()) return
+        void answer(current.id, () => castEdit(pid, { op: "assign", tracks: [current.id], characterId: suggestion.id }))
       },
       no: () => {
         if (!current || !suggestion) return false
+        if (!settled()) return
         void answer(current.id, () => castEdit(pid, { op: "not_them", tracks: [current.id], characterId: suggestion.id }))
       },
       notFace: () => {
         if (!current) return false
+        if (!settled()) return
         void answer(current.id, () => castEdit(pid, { op: "not_a_face", tracks: [current.id] }))
       },
       skip: () => {
@@ -107,6 +123,7 @@ export function ReviewPage() {
       pick: (e) => {
         const target = picks[Number(digitOf(e)) - 1]
         if (!current || !target) return false
+        if (!settled()) return
         void answer(current.id, () => castEdit(pid, { op: "assign", tracks: [current.id], characterId: target.id }))
       },
     },
@@ -235,7 +252,11 @@ export function ReviewPage() {
                     size="lg"
                     variant="primary"
                     disabled={busy}
-                    onClick={() => void answer(current.id, () => castEdit(pid, { op: "confirm", tracks: [current.id] }))}
+                    onClick={() =>
+                      void answer(current.id, () =>
+                        castEdit(pid, { op: "assign", tracks: [current.id], characterId: suggestion.id }),
+                      )
+                    }
                   >
                     <Check weight="bold" /> Yes, {suggestion.label}
                     <Kbd keys={["Y"]} className="ml-1 [&_kbd]:border-black/10 [&_kbd]:bg-black/10 [&_kbd]:text-black/60" />

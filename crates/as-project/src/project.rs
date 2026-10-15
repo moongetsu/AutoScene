@@ -21,6 +21,9 @@ pub(crate) const PROJECT_DB: &str = "project.db";
 /// 480×270 tile (sharp in a 300 px card at 150 % display scaling).
 const POSTER: StillSize = StillSize::Height(720);
 const POSTER_SMALL: StillSize = StillSize::Cover(480, 270);
+/// How alike a file found again must look at the poster's frame to keep its
+/// analysis (SSIM: the same frame scores about 0.95, another picture far less).
+const SAME_PICTURE: f64 = 0.85;
 
 /// Progress callback: `(stage, fraction 0..1)`.
 pub type Progress<'a> = &'a dyn Fn(&str, f64);
@@ -194,6 +197,17 @@ impl Project {
         if let (Err(reason), false) = (&same, force) {
             return Ok(Relink::Different { reason: reason.clone() });
         }
+        let indexed = m.status == MediaStatus::Ready && m.info.is_some();
+        let same_bytes = same.is_ok() && indexed && meta.len() == m.size_bytes as u64;
+        // Another copy (another size): does it show the same picture? Two
+        // episodes can be just as long.
+        let same_picture = match same.is_ok() && indexed && !same_bytes {
+            true => self.same_picture(tools, &m, path, &found),
+            false => None,
+        };
+        if same_picture == Some(false) && !force {
+            return Ok(Relink::Different { reason: "At the same moment it shows another picture.".into() });
+        }
         let file_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let mtime = meta
             .modified()
@@ -201,13 +215,36 @@ impl Project {
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_millis() as i64);
         self.db.relink_media(id, &new, &file_name, meta.len(), mtime)?;
-        tracing::info!(media = %id, file = %file_name, "found again");
-        let unchanged = same.is_ok() && m.status == MediaStatus::Ready && meta.len() == m.size_bytes as u64;
-        if unchanged {
+        // What failed while the file was gone can run now.
+        self.db.retry_failed_analysis(id)?;
+        tracing::info!(media = %id, file = %file_name, ?same_picture, "found again");
+        if same_bytes {
             return Ok(Relink::Same);
         }
+        // Not shown to be the same picture: its analysis is made again (the
+        // decisions wait for faces that look like theirs).
+        if same_picture != Some(true) {
+            self.db.reset_shots(id)?;
+        }
+        // Not playable or cut on the old frame index meanwhile.
+        self.db.set_media_status(id, MediaStatus::Queued, None)?;
         self.indexes.lock().remove(&id);
         Ok(Relink::Reindex)
+    }
+
+    /// Whether the file at `path` (probed as `info`) shows what the media's
+    /// poster shows, at the same frame; `None` when that can't be told.
+    fn same_picture(&self, tools: &Tools, m: &MediaItem, path: &Path, info: &MediaInfo) -> Option<bool> {
+        let poster = m.poster.as_deref().map(Path::new).filter(|p| p.is_file())?;
+        let index = self.frame_index(m.id).ok()?;
+        let probe = self.tmp_dir().join(format!("relink-{}.jpg", m.id));
+        let src = Source { path, info, index: &index };
+        let made = extract_frame_jpegs(tools, src, index.len() / 10, &[(POSTER_SMALL, &probe)], &CancelToken::new());
+        let score = made.ok().and_then(|()| as_media::poster::picture_similarity(tools, poster, &probe).ok());
+        let _ = std::fs::remove_file(&probe);
+        let score = score?;
+        tracing::info!(media = %m.id, similarity = score, "compared the picture of a file found again");
+        Some(score >= SAME_PICTURE)
     }
 
     /// Look for every missing media in `dir` (and its folders): by file name,
@@ -235,18 +272,24 @@ impl Project {
                     None
                 }
             };
-            let mut tried: Vec<(u8, &ImportCandidate)> =
-                found.iter().filter(|c| !used.contains(&c.path)).filter_map(|c| Some((rank(c)?, c))).collect();
+            // Files in the project already (another episode's) aren't candidates.
+            let mut tried: Vec<(u8, &ImportCandidate)> = found
+                .iter()
+                .filter(|c| !c.duplicate && !used.contains(&c.path))
+                .filter_map(|c| Some((rank(c)?, c)))
+                .collect();
             tried.sort_by_key(|(r, _)| *r);
             let mut outcome = None;
             for (_, c) in tried.into_iter().take(3) {
-                match self.relink(tools, m.id, Path::new(&c.path), false)? {
-                    Relink::Different { .. } => continue,
-                    r => {
+                match self.relink(tools, m.id, Path::new(&c.path), false) {
+                    Ok(Relink::Different { .. }) => continue,
+                    Ok(r) => {
                         used.insert(c.path.clone());
                         outcome = Some(r);
                         break;
                     }
+                    // A file that can't be read (half copied, not a video): the next one.
+                    Err(e) => tracing::warn!(file = %c.path, error = %e.detail(), "a candidate couldn't be used"),
                 }
             }
             match outcome {

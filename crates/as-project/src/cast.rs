@@ -35,6 +35,13 @@ const NAME_ANCHORS: usize = 5;
 /// Clusterings in a row that may find the cast changed by the user before
 /// one is stored.
 const CLUSTER_ATTEMPTS: usize = 8;
+/// A track of a new face pass as decisions are re-anchored to it: id,
+/// range, detections and (when readable) its embedding.
+type NewFace = (i64, FrameRange, Vec<FaceDet>, Option<Vec<f32>>);
+/// A decision only goes back onto a new track that looks this much like the
+/// face it was about (same embedder): frames can shift between two files,
+/// and someone else may sit where the face was.
+const REANCHOR_MIN_COS: f32 = 0.4;
 
 /// Where a track's portrait goes and what it shows.
 struct PortraitPlan {
@@ -493,11 +500,14 @@ impl Project {
     pub fn finish_faces(&self, id: MediaId) -> ProjectResult<()> {
         let edits = self.db().track_edits(id)?;
         if !edits.is_empty() {
-            let new: Vec<(i64, FrameRange, Vec<FaceDet>)> = self
+            let model = self.db().faces_model(id)?;
+            let new: Vec<NewFace> = self
                 .db()
                 .media_track_dets(id)?
                 .into_iter()
-                .filter_map(|(t, s, e, d)| Some((t, FrameRange::new(s, e), tracks::dets_from_bytes(&d)?)))
+                .filter_map(|(t, s, e, d, emb)| {
+                    Some((t, FrameRange::new(s, e), tracks::dets_from_bytes(&d)?, tracks::embedding_from_bytes(&emb)))
+                })
                 .collect();
             let mut found: Vec<(u32, i64, EditKind)> = Vec::new();
             let mut kept = 0;
@@ -505,8 +515,19 @@ impl Project {
                 let span = FrameRange::new(e.start, e.end);
                 let dets = tracks::dets_from_bytes(&e.dets).unwrap_or_default();
                 let before = found.len();
-                let matches =
-                    new.iter().filter_map(|(t, r, d)| same_face((span, &dets), (*r, d)).map(|s| (s, *t, e.kind)));
+                // The face it was about, when the same embedder made both.
+                let face = match (&e.emb, &e.model) {
+                    (Some(emb), Some(m)) if Some(m) == model.as_ref() => tracks::embedding_from_bytes(emb),
+                    _ => None,
+                };
+                let looks = |emb: &Option<Vec<f32>>| match (&face, emb) {
+                    (Some(a), Some(b)) => a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>() >= REANCHOR_MIN_COS,
+                    _ => true,
+                };
+                let matches = new
+                    .iter()
+                    .filter(|(_, _, _, emb)| looks(emb))
+                    .filter_map(|(t, r, d, _)| same_face((span, &dets), (*r, d)).map(|s| (s, *t, e.kind)));
                 if matches!(e.kind, EditKind::Cover(_)) {
                     // A picture is one face: the new track sharing most of it.
                     found.extend(matches.max_by_key(|&(s, t, _)| (s, std::cmp::Reverse(t))));
@@ -990,6 +1011,39 @@ pub(crate) mod tests {
         assert!(spans(walter).iter().all(|s| s.0 != 200));
         let extra = project.db().identity_tracks().unwrap().into_iter().find(|t| t.start == 200).unwrap();
         assert_eq!(extra.forbids, [walter]);
+    }
+
+    #[test]
+    fn a_decision_goes_back_only_onto_a_face_that_looks_like_it() {
+        let frames = 400;
+        let (_dir, project, id) = project_with_media(frames);
+        let whole = Segment { start: 0, end: frames, kind: SegmentKind::Shot, tiny: false };
+        project.db().store_segments(id, &[whole]).unwrap();
+        let pass = |who: usize| {
+            project.faces_plan(id, MODEL).unwrap();
+            project.store_face_chunk(id, 0, frames, &tracks::encode(&[seen(who, 0, 100, 190, 0.1)]), &[]).unwrap();
+            project.finish_faces(id).unwrap();
+        };
+        pass(1);
+        let t = project.cast_tracks(TrackFilter::Unassigned).unwrap()[0].id;
+        let walter = project
+            .cast_edit(&CastEdit::NewCharacter { tracks: vec![t], name: Some("Walter".into()) })
+            .unwrap()
+            .unwrap();
+        // Found again in another cut: someone else sits where he was.
+        project.reset_faces(id).unwrap();
+        pass(2);
+        assert!(project.cast_tracks(TrackFilter::Character(walter)).unwrap().is_empty(), "not on someone else");
+        // The same face found again takes his decision back.
+        project
+            .cast_edit(&CastEdit::Assign {
+                tracks: vec![project.cast_tracks(TrackFilter::Unassigned).unwrap()[0].id],
+                character_id: walter,
+            })
+            .unwrap();
+        project.reset_faces(id).unwrap();
+        pass(2);
+        assert_eq!(project.cast_tracks(TrackFilter::Character(walter)).unwrap().len(), 1);
     }
 
     #[test]

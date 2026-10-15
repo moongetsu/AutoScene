@@ -27,7 +27,7 @@ import { useAppActions } from "@/lib/actions"
 import { useCast, useMediaList, useProjects } from "@/lib/queries"
 import { shortcutKeys } from "@/lib/shortcuts"
 import { useUi } from "@/state/ui"
-import { characterEntries, episodeEntries } from "./palette-items"
+import { type ProjectEntry, characterEntries, episodeEntries } from "./palette-items"
 
 type Item = {
   id: string
@@ -44,8 +44,10 @@ type Item = {
   keywords?: string[]
 }
 
-/** Without a search, a few of the open project's characters and episodes; all once one types. */
+/** Without a search, a few of the open project's characters and episodes. */
 const FIRST = 5
+/** With one, the first that match (a big series has hundreds of extras). */
+const MATCHES = 30
 
 /** Everything the app can do or go to, behind one search field. */
 export function CommandPalette() {
@@ -97,6 +99,7 @@ export function CommandPalette() {
 
   const select = (item: Item) => {
     setOpen(false)
+    setQuery("")
     // Let the dialog close before navigating so focus returns cleanly.
     requestAnimationFrame(item.run)
   }
@@ -131,7 +134,7 @@ export function CommandPalette() {
             <Command.List className="min-h-0 flex-1 overflow-y-auto p-2">
               <Command.Empty className="px-3 py-10 text-center text-md text-fg-3">Nothing matches.</Command.Empty>
               {current && <Group heading={current.title} items={here} onSelect={select} />}
-              {current && <ProjectFinds pid={current.id} anime={current.content === "anime"} all={query.trim() !== ""} onSelect={select} />}
+              {current && <ProjectFinds pid={current.id} anime={current.content === "anime"} query={query} onSelect={select} />}
               {projectItems.length > 0 && <Group heading="Projects" items={projectItems} onSelect={select} />}
               <Group heading="Actions" items={actions} onSelect={select} />
               <Group heading="Go to" items={go} onSelect={select} />
@@ -147,18 +150,22 @@ export function CommandPalette() {
 function ProjectFinds({
   pid,
   anime,
-  all,
+  query,
   onSelect,
 }: {
   pid: string
   anime: boolean
-  all: boolean
+  query: string
   onSelect: (i: Item) => void
 }) {
   const navigate = useNavigate()
   const { data: cast } = useCast(pid)
   const { data: media } = useMediaList(pid)
-  const take = <T,>(list: T[]) => (all ? list : list.slice(0, FIRST))
+  const q = query.trim().toLowerCase()
+  const take = (list: ProjectEntry[]) =>
+    q
+      ? list.filter((e) => [e.label, ...e.keywords].some((w) => w.toLowerCase().includes(q))).slice(0, MATCHES)
+      : list.slice(0, FIRST)
   const characters: Item[] = anime
     ? []
     : take(characterEntries(cast)).map((c) => ({
