@@ -47,6 +47,7 @@ import {
   releaseTitle,
 } from "@/lib/media"
 import { modKey } from "@/lib/platform"
+import { PLAYER_SHORTCUTS } from "@/lib/shortcuts"
 import { useCast, useFrameMap, useMediaList, usePresence, useProject, useSegments } from "@/lib/queries"
 import { type Lane, charactersIn, lanesOf, useCharacterMap } from "@/lib/presence"
 import { nextShotStart, prevShotStart, segmentIndexAt, shotAt, shotNumbers } from "@/lib/segments"
@@ -764,20 +765,10 @@ function ReadyPlayer({
 
           <Card title="Keys">
             <ul className="space-y-2 text-sm text-fg-2">
-              {[
-                ["Play / pause", ["Space"]],
-                ["Step one frame", ["←", "→"]],
-                ["Step one second", ["Shift", "←"]],
-                ["Previous / next shot", ["↑", "↓"]],
-                ["Mark shot", ["X"]],
-                ["Mark in / out", ["I", "O"]],
-                ["Go to in / out", ["Shift", "I"]],
-                ["Go to timecode", [modKey, "G"]],
-                ["Mute", ["M"]],
-              ].map(([label, keys]) => (
-                <li key={label as string} className="flex items-center justify-between">
-                  <span>{label}</span>
-                  <Kbd keys={keys as string[]} />
+              {PLAYER_SHORTCUTS.map((s) => (
+                <li key={s.id} className="flex items-center justify-between gap-3">
+                  <span>{s.label}</span>
+                  <Kbd keys={s.keys} className="shrink-0" />
                 </li>
               ))}
             </ul>

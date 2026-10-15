@@ -35,11 +35,14 @@ export function useLayerSafetyNet() {
   }, [])
 }
 
-/** A dialog, sheet, menu, select or popover is on screen. */
-function layerOpen(): boolean {
+/**
+ * A dialog, sheet, menu or list of choices is open: it owns the keyboard and
+ * the pointer until it closes. (Tooltips don't count.)
+ */
+export function layerOpen(): boolean {
   return (
     document.querySelector(
-      '[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"], [data-radix-popper-content-wrapper]',
+      '[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"], [role="menu"], [role="listbox"]',
     ) != null
   )
 }

@@ -12,6 +12,7 @@ import { ProjectLoadError } from "@/features/project/ProjectLoadError"
 import { assetUrl } from "@/lib/media"
 import { firstFailure, portraitQuery, queryClient, useCast, useCastTracks, useMediaList, usePortrait } from "@/lib/queries"
 import { timecode } from "@/lib/timecode"
+import { REVIEW_SHORTCUTS, useShortcuts } from "@/lib/shortcuts"
 import { cn } from "@/lib/utils"
 import { castEdit, plural } from "./cast"
 
@@ -76,32 +77,35 @@ export function ReviewPage() {
     }
   }
 
-  useEffect(() => {
-    if (!current) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.ctrlKey || e.metaKey || e.altKey) return
-      if (e.target instanceof Element && e.target.closest("input, textarea, [role=dialog], [role=menu]")) return
-      // A focused button answers Enter and Space itself.
-      if ((e.key === "Enter" || e.key === " ") && e.target instanceof Element && e.target.closest("button, a")) return
-      const k = e.key.toLowerCase()
-      const id = current.id
-      const target = /^[1-9]$/.test(k) ? picks[Number(k) - 1] : undefined
-      if ((k === "y" || k === "j" || k === "enter") && suggestion) {
-        void answer(id, () => castEdit(pid, { op: "confirm", tracks: [id] }))
-      } else if (k === "n" && suggestion) {
-        void answer(id, () => castEdit(pid, { op: "not_them", tracks: [id], characterId: suggestion.id }))
-      } else if (k === "x") {
-        void answer(id, () => castEdit(pid, { op: "not_a_face", tracks: [id] }))
-      } else if (k === "s" || e.key === "ArrowRight") {
-        setSkipped((s) => new Set(s).add(id))
-      } else if (target) {
-        void answer(id, () => castEdit(pid, { op: "assign", tracks: [id], characterId: target.id }))
-      } else return
-      e.preventDefault()
-    }
-    window.addEventListener("keydown", onKey)
-    return () => window.removeEventListener("keydown", onKey)
-  })
+  // Answers on the keyboard (REVIEW_SHORTCUTS); a key that has nothing to
+  // answer here (no suggestion, an empty quick pick) passes through.
+  useShortcuts(
+    REVIEW_SHORTCUTS,
+    {
+      yes: () => {
+        if (!current || !suggestion) return false
+        void answer(current.id, () => castEdit(pid, { op: "confirm", tracks: [current.id] }))
+      },
+      no: () => {
+        if (!current || !suggestion) return false
+        void answer(current.id, () => castEdit(pid, { op: "not_them", tracks: [current.id], characterId: suggestion.id }))
+      },
+      notFace: () => {
+        if (!current) return false
+        void answer(current.id, () => castEdit(pid, { op: "not_a_face", tracks: [current.id] }))
+      },
+      skip: () => {
+        if (!current) return false
+        setSkipped((s) => new Set(s).add(current.id))
+      },
+      pick: (e) => {
+        const target = picks[Number(e.key) - 1]
+        if (!current || !target) return false
+        void answer(current.id, () => castEdit(pid, { op: "assign", tracks: [current.id], characterId: target.id }))
+      },
+    },
+    { enabled: current !== undefined },
+  )
 
   const toolbar = <TopBar back={{ label: "Cast", to: `/p/${pid}/cast` }} title="Review faces" />
 

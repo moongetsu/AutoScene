@@ -7,7 +7,7 @@ import { useUpdates } from "@/state/updates"
 import { commands, errorMessage, events } from "./ipc"
 import { pickVideoFiles } from "./media"
 import { isMac, isTauri } from "./platform"
-import { matchShortcut, type ShortcutId } from "./shortcuts"
+import { GLOBAL_SHORTCUTS, useShortcuts } from "./shortcuts"
 
 /** App-level actions shared by the command palette, keyboard shortcuts and the macOS menu. */
 export function useAppActions() {
@@ -50,26 +50,19 @@ export type SettingsSection = (typeof SETTINGS_SECTIONS)[number]
 export function useGlobalBindings() {
   const a = useAppActions()
 
-  useEffect(() => {
-    const run: Record<ShortcutId, () => void> = {
+  // On macOS desktop the native menu owns these accelerators and emits menu events instead.
+  useShortcuts(
+    GLOBAL_SHORTCUTS,
+    {
       palette: a.openPalette,
       activity: a.toggleActivity,
       sidebar: a.toggleSidebar,
       settings: () => a.goSettings(),
       library: a.goLibrary,
       newProject: a.newProject,
-    }
-    // On macOS desktop the native menu owns accelerators and emits menu events instead.
-    if (isMac && isTauri) return
-    const onKey = (e: KeyboardEvent) => {
-      const id = matchShortcut(e)
-      if (!id) return
-      e.preventDefault()
-      run[id]()
-    }
-    window.addEventListener("keydown", onKey)
-    return () => window.removeEventListener("keydown", onKey)
-  }, [a])
+    },
+    { enabled: !(isMac && isTauri), anywhere: ["palette", "activity"] },
+  )
 
   useEffect(() => {
     if (!isTauri) return

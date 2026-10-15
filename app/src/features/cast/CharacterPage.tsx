@@ -46,6 +46,7 @@ import { useAmbient } from "@/lib/ambient"
 import { commands, errorMessage } from "@/lib/ipc"
 import { assetUrl } from "@/lib/media"
 import { firstFailure, useCast, useCastTracks, useCharacterShots, useMediaList, useProject } from "@/lib/queries"
+import { FACES_SHORTCUTS, useShortcuts } from "@/lib/shortcuts"
 import { timecode } from "@/lib/timecode"
 import { cn } from "@/lib/utils"
 import { castEdit, formatScreenTime, plural } from "./cast"
@@ -91,19 +92,17 @@ export function CharacterPage() {
   }, [list, picked])
 
   // Esc clears the selection; Ctrl/⌘+A selects every face (where faces are shown).
-  useEffect(() => {
-    if (view !== "faces") return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.target instanceof Element && e.target.closest("input, textarea, [role=dialog], [role=menu]")) return
-      if (e.key === "Escape" && selected.size > 0) setSelected(new Set())
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {
-        e.preventDefault()
-        setSelected(new Set(list.map((t) => t.id)))
-      }
-    }
-    window.addEventListener("keydown", onKey)
-    return () => window.removeEventListener("keydown", onKey)
-  }, [list, selected, view])
+  useShortcuts(
+    FACES_SHORTCUTS,
+    {
+      selectAll: () => setSelected(new Set(list.map((t) => t.id))),
+      clearSelection: () => {
+        if (selected.size === 0) return false
+        setSelected(new Set())
+      },
+    },
+    { enabled: view === "faces" },
+  )
 
   const open = (t: { mediaId: string; start: number }) =>
     void navigate({ to: "/p/$pid/timeline/$mid", params: { pid, mid: t.mediaId }, search: { f: t.start } })
