@@ -34,6 +34,17 @@ describe("matching", () => {
     expect(matchShortcut(REVIEW_SHORTCUTS, e("7"))).toBe("pick")
   })
 
+  it("finds digits where the layout puts them", () => {
+    const e = (key: string, init: KeyboardEventInit = {}) => new KeyboardEvent("keydown", { key, ...init })
+    // AZERTY: the 1 key types "&", and "1" with Shift.
+    expect(matchShortcut(REVIEW_SHORTCUTS, e("&", { code: "Digit1" }))).toBe("pick")
+    expect(matchShortcut(REVIEW_SHORTCUTS, e("1", { code: "Digit1", shiftKey: true }))).toBe("pick")
+    expect(matchShortcut(GLOBAL_SHORTCUTS, e("&", { code: "Digit1", ctrlKey: true }))).toBe("library")
+    expect(matchShortcut(REVIEW_SHORTCUTS, e("3", { code: "Numpad3" }))).toBe("pick")
+    // The number pad without Num Lock moves instead.
+    expect(matchShortcut(REVIEW_SHORTCUTS, e("End", { code: "Numpad1" }))).toBeNull()
+  })
+
   it("never gives one key press two meanings in the same place", () => {
     for (const g of SHORTCUT_GROUPS) {
       const seen = new Map<string, string>()
@@ -43,6 +54,18 @@ describe("matching", () => {
           expect(seen.get(sig), `${g.title}: ${sig}`).toBeUndefined()
           seen.set(sig, s.id)
         }
+      }
+    }
+  })
+
+  it("keeps a page's keys apart from the ones that work everywhere", () => {
+    const sig = (b: Shortcut["bindings"][number]) =>
+      `${b.mod ? "mod+" : ""}${b.shift ? "shift+" : ""}${b.alt ? "alt+" : ""}${b.key}`
+    const everywhere = new Set(GLOBAL_SHORTCUTS.flatMap((s) => s.bindings.map(sig)))
+    for (const g of SHORTCUT_GROUPS) {
+      if (g.shortcuts === GLOBAL_SHORTCUTS) continue
+      for (const s of g.shortcuts as Shortcut[]) {
+        for (const b of s.bindings) expect(everywhere.has(sig(b)), `${g.title}: ${sig(b)}`).toBe(false)
       }
     }
   })

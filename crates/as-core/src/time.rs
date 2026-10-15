@@ -393,6 +393,14 @@ impl FrameIndex {
             }
             _ => return Err(bad("kind")),
         };
+        // The episode ends one frame duration after its last timestamp.
+        let last = match &pts {
+            PtsStore::Cfr { first, step, n } => first + step * (i64::from(*n) - 1),
+            PtsStore::Explicit(v) => v[v.len() - 1],
+        };
+        if last.checked_add(last_dur).is_none() {
+            return Err(bad("last frame duration"));
+        }
         let vfr = detect_vfr(&pts, tb, nominal_fps);
         Ok(Self { tb, nominal_fps, pts, last_dur, vfr })
     }
@@ -621,6 +629,7 @@ mod tests {
             ("constant rate without frames", patched(&cfr, 61, &0u32.to_le_bytes())),
             ("constant rate standing still", patched(&cfr, 53, &0i64.to_le_bytes())),
             ("constant rate past the end of time", patched(&cfr, 45, &(i64::MAX - 10).to_le_bytes())),
+            ("a last frame past the end of time", patched(&explicit, 36, &(i64::MAX - 100).to_le_bytes())),
             ("cut short", zstd::encode_all(&explicit[..explicit.len() - 2], 1).unwrap()),
             ("not an index at all", b"hello".to_vec()),
         ];

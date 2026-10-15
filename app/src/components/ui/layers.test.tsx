@@ -2,7 +2,7 @@ import { useState } from "react"
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { useLayerSafetyNet } from "@/lib/layers"
+import { layerOpen, useLayerSafetyNet } from "@/lib/layers"
 import { Dialog, DialogContent } from "./dialog"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./dropdown-menu"
 import { Select } from "./select"
@@ -50,6 +50,30 @@ describe("layers", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
     await waitFor(() => expect(document.body.style.pointerEvents).toBe(""))
     await user.click(screen.getByRole("button", { name: "Outside" }))
+  })
+
+  it("knows while a menu or a select is open", async () => {
+    const user = userEvent.setup()
+    render(<MenuThenDialog />)
+    expect(layerOpen()).toBe(false)
+    await user.click(screen.getByRole("button", { name: "Options" }))
+    await screen.findByRole("menu")
+    expect(layerOpen()).toBe(true)
+    await user.keyboard("{Escape}")
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull())
+    expect(layerOpen()).toBe(false)
+
+    cleanup()
+    render(<SelectInDialog />)
+    screen.getByRole("combobox", { name: "Format" }).focus()
+    await user.keyboard("{Enter}")
+    await screen.findByRole("listbox")
+    expect(layerOpen()).toBe(true)
+  })
+
+  it("doesn't count a list that is part of the page", () => {
+    render(<div role="listbox" aria-label="Results" />)
+    expect(layerOpen()).toBe(false)
   })
 })
 

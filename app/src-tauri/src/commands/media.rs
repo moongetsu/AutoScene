@@ -175,11 +175,20 @@ pub async fn media_frame_map(
     let result = blocking(move || {
         let p = lib.project(project_id)?;
         let map = p.frame_map(media_id);
-        let pending = matches!(p.media(media_id).map(|m| m.proxy), Ok(ProxyState::Pending));
-        Ok((p, map, pending))
+        let media = p.media(media_id);
+        let pending = matches!(media.as_ref().map(|m| m.proxy), Ok(ProxyState::Pending));
+        // The player asks only for media it thinks are ready. A damaged index
+        // marks its media failed (here or in an export): tell the views, so
+        // they offer "Index again".
+        let damaged = map.is_err() && matches!(media.map(|m| m.status), Ok(MediaStatus::Failed));
+        Ok((p, map, pending, damaged))
     })
     .await?;
-    let (project, map, pending) = result;
+    let (project, map, pending, damaged) = result;
+    if damaged {
+        work::library_changed(&app, &project);
+        crate::events::emit_media_changed(&app, project_id, Some(media_id));
+    }
     // Build a missing preview on demand — unless someone stopped the last
     // build: then the player offers "Prepare preview" instead of restarting
     // it on every refresh.

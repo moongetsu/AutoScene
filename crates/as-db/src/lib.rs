@@ -44,6 +44,40 @@ pub enum DbError {
     Io(String),
 }
 
+impl DbError {
+    /// What people read when the database fails. This error's `Display`, with
+    /// SQLite's own words, belongs in the log.
+    pub fn user_message(&self) -> &'static str {
+        const GENERIC: &str = "AutoScene couldn't read or save its data. Details are in the log.";
+        let sqlite = |e: &rusqlite::Error| {
+            use rusqlite::ErrorCode as C;
+            let rusqlite::Error::SqliteFailure(f, _) = e else { return GENERIC };
+            match f.code {
+                C::DiskFull => "The disk is full.",
+                C::ReadOnly => "AutoScene can't save its data there: the drive or folder is read-only.",
+                C::CannotOpen => "AutoScene couldn't open its data. Check that the drive is connected.",
+                C::PermissionDenied => "AutoScene doesn't have permission to open its data.",
+                C::DatabaseBusy | C::DatabaseLocked => {
+                    "Another program is using AutoScene's data. Close it and try again."
+                }
+                C::DatabaseCorrupt | C::NotADatabase => "AutoScene's data file is damaged. Details are in the log.",
+                C::SystemIoFailure => "The drive couldn't be read or written. Details are in the log.",
+                _ => GENERIC,
+            }
+        };
+        match self {
+            Self::TooNew => "This project was made by a newer version of AutoScene. Update AutoScene to open it.",
+            Self::Sqlite(e) => sqlite(e),
+            Self::Migration(rusqlite_migration::Error::RusqliteError { err, .. }) => match sqlite(err) {
+                GENERIC => "AutoScene couldn't update this project's data. Details are in the log.",
+                message => message,
+            },
+            Self::Migration(_) => "AutoScene couldn't update this project's data. Details are in the log.",
+            Self::Corrupt(_) | Self::Io(_) => GENERIC,
+        }
+    }
+}
+
 /// One SQLite connection behind a mutex. Every statement here is short
 /// (indexed lookups, small writes), so a single connection per database is
 /// simpler and just as fast as a pool at AutoScene's scale.

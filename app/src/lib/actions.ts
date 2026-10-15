@@ -5,6 +5,7 @@ import { useNewProject } from "@/state/new-project"
 import { useUi } from "@/state/ui"
 import { useUpdates } from "@/state/updates"
 import { commands, errorMessage, events } from "./ipc"
+import { layerOpen } from "./layers"
 import { pickVideoFiles } from "./media"
 import { isMac, isTauri } from "./platform"
 import { GLOBAL_SHORTCUTS, useShortcuts } from "./shortcuts"
@@ -66,19 +67,25 @@ export function useGlobalBindings() {
 
   useEffect(() => {
     if (!isTauri) return
+    // Like their keys elsewhere: nothing moves away under an open dialog or menu.
+    const calm =
+      (run: () => void) =>
+      () => {
+        if (!layerOpen()) run()
+      }
     const byId: Record<string, () => void> = {
       "app:check-updates": a.checkUpdates,
-      "app:settings": () => a.goSettings(),
+      "app:settings": calm(() => a.goSettings()),
       "view:command-palette": a.openPalette,
-      "view:library": a.goLibrary,
-      "file:new-project": a.newProject,
+      "view:library": calm(a.goLibrary),
+      "file:new-project": calm(a.newProject),
       // The native ⌘E accelerator swallows the keystroke; the player listens for this instead.
       "file:export": () => window.dispatchEvent(new CustomEvent(EXPORT_REQUEST)),
       "view:activity": a.toggleActivity,
-      "view:toggle-sidebar": a.toggleSidebar,
+      "view:toggle-sidebar": calm(a.toggleSidebar),
       "file:reveal": () => window.dispatchEvent(new CustomEvent(REVEAL_REQUEST)),
       "edit:copy-timecodes": () => window.dispatchEvent(new CustomEvent(COPY_TIMECODES_REQUEST)),
-      "file:add-media": () => {
+      "file:add-media": calm(() => {
         const pid = currentProjectId()
         if (!pid) return a.newProject()
         void pickVideoFiles().then((files) => {
@@ -88,15 +95,15 @@ export function useGlobalBindings() {
             .then((n) => toast(n === 0 ? "Nothing new to add" : `Added ${n} ${n === 1 ? "file" : "files"}`))
             .catch((e) => toast.error("Couldn't add files", { description: errorMessage(e) }))
         })
-      },
-      "view:episodes": () => {
+      }),
+      "view:episodes": calm(() => {
         const pid = currentProjectId()
         if (pid) a.goProject(pid, "episodes")
-      },
-      "view:exports": () => {
+      }),
+      "view:exports": calm(() => {
         const pid = currentProjectId()
         if (pid) a.goProject(pid, "exports")
-      },
+      }),
     }
     const p = events.menuAction.listen(({ payload }) => byId[payload]?.())
     return () => void p.then((un) => un())

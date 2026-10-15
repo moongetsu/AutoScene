@@ -8,7 +8,11 @@ import { isMac, modKey } from "./platform"
  * what is documented is what works.
  */
 
-/** A key press that triggers a shortcut. `key` is `KeyboardEvent.key` in lower case; `mod` is Ctrl (⌘ on macOS). */
+/**
+ * A key press that triggers a shortcut. `key` is `KeyboardEvent.key` in lower
+ * case — a digit means the key that types it on a US layout (see `matches`);
+ * `mod` is Ctrl (⌘ on macOS).
+ */
 export type Binding = { key: string; mod?: boolean; shift?: boolean; alt?: boolean }
 
 export type Shortcut<Id extends string = string> = {
@@ -110,14 +114,26 @@ export function shortcutKeys(id: GlobalId): string[] {
   return GLOBAL_SHORTCUTS.find((s) => s.id === id)?.keys ?? []
 }
 
-/** Does this key press trigger `b`? Modifiers must match exactly. */
+/**
+ * The digit a key press means: the digit row goes by the physical key, as
+ * AZERTY types "&" there and needs Shift for the 1; the number pad counts
+ * while it types digits.
+ */
+function digitOf(e: KeyboardEvent): string | null {
+  const row = /^Digit([0-9])$/.exec(e.code)
+  if (row) return row[1]
+  return /^[0-9]$/.test(e.key) ? e.key : null
+}
+
+/** Does this key press trigger `b`? Modifiers must match exactly (Shift doesn't count for digits). */
 export function matches(b: Binding, e: KeyboardEvent): boolean {
   const mod = isMac ? e.metaKey : e.ctrlKey
   const other = isMac ? e.ctrlKey : e.metaKey
+  const digit = /^[0-9]$/.test(b.key)
   return (
-    e.key.toLowerCase() === b.key &&
+    (digit ? digitOf(e) === b.key : e.key.toLowerCase() === b.key) &&
     mod === Boolean(b.mod) &&
-    e.shiftKey === Boolean(b.shift) &&
+    (digit && !b.shift ? true : e.shiftKey === Boolean(b.shift)) &&
     e.altKey === Boolean(b.alt) &&
     !other
   )

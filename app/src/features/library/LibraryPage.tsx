@@ -57,7 +57,7 @@ export function LibraryPage() {
         </TopBar>
       }
     >
-      {isError ? (
+      {isError && projects === undefined ? (
         <ErrorState error={error} title="The library couldn't be loaded" className="h-full" onRetry={() => void refetch()} />
       ) : empty ? (
         <Welcome onCreate={() => newProject()} />

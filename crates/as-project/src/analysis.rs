@@ -120,7 +120,7 @@ pub(crate) mod tests {
 
     use super::*;
 
-    fn info() -> MediaInfo {
+    pub(crate) fn info() -> MediaInfo {
         MediaInfo {
             container: "matroska,webm".into(),
             duration_sec: Some(10.0),

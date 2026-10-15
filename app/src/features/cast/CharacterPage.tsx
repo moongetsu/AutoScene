@@ -288,7 +288,7 @@ function Shots({
       </div>
     )
   }
-  if (shots.isError) {
+  if (shots.isError && shots.data === undefined) {
     return <ErrorState error={shots.error} title="Their shots couldn't be loaded" onRetry={() => void shots.refetch()} />
   }
   if (list.length === 0) {

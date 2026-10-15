@@ -126,7 +126,7 @@ export function PlayerPage() {
           media={m}
           error={map.error}
           gone={mediaQuery.isSuccess && !m}
-          listError={mediaQuery.error}
+          listError={mediaQuery.data === undefined ? mediaQuery.error : null}
           onRetryList={() => void mediaQuery.refetch()}
         />
       )}
@@ -330,9 +330,9 @@ function ReadyPlayer({
   // export of most of an episode starts.
   const oneSided =
     inFrame != null && outFrame == null
-      ? "Only an in point is marked, so the clip runs to the end of the episode. Press O to mark an out point."
+      ? "Only an in point is marked, so the clip runs to the end of the episode. To end it sooner, close this and press O where it should stop."
       : outFrame != null && inFrame == null
-        ? "Only an out point is marked, so the clip starts at the beginning of the episode. Press I to mark an in point."
+        ? "Only an out point is marked, so the clip starts at the beginning of the episode. To start it later, close this and press I where it should begin."
         : undefined
   const canExport = hasMarks && length > 0
 

@@ -249,7 +249,12 @@ impl Project {
         let blob = self.db.frame_index_blob(id)?.ok_or_else(|| ProjectError::NotReady("Still indexing.".into()))?;
         let idx = Arc::new(FrameIndex::from_bytes(&blob).map_err(|e| {
             tracing::warn!(media = %id, error = %e, "stored frame index is damaged");
-            ProjectError::Invalid("This episode's frame index is damaged. Index it again from its menu.".into())
+            // Failed, so its menu and the player offer to index it again.
+            let message = "Its frame index is damaged. Index it again.";
+            if let Err(e) = self.db.set_media_status(id, MediaStatus::Failed, Some(message)) {
+                tracing::warn!(media = %id, error = %e, "marking a damaged index failed");
+            }
+            ProjectError::Invalid(message.into())
         })?);
         self.indexes.lock().insert(id, idx.clone());
         Ok(idx)
@@ -329,7 +334,7 @@ impl Project {
             }
             Err(e) if e.is_cancelled() => return Err(ProjectError::Cancelled),
             Err(e) => {
-                tracing::warn!(file = %m.file_name, error = %e, "poster failed");
+                tracing::warn!(file = %m.file_name, error = %e.detail(), "poster failed");
                 (None, None)
             }
         };
@@ -744,6 +749,32 @@ mod tests {
     use as_core::Rational;
 
     use super::*;
+
+    #[test]
+    fn a_damaged_frame_index_asks_to_index_again() {
+        let (_dir, project, m) = crate::analysis::tests::project_with_media(240);
+        let rec = as_db::IngestRecord {
+            info: crate::analysis::tests::info(),
+            frames: 240,
+            duration_sec: 10.0,
+            fps: Rational::new(24, 1),
+            vfr: false,
+            interlaced: false,
+            proxy: ProxyState::NotNeeded,
+            poster: None,
+            poster_small: None,
+            index_blob: b"not an index".to_vec(),
+            audio_ordinal: None,
+        };
+        project.db().record_ingest(m, &rec).unwrap();
+
+        let e = project.frame_map(m).unwrap_err();
+        assert!(matches!(e, ProjectError::Invalid(_)), "{e:?}");
+        assert!(e.to_string().contains("Index it again"), "{e}");
+        let media = project.media(m).unwrap();
+        assert_eq!(media.status, MediaStatus::Failed);
+        assert_eq!(media.error.as_deref(), Some(e.to_string().as_str()));
+    }
 
     #[test]
     fn an_export_plan_names_like_the_export_and_sizes_each_preset() {

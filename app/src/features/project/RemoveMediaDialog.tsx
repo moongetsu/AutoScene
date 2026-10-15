@@ -45,7 +45,7 @@ function RemoveForm({ projectId, media: m, onDone }: { projectId: string; media:
   return (
     <DialogContent
       title={`Remove “${name}”?`}
-      description="Its shots and faces go, and with them your decisions about those faces. Characters seen only here leave the cast. The video file itself isn't touched."
+      description="Its shots and faces go, and with them your decisions about those faces. Characters you haven't named who appear only here leave the cast. The video file itself isn't touched."
     >
       <DialogFooter>
         <Button variant="ghost" onClick={onDone}>

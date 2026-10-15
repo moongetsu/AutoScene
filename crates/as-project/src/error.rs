@@ -16,7 +16,7 @@ pub enum ProjectError {
     NotReady(String),
     #[error("cancelled")]
     Cancelled,
-    #[error("{}", db_message(.0))]
+    #[error("{}", .0.user_message())]
     Db(#[from] DbError),
     #[error(transparent)]
     Media(MediaError),
@@ -24,15 +24,6 @@ pub enum ProjectError {
     Export(ExportError),
     #[error("{}", as_core::io_message(.0))]
     Io(#[from] std::io::Error),
-}
-
-/// What people read when the project's database fails; SQLite's own words
-/// are in [`ProjectError::detail`].
-fn db_message(e: &DbError) -> &'static str {
-    match e {
-        DbError::TooNew => "This project was made by a newer version of AutoScene. Update AutoScene to open it.",
-        _ => "AutoScene couldn't read or save its data. Details are in the log.",
-    }
 }
 
 impl ProjectError {
@@ -71,6 +62,11 @@ mod tests {
         assert!(!db.to_string().contains("corrupt record"), "{db}");
         assert!(db.detail().contains("corrupt record: tracks row 7"), "{}", db.detail());
         assert!(ProjectError::Db(DbError::TooNew).to_string().contains("Update AutoScene"));
+
+        let full = rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_FULL), None);
+        assert_eq!(ProjectError::Db(DbError::Sqlite(full)).to_string(), "The disk is full.");
+        let busy = rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY), None);
+        assert!(ProjectError::Db(DbError::Sqlite(busy)).to_string().contains("Another program"));
 
         let io = ProjectError::Io(std::io::Error::other("The device is not ready. (os error 21)"));
         assert!(!io.to_string().contains("os error"), "{io}");

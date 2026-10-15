@@ -18,4 +18,8 @@ describe("firstFailure", () => {
     expect(b.refetch).toHaveBeenCalledOnce()
     expect(c.refetch).toHaveBeenCalledOnce()
   })
+
+  it("keeps what a query showed when only its refetch failed", () => {
+    expect(firstFailure(ok(), { ...failed("offline"), data: [] })).toBeNull()
+  })
 })

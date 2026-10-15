@@ -132,11 +132,14 @@ export function usePresence(pid: ProjectId, mid: MediaId, enabled: boolean) {
   return useQuery({ queryKey: qk.presence(pid, mid), queryFn: () => commands.mediaPresence(pid, mid), enabled })
 }
 
-type Refetchable = { isError: boolean; error: unknown; refetch: () => unknown }
+type Refetchable = { isError: boolean; error: unknown; data?: unknown; refetch: () => unknown }
 
-/** The first failure among a view's queries, and a retry that fetches the failed ones again. */
+/**
+ * The first of a view's queries that failed with nothing to show, and a retry
+ * that fetches those again. A refetch that fails keeps its last data on screen.
+ */
 export function firstFailure(...queries: Refetchable[]): { error: unknown; retry: () => void } | null {
-  const failed = queries.filter((q) => q.isError)
+  const failed = queries.filter((q) => q.isError && q.data === undefined)
   if (failed.length === 0) return null
   return { error: failed[0].error, retry: () => failed.forEach((q) => void q.refetch()) }
 }

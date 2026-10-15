@@ -162,12 +162,15 @@ pub fn run() {
             let library = match Library::open(&paths) {
                 Ok(l) => l,
                 Err(e) => {
-                    log::error!("opening the library failed: {e}");
+                    log::error!("opening the library failed: {}", e.detail());
                     app.dialog()
                         .message(format!(
                             "AutoScene couldn't open its library.
 
-{e}"
+{e}
+
+The log is in {}",
+                            paths.logs().display()
                         ))
                         .title("AutoScene")
                         .kind(MessageDialogKind::Error)

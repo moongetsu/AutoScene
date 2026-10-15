@@ -19,7 +19,7 @@ export function ErrorState({
   onRetry?: () => void
   className?: string
 }) {
-  const ownFault = !isAppError(error) || error.code === "internal" || error.code === "io"
+  const ownFault = !isAppError(error) || error.code === "internal" || error.code === "io" || error.code === "media"
   return (
     <EmptyState
       tone="danger"

@@ -50,7 +50,7 @@ pub fn cast_changed(app: &AppHandle, project: &Arc<Project>) {
 pub fn library_changed(app: &AppHandle, project: &Project) {
     let state = app.state::<AppState>();
     if let Err(e) = state.library.refresh_stats(project) {
-        log::warn!("refreshing project stats: {e}");
+        log::warn!("refreshing project stats: {}", e.detail());
     }
     let _ = LibraryChanged { project_id: Some(project.id) }.emit(app);
 }
@@ -158,7 +158,7 @@ fn record_stage(
         Err(StageError::Failed(msg)) => set(StageState::Failed, Some(msg)),
     };
     if let Err(e) = outcome {
-        log::warn!("recording the analysis state: {e}");
+        log::warn!("recording the analysis state: {}", e.detail());
     }
 }
 
@@ -602,7 +602,7 @@ fn sync_library_posters(app: &AppHandle, project: &Project) {
             let _ = LibraryChanged { project_id: Some(project.id) }.emit(app);
         }
         Ok(false) => {}
-        Err(e) => log::warn!("refreshing project posters: {e}"),
+        Err(e) => log::warn!("refreshing project posters: {}", e.detail()),
     }
 }
 
@@ -658,7 +658,7 @@ pub fn recover_all(app: &AppHandle) {
     let projects = match state.library.projects() {
         Ok(p) => p,
         Err(e) => {
-            log::error!("listing projects: {e}");
+            log::error!("listing projects: {}", e.detail());
             return;
         }
     };
@@ -666,7 +666,7 @@ pub fn recover_all(app: &AppHandle) {
         let project = match state.library.project(summary.id) {
             Ok(p) => p,
             Err(e) => {
-                log::warn!("project '{}' unavailable: {e}", summary.title);
+                log::warn!("project '{}' unavailable: {}", summary.title, e.detail());
                 continue;
             }
         };
@@ -693,7 +693,7 @@ pub fn recover_all(app: &AppHandle) {
                 }
                 queue_posters(app, &project, r.posters);
             }
-            Err(e) => log::warn!("recovering '{}': {e}", summary.title),
+            Err(e) => log::warn!("recovering '{}': {}", summary.title, e.detail()),
         }
         queue_portraits(app, &project);
         let pending = project.pending_shots().and_then(|mut ids| {
@@ -722,7 +722,7 @@ pub fn recover_all(app: &AppHandle) {
                     queue_analysis(app, &project, id);
                 }
             }
-            Err(e) => log::warn!("recovering analysis of '{}': {e}", summary.title),
+            Err(e) => log::warn!("recovering analysis of '{}': {}", summary.title, e.detail()),
         }
     }
 }

@@ -37,12 +37,11 @@ export function useLayerSafetyNet() {
 
 /**
  * A dialog, sheet, menu or list of choices is open: it owns the keyboard and
- * the pointer until it closes. (Tooltips don't count.)
+ * the pointer until it closes. (Tooltips don't count, nor a list that is
+ * always part of the page.)
  */
 export function layerOpen(): boolean {
-  return (
-    document.querySelector(
-      '[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"], [role="menu"], [role="listbox"]',
-    ) != null
-  )
+  return document.querySelector(LAYERS) != null
 }
+
+const LAYERS = ["dialog", "alertdialog", "menu", "listbox"].map((r) => `[role="${r}"][data-state="open"]`).join(", ")
