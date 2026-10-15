@@ -85,12 +85,14 @@ Rules:
   see-through without it.
 - The native window title follows the view (taskbar, Alt+Tab): "Cast · Walter — Dark — AutoScene".
 - Background work is never page-bound: it shows in the rail's Activity ring and the Activity drawer (`Ctrl/⌘ J`).
+- The palette (`Ctrl/⌘ K`) finds projects, places and commands, and in a project its characters and episodes
+  (by name, `S01E03`, `1x03` or file). Back and Forward return a page to where it was scrolled.
 
 ## Views
 
 - **Library:** the project touched last as a hero ("Continue"), then every project as a 16:9 picture card.
 - **Project overview:** the hero, then shelves (`Section` + `Shelf`) of the cast as portraits and the episodes as
-  stills.
+  stills. Files that can't be found show as a gold banner with Locate folder… here and on Episodes.
 - **Cast:** portrait cards (3:4), Everyone else, hidden characters folded away; Review as the white pill.
 - **Character:** blurred-face hero with the portrait, the name (click to rename) and facts as chips; Build a
   scenepack as the white pill; shots scrub on hover.

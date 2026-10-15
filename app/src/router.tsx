@@ -152,7 +152,8 @@ export const router = createRouter({
   routeTree,
   history: createHashHistory(),
   defaultPreload: "intent",
-  scrollRestoration: true,
+  // Pages remember their own scrolling (they scroll inside the window, see Page).
+  scrollRestoration: false,
   defaultNotFoundComponent: NotFound,
   defaultErrorComponent: RouteError,
 })
