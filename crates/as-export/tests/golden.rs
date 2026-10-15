@@ -395,7 +395,9 @@ fn interlaced_sources_are_deinterlaced() {
         let range = FrameRange::new(100, 340);
         let out = check(&tools, &fx, range, &software_h264(), work.path());
         let (combed, progressive) = fields(&out);
-        assert!(combed * 20 < progressive, "{file}: export still combed ({combed} vs {progressive} progressive)");
+        // idet flags a few frames of any encode (how many depends on the
+        // encoder's threads, so on the machine); a combed export is most of them.
+        assert!(combed * 10 < progressive, "{file}: export still combed ({combed} vs {progressive} progressive)");
     }
 }
 
