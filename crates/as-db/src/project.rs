@@ -374,6 +374,13 @@ impl ProjectDb {
         self.0.read(|c| Ok(c.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0)).optional()?))
     }
 
+    pub fn delete_meta(&self, key: &str) -> DbResult<()> {
+        self.0.write(|tx| {
+            tx.execute("DELETE FROM meta WHERE key = ?1", [key])?;
+            Ok(())
+        })
+    }
+
     pub fn set_meta(&self, key: &str, value: &str) -> DbResult<()> {
         self.0.write(|tx| {
             tx.execute(

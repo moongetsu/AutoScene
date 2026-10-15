@@ -429,9 +429,10 @@ fn a_moved_episode_keeps_its_analysis() {
     let there = moved.join("Show - 01.mp4");
     std::fs::rename(&file, &there).unwrap();
     assert_eq!(project.media(id).unwrap().status, MediaStatus::Missing);
-    let (summary, reindex) = project.relink_folder(&tools, &moved).unwrap();
-    assert_eq!(summary, RelinkSummary { same: 1, reindex: 0, missing: 0 });
-    assert!(reindex.is_empty());
+    let found = project.relink_folder(&tools, &moved).unwrap();
+    assert_eq!(found.summary, RelinkSummary { same: 1, reindex: 0, missing: 0 });
+    assert!(found.reindex.is_empty());
+    assert_eq!(found.same, [id]);
     let m = project.media(id).unwrap();
     assert_eq!((m.status, m.path.as_str()), (MediaStatus::Ready, there.display().to_string().as_str()));
     assert_eq!(walters(&project), 1);

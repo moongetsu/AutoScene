@@ -38,10 +38,19 @@ const CLUSTER_ATTEMPTS: usize = 8;
 /// A track of a new face pass as decisions are re-anchored to it: id,
 /// range, detections and (when readable) its embedding.
 type NewFace = (i64, FrameRange, Vec<FaceDet>, Option<Vec<f32>>);
-/// A decision only goes back onto a new track that looks this much like the
-/// face it was about (same embedder): frames can shift between two files,
-/// and someone else may sit where the face was.
+/// After the media's file was replaced by one not shown to be the same
+/// picture, a decision only goes back onto a new track that looks this much
+/// like the face it was about (same embedder): frames can shift between two
+/// files, and someone else may sit where the face was. A new pass over the
+/// same file goes by place alone (a blurry face the tracker cut differently
+/// keeps its decision).
 const REANCHOR_MIN_COS: f32 = 0.4;
+
+/// Set (in `meta`) while a media's decisions wait for faces from another
+/// file than the one they were made on.
+pub(crate) fn source_changed_key(id: MediaId) -> String {
+    format!("faces_must_match:{id}")
+}
 
 /// Where a track's portrait goes and what it shows.
 struct PortraitPlan {
@@ -499,6 +508,8 @@ impl Project {
     /// the faces ready.
     pub fn finish_faces(&self, id: MediaId) -> ProjectResult<()> {
         let edits = self.db().track_edits(id)?;
+        let changed = source_changed_key(id);
+        let must_match = self.db().meta(&changed)?.is_some();
         if !edits.is_empty() {
             let model = self.db().faces_model(id)?;
             let new: Vec<NewFace> = self
@@ -515,9 +526,12 @@ impl Project {
                 let span = FrameRange::new(e.start, e.end);
                 let dets = tracks::dets_from_bytes(&e.dets).unwrap_or_default();
                 let before = found.len();
-                // The face it was about, when the same embedder made both.
+                // The face it was about, when the file changed and the same
+                // embedder made both.
                 let face = match (&e.emb, &e.model) {
-                    (Some(emb), Some(m)) if Some(m) == model.as_ref() => tracks::embedding_from_bytes(emb),
+                    (Some(emb), Some(m)) if must_match && Some(m) == model.as_ref() => {
+                        tracks::embedding_from_bytes(emb)
+                    }
                     _ => None,
                 };
                 let looks = |emb: &Option<Vec<f32>>| match (&face, emb) {
@@ -539,6 +553,9 @@ impl Project {
             let matched = resolve(found);
             tracing::info!(media = %id, edits = edits.len(), kept, tracks = matched.len(), "re-anchored cast edits");
             self.db().reanchor_edits(id, &matched)?;
+        }
+        if must_match {
+            self.db().delete_meta(&changed)?;
         }
         Ok(self.db().set_faces_state(id, StageState::Ready, None)?)
     }
@@ -1031,6 +1048,8 @@ pub(crate) mod tests {
             .unwrap()
             .unwrap();
         // Found again in another cut: someone else sits where he was.
+        let another_file = || project.db().set_meta(&source_changed_key(id), "1").unwrap();
+        another_file();
         project.reset_faces(id).unwrap();
         pass(2);
         assert!(project.cast_tracks(TrackFilter::Character(walter)).unwrap().is_empty(), "not on someone else");
@@ -1041,9 +1060,15 @@ pub(crate) mod tests {
                 character_id: walter,
             })
             .unwrap();
+        another_file();
         project.reset_faces(id).unwrap();
         pass(2);
         assert_eq!(project.cast_tracks(TrackFilter::Character(walter)).unwrap().len(), 1);
+        // The same file analysed again: the decision goes by place, even
+        // where the face came out looking different.
+        project.reset_faces(id).unwrap();
+        pass(1);
+        assert_eq!(project.cast_tracks(TrackFilter::Character(walter)).unwrap().len(), 1, "same file, same place");
     }
 
     #[test]

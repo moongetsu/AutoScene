@@ -161,10 +161,17 @@ function ProjectFinds({
   const navigate = useNavigate()
   const { data: cast } = useCast(pid)
   const { data: media } = useMediaList(pid)
-  const q = query.trim().toLowerCase()
+  // Every word typed is somewhere in the name or a keyword ("walt white",
+  // "s1 e3"); the palette's own matching orders what is left.
+  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean)
   const take = (list: ProjectEntry[]) =>
-    q
-      ? list.filter((e) => [e.label, ...e.keywords].some((w) => w.toLowerCase().includes(q))).slice(0, MATCHES)
+    words.length > 0
+      ? list
+          .filter((e) => {
+            const hay = [e.label, ...e.keywords].map((w) => w.toLowerCase())
+            return words.every((w) => hay.some((h) => h.includes(w)))
+          })
+          .slice(0, MATCHES)
       : list.slice(0, FIRST)
   const characters: Item[] = anime
     ? []

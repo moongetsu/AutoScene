@@ -4,6 +4,7 @@ use std::path::Path;
 
 use as_api::{
     AnalysisStage, FrameMap, JobKind, JobState, MediaItem, MediaStatus, ProxyState, Relink, RelinkSummary, Segment,
+    StageState,
 };
 use as_core::{MediaId, ProjectId};
 use tauri::{AppHandle, State};
@@ -125,28 +126,83 @@ pub async fn media_relink(
 ) -> AppResult<Relink> {
     let lib = state.library.clone();
     let tools = state.tools()?;
-    // Nothing goes on reading the file it was (an analysis on a drive that
-    // left, an ingest of the old path).
-    state.jobs.cancel_where(|j| j.media_id == Some(media_id));
+    let interrupted = stop_work_on(&state, &[media_id]).await?;
     let (project, relink) = blocking(move || {
         let p = lib.project(project_id)?;
         let r = p.relink(&tools, media_id, Path::new(&path), force)?;
+        if !matches!(r, Relink::Different { .. }) {
+            resume_interrupted(&p, &interrupted);
+        }
         Ok((p, r))
     })
     .await?;
     match relink {
         Relink::Different { .. } => return Ok(relink),
-        // Indexed again; the ingest queues the analysis and tells the cast.
+        // Indexed again (the ingest queues the analysis).
         Relink::Reindex => work::queue_ingest(&app, &project, media_id),
-        Relink::Same => {
-            work::queue_analysis(&app, &project, media_id);
-            // Its faces can be shown and made into portraits again.
-            work::cast_changed(&app, &project);
-        }
+        Relink::Same => found_as_it_was(&app, &project, media_id),
     }
     work::library_changed(&app, &project);
     crate::events::emit_media_changed(&app, project_id, Some(media_id));
+    // Its faces can be shown and made into portraits again, or went with
+    // an analysis the relink reset.
+    work::cast_changed(&app, &project);
     Ok(relink)
+}
+
+/// How long a relink waits for the work on the old path to stop.
+const STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// Stop every job of `media` and wait until they have ended: nothing may go
+/// on reading the old path, or record its outcome over what the relink sets.
+/// Returns the media whose analysis was under way (see `resume_interrupted`).
+async fn stop_work_on(state: &AppState, media: &[MediaId]) -> AppResult<Vec<MediaId>> {
+    let of = |j: &as_api::JobInfo| j.media_id.is_some_and(|m| media.contains(&m));
+    let interrupted: Vec<MediaId> = media
+        .iter()
+        .copied()
+        .filter(|&m| state.jobs.is_active(|j| j.kind == JobKind::Analyze && j.media_id == Some(m)))
+        .collect();
+    state.jobs.cancel_where(of);
+    let until = std::time::Instant::now() + STOP_WAIT;
+    while state.jobs.is_active(of) || media.iter().any(|m| state.analysis.lock().running.contains(m)) {
+        if std::time::Instant::now() > until {
+            return Err(AppError::new(
+                ErrorCode::NotReady,
+                "The work on this episode is still stopping. Try again in a moment.",
+            ));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    Ok(interrupted)
+}
+
+/// Analysis the relink itself stopped carries on from where it was (a stage
+/// the user had stopped stays stopped).
+fn resume_interrupted(project: &as_project::Project, media: &[MediaId]) {
+    for &id in media {
+        let Ok(m) = project.media(id) else { continue };
+        let resumed = (|| {
+            if m.shots == StageState::Stopped {
+                project.set_shots_state(id, StageState::Pending, None)?;
+            }
+            if m.faces == StageState::Stopped {
+                project.set_faces_state(id, StageState::Pending, None)?;
+            }
+            Ok::<_, as_project::ProjectError>(())
+        })();
+        if let Err(e) = resumed {
+            log::warn!("resuming the analysis of a file found again: {}", e.detail());
+        }
+    }
+}
+
+/// A file found as it was: its preview and analysis go on where they were.
+fn found_as_it_was(app: &AppHandle, project: &std::sync::Arc<as_project::Project>, media_id: MediaId) {
+    if project.media(media_id).is_ok_and(|m| m.proxy == ProxyState::Pending) {
+        work::queue_proxy(app, project, media_id);
+    }
+    work::queue_analysis(app, project, media_id);
 }
 
 /// Look for every missing episode of a project in `dir` and its folders.
@@ -168,28 +224,29 @@ pub async fn media_relink_folder(
         })
         .await?
     };
-    state.jobs.cancel_where(|j| j.media_id.is_some_and(|m| missing.contains(&m)));
-    let (project, summary, reindex) = blocking(move || {
+    let interrupted = stop_work_on(&state, &missing).await?;
+    let (project, found) = blocking(move || {
         let p = lib.project(project_id)?;
-        let (summary, reindex) = p.relink_folder(&tools, Path::new(&dir))?;
-        Ok((p, summary, reindex))
+        let found = p.relink_folder(&tools, Path::new(&dir))?;
+        let back: Vec<MediaId> =
+            interrupted.into_iter().filter(|id| found.same.contains(id) || found.reindex.contains(id)).collect();
+        resume_interrupted(&p, &back);
+        Ok((p, found))
     })
     .await?;
-    for &id in &reindex {
+    for &id in &found.reindex {
         work::queue_ingest(&app, &project, id);
     }
-    if summary.same + summary.reindex > 0 {
-        // Those found as they were: what waited for them can run.
-        for m in project.media_list().unwrap_or_default() {
-            if m.status == MediaStatus::Ready && !reindex.contains(&m.id) {
-                work::queue_analysis(&app, &project, m.id);
-            }
-        }
+    // Those found as they were: what waited for them can run.
+    for &id in &found.same {
+        found_as_it_was(&app, &project, id);
+    }
+    if !found.same.is_empty() || !found.reindex.is_empty() {
         work::library_changed(&app, &project);
         crate::events::emit_media_changed(&app, project_id, None);
         work::cast_changed(&app, &project);
     }
-    Ok(summary)
+    Ok(found.summary)
 }
 
 /// Build (or rebuild) the preview of a media that needs one.

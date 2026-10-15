@@ -78,9 +78,19 @@ describe("the ruler", () => {
     expect(near.step).toBe(60)
     expect(near.frames.map(label)).toContain("00:02:00;02")
     expect(near.frames.map(label).every((l) => l.endsWith(";00") || l === "00:02:00;02")).toBe(true)
-    // Frame steps at a skipped label don't tick one frame twice.
+    // Frame steps leave out the labels drop-frame skips: no tick crowds the next.
     const close = ticks({ t0: rel(3596), span: 0.2 }, 1000, r, frameAt, rel, counting)
     expect(new Set(close.frames).size).toBe(close.frames.length)
+    const fps60 = { num: 60000, den: 1001 }
+    const r60 = 60000 / 1001
+    const counting60 = { count: (f: number) => timecodeCount(f, fps60, true), frame: (n: number) => frameAtCount(n, fps60, true) }
+    const frameAt60 = (t: number) => Math.floor(t * r60 + 1e-6)
+    const rel60 = (f: number) => f / r60
+    const minute = ticks({ t0: 59.9, span: 0.6 }, 1000, r60, frameAt60, rel60, counting60)
+    expect(minute.step).toBe(5)
+    expect(minute.frames.every((f, i) => i === 0 || f - minute.frames[i - 1] >= 5)).toBe(true)
+    expect(minute.frames.map((f) => timecode(f, fps60, true))).toContain("00:01:00;05")
+    expect(minute.frames.map((f) => timecode(f, fps60, true))).not.toContain("00:01:00;04")
     // The whole hour, by minutes: the tenth reads ;00, the others ;02.
     const hour = ticks({ t0: 0, span: 3600 }, 1000, r, frameAt, rel, counting)
     expect(hour.frames.map(label).slice(0, 3)).toEqual(["00:00:00;00", "00:10:00;00", "00:20:00;00"])

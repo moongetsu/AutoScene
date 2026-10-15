@@ -189,7 +189,9 @@ export function usePlayer(clock: FrameClock | null) {
       const request = ++playRequest.current
       // Refused (no source yet, the format can't play): it shows as stopped.
       v.play().catch(() => {
-        if (playRequest.current === request && v.paused) setRate(0)
+        if (playRequest.current !== request || !v.paused) return
+        v.playbackRate = 1
+        setRate(0)
       })
     },
     [clock, store, go],

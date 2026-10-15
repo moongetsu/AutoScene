@@ -38,7 +38,9 @@ export function ticks(
   for (let n = Math.ceil(counting.count(frameAt(v.t0)) / step) * step; frames.length < 500; n += step) {
     const f = counting.frame(n)
     if (f > last) break
-    // Two skipped labels land on the same frame.
+    // A label drop-frame skips: in frame steps it isn't there (the frame
+    // after it would crowd its neighbour); a second or more ticks there.
+    if (step < base && counting.count(f) !== n) continue
     if (rel(f) >= v.t0 - 1e-9 && f !== frames[frames.length - 1]) frames.push(f)
   }
   return { step, frames }

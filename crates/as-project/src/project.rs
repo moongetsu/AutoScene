@@ -39,6 +39,16 @@ pub struct Recovery {
     pub posters: Vec<MediaId>,
 }
 
+/// What a folder search for missing media found ([`Project::relink_folder`]).
+#[derive(Debug, Default)]
+pub struct RelinkedFolder {
+    pub summary: RelinkSummary,
+    /// Another copy of the file: to index again.
+    pub reindex: Vec<MediaId>,
+    /// The file as it was: everything kept.
+    pub same: Vec<MediaId>,
+}
+
 /// An open project.
 pub struct Project {
     pub id: ProjectId,
@@ -221,9 +231,10 @@ impl Project {
         if same_bytes {
             return Ok(Relink::Same);
         }
-        // Not shown to be the same picture: its analysis is made again (the
-        // decisions wait for faces that look like theirs).
+        // Not shown to be the same picture: its analysis is made again, and
+        // the decisions wait for faces that look like theirs.
         if same_picture != Some(true) {
+            self.db.set_meta(&crate::cast::source_changed_key(id), "1")?;
             self.db.reset_shots(id)?;
         }
         // Not playable or cut on the old frame index meanwhile.
@@ -238,7 +249,13 @@ impl Project {
         let poster = m.poster.as_deref().map(Path::new).filter(|p| p.is_file())?;
         let index = self.frame_index(m.id).ok()?;
         let probe = self.tmp_dir().join(format!("relink-{}.jpg", m.id));
-        let src = Source { path, info, index: &index };
+        // Deinterlaced like the poster was: the field order indexing found
+        // (the stream may not say), on what `same_source` showed is the same stream.
+        let mut info = info.clone();
+        if info.video.field_order.is_none() {
+            info.video.field_order = m.info.as_ref().and_then(|i| i.video.field_order.clone());
+        }
+        let src = Source { path, info: &info, index: &index };
         let made = extract_frame_jpegs(tools, src, index.len() / 10, &[(POSTER_SMALL, &probe)], &CancelToken::new());
         let score = made.ok().and_then(|()| as_media::poster::picture_similarity(tools, poster, &probe).ok());
         let _ = std::fs::remove_file(&probe);
@@ -249,16 +266,14 @@ impl Project {
 
     /// Look for every missing media in `dir` (and its folders): by file name,
     /// then size, then episode number — each candidate only if it is the
-    /// same video ([`Self::relink`]). Returns the summary and the media to
-    /// index again.
-    pub fn relink_folder(&self, tools: &Tools, dir: &Path) -> ProjectResult<(RelinkSummary, Vec<MediaId>)> {
+    /// same video ([`Self::relink`]).
+    pub fn relink_folder(&self, tools: &Tools, dir: &Path) -> ProjectResult<RelinkedFolder> {
         let missing: Vec<MediaItem> =
             self.media_list()?.into_iter().filter(|m| m.status == MediaStatus::Missing).collect();
         let known = self.db.media_paths()?;
         let found = crate::library::scan_paths(&[dir.display().to_string()], ProjectKind::Series, &known);
         let mut used: HashSet<String> = HashSet::new();
-        let mut summary = RelinkSummary::default();
-        let mut reindex = Vec::new();
+        let mut out = RelinkedFolder::default();
         for m in &missing {
             // By file name, then size, then episode number; a few at most.
             let rank = |c: &ImportCandidate| {
@@ -293,15 +308,18 @@ impl Project {
                 }
             }
             match outcome {
-                Some(Relink::Same) => summary.same += 1,
-                Some(_) => {
-                    summary.reindex += 1;
-                    reindex.push(m.id);
+                Some(Relink::Same) => {
+                    out.summary.same += 1;
+                    out.same.push(m.id);
                 }
-                None => summary.missing += 1,
+                Some(_) => {
+                    out.summary.reindex += 1;
+                    out.reindex.push(m.id);
+                }
+                None => out.summary.missing += 1,
             }
         }
-        Ok((summary, reindex))
+        Ok(out)
     }
 
     pub fn remove_media(&self, id: MediaId) -> ProjectResult<()> {
