@@ -1,147 +1,94 @@
 # AutoScene
 
-Local Windows desktop app: drop an episode, dense GPU face scan, cluster characters, export scene packs.
+Frame-exact character scenepacks from series and movies. Add a season, let
+AutoScene cut it into shots and find who is on screen, then export every
+scene of the characters you choose as editing-ready clips.
 
-Quality-first (InsightFace `antelopev2` default). UI is a Tauri + React shell with a Python GPU API backend.
+## Download
 
-## Requirements
+Get the newest version from
+[Releases](https://github.com/tcmmi/AutoScene/releases/latest).
 
-Common to all platforms:
+| System | File |
+| --- | --- |
+| Windows 10 and 11 (x64) | `AutoScene_<version>_x64-setup.exe` |
+| macOS 13 or later on Apple Silicon | `AutoScene_<version>_aarch64.dmg` |
+| Linux (x64) | `.AppImage`, `.deb` or `.rpm` |
 
-- Python 3.11+
-- Node 20+
-- Rust (for Tauri desktop shell)
-- FFmpeg on PATH
+The builds aren't signed by a publisher yet:
 
-### Windows / Linux
+- **Windows:** SmartScreen may say it protected your PC. Choose **More info →
+  Run anyway**. The installer fetches WebView2 if it's missing.
+- **macOS:** the first launch is refused. Right-click the app and choose
+  **Open**, or run `xattr -dr com.apple.quarantine /Applications/AutoScene.app`.
+- **Linux:** make the AppImage executable (`chmod +x AutoScene_*.AppImage`).
+  WebKitGTK 4.1 is required for the `.deb` and `.rpm` packages.
 
-- **NVIDIA GPU required** (CUDA via `onnxruntime-gpu`). CPU inference is disabled.
-- Pip CUDA 13 libs: `nvidia-cublas`, `nvidia-cudnn-cu13`, `nvidia-cuda-runtime`, `nvidia-cuda-nvrtc`, `nvidia-nvjitlink` (pulled by `pip install -e .`)
+FFmpeg and ONNX Runtime ship with the app. The AI models (about 310 MB)
+download the first time an analysis needs them. Analysis runs on the GPU
+through DirectML on Windows and Core ML on macOS; on Linux it runs on the CPU.
 
-### macOS (Apple Silicon)
+## What it does
 
-- **Apple Silicon (M1 or newer).** Inference runs on the CoreML execution
-  provider; there is no `onnxruntime-gpu` build for macOS, so the CUDA wheels
-  above are skipped automatically via dependency markers.
-- Video encode/decode uses **VideoToolbox** (`h264_videotoolbox` /
-  `hevc_videotoolbox`) instead of NVENC. Homebrew's `ffmpeg` includes these.
-- Scene-cut detection falls back to **PySceneDetect** on CPU, since the
-  TransNetV2 `transnet` extra needs torch. Install the extra to use TransNetV2
-  on MPS instead.
+- **A library of series and movies**, live action and anime. Episodes are
+  numbered from their file names, and moved or renamed files can be found
+  again.
+- **Frame-exact everywhere.** Every frame is indexed from the decoder itself,
+  and each export is checked against the source frames.
+- **Shots.** A shot detector finds every cut. Transition frames belong to no
+  shot, so clips never start mid-dissolve.
+- **Characters (live action).** Faces are detected, tracked and grouped into
+  characters automatically. You name them, and you review the faces the
+  analysis wasn't sure about with one key each. Your decisions survive every
+  later analysis. Anime characters come in a later version.
+- **Scenepacks.** For each character you get their shots, filters and your own
+  picks, then one export with file names from a template.
+- **A player for editors.** It has J/K/L shuttle, frame stepping, in and out
+  points, and a zoomable timeline with shots and character lanes.
 
-## Setup
+## Build from source
 
-```bash
-cd AutoScene
-python3 -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
-python -m pip install -e .
+You need:
 
-cd ui
-npm install
-npm run build
-cd ..
-```
-
-Check GPU:
-
-```bash
-autoscene gpu
-```
-
-Windows/Linux must show `available: true` / `CUDAExecutionProvider`. If not,
-install/update NVIDIA drivers and the CUDA pip packages above.
-
-macOS should show `available: true` / `CoreMLExecutionProvider`:
-
-```json
-{
-  "available": true,
-  "name": "Apple M2",
-  "provider": "CoreMLExecutionProvider",
-  "detail": "CoreMLExecutionProvider session ok"
-}
-```
-
-A `CPUExecutionProvider` result there means CoreML could not build a session —
-it still runs, roughly 6x slower on the scan phase.
-
-Optional DeepFace A/B backend:
+- **Rust:** the nightly toolchain pinned in `rust-toolchain.toml`. `rustup`
+  installs it.
+- **Node:** version 26.
+- **Windows:** Visual Studio with the C++ tools.
+- **Linux:** the WebKitGTK development packages. See `.github/workflows/ci.yml`.
 
 ```bash
-python -m pip install -e ".[deepface]"
+cargo xtask fetch-sidecars        # pinned FFmpeg + ONNX Runtime into app/src-tauri
+cd app
+npm ci
+npm run tauri:dev                 # the app with hot reload
+npm run tauri:build               # installers in target/release/bundle
 ```
 
-## Run (Tauri desktop — recommended)
-
-From `ui/`:
+Tests:
 
 ```bash
-npm run tauri:dev
+cargo xtask fixtures              # synthetic test media
+cargo test --workspace
+cd app && npm test
 ```
 
-Tauri spawns `autoscene serve --api-only` on port 8741 and loads the React UI in a native window.
-It resolves `autoscene` from PATH, so run it from an activated virtualenv.
+## Layout
 
-One-liner from repo root (starts API if needed, then Tauri):
+| Path | What |
+| --- | --- |
+| `crates/` | The Rust core: media and frame index (`as-media`), projects and database (`as-project`, `as-db`), analysis engine and inference (`as-engine`, `as-infer`, `as-analysis`, `as-identity`), exports (`as-export`) |
+| `app/` | The desktop app: Tauri shell (`app/src-tauri`) and React UI (`app/src`) |
+| `xtask/` | Dev tasks: sidecars, fixtures, test models |
+| `models/manifest.toml` | The AI models, pinned by URL and SHA-256 |
+| `tools/model-prep/` | Dev-only Python that prepares models (never shipped) |
+| `docs/DESIGN.md` | The design system |
 
-```bash
-autoscene-desktop --tauri
-```
+`src/autoscene/` and `ui/` hold AutoScene 0.1, the Python-based version. They
+stay until this version also has its dialogue search, smart tags and frame
+interpolation.
 
-Production build:
+## Models and licences
 
-```bash
-cd ui
-export TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/autoscene-updater.key)"
-npm run tauri:build
-```
-
-The signing key is required because the build also emits updater artifacts.
-See [ui/UPDATES.md](ui/UPDATES.md).
-
-## Updates
-
-AutoScene checks for a new version on launch (macOS and Windows) and asks
-before installing anything — **Update Now**, **Update Later**, or **Remind Me
-Later**. Manual check: **AutoScene → Check for Updates…** on macOS, or
-**Settings → System → Updates** on any platform.
-
-To exercise the prompt without a release server, drop a `simulate` block in
-`~/.autoscene/updates.json` — full recipe in [ui/UPDATES.md](ui/UPDATES.md).
-
-## Run (browser dev)
-
-API only:
-
-```bash
-autoscene serve --api-only
-```
-
-Vite dev server (proxies `/api`):
-
-```bash
-cd ui
-npm run dev
-```
-
-Open http://127.0.0.1:5173
-
-Legacy pywebview shell (optional extra):
-
-```bash
-python -m pip install -e ".[desktop]"
-autoscene serve
-```
-
-## App flow
-
-1. **Import** video (InsightFace antelopev2 / buffalo_l, or DeepFace Facenet512 / ArcFace)
-2. Wait for dense scan + HDBSCAN clustering
-3. **Gallery** pick character, rename
-4. **Timeline** review segments with video preview
-5. **Export** per-person clip folder under `~/.autoscene/projects/<id>/exports/`
-   (`%USERPROFILE%\.autoscene\...` on Windows)
-
-## License note
-
-InsightFace **code** is MIT. Pretrained packs (`antelopev2`, `buffalo_l`, DeepFace `Buffalo_L`) are typically **non-commercial research** unless you obtain InsightFace commercial rights or use self-trained weights. AutoScene is for personal/research use with those packs.
+The face models come from InsightFace and may only be used non-commercially.
+The shot detector, TransNetV2, is MIT-licensed. `models/manifest.toml` lists
+the source and licence of each model.

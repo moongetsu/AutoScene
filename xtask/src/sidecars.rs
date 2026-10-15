@@ -3,7 +3,8 @@
 //!
 //! - `ffmpeg/`: ffmpeg + ffprobe (media layer, exports);
 //! - `onnxruntime/`: ONNX Runtime for the analysis engine (DirectML on
-//!   Windows, CoreML via the stock build on macOS). On Windows the folder also
+//!   Windows, CoreML via the stock build on macOS, the CPU on Linux). On
+//!   Windows the folder also
 //!   gets the Visual C++ runtime DLLs ONNX Runtime links against, app-local
 //!   (Microsoft allows redistributing them this way), so the engine starts on
 //!   PCs that never installed the VC++ Redistributable.
@@ -46,6 +47,9 @@ struct Bundle {
     required: &'static [(&'static str, bool)],
     /// Copy the Visual C++ runtime DLLs in (Windows; from the local Visual Studio).
     vc_runtime: bool,
+    /// The programs and libraries look for their libraries beside them
+    /// (Linux builds that expect a `../lib` folder; see `libraries_beside`).
+    libs_beside: bool,
 }
 
 /// What ONNX Runtime imports from the Visual C++ runtime.
@@ -64,6 +68,7 @@ const BUNDLES: &[Bundle] = &[
         }],
         required: &[("ffmpeg.exe", true), ("ffprobe.exe", true)],
         vc_runtime: false,
+        libs_beside: false,
     },
     Bundle {
         dir: "onnxruntime",
@@ -93,6 +98,7 @@ const BUNDLES: &[Bundle] = &[
             ("vcruntime140_1.dll", false),
         ],
         vc_runtime: true,
+        libs_beside: false,
     },
 ];
 
@@ -115,6 +121,7 @@ const BUNDLES: &[Bundle] = &[
         ],
         required: &[("ffmpeg", true), ("ffprobe", true)],
         vc_runtime: false,
+        libs_beside: false,
     },
     Bundle {
         dir: "onnxruntime",
@@ -129,10 +136,53 @@ const BUNDLES: &[Bundle] = &[
         }],
         required: &[("libonnxruntime.dylib", false)],
         vc_runtime: false,
+        libs_beside: false,
     },
 ];
 
-#[cfg(not(any(windows, target_os = "macos")))]
+/// The libraries FFmpeg's programs load, by the names they ask for.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const FFMPEG_LIBS: &[(&str, &str)] = &[
+    ("ffmpeg-n9.0.2-27-g7e93014c5b-linux64-gpl-shared-9.0/bin/ffmpeg", "ffmpeg"),
+    ("ffmpeg-n9.0.2-27-g7e93014c5b-linux64-gpl-shared-9.0/bin/ffprobe", "ffprobe"),
+    ("ffmpeg-n9.0.2-27-g7e93014c5b-linux64-gpl-shared-9.0/lib/libavcodec.so.63", "libavcodec.so.63"),
+    ("ffmpeg-n9.0.2-27-g7e93014c5b-linux64-gpl-shared-9.0/lib/libavdevice.so.63", "libavdevice.so.63"),
+    ("ffmpeg-n9.0.2-27-g7e93014c5b-linux64-gpl-shared-9.0/lib/libavfilter.so.12", "libavfilter.so.12"),
+    ("ffmpeg-n9.0.2-27-g7e93014c5b-linux64-gpl-shared-9.0/lib/libavformat.so.63", "libavformat.so.63"),
+    ("ffmpeg-n9.0.2-27-g7e93014c5b-linux64-gpl-shared-9.0/lib/libavutil.so.61", "libavutil.so.61"),
+    ("ffmpeg-n9.0.2-27-g7e93014c5b-linux64-gpl-shared-9.0/lib/libswresample.so.7", "libswresample.so.7"),
+    ("ffmpeg-n9.0.2-27-g7e93014c5b-linux64-gpl-shared-9.0/lib/libswscale.so.10", "libswscale.so.10"),
+];
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const BUNDLES: &[Bundle] = &[
+    Bundle {
+        dir: "ffmpeg",
+        // BtbN FFmpeg-Builds, release 9.0.2, GPL, shared libraries (as on Windows).
+        archives: &[Archive {
+            url: "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-13-13-05/ffmpeg-n9.0.2-27-g7e93014c5b-linux64-gpl-shared-9.0.tar.xz",
+            sha256: "9021fc847d154f66581f1620e51fdb052aa84f5c434cf7f79bbe08f61260e3f2",
+            pick: Pick::Files(FFMPEG_LIBS),
+        }],
+        required: &[("ffmpeg", true), ("ffprobe", true)],
+        vc_runtime: false,
+        libs_beside: true,
+    },
+    Bundle {
+        dir: "onnxruntime",
+        // Microsoft's linux-x64 build (CPU).
+        archives: &[Archive {
+            url: "https://github.com/microsoft/onnxruntime/releases/download/v1.31.0/onnxruntime-linux-x64-1.31.0.tgz",
+            sha256: "cc5c72baf5ae5c8238a6841f0897227be2d02826b9cf98eaf02fdefaeeb03a57",
+            pick: Pick::Files(&[("onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so.1.31.0", "libonnxruntime.so")]),
+        }],
+        required: &[("libonnxruntime.so", false)],
+        vc_runtime: false,
+        libs_beside: false,
+    },
+];
+
+#[cfg(not(any(windows, target_os = "macos", all(target_os = "linux", target_arch = "x86_64"))))]
 const BUNDLES: &[Bundle] = &[];
 
 /// Written into each folder last; lists the archive hashes it was built from.
@@ -220,6 +270,13 @@ fn fetch_bundle(b: &Bundle, dest: &Path) -> Result<()> {
         }
         println!("Visual C++ runtime from {}", dir.display());
     }
+    if b.libs_beside {
+        // The programs load every library themselves (the libraries carry no
+        // run path: what they need is loaded by then).
+        for (name, _) in b.required.iter().filter(|(_, runs)| *runs) {
+            libraries_beside(&staging.join(name))?;
+        }
+    }
     for (name, runs) in b.required {
         let p: PathBuf = staging.join(name);
         if !p.is_file() {
@@ -293,6 +350,29 @@ fn vc_runtime_dir() -> Result<PathBuf> {
         .rev()
         .find_map(|v| crt_in(v))
         .with_context(|| format!("no x64 Visual C++ runtime under {}", msvc.display()))
+}
+
+/// Linux builds that find their libraries in `$ORIGIN/../lib` (a `bin` and
+/// a `lib` folder) find them beside themselves instead, in the one folder
+/// the bundle keeps. The run path is a NUL-terminated string in the ELF
+/// file's dynamic string table, where the entry points to its start:
+/// shortened in place and padded with NULs, it reads `$ORIGIN`.
+fn libraries_beside(path: &Path) -> Result<()> {
+    const FROM: &[u8] = b"$ORIGIN/../lib\0";
+    const TO: &[u8] = b"$ORIGIN\0\0\0\0\0\0\0\0";
+    let mut bytes = fs::read(path)?;
+    let mut found = 0;
+    let mut at = 0;
+    while let Some(i) = bytes[at..].windows(FROM.len()).position(|w| w == FROM) {
+        bytes[at + i..at + i + TO.len()].copy_from_slice(TO);
+        at += i + TO.len();
+        found += 1;
+    }
+    if found == 0 {
+        bail!("{} doesn't look for its libraries in $ORIGIN/../lib", path.display());
+    }
+    fs::write(path, &bytes)?;
+    Ok(())
 }
 
 #[cfg(not(windows))]
