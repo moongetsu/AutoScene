@@ -28,13 +28,16 @@ export const PackCard = memo(function PackCard({
   clip: PackClip
   index: number
   media?: MediaItem
-  onToggle: (index: number, range: boolean) => void
+  onToggle: (index: number, range: boolean, byKey?: boolean) => void
   onOpen: (index: number) => void
 }) {
   const scrub = useScrub(clip.shot)
   const fps = media?.fps
-  const length = fps ? formatShotLength(((clip.end - clip.start) * fps.den) / fps.num) : ""
-  const where = fps ? `${media?.label ? `${media.label} · ` : ""}${timecode(clip.start, fps, false)}` : ""
+  // The shot itself, as the filters judge it (handles only widen the clip).
+  const { start, end } = clip.shot
+  const length = fps ? formatShotLength(((end - start) * fps.den) / fps.num) : ""
+  // Drop-frame where the rate counts it, like the files' names.
+  const where = fps ? `${media?.label ? `${media.label} · ` : ""}${timecode(start, fps, true)}` : ""
   const why = clip.included ? null : clip.reason ? REASONS[clip.reason] : "Left out"
   const canPick = pickable(clip)
 
@@ -45,11 +48,13 @@ export const PackCard = memo(function PackCard({
         aria-pressed={clip.included}
         disabled={!canPick}
         onClick={(e) => onToggle(index, e.shiftKey)}
+        data-pack-index={index}
         onKeyDown={(e) => {
           const id = matchShortcut(PACK_SHORTCUTS, e.nativeEvent)
           if (id === "toggle") {
             e.preventDefault()
-            onToggle(index, e.shiftKey)
+            // A held key would take the shot in and out again and again.
+            if (!e.repeat) onToggle(index, e.shiftKey, true)
           } else if (id === "watch") {
             e.preventDefault()
             onOpen(index)

@@ -701,7 +701,7 @@ impl Project {
             }
         }
         let sizes = presets.iter().zip(sizes).map(|(p, bytes)| PresetSize { preset_id: p.id.clone(), bytes }).collect();
-        Ok(ExportPlan { names, sizes })
+        Ok(ExportPlan { names, sizes, folder: None })
     }
 
     /// Mark an export failed before it could start (e.g. ffmpeg missing).

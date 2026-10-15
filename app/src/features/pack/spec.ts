@@ -127,15 +127,26 @@ export function withIncluded(
   included: boolean,
   fpsOf: (mediaId: string) => number | null,
 ): PackPreview {
-  const keys = new Set(clips.filter(pickable).map(keyOf))
-  if (keys.size === 0) return p
+  return withPicks(p, new Map(clips.map((c) => [keyOf(c), included])), fpsOf)
+}
+
+/** The preview with shots (by [`keyOf`]) taken in or out; the same preview when nothing changes. */
+export function withPicks(
+  p: PackPreview,
+  picks: ReadonlyMap<string, boolean>,
+  fpsOf: (mediaId: string) => number | null,
+): PackPreview {
+  if (picks.size === 0) return p
+  let changed = false
   const next = p.clips.map((c) => {
-    if (!keys.has(keyOf(c)) || c.included === included) return c
+    const included = picks.get(keyOf(c))
+    if (included === undefined || c.included === included || !pickable(c)) return c
+    changed = true
     const manual = c.byRules === included ? null : included
     const reason: PackReason | null = included ? null : manual === false ? "removed" : null
     return { ...c, included, manual, reason }
   })
-  return { ...p, clips: next, totals: totalsOf(next, fpsOf) }
+  return changed ? { ...p, clips: next, totals: totalsOf(next, fpsOf) } : p
 }
 
 export function totalsOf(clips: PackClip[], fpsOf: (mediaId: string) => number | null): PackPreview["totals"] {

@@ -25,13 +25,6 @@ const TOKENS = [
   { token: "{frame}", label: "Frame" },
 ]
 
-/** How the character's folder is named (as the backend's `safe_component`, for showing it). */
-const folderName = (label: string) =>
-  label
-    .replace(/[<>:"/\\|?*\p{Cc}]+/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-
 /** Name the pack's files, choose format and place, and export exactly the shots the grid shows. */
 export function PackExportDialog({
   pid,
@@ -72,7 +65,9 @@ function ExportForm({ pid, character, pack, onDone }: { pid: string; character: 
   const problem = pack.plan.isError ? errorMessage(pack.plan.error) : null
   const base = dir ?? defaultDir ?? ""
   const sep = base.includes("\\") ? "\\" : "/"
-  const outDir = naming.folder && base ? `${base.replace(/[\\/]+$/, "")}${sep}${folderName(character.label)}` : base
+  // The character's folder as the backend names it.
+  const folder = naming.folder ? pack.plan.data?.folder : null
+  const outDir = folder && base ? `${base.replace(/[\\/]+$/, "")}${sep}${folder}` : base
 
   const insert = (token: string) => {
     const el = template.current
@@ -101,6 +96,9 @@ function ExportForm({ pid, character, pack, onDone }: { pid: string; character: 
       })
     } catch (e) {
       toast.error("Couldn't start the export", { description: errorMessage(e) })
+      // Refused because the pack changed (a file gone, an analysis done):
+      // show it as it is now.
+      void queryClient.invalidateQueries({ queryKey: qk.pack(pid, character.id) })
     } finally {
       setBusy(false)
     }
@@ -133,7 +131,9 @@ function ExportForm({ pid, character, pack, onDone }: { pid: string; character: 
                       {n}
                     </span>
                   ))}
-                  {names.length > 3 && <span className="text-fg-3">and {(names.length - 3).toLocaleString("en-GB")} more</span>}
+                  {clips > names.length && (
+                    <span className="text-fg-3">and {(clips - names.length).toLocaleString("en-GB")} more</span>
+                  )}
                 </span>
               )
             )

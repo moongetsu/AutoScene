@@ -39,6 +39,8 @@ export function startEventBridge(): () => void {
     events.mediaChanged.listen(({ payload }) => {
       void queryClient.invalidateQueries({ queryKey: qk.media(payload.projectId) })
       void queryClient.invalidateQueries({ queryKey: qk.project(payload.projectId) })
+      // A file gone or back, indexed again: the packs cut from it change.
+      void queryClient.invalidateQueries({ queryKey: [...qk.cast(payload.projectId), "pack"] })
       const key = payload.mediaId
         ? qk.frameMap(payload.projectId, payload.mediaId)
         : (["frameMap", payload.projectId] as const)
@@ -50,8 +52,8 @@ export function startEventBridge(): () => void {
     events.castChanged.listen(({ payload }) => {
       // Prefix match: the cast, its track lists, presence lanes and clip lists.
       void queryClient.invalidateQueries({ queryKey: qk.cast(payload.projectId) })
-      // Faces found again may reuse track numbers: portraits are asked for
-      // again when next shown, not now (the face on screen stays).
+      // Portraits may have been made anew: they are asked for again when
+      // next shown, not now (the face on screen stays).
       void queryClient.invalidateQueries({ queryKey: qk.portraits(payload.projectId), refetchType: "none" })
     }),
     events.portraitsChanged.listen(({ payload }) => {

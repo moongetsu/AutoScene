@@ -171,6 +171,10 @@ export function packNames(
   })
 }
 
-export function packPlan(names: string[], preview: PackPreview, sizes: Record<string, number>): ExportPlan {
-  return { names, sizes: Object.entries(sizes).map(([presetId, perFrame]) => ({ presetId, bytes: (preview.totals.frames ?? 0) * perFrame })) }
+export function packPlan(names: string[], preview: PackPreview, sizes: Record<string, number>, folder: string | null): ExportPlan {
+  return {
+    names,
+    sizes: Object.entries(sizes).map(([presetId, perFrame]) => ({ presetId, bytes: (preview.totals.frames ?? 0) * perFrame })),
+    folder,
+  }
 }

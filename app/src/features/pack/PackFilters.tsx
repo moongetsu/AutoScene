@@ -36,7 +36,7 @@ export function PackFilters({
 
   return (
     <div
-      role="toolbar"
+      role="group"
       aria-label="Filters"
       className="sticky top-[var(--topbar-h)] z-10 flex flex-wrap items-center gap-2 border-b border-hairline bg-canvas/80 px-10 py-3 backdrop-blur-2xl backdrop-saturate-150"
     >

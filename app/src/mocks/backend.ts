@@ -407,6 +407,7 @@ function exportPlan(p: MockProject, clips: ClipRequest[]): ExportPlan {
   return {
     names: clips.map((c) => clipName(p, c)),
     sizes: presets.map((pr) => ({ presetId: pr.id, bytes: frames * (BYTES_PER_FRAME[pr.id] ?? 2e5) })),
+    folder: null,
   }
 }
 
@@ -611,7 +612,9 @@ const handlers: Record<string, Handler> = {
     if (problem) throw { code: "invalid", message: problem }
     const p = find(projectId)
     const preview = packPreview(p.id, String(characterId), spec as PackSpec, p.media, SEGMENTS)
-    return packPlan(packNames(p.id, String(characterId), p.title, preview, naming as PackNaming, p.media, tcName), preview, BYTES_PER_FRAME)
+    const names = packNames(p.id, String(characterId), p.title, preview, naming as PackNaming, p.media, tcName)
+    const folder = (naming as PackNaming).folder ? characterLabel(p.id, String(characterId)) : null
+    return packPlan(names.slice(0, 3), preview, BYTES_PER_FRAME, folder)
   },
   pack_export: ({ projectId, characterId, req }) => {
     const p = find(projectId)

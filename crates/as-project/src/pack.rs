@@ -35,6 +35,8 @@ const W_SOLO: f32 = 0.05;
 const FULL_SIZE: f32 = 0.45;
 /// Shot lengths that cut well into an edit, in seconds.
 const GOOD_LENGTH: (f64, f64) = (1.0, 6.0);
+/// Names a plan shows of a pack's files (the export dialog lists the first few).
+const PLAN_NAMES: usize = 3;
 
 /// How well a shot of `seconds` cuts into an edit: 1 inside the good range,
 /// falling off outside it.
@@ -85,8 +87,18 @@ impl Project {
     /// Pick (`Some(true)`), drop (`Some(false)`) or hand back to the filters
     /// (`None`) these shots of a character's pack.
     pub fn set_pack_overrides(&self, c: CharacterId, shots: &[PackKey], include: Option<bool>) -> ProjectResult<()> {
-        let shots: Vec<(MediaId, FrameIdx)> = shots.iter().map(|k| (k.media_id, k.shot)).collect();
-        if !self.db().set_pack_overrides(c, &shots, include)? {
+        // A pick is kept on the frame its shot starts at. When the shot was
+        // found again since, an older pick lies inside it: it goes too.
+        let now = shots_of(c, &self.db().pack_rows(c)?);
+        let spans: Vec<(MediaId, FrameIdx, FrameIdx)> = shots
+            .iter()
+            .map(|k| {
+                now.iter()
+                    .find(|s| s.media == k.media_id && s.start == k.shot)
+                    .map_or((k.media_id, k.shot, k.shot + 1), |s| (s.media, s.start, s.end))
+            })
+            .collect();
+        if !self.db().set_pack_overrides(c, &spans, include)? {
             return Err(gone());
         }
         Ok(())
@@ -99,7 +111,8 @@ impl Project {
         Ok(PackPreview { clips, totals, stamp })
     }
 
-    /// The names the pack's files get (in its order) and its size per preset.
+    /// The first names the pack's files get (in its order), the character's
+    /// folder and the pack's size per preset.
     pub fn pack_plan(
         &self,
         c: CharacterId,
@@ -118,9 +131,14 @@ impl Project {
                 *size += estimate_bytes(preset, info, media.audio_ordinal, u64::from(clip.end - clip.start), seconds);
             }
         }
+        let folder = match naming.folder {
+            true => Some(safe_component(&self.db().character_label(c)?.ok_or_else(gone)?, " ", 80)),
+            false => None,
+        };
         Ok(ExportPlan {
-            names: clips.into_iter().filter_map(|c| c.name).collect(),
+            names: clips.into_iter().filter_map(|c| c.name).take(PLAN_NAMES).collect(),
             sizes: presets.iter().zip(sizes).map(|(p, bytes)| PresetSize { preset_id: p.id.clone(), bytes }).collect(),
+            folder,
         })
     }
 
@@ -417,10 +435,19 @@ fn make(
     // stay on top of it and don't take a place. A missing file can't be
     // picked back in: there is nothing to cut from.
     if let Some(limit) = spec.limit {
+        let limit = limit as usize;
+        let ahead = |a: usize, b: usize| cands[b].clip.score.total_cmp(&cands[a].clip.score).then(a.cmp(&b));
         let mut kept: Vec<usize> =
             (0..cands.len()).filter(|&i| cands[i].rule.is_none() && cands[i].clip.manual.is_none()).collect();
-        kept.sort_by(|&a, &b| cands[b].clip.score.total_cmp(&cands[a].clip.score).then(a.cmp(&b)));
-        for &i in kept.iter().skip(limit as usize) {
+        kept.sort_by(|&a, &b| ahead(a, b));
+        let past: Vec<usize> = kept.iter().skip(limit).copied().collect();
+        // A pick by hand takes no place; the filters alone would take it
+        // if it made the limit without the pick.
+        let picked_past: Vec<usize> = (0..cands.len())
+            .filter(|&i| cands[i].rule.is_none() && cands[i].clip.manual.is_some())
+            .filter(|&i| kept.iter().filter(|&&k| ahead(k, i).is_lt()).count() >= limit)
+            .collect();
+        for i in past.into_iter().chain(picked_past) {
             cands[i].clip.by_rules = false;
             cands[i].rule = Some(PackReason::Limit);
         }
@@ -430,9 +457,10 @@ fn make(
         let clip = &mut cand.clip;
         clip.included = !missing && clip.manual.unwrap_or(cand.rule.is_none());
         clip.reason = match clip.manual {
+            _ if missing => Some(PackReason::Missing),
             Some(false) => Some(PackReason::Removed),
-            Some(true) if !missing => None,
-            _ => cand.rule,
+            Some(true) => None,
+            None => cand.rule,
         };
     }
 
@@ -608,6 +636,9 @@ mod tests {
         let v = preview(&p, &with(|s| (s.handles, s.skip_tiny) = (30, false)));
         let ranges: Vec<_> = v.clips.iter().map(|c| (c.start, c.end)).collect();
         assert_eq!(ranges, [(0, 78), (18, 80), (20, 320), (260, 440)]);
+        // Handles longer than what is left end at the episode's last frame.
+        let v = preview(&p, &with(|s| s.handles = 2100));
+        assert_eq!((clip(&v, 0).start, clip(&v, 290).end), (0, FRAMES));
         // The filters look at the shot itself, not its handles.
         let v = preview(&p, &with(|s| (s.handles, s.min_sec) = (30, Some(3.0))));
         assert_eq!(starts(&v, true), [50, 290]);
@@ -635,6 +666,35 @@ mod tests {
     }
 
     #[test]
+    fn under_a_limit_a_pick_by_hand_knows_what_the_limit_would_say() {
+        let p = pack();
+        let limit = with(|s| s.limit = Some(1));
+        // The shot at 0 is past the limit; picked, it is in, and the
+        // filters alone would still leave it out.
+        let key = PackKey { media_id: p.media, shot: 0 };
+        p.project.set_pack_overrides(p.walter, &[key], Some(true)).unwrap();
+        let v = preview(&p, &limit);
+        assert_eq!((clip(&v, 0).included, clip(&v, 0).by_rules, clip(&v, 0).reason), (true, false, None));
+        // Taken out again: back to the filters, past the limit — no pick left.
+        p.project.set_pack_overrides(p.walter, &[key], None).unwrap();
+        let v = preview(&p, &limit);
+        assert_eq!((clip(&v, 0).manual, clip(&v, 0).reason), (None, Some(PackReason::Limit)));
+        // The best shot picked by hand would make the limit anyway.
+        p.project.set_pack_overrides(p.walter, &[PackKey { media_id: p.media, shot: 50 }], Some(true)).unwrap();
+        assert!(clip(&preview(&p, &limit), 50).by_rules);
+    }
+
+    #[test]
+    fn a_missing_file_says_so_even_for_a_pick() {
+        let p = pack();
+        p.project.set_pack_overrides(p.walter, &[PackKey { media_id: p.media, shot: 50 }], Some(false)).unwrap();
+        p.project.set_pack_overrides(p.walter, &[PackKey { media_id: p.media, shot: 0 }], Some(true)).unwrap();
+        std::fs::remove_file(p.project.media(p.media).unwrap().path).unwrap();
+        let v = preview(&p, &PackSpec::default());
+        assert!(v.clips.iter().all(|c| !c.included && c.reason == Some(PackReason::Missing)), "{:?}", v.clips);
+    }
+
+    #[test]
     fn hand_picks_follow_a_shot_found_again() {
         let p = pack();
         p.project.set_pack_overrides(p.walter, &[PackKey { media_id: p.media, shot: 290 }], Some(false)).unwrap();
@@ -645,6 +705,11 @@ mod tests {
         p.project.finish_faces(p.media).unwrap();
         let v = preview(&p, &PackSpec::default());
         assert_eq!(clip(&v, 280).reason, Some(PackReason::Removed), "the pick moved with its shot");
+        // And it can be undone where the shot is now.
+        p.project.set_pack_overrides(p.walter, &[PackKey { media_id: p.media, shot: 280 }], None).unwrap();
+        let v = preview(&p, &PackSpec::default());
+        assert_eq!((clip(&v, 280).manual, clip(&v, 280).included), (None, true));
+        assert!(p.project.db().pack_overrides(p.walter).unwrap().is_empty());
     }
 
     #[test]

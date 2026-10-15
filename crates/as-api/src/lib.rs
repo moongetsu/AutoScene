@@ -563,6 +563,9 @@ pub struct ExportPlan {
     pub names: Vec<String>,
     /// Roughly how big it would be with each preset.
     pub sizes: Vec<PresetSize>,
+    /// The folder the files go into inside the destination (a scenepack's
+    /// folder named after its character), as it will be named.
+    pub folder: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]

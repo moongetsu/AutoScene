@@ -103,20 +103,31 @@ function Builder({
 
   // The cards call back with their index; these read the latest list (so
   // the cards, memoised, needn't draw again when it changes).
-  const latest = useRef({ visible, setIncluded: pack.setIncluded })
+  const latest = useRef({ visible, setIncluded: pack.setIncluded, show })
   useLayoutEffect(() => {
-    latest.current = { visible, setIncluded: pack.setIncluded }
+    latest.current = { visible, setIncluded: pack.setIncluded, show }
   })
   // The last card clicked: Shift+click takes every shot from it.
   const anchor = useRef<string | null>(null)
-  const toggle = useCallback((index: number, range: boolean) => {
-    const { visible, setIncluded } = latest.current
+  const toggle = useCallback((index: number, range: boolean, byKey?: boolean) => {
+    const { visible, setIncluded, show } = latest.current
     const clip = visible[index]
     if (!clip) return
     const included = !clip.included
     const from = range ? anchor.current : null
     anchor.current = keyOf(clip)
     void setIncluded(from ? between(visible, from, keyOf(clip)) : [clip], included)
+    // In the pack's or the left-out view the card leaves the grid: the
+    // keyboard goes on with the one that takes its place.
+    if (byKey && show !== "all") {
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => {
+          const cards = document.querySelectorAll<HTMLElement>("[data-pack-index]")
+          const next = [...cards].find((c) => c.dataset.packIndex === String(index)) ?? cards[cards.length - 1]
+          next?.focus()
+        }),
+      )
+    }
   }, [])
   const open = useCallback(
     (index: number) => {

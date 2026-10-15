@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import type { PackClip, PackPreview } from "@/bindings"
-import { DEFAULT_SPEC, between, isDefault, keyOf, lengthOf, picksFor, shown, totalsOf, withIncluded } from "./spec"
+import { DEFAULT_SPEC, between, isDefault, keyOf, lengthOf, picksFor, shown, totalsOf, withIncluded, withPicks } from "./spec"
 
 const clip = (start: number, more: Partial<PackClip> = {}): PackClip => {
   const byRules = more.byRules ?? true
@@ -64,6 +64,16 @@ describe("picks", () => {
     const added = withIncluded(p, [list[2]], true, () => 24)
     expect(added.clips[2]).toMatchObject({ included: true, manual: true })
     expect(added.totals.clips).toBe(3)
+  })
+
+  it("lays clicks not yet made part of the pack over any pack that arrives", () => {
+    const p = preview([clip(0), clip(100), clip(200, { reason: "missing", included: false })])
+    expect(withPicks(p, new Map(), () => 24)).toBe(p)
+    // Nothing to change (already so, or a missing file): the same pack.
+    expect(withPicks(p, new Map([[keyOf(p.clips[0]), true], [keyOf(p.clips[2]), true]]), () => 24)).toBe(p)
+    const out = withPicks(p, new Map([[keyOf(p.clips[1]), false]]), () => 24)
+    expect(out.clips[1]).toMatchObject({ included: false, manual: false, reason: "removed" })
+    expect(out.totals.clips).toBe(1)
   })
 
   it("splits the grid into what the pack takes and what it leaves", () => {

@@ -393,6 +393,11 @@ export type ExportPlan = {
 	names: string[],
 	/**  Roughly how big it would be with each preset. */
 	sizes: PresetSize[],
+	/**
+	 *  The folder the files go into inside the destination (a scenepack's
+	 *  folder named after its character), as it will be named.
+	 */
+	folder: string | null,
 };
 
 export type ExportPreset = {
