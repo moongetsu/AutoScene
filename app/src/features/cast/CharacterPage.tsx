@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Link, useNavigate, useParams } from "@tanstack/react-router"
 import {
   ArrowLeft,
@@ -38,6 +38,7 @@ import { Input } from "@/components/ui/input"
 import { Page } from "@/components/ui/page"
 import { Segmented } from "@/components/ui/segmented"
 import { TopBar } from "@/components/ui/topbar"
+import { VirtualGrid } from "@/components/ui/virtual-grid"
 import { ExportDialog, type ExportClip } from "@/features/export/ExportDialog"
 import { ProjectLoadError } from "@/features/project/ProjectLoadError"
 import { ShotCard } from "@/features/shots/ShotCard"
@@ -104,8 +105,11 @@ export function CharacterPage() {
     { enabled: view === "faces" },
   )
 
-  const open = (t: { mediaId: string; start: number }) =>
-    void navigate({ to: "/p/$pid/timeline/$mid", params: { pid, mid: t.mediaId }, search: { f: t.start } })
+  const open = useCallback(
+    (t: { mediaId: string; start: number }) =>
+      void navigate({ to: "/p/$pid/timeline/$mid", params: { pid, mid: t.mediaId }, search: { f: t.start } }),
+    [navigate, pid],
+  )
 
   const toolbar = (
     <TopBar overlay back={{ label: "Cast", to: `/p/${pid}/cast` }} title={everyone ? "Everyone else" : (character?.label ?? " ")} />
@@ -299,11 +303,13 @@ function Shots({
       <p className="mb-4 text-sm text-fg-3">
         {plural(list.length, "shot")} · {formatShotLength(seconds)} in all · hover to scrub, click to watch
       </p>
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-4">
-        {list.map((s) => (
-          <ShotCard key={`${s.mediaId}:${s.start}`} shot={s} media={media.get(s.mediaId)} onOpen={onOpen} />
-        ))}
-      </div>
+      <VirtualGrid
+        items={list}
+        minItemWidth={240}
+        itemHeight={(w) => (w * 9) / 16}
+        getKey={(s) => `${s.mediaId}:${s.start}`}
+        renderItem={(s) => <ShotCard shot={s} media={media.get(s.mediaId)} onOpen={onOpen} />}
+      />
     </>
   )
 }

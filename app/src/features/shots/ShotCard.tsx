@@ -42,7 +42,7 @@ export const ShotCard = memo(function ShotCard({
       aria-label={`Shot${where ? ` at ${where}` : ""}${length ? `, ${length}` : ""}`}
       title={where ? `${where} · click to watch` : undefined}
       className={cn(
-        "group relative aspect-video overflow-hidden rounded-xl bg-inset text-left outline-none picture-edge",
+        "group relative block aspect-video w-full overflow-hidden rounded-xl bg-inset text-left outline-none picture-edge",
         "transition-[transform,box-shadow] duration-[var(--dur-med)] ease-out",
         "hover:-translate-y-0.5 hover:shadow-lift focus-visible:ring-2 focus-visible:ring-accent-line",
       )}

@@ -1,12 +1,15 @@
-import { memo, useRef } from "react"
+import { memo, useCallback, useLayoutEffect, useRef } from "react"
 import { Check } from "@/components/icons"
 import type { FaceTrackItem, MediaItem } from "@/bindings"
+import { VirtualGrid } from "@/components/ui/virtual-grid"
+import { clickSelect } from "@/lib/grid"
 import { assetUrl } from "@/lib/media"
 import { timecode } from "@/lib/timecode"
 import { cn } from "@/lib/utils"
 
 /**
- * Face tracks as a grid of thumbnails. Click selects (Shift extends the
+ * Face tracks as a grid of thumbnails (only the rows on screen are drawn:
+ * "Everyone else" can hold thousands). Click selects (Shift extends the
  * range, Ctrl/⌘ toggles one), double-click opens the moment in the player.
  */
 export function FaceGrid({
@@ -25,68 +28,74 @@ export function FaceGrid({
   size?: number
 }) {
   const anchor = useRef<number | null>(null)
-
-  const click = (i: number, e: React.MouseEvent) => {
-    const id = tracks[i].id
-    const next = new Set(selected)
-    if (e.shiftKey && anchor.current != null) {
-      const a = tracks.findIndex((t) => t.id === anchor.current)
-      const [lo, hi] = a < 0 ? [i, i] : [Math.min(a, i), Math.max(a, i)]
-      for (let k = lo; k <= hi; k++) next.add(tracks[k].id)
-    } else if (e.ctrlKey || e.metaKey || selected.size > 0) {
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      anchor.current = id
-    } else {
-      next.add(id)
-      anchor.current = id
-    }
-    onSelect(next)
-  }
+  // The faces call back with their index; the latest list and selection
+  // answer, so a face only redraws when its own picture or state changes.
+  const latest = useRef({ tracks, selected, onSelect, onOpen })
+  useLayoutEffect(() => {
+    latest.current = { tracks, selected, onSelect, onOpen }
+  })
+  const pick = useCallback((index: number, e: React.MouseEvent) => {
+    const { tracks, selected, onSelect } = latest.current
+    const ids = tracks.map((t) => t.id)
+    const next = clickSelect(ids, selected, anchor.current, index, { shift: e.shiftKey, toggle: e.ctrlKey || e.metaKey })
+    anchor.current = next.anchor
+    onSelect(next.selected)
+  }, [])
+  const open = useCallback((index: number) => {
+    const t = latest.current.tracks[index]
+    if (t) latest.current.onOpen(t)
+  }, [])
 
   return (
-    <div className="grid gap-3" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${size}px, 1fr))` }}>
-      {tracks.map((t, i) => (
+    <VirtualGrid
+      items={tracks}
+      minItemWidth={size}
+      itemHeight={(w) => w}
+      gap={12}
+      getKey={(t) => t.id}
+      renderItem={(t, index) => (
         <Face
-          key={t.id}
           track={t}
+          index={index}
           media={media.get(t.mediaId)}
           selected={selected.has(t.id)}
-          onClick={(e) => click(i, e)}
-          onOpen={() => onOpen(t)}
+          onPick={pick}
+          onOpen={open}
         />
-      ))}
-    </div>
+      )}
+    />
   )
 }
 
 const Face = memo(function Face({
   track: t,
+  index,
   media: m,
   selected,
-  onClick,
+  onPick,
   onOpen,
 }: {
   track: FaceTrackItem
+  index: number
   media?: MediaItem
   selected: boolean
-  onClick: (e: React.MouseEvent) => void
-  onOpen: () => void
+  onPick: (index: number, e: React.MouseEvent) => void
+  onOpen: (index: number) => void
 }) {
   const where = m?.fps ? `${m.label ? `${m.label} · ` : ""}${timecode(t.start, m.fps, false)}` : ""
   return (
     <button
       type="button"
-      onClick={onClick}
-      onDoubleClick={onOpen}
+      onClick={(e) => onPick(index, e)}
+      onDoubleClick={() => onOpen(index)}
       onKeyDown={(e) => {
-        if (e.key === "Enter") onOpen()
+        if (e.key === "Enter") onOpen(index)
       }}
       aria-pressed={selected}
       aria-label={`Face${where ? ` at ${where}` : ""}`}
       title={where ? `${where} · double-click to watch` : undefined}
       className={cn(
-        "group relative aspect-square overflow-hidden rounded-xl bg-inset outline-none picture-edge",
+        "group relative block aspect-square w-full overflow-hidden rounded-xl bg-inset outline-none picture-edge",
         "ring-offset-2 ring-offset-canvas transition-[box-shadow,opacity,transform] duration-[var(--dur-fast)]",
         "focus-visible:ring-2 focus-visible:ring-accent-line",
         selected ? "scale-[0.96] ring-2 ring-accent" : "hover:ring-1 hover:ring-white/30",
