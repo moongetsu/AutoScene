@@ -1,8 +1,19 @@
-import { useMemo, useState } from "react"
+import { useMemo } from "react"
 import { useNavigate, useParams } from "@tanstack/react-router"
-import { FilePlus2, FolderOpen, FolderPlus, MoreHorizontal, Play, RotateCcw, ScanFace, Scissors, Trash2 } from "lucide-react"
+import {
+  ArrowCounterClockwise,
+  DotsThree,
+  FilePlus,
+  FolderOpen,
+  FolderPlus,
+  Play,
+  Scissors,
+  Trash,
+  UserFocus,
+} from "@/components/icons"
 import { toast } from "sonner"
 import type { MediaItem } from "@/bindings"
+import { Artwork } from "@/components/ui/artwork"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -13,12 +24,12 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { EmptyState } from "@/components/ui/empty-state"
-import { Page, PageHeader } from "@/components/ui/page"
+import { Page } from "@/components/ui/page"
 import { Select } from "@/components/ui/select"
+import { TopBar } from "@/components/ui/topbar"
 import { formatBytes, formatDuration } from "@/lib/format"
 import { commands, errorMessage } from "@/lib/ipc"
 import {
-  assetUrl,
   audioLabel,
   audioOption,
   codecLabel,
@@ -29,13 +40,14 @@ import {
   pickVideoFiles,
   releaseTitle,
 } from "@/lib/media"
+import { addToProject, projectFacts } from "@/lib/projects"
 import { useMediaList, useProject } from "@/lib/queries"
 import { formatFps } from "@/lib/timecode"
 import { cn } from "@/lib/utils"
+import { ProjectNav } from "./ProjectNav"
 import { StatusCell } from "./StatusCell"
 
-const CONTENT = { live: "Live action", anime: "Anime", mixed: "Mixed" } as const
-
+/** Every file of a project with its format, audio track and analysis state. */
 export function EpisodesPage() {
   const { pid } = useParams({ from: "/p/$pid/episodes" })
   const { data: project } = useProject(pid)
@@ -46,89 +58,58 @@ export function EpisodesPage() {
     for (const m of media ?? []) counts.set(releaseTitle(m.fileName), (counts.get(releaseTitle(m.fileName)) ?? 0) + 1)
     return counts
   }, [media])
-
-  const add = async (paths: string[]) => {
-    if (!paths.length) return
-    try {
-      const n = await commands.mediaAdd(pid, paths)
-      toast(n === 0 ? "Those files are already in this project" : `Added ${n} ${n === 1 ? "file" : "files"}`)
-    } catch (e) {
-      toast.error("Couldn't add files", { description: errorMessage(e) })
-    }
-  }
-
-  const isMovie = project?.kind === "movie"
+  const movie = project?.kind === "movie"
   const total = media?.reduce((s, m) => s + (m.durationSec ?? 0), 0) ?? 0
 
   return (
-    <Page>
-      <PageHeader
-        title={project?.title ?? " "}
-        description={
-          project && (
-            <>
-              {isMovie ? "Movie" : "Series"} · {CONTENT[project.content]} · {media?.length ?? 0}{" "}
-              {isMovie ? (media?.length === 1 ? "file" : "files") : media?.length === 1 ? "episode" : "episodes"}
-              {total > 0 && <> · {formatDuration(total)}</>}
-            </>
-          )
-        }
-        actions={
-          <>
-            <Button size="md" variant="ghost" onClick={() => void pickVideoFiles().then(add)}>
-              <FilePlus2 /> Add files
-            </Button>
-            <Button size="md" onClick={() => void pickFolder().then((p) => (p ? add([p]) : undefined))}>
-              <FolderPlus /> Add folder
-            </Button>
-          </>
-        }
-      />
-      <div className="px-8 pb-10">
+    <Page topbar={<TopBar title={project?.title} nav={<ProjectNav pid={pid} />} />}>
+      <header className="flex flex-wrap items-end justify-between gap-6 px-10 pt-10 pb-8">
+        <div>
+          <h1 className="display text-5xl text-fg-1">{movie ? "Files" : "Episodes"}</h1>
+          {project && (
+            <p className="mt-2 text-md text-fg-2">
+              {projectFacts(project)}
+              {total > 0 && ` · ${formatDuration(total)}`}
+            </p>
+          )}
+        </div>
+        <div className="flex items-center gap-2.5">
+          <Button size="lg" variant="secondary" onClick={() => void pickVideoFiles().then((p) => addToProject(pid, p))}>
+            <FilePlus /> Add files
+          </Button>
+          <Button
+            size="lg"
+            variant="primary"
+            onClick={() => void pickFolder().then((p) => (p ? addToProject(pid, [p]) : undefined))}
+          >
+            <FolderPlus /> Add folder
+          </Button>
+        </div>
+      </header>
+
+      <div className="px-10 pb-16">
         {!isPending && media?.length === 0 ? (
           <EmptyState
             icon={<FolderPlus />}
             title="No videos yet"
             description="Drop a season folder or video files anywhere in this window, or add them here."
-            className="rounded-xl border border-hairline bg-panel"
           />
         ) : (
-          // Columns fold away as the window narrows; the name and the row menu always stay.
-          <div className="@container overflow-hidden rounded-lg border border-hairline bg-panel shadow-1">
-            <table className="w-full table-fixed text-sm">
-              <thead>
-                <tr className="border-b border-hairline text-left">
-                  <th className="eyebrow w-[160px] py-2.5 pl-4 font-medium">{isMovie ? "File" : "Episode"}</th>
-                  <th className="eyebrow py-2.5 font-medium">Name</th>
-                  <th className="eyebrow hidden w-[84px] py-2.5 font-medium @4xl:table-cell">Length</th>
-                  <th className="eyebrow hidden w-[220px] py-2.5 font-medium @5xl:table-cell">Format</th>
-                  <th className="eyebrow w-[176px] py-2.5 font-medium">Audio</th>
-                  <th className="eyebrow w-[176px] py-2.5 font-medium">Status</th>
-                  <th className="w-11" />
-                </tr>
-              </thead>
-              <tbody>
-                {isPending
-                  ? Array.from({ length: 3 }, (_, i) => (
-                      <tr key={i} className="border-b border-hairline last:border-0">
-                        <td colSpan={7} className="px-4 py-3">
-                          <div className="skeleton h-12 rounded-sm" />
-                        </td>
-                      </tr>
-                    ))
-                  : media!.map((m) => (
-                      <EpisodeRow
-                        key={m.id}
-                        media={m}
-                        ambiguous={(nameCounts.get(releaseTitle(m.fileName)) ?? 0) > 1}
-                        projectId={pid}
-                        faces={project?.content !== "anime"}
-                        onOpen={() => void navigate({ to: "/p/$pid/timeline/$mid", params: { pid, mid: m.id } })}
-                      />
-                    ))}
-              </tbody>
-            </table>
-          </div>
+          // Details fold away as the window narrows; picture, name and state always stay.
+          <ul className="@container flex flex-col gap-1.5">
+            {isPending
+              ? Array.from({ length: 3 }, (_, i) => <li key={i} className="skeleton h-[120px] rounded-2xl" />)
+              : media!.map((m) => (
+                  <EpisodeRow
+                    key={m.id}
+                    media={m}
+                    ambiguous={(nameCounts.get(releaseTitle(m.fileName)) ?? 0) > 1}
+                    projectId={pid}
+                    faces={project?.content !== "anime"}
+                    onOpen={() => void navigate({ to: "/p/$pid/timeline/$mid", params: { pid, mid: m.id } })}
+                  />
+                ))}
+          </ul>
         )}
       </div>
     </Page>
@@ -154,10 +135,10 @@ function EpisodeRow({
     void commands
       .mediaAnalyze(projectId, m.id, stage)
       .catch((e) => toast.error("Couldn't start the analysis", { description: errorMessage(e) }))
-  const [posterFailed, setPosterFailed] = useState(false)
   const v = m.info?.video
   const ready = m.status === "ready"
   const audio = m.info?.audio ?? []
+  const flags = formatFlags(m)
 
   const setAudio = (value: string) => {
     commands
@@ -166,7 +147,7 @@ function EpisodeRow({
   }
 
   return (
-    <tr
+    <li
       onClick={ready ? onOpen : undefined}
       tabIndex={ready ? 0 : undefined}
       aria-label={ready ? `Open ${m.label ? `${m.label} ` : ""}${releaseTitle(m.fileName)}` : undefined}
@@ -174,65 +155,62 @@ function EpisodeRow({
         if (ready && e.key === "Enter" && e.target === e.currentTarget) onOpen()
       }}
       className={cn(
-        "group border-b border-hairline transition-colors last:border-0 focus-visible:bg-hover focus-visible:outline-none",
-        ready ? "cursor-pointer hover:bg-hover" : "",
+        "group grid grid-cols-[176px_minmax(0,1fr)_auto] items-center gap-5 rounded-2xl p-2.5 pr-4 transition-colors focus-visible:bg-white/[0.04] focus-visible:outline-none @3xl:grid-cols-[192px_minmax(0,1fr)_200px_190px_auto]",
+        ready && "hover:bg-white/[0.04]",
       )}
     >
-      <td className="py-2 pr-3 pl-4">
-        <div className="flex min-w-0 items-center gap-3">
-          <div className="relative aspect-video w-[72px] shrink-0 overflow-hidden rounded-xs bg-inset">
-            {m.poster && !posterFailed && (
-              <img
-                src={assetUrl(m.poster)}
-                alt=""
-                draggable={false}
-                onError={() => setPosterFailed(true)}
-                className="size-full object-cover"
-              />
-            )}
-            {ready && (
-              <span className="absolute inset-0 flex items-center justify-center bg-scrim-media opacity-0 transition-opacity group-hover:opacity-100">
-                <Play className="size-4 fill-on-media text-on-media" />
-              </span>
-            )}
-          </div>
-          <span className={cn("timecode truncate text-xs", m.label ? "text-fg-1" : "text-fg-3")} title={m.label || undefined}>
-            {m.label || "—"}
+      <Artwork path={m.poster} className="aspect-video rounded-xl picture-edge" imgClassName={cn(!ready && "opacity-40 grayscale")}>
+        {ready && (
+          <span className="absolute inset-0 flex items-center justify-center bg-black/35 opacity-0 transition-opacity group-hover:opacity-100">
+            <span className="flex size-10 items-center justify-center rounded-full border border-white/20 bg-black/40 text-white backdrop-blur-md [&_svg]:size-4">
+              <Play weight="fill" />
+            </span>
+          </span>
+        )}
+        {m.durationSec ? (
+          <span className="timecode absolute right-2 bottom-1.5 text-2xs text-white/85 drop-shadow-[0_1px_3px_rgb(0_0_0/0.8)]">
+            {formatDuration(m.durationSec)}
+          </span>
+        ) : null}
+      </Artwork>
+
+      <div className="min-w-0">
+        <div className="flex min-w-0 items-center gap-2.5">
+          {m.label && (
+            <Badge tone="neutral" className="timecode shrink-0 text-fg-1">
+              {m.label}
+            </Badge>
+          )}
+          <span className="truncate text-lg font-medium text-fg-1" title={m.fileName}>
+            {releaseTitle(m.fileName)}
           </span>
         </div>
-      </td>
-      <td className="max-w-0 py-2 pr-4">
-        <div className="truncate text-fg-1" title={m.fileName}>
-          {releaseTitle(m.fileName)}
-        </div>
-        <div className="timecode truncate text-2xs text-fg-3" title={m.fileName}>
+        <div className="mt-1.5 truncate text-sm text-fg-3" title={m.fileName}>
           {ambiguous && <>{fileStem(m.fileName)} · </>}
           {formatBytes(m.sizeBytes ?? 0)}
-          {m.durationSec ? <span className="@4xl:hidden"> · {formatDuration(m.durationSec)}</span> : null}
+          {v && (
+            <>
+              {" "}
+              · {v.width}×{v.height} · {m.fps ? formatFps(m.fps) : "–"} · {codecLabel(v.codec)}
+            </>
+          )}
         </div>
-      </td>
-      <td className="timecode hidden py-2 text-xs text-fg-2 @4xl:table-cell">
-        {m.durationSec ? formatDuration(m.durationSec) : "–"}
-      </td>
-      <td className="hidden py-2 @5xl:table-cell">
-        {v ? (
-          <div className="flex flex-col gap-1">
-            <span className="timecode text-xs text-fg-2">
-              {v.width}×{v.height} · {m.fps ? formatFps(m.fps) : "–"} · {codecLabel(v.codec)}
-            </span>
-            <span className="flex flex-wrap gap-1">
-              {formatFlags(m).map((f) => (
-                <Badge key={f} tone="outline">
-                  {f}
-                </Badge>
-              ))}
-            </span>
+        {flags.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {flags.map((f) => (
+              <Badge key={f} tone="outline" className="h-5 px-2 text-2xs">
+                {f}
+              </Badge>
+            ))}
           </div>
-        ) : (
-          <span className="text-xs text-fg-3">–</span>
         )}
-      </td>
-      <td className="py-2 pr-3" onClick={(e) => e.stopPropagation()}>
+        {/* Narrow windows: the state under the name. */}
+        <div className="mt-2.5 @3xl:hidden" onClick={(e) => e.stopPropagation()}>
+          <StatusCell media={m} projectId={projectId} faces={faces} />
+        </div>
+      </div>
+
+      <div className="hidden @3xl:block" onClick={(e) => e.stopPropagation()}>
         {audio.length > 1 ? (
           <Select
             size="sm"
@@ -243,21 +221,21 @@ function EpisodeRow({
             options={audio.map(audioOption)}
           />
         ) : (
-          <span className="block truncate text-xs text-fg-3">
-            {!m.info ? "–" : audio[0] ? audioLabel(audio[0]) : "No audio"}
-          </span>
+          <span className="block truncate text-sm text-fg-3">{!m.info ? "–" : audio[0] ? audioLabel(audio[0]) : "No audio"}</span>
         )}
-      </td>
-      <td className="py-2">
+      </div>
+
+      <div className="hidden @3xl:block" onClick={(e) => e.stopPropagation()}>
         <StatusCell media={m} projectId={projectId} faces={faces} />
-      </td>
-      <td className="py-2 pr-2" onClick={(e) => e.stopPropagation()}>
+      </div>
+
+      <div onClick={(e) => e.stopPropagation()}>
         <DropdownMenu>
           <DropdownMenuTrigger
             aria-label={`${m.fileName} options`}
-            className="flex size-7 items-center justify-center rounded-md text-fg-3 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-hover hover:text-fg-1 focus-visible:opacity-100 data-[state=open]:opacity-100"
+            className="flex size-9 items-center justify-center rounded-full text-fg-3 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-white/[0.08] hover:text-fg-1 focus-visible:opacity-100 data-[state=open]:opacity-100"
           >
-            <MoreHorizontal className="size-4" />
+            <DotsThree className="size-5" weight="bold" />
           </DropdownMenuTrigger>
           <DropdownMenuContent>
             <DropdownMenuItem disabled={!ready} onSelect={onOpen}>
@@ -268,7 +246,7 @@ function EpisodeRow({
             </DropdownMenuItem>
             {(m.status === "failed" || m.status === "missing") && (
               <DropdownMenuItem onSelect={() => void commands.mediaRetry(projectId, m.id)}>
-                <RotateCcw /> Index again
+                <ArrowCounterClockwise /> Index again
               </DropdownMenuItem>
             )}
             {ready && (
@@ -278,7 +256,7 @@ function EpisodeRow({
             )}
             {ready && faces && m.shots === "ready" && (
               <DropdownMenuItem onSelect={() => redo("faces")}>
-                <ScanFace /> Find characters again
+                <UserFocus /> Find characters again
               </DropdownMenuItem>
             )}
             <DropdownMenuSeparator />
@@ -290,11 +268,11 @@ function EpisodeRow({
                   .catch((e) => toast.error("Couldn't remove", { description: errorMessage(e) }))
               }
             >
-              <Trash2 /> Remove from project
+              <Trash /> Remove from project
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
-      </td>
-    </tr>
+      </div>
+    </li>
   )
 }

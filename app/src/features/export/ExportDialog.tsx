@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { FolderOpen, Loader2 } from "lucide-react"
+import { CircleNotch, FolderOpen } from "@/components/icons"
 import { toast } from "sonner"
 import type { ClipRequest } from "@/bindings"
 import { Button } from "@/components/ui/button"
@@ -83,7 +83,7 @@ function ExportForm({ projectId, clips, onDone }: { projectId: string; clips: Ex
       className="w-[min(560px,calc(100vw-32px))]"
     >
       <form
-        className="flex flex-col gap-4"
+        className="flex flex-col gap-5"
         onSubmit={(e) => {
           e.preventDefault()
           void start()
@@ -114,11 +114,11 @@ function ExportForm({ projectId, clips, onDone }: { projectId: string; clips: Ex
             <div
               data-selectable
               title={outDir}
-              className="flex h-8 min-w-0 flex-1 items-center rounded-md border border-hairline bg-inset px-2.5 font-mono text-xs text-fg-2"
+              className="flex h-10 min-w-0 flex-1 items-center rounded-lg border border-soft bg-white/[0.04] px-3 font-mono text-sm text-fg-2"
             >
               <span className="truncate">{outDir || "…"}</span>
             </div>
-            <Button onClick={() => void pickFolder("Export to").then((p) => p && setDir(p))}>
+            <Button size="md" className="h-10" onClick={() => void pickFolder("Export to").then((p) => p && setDir(p))}>
               <FolderOpen /> Change…
             </Button>
           </div>
@@ -127,8 +127,8 @@ function ExportForm({ projectId, clips, onDone }: { projectId: string; clips: Ex
           <Button variant="ghost" onClick={onDone}>
             Cancel
           </Button>
-          <Button type="submit" variant="primary" disabled={!presetId || busy}>
-            {busy && <Loader2 className="animate-spin" />}
+          <Button type="submit" size="lg" variant="primary" disabled={!presetId || busy}>
+            {busy && <CircleNotch className="animate-spin" />}
             Export
           </Button>
         </DialogFooter>

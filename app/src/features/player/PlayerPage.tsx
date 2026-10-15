@@ -2,24 +2,25 @@ import type * as React from "react"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { Link, useParams, useSearch } from "@tanstack/react-router"
 import {
-  ChevronLeft,
-  ChevronRight,
+  ArrowCounterClockwise,
+  CaretLeft,
+  CaretLineLeft,
+  CaretLineRight,
+  CaretRight,
+  CircleNotch,
   FolderOpen,
-  Loader2,
   Pause,
   Play,
-  RotateCcw,
   Scissors,
   SkipBack,
-  Users,
+  SidebarSimple,
   SkipForward,
-  StepBack,
-  StepForward,
-  Volume1,
-  Volume2,
-  VolumeX,
+  SpeakerHigh,
+  SpeakerLow,
+  SpeakerSlash,
+  Users,
   X,
-} from "lucide-react"
+} from "@/components/icons"
 import { toast } from "sonner"
 import type { FrameMap, MediaItem, Segment } from "@/bindings"
 import { Badge } from "@/components/ui/badge"
@@ -27,13 +28,23 @@ import { Button } from "@/components/ui/button"
 import { Kbd } from "@/components/ui/kbd"
 import { Progress } from "@/components/ui/progress"
 import { Select } from "@/components/ui/select"
+import { TopBar } from "@/components/ui/topbar"
 import { Tooltip } from "@/components/ui/tooltip"
 import { ExportDialog, type ExportClip } from "@/features/export/ExportDialog"
 import { COPY_TIMECODES_REQUEST, EXPORT_REQUEST, REVEAL_REQUEST } from "@/lib/actions"
 import { FrameClock } from "@/lib/frame-clock"
 import { formatPercent } from "@/lib/format"
 import { commands, errorMessage, isAppError } from "@/lib/ipc"
-import { assetUrl, audioOption, codecLabel, currentAudio, fileStem, formatFlags, mediaTitle, releaseTitle } from "@/lib/media"
+import {
+  assetUrl,
+  audioOption,
+  codecLabel,
+  currentAudio,
+  fileStem,
+  formatFlags,
+  mediaTitle,
+  releaseTitle,
+} from "@/lib/media"
 import { modKey } from "@/lib/platform"
 import { useCast, useFrameMap, useMediaList, usePresence, useProject, useSegments } from "@/lib/queries"
 import { type Lane, charactersIn, lanesOf, useCharacterMap } from "@/lib/presence"
@@ -43,6 +54,7 @@ import { cn } from "@/lib/utils"
 import { useMediaJob } from "@/state/activity"
 import { NO_MARKS, useMarks } from "@/state/marks"
 import { usePlayback } from "@/state/playback"
+import { useUi } from "@/state/ui"
 import { CharacterLanes } from "./CharacterLanes"
 import { Scrubber } from "./Scrubber"
 import { ShotStrip } from "./ShotStrip"
@@ -61,46 +73,70 @@ export function PlayerPage() {
   const { pid, mid } = useParams({ from: "/p/$pid/timeline/$mid" })
   const { f: openAt } = useSearch({ from: "/p/$pid/timeline/$mid" })
   const { data: media } = useMediaList(pid)
+  const { data: project } = useProject(pid)
   const m = media?.find((x) => x.id === mid)
   const ready = m?.status === "ready"
   const map = useFrameMap(pid, mid, ready)
   const index = media?.findIndex((x) => x.id === mid) ?? -1
   const prev = index > 0 ? media![index - 1] : undefined
   const next = index >= 0 && index < (media?.length ?? 0) - 1 ? media![index + 1] : undefined
+  const inspector = useUi((s) => s.inspectorOpen)
+  const toggleInspector = useUi((s) => s.toggleInspector)
 
   return (
-    <div className="flex h-full min-h-0">
-      <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-12 shrink-0 items-center gap-2 border-b border-hairline px-3">
+    <div className="flex h-full min-h-0 flex-col bg-inset">
+      <TopBar
+        back={{ label: project?.kind === "movie" ? "Files" : "Episodes", to: `/p/${pid}/episodes` }}
+        title={
+          <span className="flex min-w-0 items-baseline gap-2.5" title={m?.fileName}>
+            {m?.label && <span className="timecode shrink-0 text-md font-medium text-fg-2">{m.label}</span>}
+            <span className="truncate">{m ? releaseTitle(m.fileName) : ""}</span>
+          </span>
+        }
+        className="border-white/[0.05] bg-black/50"
+      >
+        {map.data?.isProxy && (
+          <Tooltip label="Playing a preview copy; exports always cut from the original file.">
+            <span>
+              <Badge tone="outline">Preview</Badge>
+            </span>
+          </Tooltip>
+        )}
+        <div className="flex items-center gap-1">
           <EpisodeNav pid={pid} target={prev} dir="prev" />
           <EpisodeNav pid={pid} target={next} dir="next" />
-          <div className="ml-1 flex min-w-0 items-baseline gap-2">
-            {m?.label && <span className="timecode text-sm text-fg-1">{m.label}</span>}
-            <span className="truncate text-sm text-fg-2" title={m?.fileName}>
-              {m ? releaseTitle(m.fileName) : ""}
-            </span>
-          </div>
-          {map.data?.isProxy && (
-            <Tooltip label="Playing a preview copy; exports always cut from the original file.">
-              <span className="ml-auto">
-                <Badge tone="outline">Preview</Badge>
-              </span>
-            </Tooltip>
-          )}
-        </header>
-        {m && ready && map.data ? (
-          <ReadyPlayer key={`${mid}:${map.data.src}`} pid={pid} media={m} map={map.data} openAt={openAt} />
-        ) : (
-          <NotReady pid={pid} media={m} error={map.error} />
-        )}
-      </div>
+        </div>
+        <Tooltip label={inspector ? "Hide details" : "Show details"}>
+          <Button
+            size="icon-sm"
+            variant={inspector ? "secondary" : "ghost"}
+            aria-pressed={inspector}
+            aria-label="Details"
+            onClick={toggleInspector}
+          >
+            <SidebarSimple mirrored />
+          </Button>
+        </Tooltip>
+      </TopBar>
+      {m && ready && map.data ? (
+        <ReadyPlayer
+          key={`${mid}:${map.data.src}`}
+          pid={pid}
+          media={m}
+          map={map.data}
+          openAt={openAt}
+          inspector={inspector}
+        />
+      ) : (
+        <NotReady pid={pid} media={m} error={map.error} />
+      )}
     </div>
   )
 }
 
 function EpisodeNav({ pid, target, dir }: { pid: string; target?: MediaItem; dir: "prev" | "next" }) {
   const label = dir === "prev" ? "Previous episode" : "Next episode"
-  const icon = dir === "prev" ? <ChevronLeft /> : <ChevronRight />
+  const icon = dir === "prev" ? <CaretLeft /> : <CaretRight />
   if (!target) {
     return (
       <Button size="icon-sm" variant="ghost" disabled aria-label={label}>
@@ -110,7 +146,7 @@ function EpisodeNav({ pid, target, dir }: { pid: string; target?: MediaItem; dir
   }
   return (
     <Tooltip label={`${label}: ${mediaTitle(target)}`}>
-      <Button size="icon-sm" variant="ghost" asChild>
+      <Button size="icon-sm" variant="secondary" asChild>
         <Link to="/p/$pid/timeline/$mid" params={{ pid, mid: target.id }} aria-label={label}>
           {icon}
         </Link>
@@ -145,29 +181,43 @@ function NotReady({ pid, media: m, error }: { pid: string; media?: MediaItem; er
   }
   const retryable = m && (m.status === "failed" || m.status === "missing")
   return (
-    <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-inset">
-      {m?.poster && <img src={assetUrl(m.poster)} alt="" className="absolute inset-0 size-full object-contain opacity-25 blur-[2px]" />}
-      <div className="relative flex w-[min(420px,90%)] flex-col items-center rounded-xl border border-hairline bg-raised px-6 py-6 text-center shadow-2">
-        {job ? <Loader2 className="size-5 animate-spin text-fg-2" /> : null}
-        <h2 className="mt-2 text-md font-semibold text-fg-1">{title}</h2>
-        {body && <p className="mt-1 text-sm break-words text-fg-2">{body}</p>}
+    <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden">
+      {m?.poster && (
+        <img
+          src={assetUrl(m.poster)}
+          alt=""
+          className="absolute inset-0 size-full scale-110 object-cover opacity-30 blur-2xl"
+        />
+      )}
+      <div className="glass-strong relative flex w-[min(460px,90%)] flex-col items-center rounded-3xl px-8 py-8 text-center">
+        {job ? <CircleNotch className="size-6 animate-spin text-accent" /> : null}
+        <h2 className="display mt-3 text-3xl text-fg-1">{title}</h2>
+        {body && <p className="mt-2 text-md break-words text-fg-2">{body}</p>}
         {job && (
-          <div className="mt-4 w-full">
+          <div className="mt-6 w-full">
             <Progress value={job.state === "running" ? job.progress : null} />
-            <div className="mt-1.5 flex justify-between text-2xs text-fg-3">
+            <div className="mt-2 flex justify-between text-xs text-fg-3">
               <span>{job.state === "queued" ? "Waiting…" : (job.stage ?? "")}</span>
               <span className="timecode">{formatPercent(job.progress)}</span>
             </div>
           </div>
         )}
         {!job && needsPreview && (
-          <Button className="mt-4" onClick={() => void commands.mediaPreparePreview(pid, m!.id).catch((e) => toast.error(errorMessage(e)))}>
-            <RotateCcw /> Prepare preview
+          <Button
+            className="mt-6"
+            variant="primary"
+            onClick={() => void commands.mediaPreparePreview(pid, m!.id).catch((e) => toast.error(errorMessage(e)))}
+          >
+            <ArrowCounterClockwise /> Prepare preview
           </Button>
         )}
         {!job && retryable && (
-          <Button className="mt-4" onClick={() => void commands.mediaRetry(pid, m.id).catch((e) => toast.error(errorMessage(e)))}>
-            <RotateCcw /> Try again
+          <Button
+            className="mt-6"
+            variant="primary"
+            onClick={() => void commands.mediaRetry(pid, m.id).catch((e) => toast.error(errorMessage(e)))}
+          >
+            <ArrowCounterClockwise /> Try again
           </Button>
         )}
       </div>
@@ -175,7 +225,20 @@ function NotReady({ pid, media: m, error }: { pid: string; media?: MediaItem; er
   )
 }
 
-function ReadyPlayer({ pid, media: m, map, openAt }: { pid: string; media: MediaItem; map: FrameMap; openAt?: number }) {
+function ReadyPlayer({
+  pid,
+  media: m,
+  map,
+  openAt,
+  inspector,
+}: {
+  pid: string
+  media: MediaItem
+  map: FrameMap
+  openAt?: number
+  /** The details panel is open. */
+  inspector: boolean
+}) {
   const clock = useMemo(() => new FrameClock(map), [map])
   const { videoRef, frame, playing, seek, step, toggle, pause } = usePlayer(clock)
   // Opened at a frame (a face in the cast): go there once.
@@ -321,8 +384,7 @@ function ReadyPlayer({ pid, media: m, map, openAt }: { pid: string; media: Media
         if (inFrame != null) seek(inFrame)
       } else if (k === "o" && e.shiftKey) {
         if (outFrame != null) seek(outFrame)
-      }
-      else if (k === "i") markIn()
+      } else if (k === "i") markIn()
       else if (k === "o") markOut()
       else if (k === "x" && e.altKey) clear()
       else if (k === "x") markShot()
@@ -335,11 +397,24 @@ function ReadyPlayer({ pid, media: m, map, openAt }: { pid: string; media: Media
   })
 
   const audio = m.info?.audio ?? []
+  const openExport = () => {
+    pause()
+    setExportOpen(true)
+  }
 
   return (
     <div className="flex min-h-0 flex-1">
       <div className="flex min-w-0 flex-1 flex-col">
-        <div className="relative flex min-h-0 flex-1 items-center justify-center bg-inset" onClick={toggle}>
+        <div
+          className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden px-10 pt-8 pb-5"
+          onClick={toggle}
+        >
+          <Ambilight video={videoRef} frame={frame} />
+          {/* The glow fades out before the controls. */}
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t from-inset to-transparent"
+          />
           <video
             ref={videoRef}
             src={assetUrl(map.src)}
@@ -348,47 +423,13 @@ function ReadyPlayer({ pid, media: m, map, openAt }: { pid: string; media: Media
             crossOrigin="anonymous"
             playsInline
             disablePictureInPicture
-            className="size-full object-contain"
+            className="relative max-h-full max-w-full rounded-2xl bg-black shadow-[0_50px_120px_-40px_rgb(0_0_0/1),0_0_0_1px_rgb(255_255_255/0.07)]"
           />
         </div>
 
         {/* Secondary readouts fold away as the player column narrows. */}
-        <div className="@container shrink-0 border-t border-hairline bg-panel px-4 pt-2 pb-3">
-          <Scrubber
-            clock={clock}
-            frame={frame}
-            inFrame={inFrame}
-            outFrame={outFrame}
-            onSeek={seek}
-            onScrubStart={pause}
-            formatFrame={tc}
-          />
-          {shots.length > 0 && (
-            <ShotStrip
-              segments={shots}
-              clock={clock}
-              frame={frame}
-              onSeek={(f) => {
-                pause()
-                seek(f)
-              }}
-              onMarkShot={markShot}
-              formatFrame={tc}
-            />
-          )}
-          {lanes.length > 0 && (
-            <CharacterLanes
-              lanes={lanes}
-              clock={clock}
-              focus={focus}
-              onSeek={(f) => {
-                pause()
-                seek(f)
-              }}
-              formatFrame={tc}
-            />
-          )}
-          <div className="mt-1 grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-4">
+        <div className="@container relative shrink-0 px-6 pb-5">
+          <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-4 pb-4">
             <div className="flex min-w-0 items-baseline gap-3">
               {gotoOpen ? (
                 <input
@@ -396,7 +437,7 @@ function ReadyPlayer({ pid, media: m, map, openAt }: { pid: string; media: Media
                   aria-label="Go to timecode or frame"
                   defaultValue={tc(frame)}
                   spellCheck={false}
-                  className="timecode h-8 w-[150px] rounded-md border border-accent-line bg-inset px-2 text-xl text-fg-1 outline-none"
+                  className="timecode h-10 w-[150px] rounded-xl border border-accent-line bg-white/[0.06] px-3 text-lg text-fg-1 outline-none @3xl:w-[190px] @3xl:text-2xl"
                   onBlur={() => setGotoOpen(false)}
                   onKeyDown={(e) => {
                     if (e.key === "Escape") setGotoOpen(false)
@@ -419,51 +460,79 @@ function ReadyPlayer({ pid, media: m, map, openAt }: { pid: string; media: Media
                       pause()
                       setGotoOpen(true)
                     }}
-                    className="timecode -mx-1 rounded-sm px-1 text-xl text-fg-1 hover:bg-hover"
+                    className="timecode -mx-2 rounded-xl px-2 text-lg font-medium tracking-tight text-fg-1 transition-colors hover:bg-white/[0.06] @3xl:text-2xl"
                   >
                     {tc(frame)}
                   </button>
                 </Tooltip>
               )}
-              <span className="timecode hidden text-xs whitespace-nowrap text-fg-3 @xl:inline">
+              <span className="timecode hidden text-sm whitespace-nowrap text-fg-3 @xl:inline">
                 {frame} / {last}
               </span>
             </div>
+
             <div className="flex items-center gap-1">
               <TransportButton label="First frame" keys={["Home"]} onClick={() => seek(0)}>
-                <SkipBack />
+                <SkipBack weight="fill" />
               </TransportButton>
               <TransportButton label="Previous frame" keys={["←"]} onClick={() => step(-1)}>
-                <StepBack />
+                <CaretLineLeft weight="bold" />
               </TransportButton>
               <Tooltip label={playing ? "Pause" : "Play"} shortcut={["Space"]}>
                 <button
                   onClick={toggle}
                   aria-label={playing ? "Pause" : "Play"}
-                  className="mx-1 flex size-10 items-center justify-center rounded-full bg-fg-1 text-canvas shadow-1 transition-colors hover:bg-fg-2 [&_svg]:size-4"
+                  className="mx-2 flex size-12 items-center justify-center rounded-full bg-cta text-on-cta shadow-[0_10px_30px_-8px_rgb(255_255_255/0.35)] transition-transform duration-[var(--dur-fast)] hover:scale-105 active:scale-95 [&_svg]:size-5"
                 >
-                  {playing ? <Pause className="fill-current" /> : <Play className="translate-x-px fill-current" />}
+                  {playing ? <Pause weight="fill" /> : <Play weight="fill" className="translate-x-px" />}
                 </button>
               </Tooltip>
               <TransportButton label="Next frame" keys={["→"]} onClick={() => step(1)}>
-                <StepForward />
+                <CaretLineRight weight="bold" />
               </TransportButton>
               <TransportButton label="Last frame" keys={["End"]} onClick={() => seek(last)}>
-                <SkipForward />
+                <SkipForward weight="fill" />
               </TransportButton>
             </div>
+
             <div className="flex min-w-0 items-center justify-end gap-2">
-              <span className="timecode hidden text-xs whitespace-nowrap text-fg-3 @3xl:inline">
-                {tc(last)} · {formatFps(fps)} fps
-              </span>
-              <div className="ml-2 flex items-center gap-1">
+              <MarkChip
+                label="In"
+                value={inFrame}
+                tc={tc}
+                onMark={() => markIn()}
+                onGo={() => inFrame != null && seek(inFrame)}
+                keyHint="I"
+              />
+              <MarkChip
+                label="Out"
+                value={outFrame}
+                tc={tc}
+                onMark={() => markOut()}
+                onGo={() => outFrame != null && seek(outFrame)}
+                keyHint="O"
+              />
+              {!inspector && (
+                <Tooltip label="Export clip" shortcut={[modKey, "E"]}>
+                  <Button
+                    size="icon"
+                    variant="primary"
+                    aria-label="Export clip"
+                    disabled={!canExport}
+                    onClick={openExport}
+                  >
+                    <Scissors weight="bold" />
+                  </Button>
+                </Tooltip>
+              )}
+              <div className="ml-1 hidden items-center gap-1.5 @3xl:flex">
                 <Tooltip label={muted ? "Unmute" : "Mute"} shortcut={["M"]}>
                   <button
                     onClick={toggleMute}
                     aria-label={muted ? "Unmute" : "Mute"}
-                    className="flex size-8 items-center justify-center rounded-md text-fg-2 transition-colors hover:bg-hover hover:text-fg-1 [&_svg]:size-4"
+                    className="flex size-9 items-center justify-center rounded-full text-fg-2 transition-colors hover:bg-white/[0.08] hover:text-fg-1 [&_svg]:size-[18px]"
                   >
-                    {muted || volume === 0 ? <VolumeX /> : volume < 0.5 ? <Volume1 /> : <Volume2 />}
+                    {muted || volume === 0 ? <SpeakerSlash /> : volume < 0.5 ? <SpeakerLow /> : <SpeakerHigh />}
                   </button>
                 </Tooltip>
                 <input
@@ -474,133 +543,278 @@ function ReadyPlayer({ pid, media: m, map, openAt }: { pid: string; media: Media
                   value={muted ? 0 : volume}
                   aria-label="Volume"
                   onChange={(e) => setVolume(Number(e.currentTarget.value))}
-                  className="hidden h-1 w-20 cursor-pointer accent-[var(--fg-1)] @2xl:block"
+                  className="h-1 w-20 accent-[var(--fg-1)]"
                 />
               </div>
             </div>
           </div>
+
+          <div className="flex flex-col gap-1.5 rounded-2xl border border-white/[0.07] bg-white/[0.03] px-4 pt-2 pb-3.5 [--lane-label-w:132px]">
+            <TrackRow label="Playhead">
+              <Scrubber
+                clock={clock}
+                frame={frame}
+                inFrame={inFrame}
+                outFrame={outFrame}
+                onSeek={seek}
+                onScrubStart={pause}
+                formatFrame={tc}
+              />
+            </TrackRow>
+            {shots.length > 0 && (
+              <TrackRow label="Shots">
+                <ShotStrip
+                  segments={shots}
+                  clock={clock}
+                  frame={frame}
+                  onSeek={(f) => {
+                    pause()
+                    seek(f)
+                  }}
+                  onMarkShot={markShot}
+                  formatFrame={tc}
+                />
+              </TrackRow>
+            )}
+            {lanes.length > 0 && (
+              <CharacterLanes
+                lanes={lanes}
+                clock={clock}
+                focus={focus}
+                onSeek={(f) => {
+                  pause()
+                  seek(f)
+                }}
+                formatFrame={tc}
+              />
+            )}
+          </div>
         </div>
       </div>
 
-      <aside className="flex w-[300px] shrink-0 flex-col overflow-y-auto border-l border-hairline bg-panel">
-        <section className="border-b border-hairline p-4">
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="eyebrow">Clip</h2>
-            {hasMarks && (
-              <Tooltip label="Clear in and out" shortcut={["Alt", "X"]}>
-                <button onClick={clear} aria-label="Clear in and out" className="rounded-sm p-1 text-fg-3 hover:bg-hover hover:text-fg-1">
-                  <X className="size-3.5" />
-                </button>
-              </Tooltip>
-            )}
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <MarkButton label="In" keyHint="I" value={inFrame} tc={tc} onMark={() => markIn()} onGo={() => inFrame != null && seek(inFrame)} />
-            <MarkButton label="Out" keyHint="O" value={outFrame} tc={tc} onMark={() => markOut()} onGo={() => outFrame != null && seek(outFrame)} />
-          </div>
-          <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs">
-            <dt className="text-fg-3">Duration</dt>
-            <dd className="timecode text-right text-fg-1">{hasMarks ? tc(length) : "–"}</dd>
-            <dt className="text-fg-3">Frames</dt>
-            <dd className="timecode text-right text-fg-1">{hasMarks ? length : "–"}</dd>
-          </dl>
-          <Button
-            variant="primary"
-            className="mt-4 w-full"
-            disabled={!canExport}
-            onClick={() => {
-              pause()
-              setExportOpen(true)
-            }}
+      {inspector && (
+        <aside className="flex w-[340px] shrink-0 flex-col gap-3 overflow-y-auto border-l border-white/[0.06] bg-canvas p-3">
+          <Card
+            title="Clip"
+            action={
+              hasMarks && (
+                <Tooltip label="Clear in and out" shortcut={["Alt", "X"]}>
+                  <button
+                    onClick={clear}
+                    aria-label="Clear in and out"
+                    className="flex size-7 items-center justify-center rounded-full text-fg-3 hover:bg-white/[0.08] hover:text-fg-1"
+                  >
+                    <X className="size-3.5" weight="bold" />
+                  </button>
+                </Tooltip>
+              )
+            }
           >
-            <Scissors /> Export clip
-            <Kbd keys={[modKey, "E"]} className="ml-auto opacity-70 [&_kbd]:border-on-accent/20 [&_kbd]:bg-on-accent/10 [&_kbd]:text-on-accent" />
-          </Button>
-          {!hasMarks && <p className="mt-2 text-center text-2xs text-fg-3">Mark an in or out point to export.</p>}
-        </section>
-
-        <ShotsPanel pid={pid} media={m} segments={shots} frame={frame} tc={tc} onMark={() => markShot()} onGo={goShot} />
-
-        <CharactersPanel
-          pid={pid}
-          media={m}
-          lanes={lanes}
-          shot={shotAt(shots, frame)}
-          frame={frame}
-          focus={focus}
-          onFocus={setFocus}
-          onGo={(f) => {
-            pause()
-            seek(f)
-          }}
-        />
-
-        <section className="border-b border-hairline p-4">
-          <h2 className="eyebrow mb-3">Source</h2>
-          <p className="text-sm text-fg-1">{releaseTitle(m.fileName)}</p>
-          <p data-selectable className="mt-0.5 text-2xs [overflow-wrap:anywhere] text-fg-3">
-            {m.fileName}
-          </p>
-          {m.info && (
-            <p className="timecode mt-1 text-2xs text-fg-3">
-              {m.info.video.width}×{m.info.video.height} · {formatFps(fps)} · {codecLabel(m.info.video.codec)}
-            </p>
-          )}
-          {formatFlags(m).length > 0 && (
-            <div className="mt-2 flex flex-wrap gap-1">
-              {formatFlags(m).map((f) => (
-                <Badge key={f} tone="outline">
-                  {f}
-                </Badge>
-              ))}
-            </div>
-          )}
-          {audio.length > 1 && (
-            <div className="mt-3">
-              <Select
-                size="sm"
-                aria-label="Audio track"
-                className="w-full"
-                value={String(currentAudio(m))}
-                onChange={(v) =>
-                  void commands
-                    .mediaSetAudio(pid, m.id, Number(v))
-                    .catch((e) => toast.error("Couldn't change the audio track", { description: errorMessage(e) }))
-                }
-                options={audio.map(audioOption)}
+            <div className="grid grid-cols-2 gap-2">
+              <MarkTile
+                label="In"
+                keyHint="I"
+                value={inFrame}
+                tc={tc}
+                onMark={() => markIn()}
+                onGo={() => inFrame != null && seek(inFrame)}
+              />
+              <MarkTile
+                label="Out"
+                keyHint="O"
+                value={outFrame}
+                tc={tc}
+                onMark={() => markOut()}
+                onGo={() => outFrame != null && seek(outFrame)}
               />
             </div>
-          )}
-          <Button size="sm" variant="ghost" className="mt-3 -ml-2" onClick={() => void commands.revealPath(m.path)}>
-            <FolderOpen /> Show in folder
-          </Button>
-        </section>
+            <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+              <dt className="text-fg-3">Duration</dt>
+              <dd className="timecode text-right text-fg-1">{hasMarks ? tc(length) : "–"}</dd>
+              <dt className="text-fg-3">Frames</dt>
+              <dd className="timecode text-right text-fg-1">{hasMarks ? length : "–"}</dd>
+            </dl>
+            <Button variant="primary" size="lg" className="mt-4 w-full" disabled={!canExport} onClick={openExport}>
+              <Scissors weight="bold" /> Export clip
+              <Kbd
+                keys={[modKey, "E"]}
+                className="ml-auto [&_kbd]:border-black/10 [&_kbd]:bg-black/10 [&_kbd]:text-black/60"
+              />
+            </Button>
+            {!hasMarks && (
+              <p className="mt-2.5 text-center text-xs text-fg-3">Mark an in or out point, or a whole shot (X).</p>
+            )}
+          </Card>
 
-        <section className="p-4">
-          <h2 className="eyebrow mb-2.5">Keys</h2>
-          <ul className="space-y-1.5 text-xs text-fg-2">
-            {[
-              ["Play / pause", ["Space"]],
-              ["Step one frame", ["←", "→"]],
-              ["Step one second", ["Shift", "←"]],
-              ["Previous / next shot", ["↑", "↓"]],
-              ["Mark shot", ["X"]],
-              ["Mark in / out", ["I", "O"]],
-              ["Go to in / out", ["Shift", "I"]],
-              ["Go to timecode", [modKey, "G"]],
-              ["Mute", ["M"]],
-            ].map(([label, keys]) => (
-              <li key={label as string} className="flex items-center justify-between">
-                <span>{label}</span>
-                <Kbd keys={keys as string[]} />
-              </li>
-            ))}
-          </ul>
-        </section>
-      </aside>
+          <ShotsPanel
+            pid={pid}
+            media={m}
+            segments={shots}
+            frame={frame}
+            tc={tc}
+            onMark={() => markShot()}
+            onGo={goShot}
+          />
+
+          <CharactersPanel
+            pid={pid}
+            media={m}
+            lanes={lanes}
+            shot={shotAt(shots, frame)}
+            frame={frame}
+            focus={focus}
+            onFocus={setFocus}
+            onGo={(f) => {
+              pause()
+              seek(f)
+            }}
+          />
+
+          <Card title="Source">
+            <p className="text-md font-medium text-fg-1">{releaseTitle(m.fileName)}</p>
+            <p data-selectable className="mt-0.5 text-xs [overflow-wrap:anywhere] text-fg-3">
+              {m.fileName}
+            </p>
+            {m.info && (
+              <p className="timecode mt-2 text-xs text-fg-2">
+                {m.info.video.width}×{m.info.video.height} · {formatFps(fps)} fps · {codecLabel(m.info.video.codec)}
+              </p>
+            )}
+            {formatFlags(m).length > 0 && (
+              <div className="mt-2.5 flex flex-wrap gap-1.5">
+                {formatFlags(m).map((f) => (
+                  <Badge key={f} tone="outline" className="h-5 px-2 text-2xs">
+                    {f}
+                  </Badge>
+                ))}
+              </div>
+            )}
+            {audio.length > 1 && (
+              <div className="mt-3">
+                <Select
+                  size="sm"
+                  aria-label="Audio track"
+                  className="w-full"
+                  value={String(currentAudio(m))}
+                  onChange={(v) =>
+                    void commands
+                      .mediaSetAudio(pid, m.id, Number(v))
+                      .catch((e) => toast.error("Couldn't change the audio track", { description: errorMessage(e) }))
+                  }
+                  options={audio.map(audioOption)}
+                />
+              </div>
+            )}
+            <Button size="sm" variant="ghost" className="mt-3 -ml-2" onClick={() => void commands.revealPath(m.path)}>
+              <FolderOpen /> Show in folder
+            </Button>
+          </Card>
+
+          <Card title="Keys">
+            <ul className="space-y-2 text-sm text-fg-2">
+              {[
+                ["Play / pause", ["Space"]],
+                ["Step one frame", ["←", "→"]],
+                ["Step one second", ["Shift", "←"]],
+                ["Previous / next shot", ["↑", "↓"]],
+                ["Mark shot", ["X"]],
+                ["Mark in / out", ["I", "O"]],
+                ["Go to in / out", ["Shift", "I"]],
+                ["Go to timecode", [modKey, "G"]],
+                ["Mute", ["M"]],
+              ].map(([label, keys]) => (
+                <li key={label as string} className="flex items-center justify-between">
+                  <span>{label}</span>
+                  <Kbd keys={keys as string[]} />
+                </li>
+              ))}
+            </ul>
+          </Card>
+        </aside>
+      )}
 
       <ExportDialog projectId={pid} clips={[clip]} open={exportOpen} onOpenChange={setExportOpen} />
     </div>
+  )
+}
+
+/**
+ * The picture's glow in the room: a tiny copy of the current frame, blurred
+ * far beyond the screen's edges.
+ */
+function Ambilight({ video, frame }: { video: React.RefObject<HTMLVideoElement | null>; frame: number }) {
+  const canvas = useRef<HTMLCanvasElement>(null)
+  const last = useRef(0)
+  // Playback moves `frame` every video frame; the glow follows ~10 times a
+  // second (a trailing draw catches the frame it stops on).
+  useEffect(() => {
+    const wait = AMBILIGHT_MS - (performance.now() - last.current)
+    const draw = () => {
+      last.current = performance.now()
+      drawFrame(video.current, canvas.current)
+    }
+    if (wait <= 0) {
+      draw()
+      return
+    }
+    const t = window.setTimeout(draw, wait)
+    return () => window.clearTimeout(t)
+  }, [video, frame])
+  useEffect(() => {
+    const v = video.current
+    if (!v) return
+    const draw = () => drawFrame(v, canvas.current)
+    v.addEventListener("seeked", draw)
+    v.addEventListener("loadeddata", draw)
+    return () => {
+      v.removeEventListener("seeked", draw)
+      v.removeEventListener("loadeddata", draw)
+    }
+  }, [video])
+  return (
+    <canvas
+      ref={canvas}
+      width={48}
+      height={27}
+      aria-hidden
+      className="pointer-events-none absolute inset-0 size-full scale-110 opacity-60 blur-[100px] brightness-125 saturate-[1.8]"
+    />
+  )
+}
+
+/** How often the ambilight follows playback. */
+const AMBILIGHT_MS = 100
+
+function drawFrame(v: HTMLVideoElement | null, c: HTMLCanvasElement | null) {
+  const ctx = c?.getContext("2d")
+  if (!v || !ctx || v.readyState < 2) return
+  try {
+    ctx.drawImage(v, 0, 0, ctx.canvas.width, ctx.canvas.height)
+  } catch {
+    // A frame that can't be read (no CORS) just leaves the room dark.
+  }
+}
+
+/** A timeline row: its name in the label column, the track beside it. */
+function TrackRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="grid grid-cols-[var(--lane-label-w)_minmax(0,1fr)] items-center gap-3">
+      <span className="text-xs font-medium text-fg-3">{label}</span>
+      {children}
+    </div>
+  )
+}
+
+/** A titled card of the details panel. */
+function Card({ title, action, children }: { title: string; action?: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <section className="rounded-2xl border border-white/[0.06] bg-white/[0.03] p-4">
+      <div className="mb-3 flex min-h-7 items-center justify-between gap-2">
+        <h2 className="text-sm font-semibold text-fg-1">{title}</h2>
+        {action}
+      </div>
+      {children}
+    </section>
   )
 }
 
@@ -629,24 +843,25 @@ function ShotsPanel({
   const i = segmentIndexAt(segments, frame)
   const seg = i >= 0 ? segments[i] : null
   const analyze = () =>
-    void commands.mediaAnalyze(pid, m.id, null).catch((e) => toast.error("Couldn't start the analysis", { description: errorMessage(e) }))
+    void commands
+      .mediaAnalyze(pid, m.id, null)
+      .catch((e) => toast.error("Couldn't start the analysis", { description: errorMessage(e) }))
 
   return (
-    <section className="border-b border-hairline p-4">
-      <div className="mb-3 flex items-center justify-between">
-        <h2 className="eyebrow">Shot</h2>
-        {m.shots === "ready" && <span className="timecode text-2xs text-fg-3">{total} shots</span>}
-      </div>
+    <Card
+      title="Shot"
+      action={m.shots === "ready" && <span className="timecode text-xs text-fg-3">{total} shots</span>}
+    >
       {m.shots === "ready" && seg ? (
         <>
           <div className="flex items-baseline justify-between gap-2">
-            <span className="text-sm text-fg-1">
+            <span className="text-lg font-medium text-fg-1">
               {seg.kind === "shot" ? `Shot ${numbers[i] + 1}` : SEGMENT_LABEL[seg.kind]}
               {seg.tiny && <span className="text-fg-3"> · tiny</span>}
             </span>
-            <span className="timecode text-xs text-fg-2">{seg.end - seg.start} frames</span>
+            <span className="timecode text-sm text-fg-2">{seg.end - seg.start} frames</span>
           </div>
-          <p className="timecode mt-0.5 text-2xs text-fg-3">
+          <p className="timecode mt-0.5 text-xs text-fg-3">
             {tc(seg.start)} – {tc(seg.end - 1)}
           </p>
           <div className="mt-3 flex gap-2">
@@ -654,20 +869,30 @@ function ShotsPanel({
               Mark shot <Kbd keys={["X"]} className="ml-auto" />
             </Button>
             <Tooltip label="Previous shot" shortcut={["↑"]}>
-              <Button size="icon-sm" variant="ghost" aria-label="Previous shot" onClick={() => onGo(prevShotStart(segments, frame))}>
-                <ChevronLeft />
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                aria-label="Previous shot"
+                onClick={() => onGo(prevShotStart(segments, frame))}
+              >
+                <CaretLeft />
               </Button>
             </Tooltip>
             <Tooltip label="Next shot" shortcut={["↓"]}>
-              <Button size="icon-sm" variant="ghost" aria-label="Next shot" onClick={() => onGo(nextShotStart(segments, frame))}>
-                <ChevronRight />
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                aria-label="Next shot"
+                onClick={() => onGo(nextShotStart(segments, frame))}
+              >
+                <CaretRight />
               </Button>
             </Tooltip>
           </div>
         </>
       ) : analyzing ? (
         <div>
-          <div className="flex justify-between text-2xs text-fg-3">
+          <div className="flex justify-between text-xs text-fg-3">
             <span>{job.state === "queued" ? "Waiting…" : (job.stage ?? "Finding shots")}</span>
             <span className="timecode">{formatPercent(job.progress)}</span>
           </div>
@@ -675,21 +900,21 @@ function ShotsPanel({
         </div>
       ) : m.shots === "failed" ? (
         <div>
-          <p className="text-xs text-danger">Shot detection failed.</p>
-          {m.shotsError && <p className="mt-0.5 text-2xs break-words text-fg-3">{m.shotsError}</p>}
+          <p className="text-sm text-danger">Shot detection failed.</p>
+          {m.shotsError && <p className="mt-0.5 text-xs break-words text-fg-3">{m.shotsError}</p>}
           <Button size="sm" variant="ghost" className="mt-2 -ml-2" onClick={analyze}>
-            <RotateCcw /> Try again
+            <ArrowCounterClockwise /> Try again
           </Button>
         </div>
       ) : (
         <div>
-          <p className="text-xs text-fg-3">Shots haven't been detected yet.</p>
+          <p className="text-sm text-fg-3">Shots haven't been detected yet.</p>
           <Button size="sm" variant="ghost" className="mt-2 -ml-2" onClick={analyze}>
             <Scissors /> Find shots
           </Button>
         </div>
       )}
-    </section>
+    </Card>
   )
 }
 
@@ -724,31 +949,34 @@ function CharactersPanel({
   /** The next time `lane` is on screen after the playhead (wrapping around). */
   const next = (lane: Lane) => (lane.spans.find((s) => s.start > frame) ?? lane.spans[0])?.start
   return (
-    <section className="border-b border-hairline p-4">
-      <div className="mb-3 flex items-center justify-between">
-        <h2 className="eyebrow">Characters</h2>
-        <Link to="/p/$pid/cast" params={{ pid }} className="text-2xs text-fg-3 hover:text-fg-1">
+    <Card
+      title="Characters"
+      action={
+        <Link to="/p/$pid/cast" params={{ pid }} className="text-xs font-medium text-fg-3 hover:text-fg-1">
           Cast
         </Link>
-      </div>
+      }
+    >
       {m.faces !== "ready" ? (
         job ? (
           <div>
-            <div className="flex justify-between text-2xs text-fg-3">
+            <div className="flex justify-between text-xs text-fg-3">
               <span>{job.state === "queued" ? "Waiting…" : (job.stage ?? "Analysing")}</span>
               <span className="timecode">{formatPercent(job.progress)}</span>
             </div>
             <Progress className="mt-1.5" value={job.state === "running" ? job.progress : null} />
           </div>
         ) : (
-          <p className="text-xs text-fg-3">
-            {m.faces === "failed" ? (m.facesError ?? "Finding characters failed.") : "Characters haven't been found in this episode yet."}
+          <p className="text-sm text-fg-3">
+            {m.faces === "failed"
+              ? (m.facesError ?? "Finding characters failed.")
+              : "Characters haven't been found in this episode yet."}
           </p>
         )
       ) : lanes.length === 0 ? (
-        <p className="text-xs text-fg-3">Nobody the cast knows appears here.</p>
+        <p className="text-sm text-fg-3">Nobody the cast knows appears here.</p>
       ) : (
-        <ul className="-mx-1 flex flex-col">
+        <ul className="-mx-1.5 flex flex-col gap-0.5">
           {listed.map((l) => {
             const c = l.character
             const on = hereIds.has(c.id)
@@ -762,15 +990,22 @@ function CharactersPanel({
                   }}
                   title="Click to highlight · double-click for the next appearance"
                   className={cn(
-                    "flex w-full items-center gap-2 rounded-md px-1 py-1 text-left transition-colors hover:bg-hover",
+                    "flex w-full items-center gap-2.5 rounded-xl px-1.5 py-1.5 text-left transition-colors hover:bg-white/[0.06]",
                     focus === c.id && "bg-accent-subtle",
                   )}
                 >
-                  <span className={cn("size-6 shrink-0 overflow-hidden rounded-sm bg-inset", !on && "opacity-50")}>
+                  <span
+                    className={cn(
+                      "size-8 shrink-0 overflow-hidden rounded-full bg-inset",
+                      on ? "ring-2 ring-accent/70" : "opacity-50",
+                    )}
+                  >
                     {c.cover && <img src={assetUrl(c.cover)} alt="" className="size-full object-cover" />}
                   </span>
-                  <span className={cn("min-w-0 flex-1 truncate text-xs", on ? "text-fg-1" : "text-fg-3")}>{c.label}</span>
-                  {on && <span className="text-[10px] text-fg-3">in shot</span>}
+                  <span className={cn("min-w-0 flex-1 truncate text-sm font-medium", on ? "text-fg-1" : "text-fg-3")}>
+                    {c.label}
+                  </span>
+                  {on && <span className="text-xs text-accent">in shot</span>}
                 </button>
               </li>
             )
@@ -779,7 +1014,7 @@ function CharactersPanel({
             <li>
               <button
                 onClick={() => setAll((v) => !v)}
-                className="mt-0.5 w-full rounded-md px-1 py-1 text-left text-2xs text-fg-3 hover:bg-hover hover:text-fg-1"
+                className="mt-0.5 w-full rounded-xl px-1.5 py-1.5 text-left text-xs font-medium text-fg-3 hover:bg-white/[0.06] hover:text-fg-1"
               >
                 {all ? "Show fewer" : `${hiddenCount} more in this episode`}
               </button>
@@ -794,7 +1029,7 @@ function CharactersPanel({
           </Link>
         </Button>
       )}
-    </section>
+    </Card>
   )
 }
 
@@ -823,7 +1058,7 @@ function TransportButton({
       <button
         onClick={onClick}
         aria-label={label}
-        className="flex size-8 items-center justify-center rounded-md text-fg-2 transition-colors hover:bg-hover hover:text-fg-1 [&_svg]:size-4"
+        className="flex size-10 items-center justify-center rounded-full text-fg-2 transition-colors hover:bg-white/[0.08] hover:text-fg-1 [&_svg]:size-[18px]"
       >
         {children}
       </button>
@@ -831,7 +1066,8 @@ function TransportButton({
   )
 }
 
-function MarkButton({
+/** In or out point in the details panel: set it, or go to it. */
+function MarkTile({
   label,
   keyHint,
   value,
@@ -849,23 +1085,64 @@ function MarkButton({
   return (
     <div
       className={cn(
-        "flex flex-col rounded-md border bg-inset px-2.5 py-2",
-        value != null ? "border-accent-line" : "border-hairline",
+        "flex flex-col rounded-xl border px-3 py-2.5",
+        value != null ? "border-accent-line bg-accent-subtle" : "border-white/[0.08] bg-black/20",
       )}
     >
       <div className="flex items-center justify-between">
-        <span className="text-2xs font-medium text-fg-3">{label}</span>
+        <span className={cn("text-xs font-semibold", value != null ? "text-accent" : "text-fg-3")}>{label}</span>
         <Kbd keys={[keyHint]} />
       </div>
       {value != null ? (
-        <button onClick={onGo} className="timecode mt-1 text-left text-sm text-fg-1 hover:text-accent" title="Go to this frame">
+        <button
+          onClick={onGo}
+          className="timecode mt-1.5 text-left text-md text-fg-1 hover:text-accent"
+          title="Go to this frame"
+        >
           {tc(value)}
         </button>
       ) : (
-        <button onClick={onMark} className="mt-1 text-left text-sm text-fg-3 hover:text-fg-1">
+        <button onClick={onMark} className="mt-1.5 text-left text-md text-fg-3 hover:text-fg-1">
           Mark {label.toLowerCase()}
         </button>
       )}
     </div>
+  )
+}
+
+/** In or out point in the transport row: gold once set. */
+function MarkChip({
+  label,
+  keyHint,
+  value,
+  tc,
+  onMark,
+  onGo,
+}: {
+  label: string
+  keyHint: string
+  value: number | null
+  tc: (f: number) => string
+  onMark: () => void
+  onGo: () => void
+}) {
+  return (
+    <Tooltip
+      label={value != null ? `Go to ${label.toLowerCase()} point` : `Mark ${label.toLowerCase()}`}
+      shortcut={value != null ? ["Shift", keyHint] : [keyHint]}
+    >
+      <button
+        onClick={value != null ? onGo : onMark}
+        className={cn(
+          "flex h-9 items-center gap-2 rounded-full border px-3 text-sm whitespace-nowrap transition-colors",
+          value != null
+            ? "border-accent-line bg-accent-subtle text-fg-1 hover:bg-accent/25"
+            : "border-white/10 text-fg-3 hover:border-white/20 hover:text-fg-1",
+        )}
+      >
+        <span className={cn("text-xs font-semibold", value != null && "text-accent")}>{label}</span>
+        {value != null && <span className="timecode hidden @5xl:inline">{tc(value)}</span>}
+      </button>
+    </Tooltip>
   )
 }

@@ -1,7 +1,7 @@
 import { mediaTitle } from "@/lib/media"
 import { useCast, useMediaList, useProject } from "@/lib/queries"
 
-/** Title-bar breadcrumbs that follow renames live. */
+/** Names of the views for the window title; they follow renames live. */
 export function ProjectCrumb({ pid }: { pid: string }) {
   const { data } = useProject(pid)
   return <>{data?.title ?? "Project"}</>

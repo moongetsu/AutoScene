@@ -15,6 +15,7 @@ import { LibraryPage } from "@/features/library/LibraryPage"
 import { PlayerPage } from "@/features/player/PlayerPage"
 import { EpisodesPage } from "@/features/project/EpisodesPage"
 import { ExportsPage } from "@/features/project/ExportsPage"
+import { OverviewPage } from "@/features/project/OverviewPage"
 import { CharacterCrumb, MediaCrumb, ProjectCrumb } from "@/features/project/crumbs"
 import { SettingsPage } from "@/features/settings/SettingsPage"
 import { settingsLabel } from "@/features/settings/sections"
@@ -26,10 +27,8 @@ declare module "@tanstack/react-router" {
     router: typeof router
   }
   interface StaticDataRouteOption {
-    /** Breadcrumb shown in the title bar. */
+    /** Name of the view in the window title (see WindowTitle). */
     crumb?: React.ReactNode | ((params: Record<string, string>) => React.ReactNode)
-    /** Where the crumb links to (defaults to the route's own path). */
-    crumbTo?: (params: Record<string, string>) => string
   }
 }
 
@@ -44,16 +43,14 @@ const libraryRoute = createRoute({
 const projectRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/p/$pid",
-  staticData: { crumb: (p) => <ProjectCrumb pid={p.pid} />, crumbTo: (p) => `/p/${p.pid}/episodes` },
+  staticData: { crumb: (p) => <ProjectCrumb pid={p.pid} /> },
   component: Outlet,
 })
 
 const projectIndexRoute = createRoute({
   getParentRoute: () => projectRoute,
   path: "/",
-  beforeLoad: ({ params }) => {
-    throw redirect({ to: "/p/$pid/episodes", params })
-  },
+  component: OverviewPage,
 })
 
 const episodesRoute = createRoute({
@@ -93,7 +90,7 @@ const reviewRoute = createRoute({
 const characterRoute = createRoute({
   getParentRoute: () => projectRoute,
   path: "/cast/$cid",
-  staticData: { crumb: (p) => <CharacterCrumb pid={p.pid} cid={p.cid} />, crumbTo: (p) => `/p/${p.pid}/cast/${p.cid}` },
+  staticData: { crumb: (p) => <CharacterCrumb pid={p.pid} cid={p.cid} /> },
   component: CharacterPage,
 })
 

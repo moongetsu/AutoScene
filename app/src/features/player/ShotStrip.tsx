@@ -56,7 +56,7 @@ export function ShotStrip({
   return (
     <div
       ref={ref}
-      className="relative mt-1 h-3.5 cursor-pointer select-none"
+      className="relative h-5 rounded-md select-none"
       role="group"
       aria-label="Shots"
       onPointerMove={(e) => setHover(indexAtX(e.clientX))}
@@ -73,13 +73,13 @@ export function ShotStrip({
       <Blocks segments={segments} numbers={numbers} pct={pct} />
       {cur && (
         <div
-          className="pointer-events-none absolute inset-y-0 rounded-[2px] bg-accent-subtle ring-1 ring-accent-line"
+          className="pointer-events-none absolute inset-y-0 rounded-[3px] bg-accent/25 ring-1 ring-accent ring-inset"
           style={{ left: `${pct(cur.start)}%`, width: `${Math.max(0.15, pct(cur.end) - pct(cur.start))}%` }}
         />
       )}
       {hover && hovered && (
         <div
-          className="glass pointer-events-none absolute bottom-full mb-1.5 -translate-x-1/2 rounded-sm px-1.5 py-0.5 text-2xs whitespace-nowrap"
+          className="glass-strong pointer-events-none absolute bottom-full mb-2 -translate-x-1/2 rounded-lg px-2 py-1 text-xs whitespace-nowrap"
           style={{ left: hover.x }}
         >
           <span className="text-fg-1">
@@ -114,8 +114,8 @@ const Blocks = memo(function Blocks({
           <div
             key={s.start}
             className={cn(
-              "absolute inset-y-0 border-r border-panel",
-              s.kind === "shot" && (numbers[i] % 2 === 0 ? "bg-active" : "bg-[rgb(255_255_255/0.12)]"),
+              "absolute inset-y-0 border-r border-black/50",
+              s.kind === "shot" && (numbers[i] % 2 === 0 ? "bg-white/[0.09]" : "bg-white/[0.15]"),
               s.kind === "black" && "bg-inset",
               s.kind === "flash" && "bg-fg-2",
               (s.kind === "dissolve" || s.kind === "fade_in" || s.kind === "fade_out") &&

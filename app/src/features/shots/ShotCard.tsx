@@ -1,5 +1,5 @@
 import { memo, useState } from "react"
-import { Play } from "lucide-react"
+import { Play } from "@/components/icons"
 import type { CharacterShot, MediaItem } from "@/bindings"
 import { assetUrl } from "@/lib/media"
 import { timecode } from "@/lib/timecode"
@@ -42,9 +42,9 @@ export const ShotCard = memo(function ShotCard({
       aria-label={`Shot${where ? ` at ${where}` : ""}${length ? `, ${length}` : ""}`}
       title={where ? `${where} · click to watch` : undefined}
       className={cn(
-        "group relative aspect-video overflow-hidden rounded-md bg-inset text-left outline-none",
-        "ring-offset-2 ring-offset-canvas transition-shadow duration-[var(--dur-fast)]",
-        "hover:ring-1 hover:ring-strong focus-visible:ring-2 focus-visible:ring-accent-line",
+        "group relative aspect-video overflow-hidden rounded-xl bg-inset text-left outline-none picture-edge",
+        "transition-[transform,box-shadow] duration-[var(--dur-med)] ease-out",
+        "hover:-translate-y-0.5 hover:shadow-lift focus-visible:ring-2 focus-visible:ring-accent-line",
       )}
     >
       {shot.sprite ? (
@@ -72,7 +72,7 @@ export const ShotCard = memo(function ShotCard({
           className="absolute inset-0 size-full scale-110 object-cover opacity-60 blur-[1px]"
         />
       )}
-      <span className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-canvas/80 to-transparent" />
+      <span className="pointer-events-none absolute inset-x-0 bottom-0 h-14 bg-gradient-to-t from-black/70 to-transparent" />
       {shot.sprite && (
         <img
           src={assetUrl(shot.face)}
@@ -80,26 +80,27 @@ export const ShotCard = memo(function ShotCard({
           loading="lazy"
           decoding="async"
           draggable={false}
-          className="absolute bottom-1.5 left-1.5 size-6 rounded-full object-cover shadow-1 ring-1 ring-canvas/60"
+          className="absolute bottom-2 left-2 size-7 rounded-full object-cover shadow-1 ring-2 ring-black/40"
         />
       )}
       {length && (
-        <span className="timecode absolute right-1.5 bottom-1.5 rounded-xs bg-canvas/70 px-1 text-[10px] leading-4 text-fg-1">
+        <span className="timecode absolute right-2 bottom-2 rounded-full bg-black/50 px-2 text-[11px] leading-5 text-white backdrop-blur-md">
           {length}
         </span>
       )}
       {media?.label && (
-        <span className="timecode absolute top-1.5 left-1.5 rounded-xs bg-canvas/70 px-1 text-[10px] leading-4 text-fg-2 opacity-0 transition-opacity group-hover:opacity-100">
+        <span className="timecode absolute top-2 left-2 rounded-full bg-black/50 px-2 text-[11px] leading-5 text-white/90 opacity-0 backdrop-blur-md transition-opacity group-hover:opacity-100">
           {media.label}
         </span>
       )}
       <Play
-        className="absolute top-1.5 right-1.5 size-3.5 fill-fg-1 text-fg-1 opacity-0 drop-shadow transition-opacity group-hover:opacity-90"
+        weight="fill"
+        className="absolute top-2 right-2 size-4 text-white opacity-0 drop-shadow transition-opacity group-hover:opacity-90"
         aria-hidden
       />
       {hover != null && cells > 1 && (
         <span
-          className="pointer-events-none absolute bottom-0 left-0 h-0.5 bg-accent"
+          className="pointer-events-none absolute bottom-0 left-0 h-[3px] bg-accent shadow-[0_0_8px_var(--accent)]"
           style={{ width: `${((hover + 1) * 100) / cells}%` }}
         />
       )}

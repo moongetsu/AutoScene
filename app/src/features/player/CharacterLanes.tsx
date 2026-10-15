@@ -30,7 +30,7 @@ export function CharacterLanes({
   const shown = lanes.slice(0, MAX_LANES)
   if (shown.length === 0) return null
   return (
-    <div className="mt-1 flex flex-col gap-px" role="group" aria-label="Characters on screen">
+    <div className="mt-1 flex flex-col gap-1" role="group" aria-label="Characters on screen">
       {shown.map((lane) => (
         <LaneRow
           key={lane.character.id}
@@ -80,57 +80,62 @@ function LaneRow({
     return best ? { x, span: best } : null
   }
   return (
-    <div
-      ref={ref}
-      className="group relative h-3 cursor-pointer rounded-[2px] bg-inset/60"
-      onPointerMove={(e) => setHover(spanAt(e.clientX))}
-      onPointerLeave={() => setHover(null)}
-      onClick={(e) => {
-        const h = spanAt(e.clientX)
-        if (h) onSeek(h.span.start)
-      }}
-    >
-      <Spans spans={lane.spans} pct={pct} focused={focused} />
-      <span className="pointer-events-none absolute inset-y-0 left-0 flex items-center gap-1 rounded-l-[2px] bg-gradient-to-r from-panel via-panel/80 to-transparent pr-3 pl-0.5">
-        {c.cover && <img src={assetUrl(c.cover)} alt="" className="size-2.5 rounded-full object-cover" />}
-        <span className={cn("text-[9px] leading-none", focused ? "text-accent" : "text-fg-3 group-hover:text-fg-2")}>
+    <div className="group grid grid-cols-[var(--lane-label-w)_minmax(0,1fr)] items-center gap-3">
+      <span className="flex min-w-0 items-center gap-2">
+        {c.cover && <img src={assetUrl(c.cover)} alt="" className="size-5 shrink-0 rounded-full object-cover" />}
+        <span
+          className={cn(
+            "truncate text-xs font-medium",
+            focused ? "text-accent" : c.name ? "text-fg-2 group-hover:text-fg-1" : "text-fg-3 group-hover:text-fg-2",
+          )}
+        >
           {c.label}
         </span>
       </span>
-      {hover && (
-        <div
-          className="glass pointer-events-none absolute bottom-full z-10 mb-1 -translate-x-1/2 rounded-sm px-1.5 py-0.5 text-2xs whitespace-nowrap"
-          style={{ left: hover.x }}
-        >
-          <span className="text-fg-1">{c.label}</span>
-          <span className="timecode text-fg-3"> · {formatFrame(hover.span.start)}</span>
-        </div>
-      )}
+      <div
+        ref={ref}
+        className="relative h-6 rounded-lg bg-white/[0.03]"
+        onPointerMove={(e) => setHover(spanAt(e.clientX))}
+        onPointerLeave={() => setHover(null)}
+        onClick={(e) => {
+          const h = spanAt(e.clientX)
+          if (h) onSeek(h.span.start)
+        }}
+      >
+        <Spans spans={lane.spans} pct={pct} focused={focused} />
+        {hover && (
+          <div
+            className="glass-strong pointer-events-none absolute bottom-full z-10 mb-1.5 -translate-x-1/2 rounded-lg px-2 py-1 text-xs whitespace-nowrap"
+            style={{ left: hover.x }}
+          >
+            <span className="text-fg-1">{c.label}</span>
+            <span className="timecode text-fg-3"> · {formatFrame(hover.span.start)}</span>
+          </div>
+        )}
+      </div>
     </div>
   )
 }
 
-const Spans = memo(function Spans({
-  spans,
-  pct,
-  focused,
-}: {
-  spans: Presence[]
-  pct: (f: number) => number
-  focused: boolean
-}) {
-  return (
-    <>
-      {spans.map((s) => {
-        const left = pct(s.start)
-        return (
-          <div
-            key={s.trackId}
-            className={cn("absolute inset-y-0.5 rounded-[1px]", focused ? "bg-accent" : "bg-fg-3/70")}
-            style={{ left: `${left}%`, width: `${Math.max(0.12, pct(s.end) - left)}%` }}
-          />
-        )
-      })}
-    </>
-  )
-}, (a, b) => a.spans === b.spans && a.focused === b.focused)
+const Spans = memo(
+  function Spans({ spans, pct, focused }: { spans: Presence[]; pct: (f: number) => number; focused: boolean }) {
+    return (
+      <>
+        {spans.map((s) => {
+          const left = pct(s.start)
+          return (
+            <div
+              key={s.trackId}
+              className={cn(
+                "absolute inset-y-[7px] rounded-full",
+                focused ? "bg-accent shadow-[0_0_8px_var(--accent)]" : "bg-white/40",
+              )}
+              style={{ left: `${left}%`, width: `${Math.max(0.12, pct(s.end) - left)}%` }}
+            />
+          )
+        })}
+      </>
+    )
+  },
+  (a, b) => a.spans === b.spans && a.focused === b.focused,
+)

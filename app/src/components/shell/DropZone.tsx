@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react"
 import { useRouterState } from "@tanstack/react-router"
 import { getCurrentWebview } from "@tauri-apps/api/webview"
-import { FolderInput } from "lucide-react"
+import { FolderPlus } from "@/components/icons"
 import { toast } from "sonner"
 import { commands, errorMessage } from "@/lib/ipc"
 import { isTauri } from "@/lib/platform"
@@ -41,11 +41,13 @@ export function DropZone() {
 
   if (!over) return null
   return (
-    <div className="pointer-events-none fixed inset-0 top-[var(--titlebar-h)] z-[60] p-3">
-      <div className="flex size-full flex-col items-center justify-center rounded-xl border-2 border-dashed border-accent-line bg-scrim animate-fade-in">
-        <FolderInput className="size-8 text-accent" />
-        <p className="mt-3 text-lg font-semibold text-fg-1">{pid ? "Add to this project" : "Create a project"}</p>
-        <p className="mt-1 text-sm text-fg-2">Drop a season folder or video files</p>
+    <div className="pointer-events-none fixed inset-0 z-[60] p-4">
+      <div className="flex size-full animate-fade-in flex-col items-center justify-center rounded-[28px] border-2 border-dashed border-accent-line bg-black/60 backdrop-blur-xl">
+        <span className="flex size-20 items-center justify-center rounded-full bg-accent-subtle text-accent shadow-[0_0_60px_rgb(224_180_92/0.3)] [&_svg]:size-9">
+          <FolderPlus />
+        </span>
+        <p className="display mt-6 text-4xl text-fg-1">{pid ? "Add to this project" : "Create a project"}</p>
+        <p className="mt-2 text-md text-fg-2">Drop a season folder or video files</p>
       </div>
     </div>
   )

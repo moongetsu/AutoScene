@@ -1,5 +1,5 @@
 import type * as React from "react"
-import { CheckCircle2, Loader2 } from "lucide-react"
+import { CheckCircle, CircleNotch } from "@/components/icons"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { useAppInfo } from "@/lib/queries"
@@ -24,7 +24,7 @@ export function UpdatesSection() {
   else if (u.phase === "current")
     statusLine = (
       <span className="inline-flex items-center gap-1.5">
-        <CheckCircle2 className="size-3.5 text-fg-2" /> You're up to date
+        <CheckCircle className="size-3.5 text-fg-2" /> You're up to date
         {u.lastChecked && <span className="text-fg-3"> · checked {relativeTime(u.lastChecked)}</span>}
       </span>
     )
@@ -48,7 +48,7 @@ export function UpdatesSection() {
           </Button>
         ) : (
           <Button size="sm" disabled={checking} onClick={() => void u.check(true)}>
-            {checking && <Loader2 className="animate-spin" />}
+            {checking && <CircleNotch className="animate-spin" />}
             Check for updates
           </Button>
         )}

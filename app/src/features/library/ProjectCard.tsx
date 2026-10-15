@@ -1,7 +1,8 @@
-import { useState } from "react"
 import { Link } from "@tanstack/react-router"
-import { Film, FolderOpen, MoreHorizontal, Pencil, Trash2, Tv } from "lucide-react"
+import { DotsThree, FilmStrip, FolderOpen, PencilSimple, Television, Trash } from "@/components/icons"
 import type { ProjectSummary } from "@/bindings"
+import { Artwork } from "@/components/ui/artwork"
+import { Badge } from "@/components/ui/badge"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -12,12 +13,11 @@ import {
 import { Progress } from "@/components/ui/progress"
 import { formatDuration } from "@/lib/format"
 import { commands } from "@/lib/ipc"
-import { assetUrl } from "@/lib/media"
 import { cn } from "@/lib/utils"
+import { projectFacts } from "@/lib/projects"
 import { useProjectIndexing } from "@/state/activity"
 
-const CONTENT = { live: "Live action", anime: "Anime", mixed: "Mixed" } as const
-
+/** A project as its picture: the title over the footage, facts beneath it. */
 export function ProjectCard({
   project: p,
   onRename,
@@ -27,82 +27,66 @@ export function ProjectCard({
   onRename: () => void
   onDelete: () => void
 }) {
-  const [posterFailed, setPosterFailed] = useState(false)
   const indexing = useProjectIndexing(p.id)
-  const unit = p.kind === "movie" ? (p.mediaCount === 1 ? "file" : "files") : p.mediaCount === 1 ? "episode" : "episodes"
-
   return (
     <div className="group relative">
       <Link
-        to="/p/$pid/episodes"
+        to="/p/$pid"
         params={{ pid: p.id }}
-        className={cn(
-          "block overflow-hidden rounded-lg border border-hairline bg-panel shadow-1 transition-[border-color,transform] duration-[var(--dur-med)]",
-          "hover:border-strong focus-visible:border-accent-line",
-        )}
+        className="block rounded-2xl transition-transform duration-[var(--dur-med)] ease-out hover:-translate-y-1 focus-visible:-translate-y-1"
       >
-        <div className="relative aspect-video overflow-hidden bg-inset">
-          {p.poster && !posterFailed ? (
-            <img
-              src={assetUrl(p.poster)}
-              alt=""
-              draggable={false}
-              onError={() => setPosterFailed(true)}
-              className="size-full object-cover transition-transform duration-[var(--dur-slow)] ease-out group-hover:scale-[1.02]"
-            />
-          ) : (
-            <div className="flex size-full items-center justify-center text-fg-disabled [&_svg]:size-7">
-              {p.kind === "movie" ? <Film /> : <Tv />}
+        <Artwork
+          path={p.poster}
+          className="aspect-video rounded-2xl picture-edge transition-shadow duration-[var(--dur-med)] group-hover:shadow-lift"
+          imgClassName="group-hover:scale-[1.04] duration-[600ms]"
+          fallback={
+            <div className="flex size-full items-center justify-center artwork-fallback text-fg-disabled [&_svg]:size-10">
+              {p.kind === "movie" ? <FilmStrip /> : <Television />}
             </div>
-          )}
-          {/* Legibility for the meta line without tinting the footage. */}
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-scrim to-transparent" />
-          <span className="timecode absolute right-2 bottom-1.5 text-2xs text-on-media">
-            {p.durationSec ? formatDuration(p.durationSec) : ""}
-          </span>
-        </div>
-        <div className="px-3.5 pt-2.5 pb-3">
-          <div className="truncate text-sm font-semibold text-fg-1">{p.title}</div>
-          <div className="mt-0.5 flex items-center gap-1.5 text-xs text-fg-3">
-            <span>
-              {p.kind === "movie" ? "Movie" : "Series"} · {CONTENT[p.content]}
-            </span>
-            <span aria-hidden>·</span>
-            <span>
-              {p.mediaCount} {unit}
-            </span>
+          }
+        >
+          <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/85 via-black/20 to-transparent" />
+          <div className="absolute inset-x-0 bottom-0 p-4">
+            <div className="display truncate text-3xl text-white drop-shadow-[0_2px_12px_rgb(0_0_0/0.6)]">{p.title}</div>
+            {indexing ? (
+              <div className="mt-2 flex items-center gap-2.5">
+                <Progress value={p.mediaCount ? p.readyCount / p.mediaCount : 0} className="flex-1 bg-white/15" />
+                <span className="timecode text-xs text-white/80">
+                  {p.readyCount}/{p.mediaCount}
+                </span>
+              </div>
+            ) : (
+              <div className="mt-1 truncate text-sm text-white/75">{projectFacts(p)}</div>
+            )}
           </div>
-          {indexing && (
-            <div className="mt-2.5 flex items-center gap-2">
-              <Progress value={p.mediaCount ? p.readyCount / p.mediaCount : 0} className="flex-1" />
-              <span className="timecode text-2xs text-fg-3">
-                {p.readyCount}/{p.mediaCount}
-              </span>
-            </div>
-          )}
-        </div>
+          {p.durationSec ? (
+            <Badge tone="media" className="timecode absolute top-3 left-3">
+              {formatDuration(p.durationSec)}
+            </Badge>
+          ) : null}
+        </Artwork>
       </Link>
 
       <DropdownMenu>
         <DropdownMenuTrigger
           aria-label={`${p.title} options`}
           className={cn(
-            "absolute top-2 right-2 flex size-7 items-center justify-center rounded-md border border-soft bg-overlay text-fg-2 opacity-0 shadow-1 transition-opacity",
-            "group-hover:opacity-100 hover:text-fg-1 focus-visible:opacity-100 data-[state=open]:opacity-100",
+            "absolute top-3 right-3 flex size-8 items-center justify-center rounded-full border border-white/15 bg-black/40 text-white opacity-0 backdrop-blur-md transition-opacity",
+            "group-hover:opacity-100 hover:bg-black/60 focus-visible:opacity-100 data-[state=open]:opacity-100",
           )}
         >
-          <MoreHorizontal className="size-4" />
+          <DotsThree className="size-5" weight="bold" />
         </DropdownMenuTrigger>
         <DropdownMenuContent>
           <DropdownMenuItem onSelect={onRename}>
-            <Pencil /> Rename…
+            <PencilSimple /> Rename…
           </DropdownMenuItem>
           <DropdownMenuItem onSelect={() => void commands.revealPath(p.dir)}>
             <FolderOpen /> Show project folder
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem destructive onSelect={onDelete}>
-            <Trash2 /> Remove…
+            <Trash /> Remove…
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>

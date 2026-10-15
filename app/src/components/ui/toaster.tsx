@@ -5,18 +5,19 @@ export function Toaster() {
     <Sonner
       theme="dark"
       position="top-right"
-      offset={{ top: 52, right: 16 }}
+      offset={{ top: 64, right: 16 }}
       gap={8}
       toastOptions={{
         unstyled: true,
         classNames: {
           toast:
-            "glass flex w-[356px] items-start gap-3 rounded-lg px-4 py-3 text-sm text-fg-1 [&>[data-icon]]:mt-0.5 [&>[data-icon]>svg]:size-4",
+            "glass-strong flex w-[380px] items-start gap-3 rounded-2xl px-4 py-3.5 text-md text-fg-1 [&>[data-icon]]:mt-0.5 [&>[data-icon]>svg]:size-4",
           title: "font-medium",
-          description: "mt-0.5 text-xs text-fg-2",
+          description: "mt-0.5 text-sm text-fg-2",
           content: "min-w-0 flex-1 break-words",
-          actionButton: "ml-auto shrink-0 self-center whitespace-nowrap rounded-sm bg-accent px-2 py-1 text-xs font-medium text-on-accent",
-          cancelButton: "ml-auto shrink-0 self-center whitespace-nowrap rounded-sm bg-active px-2 py-1 text-xs text-fg-2",
+          actionButton:
+            "ml-auto shrink-0 self-center whitespace-nowrap rounded-full bg-cta px-3 py-1 text-sm font-semibold text-on-cta",
+          cancelButton: "ml-auto shrink-0 self-center whitespace-nowrap rounded-full bg-active px-3 py-1 text-sm text-fg-2",
           error: "[&>[data-icon]]:text-danger",
           success: "[&>[data-icon]]:text-fg-1",
         },

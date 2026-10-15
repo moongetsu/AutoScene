@@ -17,7 +17,7 @@ export function DropdownMenuContent({
         align={align}
         sideOffset={sideOffset}
         className={cn(
-          "glass z-50 min-w-[180px] rounded-lg p-1 data-[state=open]:animate-pop-in focus:outline-none",
+          "glass-strong z-50 min-w-[200px] rounded-xl p-1.5 data-[state=open]:animate-pop-in focus:outline-none",
           className,
         )}
         {...props}
@@ -34,7 +34,7 @@ export function DropdownMenuItem({
   return (
     <M.Item
       className={cn(
-        "flex h-8 cursor-default items-center gap-2.5 rounded-md px-2.5 text-sm text-fg-2 outline-none select-none",
+        "flex h-9 cursor-default items-center gap-3 rounded-lg px-3 text-md text-fg-2 outline-none select-none",
         "data-[highlighted]:bg-active data-[highlighted]:text-fg-1 data-[disabled]:opacity-40",
         "[&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-fg-3 data-[highlighted]:[&_svg]:text-fg-2",
         destructive && "text-danger data-[highlighted]:bg-danger-subtle data-[highlighted]:text-danger [&_svg]:text-danger",
@@ -46,9 +46,9 @@ export function DropdownMenuItem({
 }
 
 export function DropdownMenuSeparator() {
-  return <M.Separator className="my-1 h-px bg-hairline" />
+  return <M.Separator className="mx-2 my-1.5 h-px bg-hairline" />
 }
 
 export function DropdownMenuLabel({ className, ...props }: React.ComponentProps<typeof M.Label>) {
-  return <M.Label className={cn("eyebrow px-2.5 pt-1.5 pb-1", className)} {...props} />
+  return <M.Label className={cn("eyebrow px-3 pt-2 pb-1", className)} {...props} />
 }

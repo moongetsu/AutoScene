@@ -1,4 +1,4 @@
-import { AlertTriangle, Check, Clock, FileQuestion, RotateCcw, ScanFace, Scissors } from "lucide-react"
+import { ArrowCounterClockwise, Check, Clock, FileX, Scissors, UserFocus, Warning } from "@/components/icons"
 import { toast } from "sonner"
 import type { JobInfo, MediaItem } from "@/bindings"
 import { Progress } from "@/components/ui/progress"
@@ -37,30 +37,30 @@ export function StatusCell({ media: m, projectId, faces }: { media: MediaItem; p
   if (m.status === "missing") {
     return (
       <Tooltip label={m.path}>
-        <span className="inline-flex items-center gap-1.5 text-xs text-danger">
-          <FileQuestion className="size-3.5" /> File missing
+        <span className="inline-flex items-center gap-1.5 text-sm text-danger">
+          <FileX className="size-3.5" /> File missing
         </span>
       </Tooltip>
     )
   }
   if (m.status === "failed") {
     return (
-      <span className="inline-flex items-center gap-2 text-xs">
+      <span className="inline-flex items-center gap-2 text-sm">
         <Tooltip label={m.error ?? "Indexing failed"}>
           <span className="inline-flex items-center gap-1.5 text-danger">
-            <AlertTriangle className="size-3.5" /> Failed
+            <Warning className="size-3.5" /> Failed
           </span>
         </Tooltip>
         <button onClick={retry} className="inline-flex items-center gap-1 rounded-xs px-1 text-fg-3 hover:text-fg-1">
-          <RotateCcw className="size-3" /> Retry
+          <ArrowCounterClockwise className="size-3" /> Retry
         </button>
       </span>
     )
   }
   if (job && job.state === "running") {
     return (
-      <div className="flex w-36 flex-col gap-1">
-        <div className="flex justify-between text-2xs text-fg-3">
+      <div className="flex w-40 flex-col gap-1.5">
+        <div className="flex justify-between text-xs text-fg-3">
           <span className="truncate">{runningLabel(job)}</span>
           <span className="timecode">{formatPercent(job.progress)}</span>
         </div>
@@ -70,28 +70,28 @@ export function StatusCell({ media: m, projectId, faces }: { media: MediaItem; p
   }
   if (m.status !== "ready" || job) {
     return (
-      <span className="inline-flex items-center gap-1.5 text-xs text-fg-3">
+      <span className="inline-flex items-center gap-1.5 text-sm text-fg-3">
         <Clock className="size-3.5" /> {queuedLabel(m, job)}
       </span>
     )
   }
   if (m.shots === "failed") {
     return (
-      <span className="inline-flex items-center gap-2 text-xs">
+      <span className="inline-flex items-center gap-2 text-sm">
         <Tooltip label={m.shotsError ?? "Shot detection failed"}>
           <span className="inline-flex items-center gap-1.5 text-danger">
-            <AlertTriangle className="size-3.5" /> Analysis failed
+            <Warning className="size-3.5" /> Analysis failed
           </span>
         </Tooltip>
         <button onClick={analyze} className="inline-flex items-center gap-1 rounded-xs px-1 text-fg-3 hover:text-fg-1">
-          <RotateCcw className="size-3" /> Retry
+          <ArrowCounterClockwise className="size-3" /> Retry
         </button>
       </span>
     )
   }
   if (m.shots !== "ready") {
     return (
-      <span className="inline-flex items-center gap-2 text-xs">
+      <span className="inline-flex items-center gap-2 text-sm">
         <span className="inline-flex items-center gap-1.5 text-fg-2">
           <Check className="size-3.5 text-fg-3" /> {m.shots === "stopped" ? "Stopped" : "Indexed"}
         </span>
@@ -108,10 +108,10 @@ export function StatusCell({ media: m, projectId, faces }: { media: MediaItem; p
   )
   if (!faces || m.faces === "ready") {
     return (
-      <span className="inline-flex flex-col text-xs">
+      <span className="inline-flex flex-col text-sm">
         {shots}
         {faces && (
-          <span className="pl-5 text-2xs text-fg-3">
+          <span className="pl-5 text-xs text-fg-3">
             <span className="timecode">{(m.faceCount ?? 0).toLocaleString("en-GB")}</span> faces
           </span>
         )}
@@ -120,26 +120,26 @@ export function StatusCell({ media: m, projectId, faces }: { media: MediaItem; p
   }
   if (m.faces === "failed") {
     return (
-      <span className="inline-flex flex-col gap-0.5 text-xs">
+      <span className="inline-flex flex-col gap-0.5 text-sm">
         {shots}
-        <span className="inline-flex items-center gap-2 pl-5 text-2xs">
+        <span className="inline-flex items-center gap-2 pl-5 text-xs">
           <Tooltip label={m.facesError ?? "Finding characters failed"}>
             <span className="inline-flex items-center gap-1 text-danger">
-              <AlertTriangle className="size-3" /> Characters failed
+              <Warning className="size-3" /> Characters failed
             </span>
           </Tooltip>
           <button onClick={analyze} className="inline-flex items-center gap-1 rounded-xs px-1 text-fg-3 hover:text-fg-1">
-            <RotateCcw className="size-3" /> Retry
+            <ArrowCounterClockwise className="size-3" /> Retry
           </button>
         </span>
       </span>
     )
   }
   return (
-    <span className="inline-flex flex-col gap-0.5 text-xs">
+    <span className="inline-flex flex-col gap-0.5 text-sm">
       {shots}
-      <button onClick={analyze} className="inline-flex items-center gap-1 rounded-xs pl-5 text-left text-2xs text-fg-3 hover:text-fg-1">
-        <ScanFace className="size-3" /> {m.faces === "stopped" ? "Stopped · continue" : "Find characters"}
+      <button onClick={analyze} className="inline-flex items-center gap-1 rounded-xs pl-5 text-left text-xs text-fg-3 hover:text-fg-1">
+        <UserFocus className="size-3" /> {m.faces === "stopped" ? "Stopped · continue" : "Find characters"}
       </button>
     </span>
   )

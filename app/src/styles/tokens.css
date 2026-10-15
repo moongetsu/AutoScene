@@ -1,96 +1,136 @@
 /*
- * Cinema Graphite — AutoScene design tokens.
+ * AutoScene — "Cinematic" design tokens (see docs/DESIGN.md).
  *
- * Rules (see docs/DESIGN.md):
- *  - Neutral graphite surfaces only; no tinted greys.
- *  - Logo gold (#C4A35A) is the ONLY accent. Danger red is semantic, never decorative.
- *  - Depth comes from surface steps + hairlines, not glow. Glass is reserved for
- *    floating layers (popovers, palette, drawer).
+ *  - The app is a dark theatre: near-black, neutral surfaces; the pictures
+ *    (episode stills, faces, shots) bring the colour.
+ *  - Warm white for text and for the one main action of a screen (a white
+ *    pill, like a player's Play button). The logo's gold, brightened for
+ *    dark screens, marks what is selected, running or in focus.
+ *  - Depth comes from light and blur: soft deep shadows under cards, glass
+ *    for anything that floats, the native window material (Mica, vibrancy)
+ *    behind the rail where the system has one.
  */
 :root {
   color-scheme: dark;
 
   /* Surfaces, darkest → lightest */
-  --bg-inset: #0a0a0c;
-  --bg-canvas: #0d0d0f;
-  --bg-panel: #141417;
-  --bg-raised: #1a1a1e;
+  --bg-inset: #050506;
+  --bg-canvas: #09090b;
+  --bg-panel: #111114;
+  --bg-raised: #18181c;
   --bg-overlay: #202025;
-  --bg-hover: rgb(255 255 255 / 0.045);
-  --bg-active: rgb(255 255 255 / 0.075);
-  --bg-selected: rgb(196 163 90 / 0.12);
+  --bg-hover: rgb(255 255 255 / 0.06);
+  --bg-active: rgb(255 255 255 / 0.1);
+  --bg-selected: rgb(224 180 92 / 0.14);
+
+  /* The rail: the window material shows through where there is one. */
+  --bg-rail: #0c0c0e;
 
   /* Lines */
-  --line-hairline: rgb(255 255 255 / 0.075);
-  --line-soft: rgb(255 255 255 / 0.1);
-  --line-strong: rgb(255 255 255 / 0.15);
-  --line-focus: rgb(196 163 90 / 0.6);
+  --line-hairline: rgb(255 255 255 / 0.07);
+  --line-soft: rgb(255 255 255 / 0.11);
+  --line-strong: rgb(255 255 255 / 0.18);
+  --line-focus: rgb(224 180 92 / 0.7);
 
-  /* Text */
-  --fg-1: #ededef;
-  --fg-2: #a3a3ab;
-  /* 4.5:1 on panel, raised and overlay surfaces (WCAG AA for 11-12px text) */
-  --fg-3: #88888f;
-  --fg-disabled: #4b4b52;
-  --fg-on-accent: #16130c;
+  /* Text: warm white, two quieter steps (both ≥ 4.5:1 on panels) */
+  --fg-1: #f5f3ef;
+  --fg-2: #b4b1ac;
+  --fg-3: #8a8783;
+  --fg-disabled: #4f4d4a;
 
-  /* Accent — the logo gold */
-  --accent: #c4a35a;
-  --accent-hover: #d1b26d;
-  --accent-press: #ad8e48;
-  --accent-subtle: rgb(196 163 90 / 0.14);
-  --accent-line: rgb(196 163 90 / 0.35);
+  /* The main action: a white pill */
+  --cta: #f5f3ef;
+  --cta-hover: #ffffff;
+  --fg-on-cta: #0b0b0d;
+
+  /* Accent — the logo's gold, brightened for dark screens */
+  --accent: #e0b45c;
+  --accent-hover: #eac375;
+  --accent-press: #c99e48;
+  --accent-subtle: rgb(224 180 92 / 0.14);
+  --accent-line: rgb(224 180 92 / 0.4);
+  --fg-on-accent: #1a1407;
 
   /* Semantic */
-  --danger: #d2564b;
-  --danger-subtle: rgb(210 86 75 / 0.14);
+  --danger: #ef5f57;
+  --danger-subtle: rgb(239 95 87 / 0.14);
+  --ok: #5fc58f;
 
   /* Scrims, and content drawn over pictures */
-  --scrim: rgb(0 0 0 / 0.55);
+  --scrim: rgb(0 0 0 / 0.6);
   --scrim-soft: rgb(0 0 0 / 0.35);
   --scrim-media: rgb(0 0 0 / 0.45);
-  --fg-on-media: rgb(255 255 255 / 0.9);
+  --fg-on-media: rgb(255 255 255 / 0.92);
 
   /* Platform chrome: the Windows caption close button (Fluent spec), not an accent */
   --win-close: #c42b1c;
   --fg-on-win-close: #ffffff;
 
-  /* Glass (floating layers only) */
-  --glass-bg: rgb(24 24 28 / 0.78);
-  --glass-border: rgb(255 255 255 / 0.1);
-  --glass-blur: 24px;
+  /* Glass: everything that floats (menus, palette, drawer, bars over pictures) */
+  --glass-bg: rgb(26 26 30 / 0.66);
+  --glass-bg-strong: rgb(22 22 26 / 0.86);
+  --glass-border: rgb(255 255 255 / 0.12);
+  --glass-blur: 32px;
 
   /* Elevation */
-  --shadow-1: inset 0 1px 0 rgb(255 255 255 / 0.035), 0 1px 2px rgb(0 0 0 / 0.4);
-  --shadow-2: inset 0 1px 0 rgb(255 255 255 / 0.04), 0 8px 24px rgb(0 0 0 / 0.45);
-  --shadow-3: inset 0 1px 0 rgb(255 255 255 / 0.05), 0 24px 64px rgb(0 0 0 / 0.6);
+  --shadow-1: inset 0 1px 0 rgb(255 255 255 / 0.04), 0 1px 2px rgb(0 0 0 / 0.5);
+  --shadow-2: inset 0 1px 0 rgb(255 255 255 / 0.05), 0 12px 32px -12px rgb(0 0 0 / 0.7);
+  --shadow-3: inset 0 1px 0 rgb(255 255 255 / 0.06), 0 30px 80px -20px rgb(0 0 0 / 0.85);
+  --shadow-lift: 0 28px 60px -20px rgb(0 0 0 / 0.85), 0 0 0 1px rgb(255 255 255 / 0.12);
 
   /* Shape */
-  --radius-xs: 4px;
-  --radius-sm: 6px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
-  --radius-xl: 16px;
+  --radius-xs: 6px;
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+  --radius-2xl: 28px;
 
   /* Type */
-  --font-sans: "Geist Variable", ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, "Segoe UI Variable", "Segoe UI", sans-serif;
+  --font-display: "Instrument Serif", "Iowan Old Style", Georgia, serif;
   --font-mono: "Geist Mono Variable", ui-monospace, "Cascadia Mono", Menlo, monospace;
 
   /* Motion */
   --dur-fast: 120ms;
-  --dur-med: 180ms;
-  --dur-slow: 260ms;
+  --dur-med: 200ms;
+  --dur-slow: 320ms;
   --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
 
   /* Chrome metrics */
-  --titlebar-h: 40px;
-  --sidebar-w: 232px;
-  --sidebar-w-collapsed: 56px;
+  --rail-w: 76px;
+  --topbar-h: 56px;
+  /* Room the window's own buttons take (set per platform below). */
+  --caption-inset: 0px;
+  --traffic-inset: 0px;
+  /* Width of the traffic lights, for a top bar without the rail under them. */
+  --traffic-x: 0px;
 
   /* Timeline lanes */
-  --tl-shot-a: #1d1d22;
-  --tl-shot-b: #25252b;
-  --tl-transition: rgb(196 163 90 / 0.35);
-  --tl-presence: rgb(237 237 239 / 0.55);
+  --tl-shot-a: #1b1b20;
+  --tl-shot-b: #25252c;
+  --tl-transition: rgb(224 180 92 / 0.4);
+  --tl-presence: rgb(245 243 239 / 0.6);
+}
+
+/* Windows: our caption buttons over the top-right corner (3 × 46px). */
+:root[data-chrome="windows"] {
+  --caption-inset: 138px;
+}
+
+/* macOS: the traffic lights over the top-left corner, above the rail. */
+:root[data-chrome="macos"] {
+  --traffic-inset: 32px;
+  --traffic-x: 72px;
+}
+
+/* A native material is behind the window (Windows 11 Mica, macOS vibrancy):
+   the page itself is transparent and only the rail lets it through. */
+:root[data-material] {
+  --bg-rail: rgb(12 12 14 / 0.42);
+}
+:root[data-material="vibrancy"] {
+  --bg-rail: rgb(12 12 14 / 0.3);
 }

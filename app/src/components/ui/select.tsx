@@ -1,6 +1,6 @@
 import type * as React from "react"
 import { Select as S } from "radix-ui"
-import { Check, ChevronDown } from "lucide-react"
+import { CaretDown, Check } from "@/components/icons"
 import { cn } from "@/lib/utils"
 
 export type SelectOption = { value: string; label: React.ReactNode; description?: React.ReactNode }
@@ -30,10 +30,10 @@ export function Select({
       <S.Trigger
         aria-label={ariaLabel}
         className={cn(
-          "inline-flex min-w-0 items-center justify-between gap-2 rounded-md border border-soft bg-raised text-left text-fg-1 shadow-1",
-          "transition-colors duration-[var(--dur-fast)] hover:border-strong focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-subtle",
-          "data-[placeholder]:text-fg-3 disabled:opacity-45",
-          size === "sm" ? "h-7 px-2 text-xs" : "h-8 px-2.5 text-sm",
+          "inline-flex min-w-0 items-center justify-between gap-2 rounded-lg border border-soft bg-white/[0.06] text-left text-fg-1",
+          "transition-colors duration-[var(--dur-fast)] hover:border-strong hover:bg-white/[0.09] focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-accent-subtle",
+          "data-[placeholder]:text-fg-3 disabled:opacity-40",
+          size === "sm" ? "h-8 px-2.5 text-sm" : "h-10 px-3 text-md",
           className,
         )}
       >
@@ -41,29 +41,29 @@ export function Select({
           <S.Value placeholder={placeholder} />
         </span>
         <S.Icon>
-          <ChevronDown className="size-3.5 shrink-0 text-fg-3" />
+          <CaretDown className="size-3.5 shrink-0 text-fg-3" />
         </S.Icon>
       </S.Trigger>
       <S.Portal>
         <S.Content
           position="popper"
           sideOffset={6}
-          className="glass z-50 max-h-[min(360px,var(--radix-select-content-available-height))] min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-lg data-[state=open]:animate-pop-in"
+          className="glass-strong z-50 max-h-[min(380px,var(--radix-select-content-available-height))] min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-xl data-[state=open]:animate-pop-in"
         >
-          <S.Viewport className="p-1">
+          <S.Viewport className="p-1.5">
             {options.map((o) => (
               <S.Item
                 key={o.value}
                 value={o.value}
                 className={cn(
-                  "relative flex cursor-default flex-col rounded-md py-1.5 pr-8 pl-2.5 text-sm text-fg-2 outline-none select-none",
+                  "relative flex cursor-default flex-col rounded-lg py-2 pr-9 pl-3 text-md text-fg-2 outline-none select-none",
                   "data-[highlighted]:bg-active data-[highlighted]:text-fg-1 data-[state=checked]:text-fg-1",
                 )}
               >
                 <S.ItemText>{o.label}</S.ItemText>
-                {o.description && <span className="mt-0.5 text-2xs text-fg-3">{o.description}</span>}
-                <S.ItemIndicator className="absolute top-2 right-2.5">
-                  <Check className="size-3.5 text-accent" />
+                {o.description && <span className="mt-0.5 text-xs text-fg-3">{o.description}</span>}
+                <S.ItemIndicator className="absolute top-2.5 right-3">
+                  <Check className="size-4 text-accent" weight="bold" />
                 </S.ItemIndicator>
               </S.Item>
             ))}

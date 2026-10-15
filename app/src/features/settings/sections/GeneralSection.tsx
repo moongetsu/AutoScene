@@ -1,4 +1,4 @@
-import { FolderOpen } from "lucide-react"
+import { FolderOpen } from "@/components/icons"
 import { toast } from "sonner"
 import type { AppSettings } from "@/bindings"
 import { Button } from "@/components/ui/button"

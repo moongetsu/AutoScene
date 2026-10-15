@@ -19,8 +19,8 @@ export function useAppActions() {
       toggleSidebar: () => useUi.getState().toggleSidebar(),
       goLibrary: () => void navigate({ to: "/" }),
       newProject: () => useNewProject.getState().show(),
-      goProject: (pid: string, page: "episodes" | "exports" = "episodes") =>
-        void navigate({ to: page === "episodes" ? "/p/$pid/episodes" : "/p/$pid/exports", params: { pid } }),
+      goProject: (pid: string, page: "overview" | "episodes" | "cast" | "exports" = "overview") =>
+        void navigate({ to: page === "overview" ? "/p/$pid" : `/p/$pid/${page}`, params: { pid } }),
       goSettings: (section: SettingsSection = "general") =>
         void navigate({ to: "/settings/$section", params: { section } }),
       checkUpdates: () => void useUpdates.getState().check(true, true),

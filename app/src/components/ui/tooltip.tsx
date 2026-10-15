@@ -18,8 +18,8 @@ export function Tooltip({ label, shortcut, side = "bottom", children }: TooltipP
       <T.Portal>
         <T.Content
           side={side}
-          sideOffset={6}
-          className="glass z-50 flex items-center gap-2 rounded-sm px-2 py-1 text-xs text-fg-1 data-[state=delayed-open]:animate-fade-in"
+          sideOffset={8}
+          className="glass-strong z-50 flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs font-medium text-fg-1 data-[state=delayed-open]:animate-fade-in"
         >
           {label}
           {shortcut && <Kbd keys={shortcut} />}

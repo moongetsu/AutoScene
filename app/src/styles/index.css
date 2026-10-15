@@ -12,6 +12,7 @@
   --color-hover: var(--bg-hover);
   --color-active: var(--bg-active);
   --color-selected: var(--bg-selected);
+  --color-rail: var(--bg-rail);
 
   --color-hairline: var(--line-hairline);
   --color-soft: var(--line-soft);
@@ -24,6 +25,10 @@
   --color-fg-disabled: var(--fg-disabled);
   --color-on-accent: var(--fg-on-accent);
 
+  --color-cta: var(--cta);
+  --color-cta-hover: var(--cta-hover);
+  --color-on-cta: var(--fg-on-cta);
+
   --color-accent: var(--accent);
   --color-accent-hover: var(--accent-hover);
   --color-accent-press: var(--accent-press);
@@ -32,6 +37,7 @@
 
   --color-danger: var(--danger);
   --color-danger-subtle: var(--danger-subtle);
+  --color-ok: var(--ok);
 
   --color-scrim: var(--scrim);
   --color-scrim-soft: var(--scrim-soft);
@@ -41,6 +47,7 @@
   --color-on-win-close: var(--fg-on-win-close);
 
   --font-sans: var(--font-sans);
+  --font-display: var(--font-display);
   --font-mono: var(--font-mono);
 
   --radius-xs: var(--radius-xs);
@@ -48,10 +55,12 @@
   --radius-md: var(--radius-md);
   --radius-lg: var(--radius-lg);
   --radius-xl: var(--radius-xl);
+  --radius-2xl: var(--radius-2xl);
 
   --shadow-1: var(--shadow-1);
   --shadow-2: var(--shadow-2);
   --shadow-3: var(--shadow-3);
+  --shadow-lift: var(--shadow-lift);
 
   --text-2xs: 11px;
   --text-2xs--line-height: 16px;
@@ -60,18 +69,28 @@
   --text-sm: 13px;
   --text-sm--line-height: 20px;
   --text-md: 14px;
-  --text-md--line-height: 20px;
+  --text-md--line-height: 22px;
   --text-lg: 16px;
   --text-lg--line-height: 24px;
   --text-xl: 20px;
   --text-xl--line-height: 28px;
-  --text-2xl: 24px;
+  --text-2xl: 26px;
   --text-2xl--line-height: 32px;
-  --text-3xl: 32px;
+  --text-3xl: 34px;
   --text-3xl--line-height: 40px;
+  --text-4xl: 48px;
+  --text-4xl--line-height: 52px;
+  --text-5xl: 64px;
+  --text-5xl--line-height: 64px;
+  --text-6xl: 84px;
+  --text-6xl--line-height: 84px;
 
   --ease-out: var(--ease-out);
+  --ease-spring: var(--ease-spring);
   --animate-fade-in: fade-in var(--dur-med) var(--ease-out);
+  /* `backwards`, never `both`: a transform left on the page wrapper would
+     capture its `position: fixed` children (selection bar, overlays). */
+  --animate-rise-in: rise-in var(--dur-slow) var(--ease-out) backwards;
   --animate-shimmer: shimmer 1.6s linear infinite;
   --animate-pop-in: pop-in var(--dur-med) var(--ease-out);
   --animate-sheet-in: sheet-in var(--dur-slow) var(--ease-out);
@@ -80,7 +99,19 @@
 @keyframes pop-in {
   from {
     opacity: 0;
-    transform: translateY(4px) scale(0.98);
+    transform: translateY(6px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Views arrive with a short rise. */
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
   }
   to {
     opacity: 1;
@@ -100,7 +131,7 @@
 @keyframes sheet-in {
   from {
     opacity: 0;
-    transform: translateX(16px);
+    transform: translateX(24px);
   }
   to {
     opacity: 1;
@@ -141,9 +172,10 @@
 
   html {
     font-family: var(--font-sans);
-    font-size: 13px;
-    line-height: 20px;
-    font-feature-settings: "ss01", "cv11";
+    font-size: 14px;
+    line-height: 22px;
+    font-optical-sizing: auto;
+    font-feature-settings: "cv11", "ss03";
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     text-rendering: optimizeLegibility;
@@ -158,6 +190,18 @@
     -webkit-user-select: none;
   }
 
+  /* Controls keep the arrow, as in native apps (the hand means "web link"). */
+  a,
+  button,
+  [role="button"],
+  [role="tab"] {
+    cursor: default;
+  }
+
+  img {
+    -webkit-user-drag: none;
+  }
+
   /* Text the user may want to copy stays selectable. */
   input,
   textarea,
@@ -169,7 +213,7 @@
   }
 
   ::selection {
-    background: rgb(196 163 90 / 0.35);
+    background: rgb(224 180 92 / 0.35);
     color: var(--fg-1);
   }
 
@@ -181,27 +225,27 @@
   h1,
   h2,
   h3 {
-    letter-spacing: -0.02em;
+    letter-spacing: -0.015em;
     font-weight: 600;
   }
 
   /* Thin, quiet scrollbars. */
   * {
     scrollbar-width: thin;
-    scrollbar-color: rgb(255 255 255 / 0.14) transparent;
+    scrollbar-color: rgb(255 255 255 / 0.16) transparent;
   }
   ::-webkit-scrollbar {
     width: 10px;
     height: 10px;
   }
   ::-webkit-scrollbar-thumb {
-    background: rgb(255 255 255 / 0.12);
+    background: rgb(255 255 255 / 0.14);
     border: 3px solid transparent;
     border-radius: 999px;
     background-clip: content-box;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background-color: rgb(255 255 255 / 0.22);
+    background-color: rgb(255 255 255 / 0.26);
   }
   ::-webkit-scrollbar-corner {
     background: transparent;
@@ -217,6 +261,13 @@
   }
 }
 
+/* The window material shows behind the rail (see tokens.css). Outside the
+   layers on purpose: it must beat the splash colour index.html paints. */
+:root[data-material],
+:root[data-material] body {
+  background: transparent;
+}
+
 @utility tabular {
   font-variant-numeric: tabular-nums;
 }
@@ -228,22 +279,49 @@
   letter-spacing: 0;
 }
 
-/* Floating layer surface (popovers, palette, drawer). */
+/* Big titles: series, characters, empty states. */
+@utility display {
+  font-family: var(--font-display);
+  font-weight: 400;
+  letter-spacing: -0.01em;
+}
+
+/* Floating layer surface (menus, popovers, palette, drawer). */
 @utility glass {
   background: var(--glass-bg);
-  backdrop-filter: blur(var(--glass-blur)) saturate(140%);
-  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(140%);
+  backdrop-filter: blur(var(--glass-blur)) saturate(180%);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(180%);
   border: 1px solid var(--glass-border);
   box-shadow: var(--shadow-3);
 }
 
-/* Small all-caps section label. */
+/* Denser glass for surfaces that hold a lot of text over pictures. */
+@utility glass-strong {
+  background: var(--glass-bg-strong);
+  backdrop-filter: blur(var(--glass-blur)) saturate(180%);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(180%);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--shadow-3);
+}
+
+/* A fine light edge on pictures, so they sit on the dark like prints. */
+@utility picture-edge {
+  box-shadow:
+    inset 0 0 0 1px rgb(255 255 255 / 0.08),
+    var(--shadow-2);
+}
+
+/* What a missing picture shows: a quiet lit surface. */
+@utility artwork-fallback {
+  background: radial-gradient(85% 85% at 60% 25%, var(--bg-overlay), var(--bg-panel) 75%);
+}
+
+/* Small section label. */
 @utility eyebrow {
-  font-size: 11px;
+  font-size: 12px;
   line-height: 16px;
-  font-weight: 500;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  font-weight: 600;
+  letter-spacing: 0.02em;
   color: var(--fg-3);
 }
 

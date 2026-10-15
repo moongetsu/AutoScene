@@ -72,9 +72,27 @@ export function useMediaJob(mediaId: string | undefined, kind?: JobInfo["kind"])
   })
 }
 
-/** Count of queued + running jobs (title bar badge). */
+/** Count of queued + running jobs (the sidebar's Activity badge). */
 export function useActiveCount(): number {
   return useActivity((s) => s.order.reduce((n, id) => n + (isFinished(s.jobs[id]) ? 0 : 1), 0))
+}
+
+/**
+ * How far running work is, as one number: the mean progress of the running
+ * jobs that report one (`null`: nothing reports progress yet).
+ */
+export function useActiveProgress(): number | null {
+  return useActivity((s) => {
+    let [sum, n] = [0, 0]
+    for (const id of s.order) {
+      const j = s.jobs[id]
+      if (j.state === "running" && j.progress != null) {
+        sum += j.progress
+        n += 1
+      }
+    }
+    return n > 0 ? sum / n : null
+  })
 }
 
 /** Is any media of `projectId` being indexed right now? */

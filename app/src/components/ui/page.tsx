@@ -1,29 +1,42 @@
 import type * as React from "react"
+import { useLayoutEffect, useRef, useState } from "react"
+import { useRouterState } from "@tanstack/react-router"
 import { cn } from "@/lib/utils"
+import { PageScrolled } from "./page-scroll"
 
-/** Scrollable page body with consistent gutters. */
-export function Page({ className, children }: { className?: string; children: React.ReactNode }) {
-  return <div className={cn("h-full overflow-y-auto", className)}>{children}</div>
-}
-
-export function PageHeader({
-  title,
-  description,
-  actions,
+/**
+ * A view: it scrolls as a whole, its top bar (`TopBar`) stays on top and
+ * floats over a hero, and it arrives with a short rise. Another place (a
+ * route reusing this view with new params) starts at the top again.
+ */
+export function Page({
+  topbar,
   className,
+  children,
 }: {
-  title: React.ReactNode
-  description?: React.ReactNode
-  actions?: React.ReactNode
+  topbar?: React.ReactNode
   className?: string
+  children: React.ReactNode
 }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const path = useRouterState({ select: (s) => s.location.pathname })
+  // The place that was scrolled: a new place starts unscrolled.
+  const [scrolledAt, setScrolledAt] = useState<string | null>(null)
+  useLayoutEffect(() => {
+    ref.current?.scrollTo({ top: 0 })
+  }, [path])
   return (
-    <div className={cn("flex items-end justify-between gap-6 px-8 pt-7 pb-5", className)}>
-      <div className="min-w-0">
-        <h1 className="truncate text-2xl text-fg-1">{title}</h1>
-        {description && <p className="mt-1 text-sm text-fg-2">{description}</p>}
+    <PageScrolled.Provider value={scrolledAt === path}>
+      <div
+        ref={ref}
+        onScroll={(e) => setScrolledAt(e.currentTarget.scrollTop > 12 ? path : null)}
+        className={cn("relative h-full overflow-x-hidden overflow-y-auto", className)}
+      >
+        {topbar}
+        <div key={path} className="animate-rise-in">
+          {children}
+        </div>
       </div>
-      {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
-    </div>
+    </PageScrolled.Provider>
   )
 }

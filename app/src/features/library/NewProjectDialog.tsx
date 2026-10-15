@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useNavigate } from "@tanstack/react-router"
-import { Clapperboard, FilePlus2, Film, FolderPlus, Loader2, Tv, X } from "lucide-react"
+import { CircleNotch, FilePlus, FilmSlate, FilmStrip, FolderPlus, Television, X } from "@/components/icons"
 import { toast } from "sonner"
 import type { ContentKind, ImportCandidate, ProjectKind } from "@/bindings"
 import { Button } from "@/components/ui/button"
@@ -94,9 +94,9 @@ function NewProjectForm({ seed, onDone }: { seed: string[]; onDone: () => void }
     <DialogContent
       title="New project"
       description="A project is one series or movie. Episodes are recognised and ordered from their file names."
-      className="w-[min(720px,calc(100vw-32px))]"
+      className="w-[min(760px,calc(100vw-32px))]"
     >
-      <div className="grid grid-cols-[1fr_auto_auto] items-end gap-3">
+      <div className="grid grid-cols-[1fr_auto_auto] items-end gap-4">
         <Field label="Title" htmlFor="np-title">
           <Input
             id="np-title"
@@ -118,8 +118,8 @@ function NewProjectForm({ seed, onDone }: { seed: string[]; onDone: () => void }
               setKind(v)
             }}
             options={[
-              { value: "series", label: <><Tv /> Series</> },
-              { value: "movie", label: <><Film /> Movie</> },
+              { value: "series", label: <><Television /> Series</> },
+              { value: "movie", label: <><FilmStrip /> Movie</> },
             ]}
           />
         </Field>
@@ -137,52 +137,52 @@ function NewProjectForm({ seed, onDone }: { seed: string[]; onDone: () => void }
         </Field>
       </div>
 
-      <div className="mt-4 overflow-hidden rounded-lg border border-hairline bg-inset">
+      <div className="mt-6 overflow-hidden rounded-2xl border border-white/[0.08] bg-black/25">
         {candidates.length === 0 ? (
-          <div className="flex flex-col items-center px-6 py-10 text-center">
+          <div className="flex flex-col items-center border-2 border-dashed border-white/[0.08] m-2 rounded-xl px-6 py-12 text-center">
             {scanning ? (
-              <Loader2 className="size-5 animate-spin text-fg-3" />
+              <CircleNotch className="size-6 animate-spin text-accent" />
             ) : (
               <>
-                <div className="flex size-10 items-center justify-center rounded-lg border border-hairline bg-panel text-fg-3 shadow-1">
-                  <Clapperboard className="size-5" />
+                <div className="flex size-14 items-center justify-center rounded-2xl bg-white/[0.06] text-fg-1 [&_svg]:size-7">
+                  <FilmSlate />
                 </div>
-                <p className="mt-3 text-sm text-fg-1">Drop a season folder or video files here</p>
-                <p className="mt-0.5 text-xs text-fg-3">MKV, MP4, MOV, TS and more. Sources are never copied or changed.</p>
+                <p className="mt-4 text-lg font-medium text-fg-1">Drop a season folder or video files here</p>
+                <p className="mt-1 text-sm text-fg-3">MKV, MP4, MOV, TS and more. Sources are never copied or changed.</p>
               </>
             )}
-            <div className="mt-4 flex gap-2">
-              <Button size="sm" onClick={() => void pickFolder("Choose a season or movie folder").then((p) => p && addSources([p]))}>
+            <div className="mt-6 flex gap-2.5">
+              <Button onClick={() => void pickFolder("Choose a season or movie folder").then((p) => p && addSources([p]))}>
                 <FolderPlus /> Add folder…
               </Button>
-              <Button size="sm" variant="ghost" onClick={() => void pickVideoFiles().then(addSources)}>
-                <FilePlus2 /> Add files…
+              <Button variant="ghost" onClick={() => void pickVideoFiles().then(addSources)}>
+                <FilePlus /> Add files…
               </Button>
             </div>
           </div>
         ) : (
           <>
-            <div className="max-h-[300px] overflow-y-auto">
-              <table className="w-full text-sm">
+            <div className="max-h-[320px] overflow-y-auto p-1.5">
+              <table className="w-full text-md">
                 <tbody>
                   {candidates.map((c) => {
                     const off = removed.has(c.path)
                     return (
-                      <tr key={c.path} className={cn("group border-b border-hairline last:border-0", off && "opacity-40")}>
-                        <td className="w-20 py-1.5 pl-3">
-                          <span className={cn("timecode text-xs", c.label ? "text-fg-1" : "text-fg-3")}>
+                      <tr key={c.path} className={cn("group", off && "opacity-40")}>
+                        <td className="w-24 rounded-l-xl py-2 pl-3 group-hover:bg-white/[0.04]">
+                          <span className={cn("timecode text-sm", c.label ? "text-fg-1" : "text-fg-3")}>
                             {c.label || "—"}
                           </span>
                         </td>
-                        <td className="max-w-0 py-1.5">
+                        <td className="max-w-0 py-2 group-hover:bg-white/[0.04]">
                           <div className="truncate text-fg-2" title={c.path}>
                             {c.fileName}
                           </div>
                         </td>
-                        <td className="timecode w-20 py-1.5 pr-2 text-right text-xs text-fg-3">
+                        <td className="timecode w-24 py-2 pr-2 text-right text-sm text-fg-3 group-hover:bg-white/[0.04]">
                           {formatBytes(c.sizeBytes ?? 0)}
                         </td>
-                        <td className="w-9 py-1 pr-1.5">
+                        <td className="w-10 rounded-r-xl py-1 pr-1.5 group-hover:bg-white/[0.04]">
                           <button
                             aria-label={off ? `Include ${c.fileName}` : `Skip ${c.fileName}`}
                             onClick={() =>
@@ -193,7 +193,7 @@ function NewProjectForm({ seed, onDone }: { seed: string[]; onDone: () => void }
                                 return n
                               })
                             }
-                            className="flex size-6 items-center justify-center rounded-sm text-fg-3 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-hover hover:text-fg-1 focus-visible:opacity-100"
+                            className="flex size-7 items-center justify-center rounded-full text-fg-3 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-white/[0.1] hover:text-fg-1 focus-visible:opacity-100"
                           >
                             <X className="size-3.5" />
                           </button>
@@ -204,17 +204,17 @@ function NewProjectForm({ seed, onDone }: { seed: string[]; onDone: () => void }
                 </tbody>
               </table>
             </div>
-            <div className="flex items-center justify-between border-t border-hairline bg-panel px-3 py-2">
-              <span className="text-xs text-fg-3">
+            <div className="flex items-center justify-between border-t border-white/[0.06] bg-white/[0.02] px-4 py-2.5">
+              <span className="text-sm text-fg-2">
                 {chosen.length} {chosen.length === 1 ? "video" : "videos"} · {formatBytes(totalBytes)}
-                {scanning && <Loader2 className="ml-2 inline size-3 animate-spin" />}
+                {scanning && <CircleNotch className="ml-2 inline size-3 animate-spin" />}
               </span>
               <div className="flex gap-1">
                 <Button size="sm" variant="ghost" onClick={() => void pickFolder().then((p) => p && addSources([p]))}>
                   <FolderPlus /> Folder…
                 </Button>
                 <Button size="sm" variant="ghost" onClick={() => void pickVideoFiles().then(addSources)}>
-                  <FilePlus2 /> Files…
+                  <FilePlus /> Files…
                 </Button>
               </div>
             </div>
@@ -227,7 +227,7 @@ function NewProjectForm({ seed, onDone }: { seed: string[]; onDone: () => void }
           Cancel
         </Button>
         <Button variant="primary" disabled={!title.trim() || chosen.length === 0 || creating} onClick={() => void create()}>
-          {creating && <Loader2 className="animate-spin" />}
+          {creating && <CircleNotch className="animate-spin" />}
           Create project
         </Button>
       </DialogFooter>

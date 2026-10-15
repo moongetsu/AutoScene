@@ -2,24 +2,26 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import { Link, useNavigate, useParams } from "@tanstack/react-router"
 import {
   ArrowLeft,
-  Ban,
+  ArrowsMerge,
   Check,
+  CircleNotch,
+  DotsThree,
   Eye,
-  EyeOff,
-  ImageIcon,
-  Loader2,
-  Merge,
-  MoreHorizontal,
-  PackageOpen,
-  Pencil,
-  ScanFace,
-  UserRound,
-  UserRoundPlus,
+  EyeSlash,
+  Image,
+  Package,
+  PencilSimple,
+  Prohibit,
+  User,
+  UserFocus,
+  UserPlus,
   Users,
   X,
-} from "lucide-react"
+} from "@/components/icons"
 import { toast } from "sonner"
 import type { CastEdit, Character, CharacterShot, FaceTrackItem, MediaItem } from "@/bindings"
+import { Artwork } from "@/components/ui/artwork"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent } from "@/components/ui/dialog"
 import {
@@ -30,12 +32,15 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { EmptyState } from "@/components/ui/empty-state"
+import { Hero } from "@/components/ui/hero"
 import { Input } from "@/components/ui/input"
 import { Page } from "@/components/ui/page"
 import { Segmented } from "@/components/ui/segmented"
+import { TopBar } from "@/components/ui/topbar"
 import { ExportDialog, type ExportClip } from "@/features/export/ExportDialog"
 import { ShotCard } from "@/features/shots/ShotCard"
 import { formatShotLength } from "@/features/shots/shots"
+import { useAmbient } from "@/lib/ambient"
 import { commands, errorMessage } from "@/lib/ipc"
 import { assetUrl } from "@/lib/media"
 import { useCast, useCastTracks, useCharacterShots, useMediaList, useProject } from "@/lib/queries"
@@ -99,9 +104,13 @@ export function CharacterPage() {
   const open = (t: { mediaId: string; start: number }) =>
     void navigate({ to: "/p/$pid/timeline/$mid", params: { pid, mid: t.mediaId }, search: { f: t.start } })
 
+  const toolbar = (
+    <TopBar overlay back={{ label: "Cast", to: `/p/${pid}/cast` }} title={everyone ? "Everyone else" : (character?.label ?? " ")} />
+  )
+
   if (!everyone && !isPending && !character) {
     return (
-      <Page>
+      <Page topbar={toolbar}>
         <EmptyState
           icon={<Users />}
           title="This character isn't in the cast any more"
@@ -113,7 +122,7 @@ export function CharacterPage() {
               </Link>
             </Button>
           }
-          className="mt-16"
+          className="mt-24"
         />
       </Page>
     )
@@ -125,17 +134,17 @@ export function CharacterPage() {
   }
 
   return (
-    <Page>
+    <Page topbar={toolbar}>
       <Header pid={pid} character={character} everyone={everyone} faces={list.length} onMerge={() => setMergeOpen(true)} />
 
       {!everyone && (maybe.data?.length ?? 0) > 0 && character && (
         <Maybe pid={pid} character={character} tracks={maybe.data!} media={mediaById} onOpen={open} />
       )}
 
-      <section className="px-8 pb-24">
-        <div className="mb-3 flex items-center justify-between gap-4">
+      <section className="px-10 pt-2 pb-28">
+        <div className="mb-5 flex items-center justify-between gap-4">
           {everyone ? (
-            <h2 className="eyebrow">Faces nobody claimed</h2>
+            <h2 className="text-xl font-semibold text-fg-1">Faces nobody claimed</h2>
           ) : (
             <Segmented<View>
               aria-label="Show"
@@ -148,33 +157,33 @@ export function CharacterPage() {
             />
           )}
           {view === "faces" && list.length > 0 && (
-            <span className="text-2xs text-fg-3">Click to select · Shift for a range · double-click to watch</span>
+            <span className="text-sm text-fg-3">Click to select · Shift for a range · double-click to watch</span>
           )}
         </div>
         {view === "shots" && character ? (
           <Shots pid={pid} character={character} media={mediaById} onOpen={open} />
         ) : tracks.isPending ? (
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(96px,1fr))] gap-2">
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(104px,1fr))] gap-3">
             {Array.from({ length: 24 }, (_, i) => (
-              <div key={i} className="skeleton aspect-square rounded-md" />
+              <div key={i} className="skeleton aspect-square rounded-xl" />
             ))}
           </div>
         ) : list.length === 0 ? (
-          <p className="text-sm text-fg-3">No faces here.</p>
+          <p className="text-md text-fg-3">No faces here.</p>
         ) : (
           <FaceGrid tracks={list} media={mediaById} selected={selected} onSelect={setSelected} onOpen={open} />
         )}
       </section>
 
       {view === "faces" && selected.size > 0 && (
-        <div className="glass fixed bottom-5 left-1/2 z-40 flex -translate-x-1/2 items-center gap-1 rounded-xl px-2 py-1.5 shadow-2">
-          <span className="px-2 text-sm text-fg-1">{plural(selected.size, "face")}</span>
+        <div className="glass-strong fixed bottom-6 left-1/2 z-40 flex -translate-x-1/2 animate-pop-in items-center gap-1 rounded-full py-1.5 pr-1.5 pl-5">
+          <span className="pr-2 text-md font-semibold text-fg-1">{plural(selected.size, "face")}</span>
           <Button size="sm" variant="ghost" onClick={() => setMoveOpen(true)}>
-            <UserRoundPlus /> Move to…
+            <UserPlus /> Move to…
           </Button>
           {character && (
             <Button size="sm" variant="ghost" onClick={() => void edit({ op: "not_them", tracks: ids, characterId: character.id })}>
-              <Ban /> Not {character.label}
+              <Prohibit /> Not {character.label}
             </Button>
           )}
           <Button size="sm" variant="ghost" onClick={() => void edit({ op: "not_a_face", tracks: ids })}>
@@ -182,10 +191,10 @@ export function CharacterPage() {
           </Button>
           {character && selected.size === 1 && (
             <Button size="sm" variant="ghost" onClick={() => void edit({ op: "set_cover", characterId: character.id, track: ids[0] })}>
-              <ImageIcon /> Use as picture
+              <Image /> Use as picture
             </Button>
           )}
-          <span className="mx-1 h-5 w-px bg-hairline" />
+          <span className="mx-1 h-5 w-px bg-white/15" />
           <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())} aria-label="Clear selection">
             Clear
           </Button>
@@ -255,26 +264,26 @@ function Shots({
   )
   if (shots.isPending) {
     return (
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-2">
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-4">
         {Array.from({ length: 12 }, (_, i) => (
-          <div key={i} className="skeleton aspect-video rounded-md" />
+          <div key={i} className="skeleton aspect-video rounded-xl" />
         ))}
       </div>
     )
   }
   if (list.length === 0) {
     return (
-      <p className="text-sm text-fg-3">
+      <p className="text-md text-fg-3">
         {character.waiting > 0 ? "Their episode is being analysed again; the shots come back when it's done." : "No shots yet."}
       </p>
     )
   }
   return (
     <>
-      <p className="mb-3 text-xs text-fg-3">
+      <p className="mb-4 text-sm text-fg-3">
         {plural(list.length, "shot")} · {formatShotLength(seconds)} in all · hover to scrub, click to watch
       </p>
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-2">
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-4">
         {list.map((s) => (
           <ShotCard key={`${s.mediaId}:${s.start}`} shot={s} media={media.get(s.mediaId)} onOpen={onOpen} />
         ))}
@@ -301,6 +310,7 @@ function Header({
   const [loading, setLoading] = useState(false)
   const { data: project } = useProject(pid)
   const { data: media } = useMediaList(pid)
+  const ambient = useAmbient(c?.cover)
 
   const startExport = async () => {
     if (!c) return
@@ -317,70 +327,79 @@ function Header({
   }
 
   return (
-    <div className="px-8 pt-6 pb-6">
-      <Link to="/p/$pid/cast" params={{ pid }} className="inline-flex items-center gap-1 text-xs text-fg-3 hover:text-fg-1">
-        <ArrowLeft className="size-3.5" /> Cast
-      </Link>
-      <div className="mt-3 flex items-end justify-between gap-6">
-        <div className="flex min-w-0 items-center gap-4">
-          <div className="size-16 shrink-0 overflow-hidden rounded-lg bg-inset shadow-1">
-            {c?.cover ? (
-              <img src={assetUrl(c.cover)} alt="" className="size-full object-cover" />
-            ) : (
-              <UserRound className="m-auto mt-4 size-8 text-fg-3" />
-            )}
-          </div>
-          <div className="min-w-0">
+    <Hero path={c?.cover} ambient={ambient} blur className="min-h-[clamp(320px,44vh,460px)]">
+      <div className="flex flex-wrap items-end justify-between gap-8">
+        <div className="flex min-w-0 items-end gap-7">
+          <Artwork
+            path={c?.cover}
+            className="size-40 shrink-0 rounded-[28px] shadow-[0_30px_60px_-20px_rgb(0_0_0/0.8),inset_0_0_0_1px_rgb(255_255_255/0.12)]"
+            fallback={
+              <div className="flex size-full items-center justify-center bg-white/[0.06] text-white/60 [&_svg]:size-14">
+                <User />
+              </div>
+            }
+          />
+          <div className="min-w-0 pb-1">
             {everyone ? (
-              <h1 className="text-2xl text-fg-1">Everyone else</h1>
+              <h1 className="display text-6xl leading-none text-white">Everyone else</h1>
             ) : editing && c ? (
               <NameField character={c} pid={pid} onDone={() => setEditing(false)} />
             ) : (
               <button
                 onClick={() => setEditing(true)}
-                className="group -mx-1 flex max-w-full items-center gap-2 rounded-md px-1 text-left hover:bg-hover"
+                className="group -mx-2 flex max-w-full items-center gap-3 rounded-xl px-2 text-left transition-colors hover:bg-white/[0.06]"
                 title="Rename"
               >
-                <h1 className={cn("truncate text-2xl", c?.name ? "text-fg-1" : "text-fg-2")}>{c?.label ?? " "}</h1>
-                <Pencil className="size-3.5 shrink-0 text-fg-3 opacity-0 transition-opacity group-hover:opacity-100" />
+                <h1 className={cn("display truncate text-6xl leading-[1.05] text-white", !c?.name && "text-white/75 italic")}>
+                  {c?.label ?? " "}
+                </h1>
+                <PencilSimple className="size-5 shrink-0 text-white/60 opacity-0 transition-opacity group-hover:opacity-100" />
               </button>
             )}
-            <p className="mt-1 text-sm text-fg-2">
+            <div className="mt-4 flex flex-wrap items-center gap-2">
               {everyone ? (
-                <>Extras, background faces and anyone seen too briefly to tell · {plural(faces, "face")}</>
+                <>
+                  <Badge tone="media">{plural(faces, "face")}</Badge>
+                  <span className="text-sm text-white/70">Extras, background faces and anyone seen too briefly to tell</span>
+                </>
               ) : c ? (
                 <>
-                  {formatScreenTime(c.screenSec ?? 0)} on screen · {plural(c.shots, "shot")} · {plural(c.media, "episode")} ·{" "}
-                  {plural(c.tracks, "face")}
-                  {!c.name && <span className="text-fg-3"> · click the name to rename</span>}
+                  <Badge tone="media">{formatScreenTime(c.screenSec ?? 0)} on screen</Badge>
+                  <Badge tone="media">{plural(c.shots, "shot")}</Badge>
+                  <Badge tone="media">{plural(c.media, "episode")}</Badge>
+                  <Badge tone="media">{plural(c.tracks, "face")}</Badge>
+                  {!c.name && <span className="pl-1 text-sm text-white/60">Click the name to rename</span>}
                 </>
               ) : null}
-            </p>
+            </div>
           </div>
         </div>
         {c && (
-          <div className="flex shrink-0 items-center gap-2">
-            <Button variant="primary" disabled={loading || c.shots === 0} onClick={() => void startExport()}>
-              {loading ? <Loader2 className="animate-spin" /> : <PackageOpen />} Export {plural(c.shots, "shot")}
+          <div className="flex shrink-0 items-center gap-2.5 pb-1">
+            <Button size="lg" variant="primary" disabled={loading || c.shots === 0} onClick={() => void startExport()}>
+              {loading ? <CircleNotch className="animate-spin" /> : <Package weight="bold" />} Export {plural(c.shots, "shot")}
+            </Button>
+            <Button size="lg" variant="glass" onClick={onMerge}>
+              <ArrowsMerge /> Same person as…
             </Button>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button size="icon" variant="ghost" aria-label={`${c.label} options`}>
-                  <MoreHorizontal />
+                <Button size="icon-lg" variant="glass" aria-label={`${c.label} options`}>
+                  <DotsThree weight="bold" />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
                 <DropdownMenuItem onSelect={() => setEditing(true)}>
-                  <Pencil /> Rename
+                  <PencilSimple /> Rename
                 </DropdownMenuItem>
                 <DropdownMenuItem onSelect={onMerge}>
-                  <Merge /> Same person as…
+                  <ArrowsMerge /> Same person as…
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
                   onSelect={() => void castEdit(pid, { op: "set_hidden", characterId: c.id, hidden: !c.hidden })}
                 >
-                  {c.hidden ? <Eye /> : <EyeOff />} {c.hidden ? "Show in the cast" : "Hide from the cast"}
+                  {c.hidden ? <Eye /> : <EyeSlash />} {c.hidden ? "Show in the cast" : "Hide from the cast"}
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -395,7 +414,7 @@ function Header({
           onOpenChange={(o) => !o && setExportClips(null)}
         />
       )}
-    </div>
+    </Hero>
   )
 }
 
@@ -441,7 +460,7 @@ function NameField({ character: c, pid, onDone }: { character: Character; pid: s
       defaultValue={c.name ?? ""}
       placeholder={c.label}
       aria-label="Character name"
-      className="h-10 w-[min(360px,60vw)] text-xl"
+      className="display h-16 w-[min(520px,60vw)] rounded-2xl border-white/20 bg-black/30 px-4 text-5xl backdrop-blur-md"
       onBlur={() => void save()}
       onKeyDown={(e) => {
         if (e.key === "Enter") void save()
@@ -468,34 +487,34 @@ function Maybe({
   const [all, setAll] = useState(false)
   const shown = all ? tracks : tracks.slice(0, 12)
   return (
-    <section className="mx-8 mb-8 rounded-lg border border-hairline bg-panel p-4 shadow-1">
-      <div className="mb-3 flex items-center justify-between gap-4">
+    <section className="mx-10 mb-10 rounded-3xl border border-accent-line/60 bg-[linear-gradient(135deg,rgb(224_180_92/0.1),rgb(255_255_255/0.02)_60%)] p-6">
+      <div className="mb-5 flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h2 className="text-sm font-medium text-fg-1">Maybe {c.label}?</h2>
-          <p className="text-2xs text-fg-3">
+          <h2 className="display text-3xl text-fg-1">Maybe {c.label}?</h2>
+          <p className="mt-1 text-sm text-fg-2">
             {plural(tracks.length, "face")} {tracks.length === 1 ? "looks" : "look"} like {c.label}, but not clearly enough to
             decide alone.
           </p>
         </div>
         <div className="flex shrink-0 gap-2">
-          <Button size="sm" variant="ghost" asChild>
+          <Button variant="secondary" asChild>
             <Link to="/p/$pid/cast/review" params={{ pid }} search={{ c: c.id }}>
-              <ScanFace /> Review one by one
+              <UserFocus /> Review one by one
             </Link>
           </Button>
-          <Button size="sm" onClick={() => void castEdit(pid, { op: "confirm", tracks: tracks.map((t) => t.id) })}>
-            <Check /> All are {c.label}
+          <Button variant="accent" onClick={() => void castEdit(pid, { op: "confirm", tracks: tracks.map((t) => t.id) })}>
+            <Check weight="bold" /> All are {c.label}
           </Button>
         </div>
       </div>
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(88px,1fr))] gap-2">
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(104px,1fr))] gap-3">
         {shown.map((t) => (
-          <div key={t.id} className="group relative aspect-square overflow-hidden rounded-md bg-inset">
+          <div key={t.id} className="group relative aspect-square overflow-hidden rounded-xl bg-inset picture-edge">
             <img
               src={assetUrl(t.thumb)}
               alt=""
               loading="lazy"
-              className="size-full cursor-pointer object-cover"
+              className="size-full object-cover"
               onDoubleClick={() => onOpen(t)}
               title={media.get(t.mediaId)?.label}
             />
@@ -503,14 +522,14 @@ function Maybe({
               <button
                 onClick={() => void castEdit(pid, { op: "confirm", tracks: [t.id] })}
                 aria-label={`Yes, ${c.label}`}
-                className="flex h-6 flex-1 items-center justify-center rounded-sm bg-canvas/85 text-fg-1 hover:bg-accent hover:text-on-accent"
+                className="flex h-7 flex-1 items-center justify-center rounded-lg bg-black/60 text-white backdrop-blur-md hover:bg-accent hover:text-on-accent"
               >
                 <Check className="size-3.5" />
               </button>
               <button
                 onClick={() => void castEdit(pid, { op: "not_them", tracks: [t.id], characterId: c.id })}
                 aria-label={`Not ${c.label}`}
-                className="flex h-6 flex-1 items-center justify-center rounded-sm bg-canvas/85 text-fg-1 hover:bg-danger hover:text-on-accent"
+                className="flex h-7 flex-1 items-center justify-center rounded-lg bg-black/60 text-white backdrop-blur-md hover:bg-danger hover:text-white"
               >
                 <X className="size-3.5" />
               </button>
@@ -519,7 +538,7 @@ function Maybe({
         ))}
       </div>
       {tracks.length > 12 && (
-        <button onClick={() => setAll((v) => !v)} className="mt-2 text-2xs text-fg-3 hover:text-fg-1">
+        <button onClick={() => setAll((v) => !v)} className="mt-4 text-sm font-medium text-fg-2 hover:text-fg-1">
           {all ? "Show fewer" : `Show ${plural(tracks.length - shown.length, "more face")}`}
         </button>
       )}
@@ -576,12 +595,12 @@ export function PickCharacter({
         {pending && asked ? (
           <div className="flex flex-col gap-4">
             <div className="flex items-center gap-3">
-              <span className="size-12 shrink-0 overflow-hidden rounded-md bg-inset">
+              <span className="size-14 shrink-0 overflow-hidden rounded-full bg-inset picture-edge">
                 {pending.cover && <img src={assetUrl(pending.cover)} alt="" className="size-full object-cover" />}
               </span>
               <div>
-                <p className="text-sm text-fg-1">{asked.question}</p>
-                <p className="mt-0.5 text-2xs text-fg-3">{asked.detail}</p>
+                <p className="text-md font-medium text-fg-1">{asked.question}</p>
+                <p className="mt-1 text-sm text-fg-3">{asked.detail}</p>
               </div>
             </div>
             <div className="flex justify-end gap-2">
@@ -620,17 +639,17 @@ export function PickCharacter({
                 }
               }}
             />
-            <div id="pick-character-list" role="listbox" className="mt-3 max-h-[320px] overflow-y-auto">
+            <div id="pick-character-list" role="listbox" className="-mx-2 mt-3 max-h-[360px] overflow-y-auto px-1">
               {allowNew && (
                 <button
                   onClick={() => onPick({ kind: "new", name: query.trim() })}
                   className={cn(
-                    "flex w-full items-center gap-3 rounded-md px-2 py-1.5 text-left text-sm text-fg-1 hover:bg-hover",
+                    "flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left text-md text-fg-1 hover:bg-hover",
                     selected == null && q && "bg-hover",
                   )}
                 >
-                  <span className="flex size-8 items-center justify-center rounded-md border border-dashed border-soft text-fg-3">
-                    <UserRoundPlus className="size-4" />
+                  <span className="flex size-10 items-center justify-center rounded-full border border-dashed border-white/25 text-fg-3">
+                    <UserPlus className="size-4" />
                   </span>
                   {query.trim() ? <>New character “{query.trim()}”</> : "New character"}
                 </button>
@@ -644,22 +663,22 @@ export function PickCharacter({
                   onClick={() => choose(c)}
                   onMouseMove={() => active !== i && setActive(i)}
                   className={cn(
-                    "flex w-full items-center gap-3 rounded-md px-2 py-1.5 text-left hover:bg-hover",
-                    i === selected && "bg-hover ring-1 ring-strong",
+                    "flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left hover:bg-hover",
+                    i === selected && "bg-active",
                   )}
                 >
-                  <span className="size-8 shrink-0 overflow-hidden rounded-md bg-inset">
+                  <span className="size-10 shrink-0 overflow-hidden rounded-full bg-inset picture-edge">
                     {c.cover && <img src={assetUrl(c.cover)} alt="" className="size-full object-cover" />}
                   </span>
                   <span className="min-w-0 flex-1">
-                    <span className={cn("block truncate text-sm", c.name ? "text-fg-1" : "text-fg-2")}>{c.label}</span>
-                    <span className="block text-2xs text-fg-3">
+                    <span className={cn("block truncate text-md font-medium", c.name ? "text-fg-1" : "text-fg-2")}>{c.label}</span>
+                    <span className="block text-xs text-fg-3">
                       {formatScreenTime(c.screenSec ?? 0)} · {plural(c.shots, "shot")}
                     </span>
                   </span>
                 </button>
               ))}
-              {!allowNew && options.length === 0 && <p className="px-2 py-3 text-sm text-fg-3">Nobody matches.</p>}
+              {!allowNew && options.length === 0 && <p className="px-3 py-4 text-md text-fg-3">Nobody matches.</p>}
             </div>
           </>
         )}

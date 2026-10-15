@@ -1,5 +1,5 @@
 import { memo, useRef } from "react"
-import { Check } from "lucide-react"
+import { Check } from "@/components/icons"
 import type { FaceTrackItem, MediaItem } from "@/bindings"
 import { assetUrl } from "@/lib/media"
 import { timecode } from "@/lib/timecode"
@@ -15,7 +15,7 @@ export function FaceGrid({
   selected,
   onSelect,
   onOpen,
-  size = 96,
+  size = 108,
 }: {
   tracks: FaceTrackItem[]
   media: Map<string, MediaItem>
@@ -45,7 +45,7 @@ export function FaceGrid({
   }
 
   return (
-    <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${size}px, 1fr))` }}>
+    <div className="grid gap-3" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${size}px, 1fr))` }}>
       {tracks.map((t, i) => (
         <Face
           key={t.id}
@@ -86,10 +86,10 @@ const Face = memo(function Face({
       aria-label={`Face${where ? ` at ${where}` : ""}`}
       title={where ? `${where} · double-click to watch` : undefined}
       className={cn(
-        "group relative aspect-square overflow-hidden rounded-md bg-inset outline-none",
-        "ring-offset-2 ring-offset-canvas transition-[box-shadow,opacity] duration-[var(--dur-fast)]",
+        "group relative aspect-square overflow-hidden rounded-xl bg-inset outline-none picture-edge",
+        "ring-offset-2 ring-offset-canvas transition-[box-shadow,opacity,transform] duration-[var(--dur-fast)]",
         "focus-visible:ring-2 focus-visible:ring-accent-line",
-        selected ? "ring-2 ring-accent" : "hover:ring-1 hover:ring-strong",
+        selected ? "scale-[0.96] ring-2 ring-accent" : "hover:ring-1 hover:ring-white/30",
       )}
     >
       <img
@@ -101,20 +101,20 @@ const Face = memo(function Face({
         className={cn("size-full object-cover", (t.quality ?? 0) < 0.3 && "opacity-70")}
       />
       {t.assign === "pinned" && !selected && (
-        <span className="absolute top-1 left-1 size-1.5 rounded-full bg-fg-1/80 shadow-1" aria-label="Confirmed" />
+        <span className="absolute top-2 left-2 size-2 rounded-full bg-white shadow-[0_0_6px_rgb(255_255_255/0.6)]" aria-label="Confirmed" />
       )}
       <span
         className={cn(
-          "absolute top-1 right-1 flex size-4 items-center justify-center rounded-full border transition-opacity",
+          "absolute top-1.5 right-1.5 flex size-5 items-center justify-center rounded-full border-2 transition-opacity",
           selected
             ? "border-accent bg-accent text-on-accent opacity-100"
-            : "border-fg-1/60 bg-canvas/40 opacity-0 group-hover:opacity-100",
+            : "border-white/70 bg-black/30 opacity-0 backdrop-blur-sm group-hover:opacity-100",
         )}
       >
-        {selected && <Check className="size-3" strokeWidth={3} />}
+        {selected && <Check className="size-3" weight="bold" />}
       </span>
       {m?.label && (
-        <span className="timecode absolute right-1 bottom-1 rounded-xs bg-canvas/70 px-1 text-[10px] leading-4 text-fg-2 opacity-0 transition-opacity group-hover:opacity-100">
+        <span className="timecode absolute right-1.5 bottom-1.5 rounded-full bg-black/55 px-1.5 text-[10px] leading-4 text-white/90 opacity-0 backdrop-blur-md transition-opacity group-hover:opacity-100">
           {m.label}
         </span>
       )}

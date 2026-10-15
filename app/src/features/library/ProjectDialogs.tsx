@@ -1,6 +1,6 @@
 import { useState } from "react"
 import { useNavigate, useRouterState } from "@tanstack/react-router"
-import { Loader2 } from "lucide-react"
+import { CircleNotch } from "@/components/icons"
 import { toast } from "sonner"
 import type { ProjectSummary } from "@/bindings"
 import { Button } from "@/components/ui/button"
@@ -106,7 +106,7 @@ function DeleteForm({ project, onDone }: { project: ProjectSummary; onDone: () =
           Cancel
         </Button>
         <Button variant="danger" disabled={busy} onClick={() => void remove()}>
-          {busy && <Loader2 className="animate-spin" />}
+          {busy && <CircleNotch className="animate-spin" />}
           Remove project
         </Button>
       </DialogFooter>

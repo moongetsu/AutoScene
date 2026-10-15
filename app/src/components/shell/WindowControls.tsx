@@ -2,7 +2,10 @@ import { useEffect, useState } from "react"
 import { getCurrentWindow } from "@tauri-apps/api/window"
 import { cn } from "@/lib/utils"
 
-/** Windows caption buttons for the frameless window (Segoe Fluent-style glyphs). */
+/**
+ * Windows caption buttons for the frameless window (Segoe Fluent-style
+ * glyphs), over the top-right corner of every view (`--caption-inset`).
+ */
 export function WindowControls() {
   const [maximized, setMaximized] = useState(false)
 
@@ -14,18 +17,19 @@ export function WindowControls() {
   }, [])
 
   const win = () => getCurrentWindow()
-  const base = "flex h-full w-[46px] items-center justify-center text-fg-2 transition-colors duration-[var(--dur-fast)]"
+  const base =
+    "flex h-full w-[46px] items-center justify-center text-fg-1/80 transition-colors duration-[var(--dur-fast)] [filter:drop-shadow(0_1px_2px_rgb(0_0_0/0.6))]"
 
   return (
-    <div className="flex h-full">
-      <button aria-label="Minimize" className={cn(base, "hover:bg-hover hover:text-fg-1")} onClick={() => void win().minimize()}>
+    <div className="fixed top-0 right-0 z-30 flex h-[var(--topbar-h)]">
+      <button aria-label="Minimize" className={cn(base, "hover:bg-white/10 hover:text-white")} onClick={() => void win().minimize()}>
         <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden>
           <path d="M0 5h10" stroke="currentColor" strokeWidth="1" />
         </svg>
       </button>
       <button
         aria-label={maximized ? "Restore" : "Maximize"}
-        className={cn(base, "hover:bg-hover hover:text-fg-1")}
+        className={cn(base, "hover:bg-white/10 hover:text-white")}
         onClick={() => void win().toggleMaximize()}
       >
         {maximized ? (

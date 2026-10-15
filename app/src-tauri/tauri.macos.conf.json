@@ -14,12 +14,24 @@
         "decorations": true,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
-        "backgroundColor": "#0D0D0F"
+        "transparent": true,
+        "theme": "Dark",
+        "windowEffects": {
+          "effects": [
+            "sidebar"
+          ],
+          "state": "followsWindowActiveState"
+        }
       }
     ]
   },
   "bundle": {
-    "targets": ["app", "dmg"],
-    "macOS": { "minimumSystemVersion": "13.0" }
+    "targets": [
+      "app",
+      "dmg"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "13.0"
+    }
   }
 }

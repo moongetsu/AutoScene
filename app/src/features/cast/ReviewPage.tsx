@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from "react"
 import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router"
-import { ArrowLeft, Check, Play, Sparkles } from "lucide-react"
-import type { Character, FaceTrackItem } from "@/bindings"
+import { Check, Checks, Play } from "@/components/icons"
+import type { Character } from "@/bindings"
 import { Button } from "@/components/ui/button"
 import { EmptyState } from "@/components/ui/empty-state"
 import { Kbd } from "@/components/ui/kbd"
 import { Page } from "@/components/ui/page"
 import { Progress } from "@/components/ui/progress"
+import { TopBar } from "@/components/ui/topbar"
 import { assetUrl } from "@/lib/media"
 import { useCast, useCastTracks, useMediaList } from "@/lib/queries"
 import { timecode } from "@/lib/timecode"
@@ -89,18 +90,13 @@ export function ReviewPage() {
     return () => window.removeEventListener("keydown", onKey)
   })
 
-  const back = (
-    <Link to="/p/$pid/cast" params={{ pid }} className="inline-flex items-center gap-1 text-xs text-fg-3 hover:text-fg-1">
-      <ArrowLeft className="size-3.5" /> Cast
-    </Link>
-  )
+  const toolbar = <TopBar back={{ label: "Cast", to: `/p/${pid}/cast` }} title="Review faces" />
 
   if (!queue.isPending && !current) {
     return (
-      <Page>
-        <div className="px-8 pt-6">{back}</div>
+      <Page topbar={toolbar}>
         <EmptyState
-          icon={<Sparkles />}
+          icon={<Checks />}
           title={done > 0 ? "All reviewed" : "Nothing to review"}
           description={
             skipped.size > 0
@@ -120,119 +116,154 @@ export function ReviewPage() {
               </Button>
             )
           }
-          className="mt-10"
+          className="mt-24"
         />
       </Page>
     )
   }
 
   return (
-    <Page>
-      <div className="mx-auto flex max-w-[760px] flex-col px-8 pt-6 pb-10">
-        {back}
-        <div className="mt-3 flex items-baseline justify-between">
-          <h1 className="text-2xl text-fg-1">Review faces</h1>
-          <span className="timecode text-xs text-fg-3">
+    <Page topbar={toolbar}>
+      {/* The face being decided lights the room. */}
+      {current && (
+        <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-screen overflow-hidden opacity-40">
+          <img
+            key={current.id}
+            src={assetUrl(current.thumb)}
+            alt=""
+            className="size-full scale-125 animate-fade-in object-cover blur-[90px] saturate-150"
+          />
+          <div className="absolute inset-0 bg-gradient-to-b from-canvas/40 via-canvas/70 to-canvas" />
+        </div>
+      )}
+      <div className="relative mx-auto flex max-w-[920px] flex-col px-10 pt-6 pb-12">
+        <div className="flex items-center gap-4">
+          <Progress className="flex-1" value={total > 0 ? done / total : null} />
+          <span className="timecode shrink-0 text-sm text-fg-2">
             {done} of {total}
-            {skipped.size > 0 && <> · {skipped.size} skipped</>}
+            {skipped.size > 0 && <span className="text-fg-3"> · {skipped.size} skipped</span>}
           </span>
         </div>
-        <Progress className="mt-2" value={total > 0 ? done / total : null} />
 
         {current && (
-          <div className="mt-8 grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-center gap-8">
-            <figure className="flex flex-col items-center">
-              <div className="aspect-square w-full max-w-[300px] overflow-hidden rounded-xl bg-inset shadow-2">
-                <img key={current.id} src={assetUrl(current.thumb)} alt="The face to decide on" className="size-full object-cover" />
-              </div>
-              <figcaption className="mt-2 flex items-center gap-2 text-2xs text-fg-3">
-                <span className="timecode">
-                  {m?.label && `${m.label} · `}
-                  {m?.fps ? timecode(current.start, m.fps, false) : current.start}
-                </span>
-                <button
-                  onClick={() =>
-                    void navigate({
-                      to: "/p/$pid/timeline/$mid",
-                      params: { pid, mid: current.mediaId },
-                      search: { f: current.start },
-                    })
-                  }
-                  className="inline-flex items-center gap-1 rounded-xs px-1 hover:bg-hover hover:text-fg-1"
-                >
-                  <Play className="size-3" /> Watch
-                </button>
-              </figcaption>
-            </figure>
-            <div>
+          <>
+            <h2 className="display mt-[min(40px,4vh)] text-center text-5xl text-fg-1">
               {suggestion ? (
-                <Suggestion character={suggestion} track={current} />
+                <>
+                  Is this <span className={cn(!suggestion.name && "italic")}>{suggestion.label}</span>?
+                </>
               ) : (
-                <p className="text-sm text-fg-2">Who is this?</p>
+                "Who is this?"
               )}
-              <div className="mt-6 flex flex-col gap-2">
-                {suggestion && (
-                  <>
-                    <Button
-                      variant="primary"
-                      disabled={busy}
-                      onClick={() => void answer(current.id, () => castEdit(pid, { op: "confirm", tracks: [current.id] }))}
-                    >
-                      <Check /> Yes, {suggestion.label}
-                      <Kbd keys={["Y"]} className="ml-auto opacity-70 [&_kbd]:border-on-accent/20 [&_kbd]:bg-on-accent/10 [&_kbd]:text-on-accent" />
-                    </Button>
-                    <Button
-                      disabled={busy}
-                      onClick={() =>
-                        void answer(current.id, () =>
-                          castEdit(pid, { op: "not_them", tracks: [current.id], characterId: suggestion.id }),
-                        )
-                      }
-                    >
-                      No, someone else <Kbd keys={["N"]} className="ml-auto" />
-                    </Button>
-                  </>
-                )}
-                <div className="grid grid-cols-2 gap-2">
-                  <Button
-                    variant="ghost"
-                    disabled={busy}
-                    onClick={() => void answer(current.id, () => castEdit(pid, { op: "not_a_face", tracks: [current.id] }))}
-                  >
-                    Not a face <Kbd keys={["X"]} className="ml-auto" />
-                  </Button>
-                  <Button variant="ghost" onClick={() => setSkipped((s) => new Set(s).add(current.id))}>
-                    Skip <Kbd keys={["→"]} className="ml-auto" />
-                  </Button>
+            </h2>
+            {suggestion && (
+              <p className="mt-2 text-center text-md text-fg-2">
+                {(current.score ?? 0) >= 0.45 ? "Looks a lot like them" : "Might be them"} — the analysis wasn't sure enough to decide
+                alone.
+              </p>
+            )}
+
+            <div className="mt-[min(40px,4vh)] flex items-center justify-center gap-8">
+              <figure className="flex flex-col items-center">
+                <div className="size-[min(300px,32vh)] overflow-hidden rounded-[32px] bg-inset shadow-[0_40px_80px_-30px_rgb(0_0_0/0.9),inset_0_0_0_1px_rgb(255_255_255/0.12)]">
+                  <img
+                    key={current.id}
+                    src={assetUrl(current.thumb)}
+                    alt="The face to decide on"
+                    className="size-full animate-fade-in object-cover"
+                  />
                 </div>
-              </div>
+                <figcaption className="mt-3 flex items-center gap-2 text-sm text-fg-3">
+                  <span className="timecode">
+                    {m?.label && `${m.label} · `}
+                    {m?.fps ? timecode(current.start, m.fps, false) : current.start}
+                  </span>
+                  <button
+                    onClick={() =>
+                      void navigate({
+                        to: "/p/$pid/timeline/$mid",
+                        params: { pid, mid: current.mediaId },
+                        search: { f: current.start },
+                      })
+                    }
+                    className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 font-medium text-fg-2 transition-colors hover:bg-white/[0.08] hover:text-fg-1"
+                  >
+                    <Play weight="fill" className="size-3" /> Watch
+                  </button>
+                </figcaption>
+              </figure>
+              {suggestion && <Suggestion character={suggestion} />}
             </div>
-          </div>
+
+            <div className="mt-[min(40px,4vh)] flex flex-wrap items-center justify-center gap-3">
+              {suggestion && (
+                <>
+                  <Button
+                    size="lg"
+                    variant="primary"
+                    disabled={busy}
+                    onClick={() => void answer(current.id, () => castEdit(pid, { op: "confirm", tracks: [current.id] }))}
+                  >
+                    <Check weight="bold" /> Yes, {suggestion.label}
+                    <Kbd keys={["Y"]} className="ml-1 [&_kbd]:border-black/10 [&_kbd]:bg-black/10 [&_kbd]:text-black/60" />
+                  </Button>
+                  <Button
+                    size="lg"
+                    variant="secondary"
+                    disabled={busy}
+                    onClick={() =>
+                      void answer(current.id, () =>
+                        castEdit(pid, { op: "not_them", tracks: [current.id], characterId: suggestion.id }),
+                      )
+                    }
+                  >
+                    No, someone else <Kbd keys={["N"]} className="ml-1" />
+                  </Button>
+                </>
+              )}
+              <Button
+                size="lg"
+                variant="ghost"
+                disabled={busy}
+                onClick={() => void answer(current.id, () => castEdit(pid, { op: "not_a_face", tracks: [current.id] }))}
+              >
+                Not a face <Kbd keys={["X"]} className="ml-1" />
+              </Button>
+              <Button size="lg" variant="ghost" onClick={() => setSkipped((s) => new Set(s).add(current.id))}>
+                Skip <Kbd keys={["→"]} className="ml-1" />
+              </Button>
+            </div>
+          </>
         )}
 
         {current && picks.some(Boolean) && (
-          <div className="mt-10">
-            <h2 className="eyebrow mb-2">Or someone else</h2>
-            <div className="flex flex-wrap gap-2">
-              {picks.map((p, i) => p && (
-                <button
-                  key={p.id}
-                  disabled={busy}
-                  onClick={() =>
-                    void answer(current.id, () => castEdit(pid, { op: "assign", tracks: [current.id], characterId: p.id }))
-                  }
-                  className={cn(
-                    "flex items-center gap-2 rounded-md border border-hairline bg-panel py-1 pr-2.5 pl-1 text-left transition-colors hover:border-strong hover:bg-hover",
-                    p.id === suggestion?.id && "border-accent-line",
-                  )}
-                >
-                  <span className="size-7 shrink-0 overflow-hidden rounded-sm bg-inset">
-                    {p.cover && <img src={assetUrl(p.cover)} alt="" className="size-full object-cover" />}
-                  </span>
-                  <span className="max-w-[120px] truncate text-xs text-fg-1">{p.label}</span>
-                  <Kbd keys={[String(i + 1)]} />
-                </button>
-              ))}
+          <div className="mt-14">
+            <h3 className="mb-4 text-center text-md font-semibold text-fg-2">Or someone else</h3>
+            <div className="flex flex-wrap justify-center gap-2.5">
+              {picks.map(
+                (p, i) =>
+                  p && (
+                    <button
+                      key={p.id}
+                      disabled={busy}
+                      onClick={() =>
+                        void answer(current.id, () => castEdit(pid, { op: "assign", tracks: [current.id], characterId: p.id }))
+                      }
+                      className={cn(
+                        "flex items-center gap-2.5 rounded-full border border-white/10 bg-white/[0.05] py-1 pr-2 pl-1 text-left backdrop-blur-xl transition-colors hover:border-white/25 hover:bg-white/[0.1]",
+                        p.id === suggestion?.id && "border-accent-line",
+                      )}
+                    >
+                      <span className="size-8 shrink-0 overflow-hidden rounded-full bg-inset">
+                        {p.cover && <img src={assetUrl(p.cover)} alt="" className="size-full object-cover" />}
+                      </span>
+                      <span className={cn("max-w-[140px] truncate text-sm font-medium", p.name ? "text-fg-1" : "text-fg-2")}>
+                        {p.label}
+                      </span>
+                      <Kbd keys={[String(i + 1)]} />
+                    </button>
+                  ),
+              )}
             </div>
           </div>
         )}
@@ -241,17 +272,19 @@ export function ReviewPage() {
   )
 }
 
-function Suggestion({ character: c, track }: { character: Character; track: FaceTrackItem }) {
-  const sure = (track.score ?? 0) >= 0.45 ? "Looks a lot like" : "Might be"
+/** Who the analysis thinks it is, as big as the face being decided. */
+function Suggestion({ character: c }: { character: Character }) {
   return (
-    <div>
-      <p className="text-sm text-fg-2">{sure}</p>
-      <div className="mt-2 flex items-center gap-3">
-        <span className="size-14 shrink-0 overflow-hidden rounded-lg bg-inset shadow-1">
+    <>
+      <span className="display text-4xl text-fg-3" aria-hidden>
+        ?
+      </span>
+      <figure className="flex flex-col items-center">
+        <div className="size-[min(300px,32vh)] overflow-hidden rounded-[32px] bg-inset shadow-[0_40px_80px_-30px_rgb(0_0_0/0.9),inset_0_0_0_1px_rgb(255_255_255/0.12)]">
           {c.cover && <img src={assetUrl(c.cover)} alt="" className="size-full object-cover" />}
-        </span>
-        <span className={cn("text-xl", c.name ? "text-fg-1" : "text-fg-2")}>{c.label}</span>
-      </div>
-    </div>
+        </div>
+        <figcaption className={cn("display mt-3 text-2xl", c.name ? "text-fg-1" : "text-fg-2 italic")}>{c.label}</figcaption>
+      </figure>
+    </>
   )
 }
