@@ -20,7 +20,7 @@ pub enum ExportError {
     BadPreset(String),
     #[error(transparent)]
     Media(#[from] as_media::MediaError),
-    #[error(transparent)]
+    #[error("{}", as_core::io_message(.0))]
     Io(#[from] std::io::Error),
 }
 

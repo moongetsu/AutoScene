@@ -21,10 +21,19 @@ pub enum MediaError {
     Ffmpeg(String),
     #[error("The result didn't pass the frame check.")]
     Verify(String),
-    #[error(transparent)]
+    #[error("{}", core_message(.0))]
     Core(#[from] as_core::CoreError),
-    #[error(transparent)]
+    #[error("{}", as_core::io_message(.0))]
     Io(#[from] std::io::Error),
+}
+
+/// A frame index that can't be built or read: the video's timing is broken
+/// (or the stored index is), never something the person did.
+fn core_message(e: &as_core::CoreError) -> &'static str {
+    match e {
+        as_core::CoreError::Cancelled => "Cancelled.",
+        _ => "The video's frames couldn't be put in order. Details are in the log.",
+    }
 }
 
 fn file_name(path: &str) -> &str {
@@ -40,6 +49,8 @@ impl MediaError {
             Self::Probe { path, message } => format!("ffprobe {path}: {message}"),
             Self::Ffmpeg(tail) => format!("ffmpeg failed: {tail}"),
             Self::Verify(why) => format!("verification failed: {why}"),
+            Self::Core(e) => format!("frame index: {e}"),
+            Self::Io(e) => format!("file: {e}"),
             e => e.to_string(),
         }
     }

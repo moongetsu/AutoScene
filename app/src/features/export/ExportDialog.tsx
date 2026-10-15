@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { CircleNotch, FolderOpen } from "@/components/icons"
+import { CircleNotch, FolderOpen, Info } from "@/components/icons"
 import { toast } from "sonner"
 import type { ClipRequest } from "@/bindings"
 import { Button } from "@/components/ui/button"
@@ -22,22 +22,37 @@ export type ExportClip = ClipRequest & {
 export function ExportDialog({
   projectId,
   clips,
+  notice,
   open,
   onOpenChange,
 }: {
   projectId: string
   clips: ExportClip[]
+  /** Something to check before exporting (a clip that runs to the episode's edge). */
+  notice?: string
   open: boolean
   onOpenChange: (open: boolean) => void
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      {open && clips.length > 0 && <ExportForm projectId={projectId} clips={clips} onDone={() => onOpenChange(false)} />}
+      {open && clips.length > 0 && (
+        <ExportForm projectId={projectId} clips={clips} notice={notice} onDone={() => onOpenChange(false)} />
+      )}
     </Dialog>
   )
 }
 
-function ExportForm({ projectId, clips, onDone }: { projectId: string; clips: ExportClip[]; onDone: () => void }) {
+function ExportForm({
+  projectId,
+  clips,
+  notice,
+  onDone,
+}: {
+  projectId: string
+  clips: ExportClip[]
+  notice?: string
+  onDone: () => void
+}) {
   const { data: presets } = usePresets()
   const { data: settings } = useSettings()
   const { data: defaultDir } = useExportDir(projectId)
@@ -89,6 +104,11 @@ function ExportForm({ projectId, clips, onDone }: { projectId: string; clips: Ex
           void start()
         }}
       >
+        {notice && (
+          <p className="flex items-start gap-2.5 rounded-lg border border-white/10 bg-white/[0.04] px-3.5 py-3 text-sm text-fg-2 [&_svg]:mt-0.5 [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-fg-1">
+            <Info /> {notice}
+          </p>
+        )}
         {single && (
           <Field label="File name" htmlFor="export-name">
             <Input

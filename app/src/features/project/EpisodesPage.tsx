@@ -1,4 +1,4 @@
-import { useMemo } from "react"
+import { useMemo, useState } from "react"
 import { useNavigate, useParams } from "@tanstack/react-router"
 import {
   ArrowCounterClockwise,
@@ -41,18 +41,23 @@ import {
   releaseTitle,
 } from "@/lib/media"
 import { addToProject, projectFacts } from "@/lib/projects"
-import { useMediaList, useProject } from "@/lib/queries"
+import { firstFailure, useMediaList, useProject } from "@/lib/queries"
 import { formatFps } from "@/lib/timecode"
 import { cn } from "@/lib/utils"
+import { ProjectLoadError } from "./ProjectLoadError"
 import { ProjectNav } from "./ProjectNav"
+import { RemoveMediaDialog } from "./RemoveMediaDialog"
 import { StatusCell } from "./StatusCell"
 
 /** Every file of a project with its format, audio track and analysis state. */
 export function EpisodesPage() {
   const { pid } = useParams({ from: "/p/$pid/episodes" })
-  const { data: project } = useProject(pid)
-  const { data: media, isPending } = useMediaList(pid)
+  const projectQuery = useProject(pid)
+  const mediaQuery = useMediaList(pid)
+  const { data: project } = projectQuery
+  const { data: media, isPending } = mediaQuery
   const navigate = useNavigate()
+  const [removing, setRemoving] = useState<MediaItem | null>(null)
   const nameCounts = useMemo(() => {
     const counts = new Map<string, number>()
     for (const m of media ?? []) counts.set(releaseTitle(m.fileName), (counts.get(releaseTitle(m.fileName)) ?? 0) + 1)
@@ -60,6 +65,15 @@ export function EpisodesPage() {
   }, [media])
   const movie = project?.kind === "movie"
   const total = media?.reduce((s, m) => s + (m.durationSec ?? 0), 0) ?? 0
+  const failure = firstFailure(projectQuery, mediaQuery)
+
+  if (failure) {
+    return (
+      <Page topbar={<TopBar title={project?.title} nav={<ProjectNav pid={pid} />} />}>
+        <ProjectLoadError error={failure.error} onRetry={failure.retry} />
+      </Page>
+    )
+  }
 
   return (
     <Page topbar={<TopBar title={project?.title} nav={<ProjectNav pid={pid} />} />}>
@@ -107,11 +121,13 @@ export function EpisodesPage() {
                     projectId={pid}
                     faces={project?.content !== "anime"}
                     onOpen={() => void navigate({ to: "/p/$pid/timeline/$mid", params: { pid, mid: m.id } })}
+                    onRemove={() => setRemoving(m)}
                   />
                 ))}
           </ul>
         )}
       </div>
+      <RemoveMediaDialog projectId={pid} media={removing} onOpenChange={(o) => !o && setRemoving(null)} />
     </Page>
   )
 }
@@ -122,6 +138,7 @@ function EpisodeRow({
   projectId,
   faces,
   onOpen,
+  onRemove,
 }: {
   media: MediaItem
   /** Another row has the same clean name: show the file name too. */
@@ -130,6 +147,7 @@ function EpisodeRow({
   /** The project finds characters (live action). */
   faces: boolean
   onOpen: () => void
+  onRemove: () => void
 }) {
   const redo = (stage: "shots" | "faces") =>
     void commands
@@ -260,15 +278,8 @@ function EpisodeRow({
               </DropdownMenuItem>
             )}
             <DropdownMenuSeparator />
-            <DropdownMenuItem
-              destructive
-              onSelect={() =>
-                void commands
-                  .mediaRemove(projectId, m.id)
-                  .catch((e) => toast.error("Couldn't remove", { description: errorMessage(e) }))
-              }
-            >
-              <Trash /> Remove from project
+            <DropdownMenuItem destructive onSelect={onRemove}>
+              <Trash /> Remove from project…
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

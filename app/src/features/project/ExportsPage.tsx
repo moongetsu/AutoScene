@@ -10,10 +10,11 @@ import { Progress } from "@/components/ui/progress"
 import { Tooltip } from "@/components/ui/tooltip"
 import { formatBytes, formatDateTime, formatPercent } from "@/lib/format"
 import { commands } from "@/lib/ipc"
-import { useExports, useMediaList, useProject } from "@/lib/queries"
+import { firstFailure, useExports, useMediaList, useProject } from "@/lib/queries"
 import { isDropFrameRate, timecode } from "@/lib/timecode"
 import { useActivity } from "@/state/activity"
 import { TopBar } from "@/components/ui/topbar"
+import { ProjectLoadError } from "./ProjectLoadError"
 import { ProjectNav } from "./ProjectNav"
 
 function reveal(path: string) {
@@ -22,10 +23,22 @@ function reveal(path: string) {
 
 export function ExportsPage() {
   const { pid } = useParams({ from: "/p/$pid/exports" })
-  const { data: project } = useProject(pid)
-  const { data: exports, isPending } = useExports(pid)
-  const { data: media } = useMediaList(pid)
+  const projectQuery = useProject(pid)
+  const exportsQuery = useExports(pid)
+  const mediaQuery = useMediaList(pid)
+  const { data: project } = projectQuery
+  const { data: exports } = exportsQuery
+  const { data: media } = mediaQuery
   const byId = new Map(media?.map((m) => [m.id, m]))
+  const failure = firstFailure(projectQuery, exportsQuery, mediaQuery)
+
+  if (failure) {
+    return (
+      <Page topbar={<TopBar title={project?.title} nav={<ProjectNav pid={pid} />} />}>
+        <ProjectLoadError error={failure.error} onRetry={failure.retry} />
+      </Page>
+    )
+  }
 
   return (
     <Page topbar={<TopBar title={project?.title} nav={<ProjectNav pid={pid} />} />}>
@@ -34,7 +47,7 @@ export function ExportsPage() {
         <p className="mt-2 text-md text-fg-2">Every clip is cut frame-exact and checked against the source, frame by frame.</p>
       </header>
       <div className="flex flex-col gap-5 px-10 pb-16">
-        {!isPending && exports?.length === 0 && (
+        {exports?.length === 0 && (
           <EmptyState
             icon={<Package />}
             title="No exports yet"

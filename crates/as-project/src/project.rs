@@ -246,7 +246,10 @@ impl Project {
             return Ok(i.clone());
         }
         let blob = self.db.frame_index_blob(id)?.ok_or_else(|| ProjectError::NotReady("Still indexing.".into()))?;
-        let idx = Arc::new(FrameIndex::from_bytes(&blob).map_err(|e| ProjectError::Invalid(e.to_string()))?);
+        let idx = Arc::new(FrameIndex::from_bytes(&blob).map_err(|e| {
+            tracing::warn!(media = %id, error = %e, "stored frame index is damaged");
+            ProjectError::Invalid("This episode's frame index is damaged. Index it again from its menu.".into())
+        })?);
         self.indexes.lock().insert(id, idx.clone());
         Ok(idx)
     }

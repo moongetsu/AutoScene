@@ -40,9 +40,12 @@ pub async fn media_tools(state: State<'_, AppState>) -> AppResult<MediaToolsStat
 pub fn reveal_path(path: String) -> AppResult<()> {
     let p = PathBuf::from(&path);
     if !p.exists() {
-        return Err(AppError::new(ErrorCode::NotFound, format!("{path} does not exist")));
+        return Err(AppError::new(ErrorCode::NotFound, "That file or folder isn't there any more."));
     }
-    tauri_plugin_opener::reveal_item_in_dir(&p).map_err(|e| AppError::new(ErrorCode::Io, e.to_string()))
+    tauri_plugin_opener::reveal_item_in_dir(&p).map_err(|e| {
+        log::warn!("revealing {path}: {e}");
+        AppError::new(ErrorCode::Io, "That file or folder couldn't be shown.")
+    })
 }
 
 /// Put text on the clipboard. Natively, so it also works from the macOS
@@ -51,7 +54,10 @@ pub fn reveal_path(path: String) -> AppResult<()> {
 #[specta::specta]
 pub fn clipboard_write(app: AppHandle, text: String) -> AppResult<()> {
     use tauri_plugin_clipboard_manager::ClipboardExt;
-    app.clipboard().write_text(text).map_err(|e| AppError::new(ErrorCode::Internal, e.to_string()))
+    app.clipboard().write_text(text).map_err(|e| {
+        log::warn!("clipboard: {e}");
+        AppError::new(ErrorCode::Internal, "Couldn't copy to the clipboard.")
+    })
 }
 
 /// Open the logs folder (Settings → About, Help menu on Windows).
@@ -60,6 +66,8 @@ pub fn clipboard_write(app: AppHandle, text: String) -> AppResult<()> {
 pub fn open_logs_dir() -> AppResult<()> {
     let dir = AppPaths::resolve().logs();
     std::fs::create_dir_all(&dir)?;
-    tauri_plugin_opener::open_path(dir.display().to_string(), None::<&str>)
-        .map_err(|e| AppError::new(ErrorCode::Io, e.to_string()))
+    tauri_plugin_opener::open_path(dir.display().to_string(), None::<&str>).map_err(|e| {
+        log::warn!("opening {}: {e}", dir.display());
+        AppError::new(ErrorCode::Io, "The logs folder couldn't be opened.")
+    })
 }

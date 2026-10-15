@@ -20,6 +20,7 @@ import { CharacterCrumb, MediaCrumb, ProjectCrumb } from "@/features/project/cru
 import { SettingsPage } from "@/features/settings/SettingsPage"
 import { settingsLabel } from "@/features/settings/sections"
 import { NotFound } from "@/features/not-found"
+import { RouteError } from "@/features/route-error"
 import { SETTINGS_SECTIONS, type SettingsSection } from "@/lib/actions"
 
 declare module "@tanstack/react-router" {
@@ -144,4 +145,5 @@ export const router = createRouter({
   defaultPreload: "intent",
   scrollRestoration: true,
   defaultNotFoundComponent: NotFound,
+  defaultErrorComponent: RouteError,
 })

@@ -7,8 +7,9 @@ import { EmptyState } from "@/components/ui/empty-state"
 import { Page } from "@/components/ui/page"
 import { TopBar } from "@/components/ui/topbar"
 import { AnalysisStatus } from "@/features/project/AnalysisStatus"
+import { ProjectLoadError } from "@/features/project/ProjectLoadError"
 import { ProjectNav } from "@/features/project/ProjectNav"
-import { useCast, useMediaList, useProject } from "@/lib/queries"
+import { firstFailure, useCast, useMediaList, useProject } from "@/lib/queries"
 import { cn } from "@/lib/utils"
 import { CharacterCard } from "./CharacterCard"
 import { plural, splitHidden, useProjectAnalysis } from "./cast"
@@ -16,13 +17,25 @@ import { plural, splitHidden, useProjectAnalysis } from "./cast"
 /** Everyone the analysis found, most screen time first. */
 export function CastPage() {
   const { pid } = useParams({ from: "/p/$pid/cast" })
-  const { data: project } = useProject(pid)
-  const { data: cast, isPending } = useCast(pid)
-  const { data: media } = useMediaList(pid)
+  const projectQuery = useProject(pid)
+  const castQuery = useCast(pid)
+  const mediaQuery = useMediaList(pid)
+  const { data: project } = projectQuery
+  const { data: cast, isPending } = castQuery
+  const { data: media } = mediaQuery
   const running = useProjectAnalysis(pid)
   const [showHidden, setShowHidden] = useState(false)
   const { shown, hidden } = splitHidden(cast)
   const anime = project?.content === "anime"
+  const failure = firstFailure(projectQuery, castQuery, mediaQuery)
+
+  if (failure) {
+    return (
+      <Page topbar={<TopBar title={project?.title} nav={<ProjectNav pid={pid} />} />}>
+        <ProjectLoadError error={failure.error} onRetry={failure.retry} />
+      </Page>
+    )
+  }
 
   return (
     <Page topbar={<TopBar title={project?.title} nav={<ProjectNav pid={pid} />} />}>

@@ -23,17 +23,21 @@ import { formatDuration } from "@/lib/format"
 import { commands } from "@/lib/ipc"
 import { pickFolder, pickVideoFiles } from "@/lib/media"
 import { addToProject, projectFacts } from "@/lib/projects"
-import { useCast, useMediaList, useProject } from "@/lib/queries"
+import { firstFailure, useCast, useMediaList, useProject } from "@/lib/queries"
 import { AnalysisStatus } from "./AnalysisStatus"
 import { EpisodeCard } from "./EpisodeCard"
+import { ProjectLoadError } from "./ProjectLoadError"
 import { ProjectNav } from "./ProjectNav"
 
 /** A project's front page: its picture and title, its cast, its episodes. */
 export function OverviewPage() {
   const { pid } = useParams({ from: "/p/$pid/" })
-  const { data: project } = useProject(pid)
-  const { data: media } = useMediaList(pid)
-  const { data: cast } = useCast(pid)
+  const projectQuery = useProject(pid)
+  const mediaQuery = useMediaList(pid)
+  const castQuery = useCast(pid)
+  const { data: project } = projectQuery
+  const { data: media } = mediaQuery
+  const { data: cast } = castQuery
   const [renaming, setRenaming] = useState<ProjectSummary | null>(null)
   const pictured = project?.poster ? project : media?.find((m) => m.poster)
   const backdrop = pictured?.poster ?? null
@@ -41,6 +45,15 @@ export function OverviewPage() {
   const { shown } = splitHidden(cast)
   const live = project?.content !== "anime"
   const movie = project?.kind === "movie"
+  const failure = firstFailure(projectQuery, mediaQuery, castQuery)
+
+  if (failure) {
+    return (
+      <Page topbar={<TopBar title={project?.title} nav={<ProjectNav pid={pid} />} />}>
+        <ProjectLoadError error={failure.error} onRetry={failure.retry} />
+      </Page>
+    )
+  }
 
   return (
     <Page topbar={<TopBar title={project?.title} overlay nav={<ProjectNav pid={pid} />} />}>

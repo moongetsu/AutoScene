@@ -8,8 +8,9 @@ import { Kbd } from "@/components/ui/kbd"
 import { Page } from "@/components/ui/page"
 import { Progress } from "@/components/ui/progress"
 import { TopBar } from "@/components/ui/topbar"
+import { ProjectLoadError } from "@/features/project/ProjectLoadError"
 import { assetUrl } from "@/lib/media"
-import { portraitQuery, queryClient, useCast, useCastTracks, useMediaList, usePortrait } from "@/lib/queries"
+import { firstFailure, portraitQuery, queryClient, useCast, useCastTracks, useMediaList, usePortrait } from "@/lib/queries"
 import { timecode } from "@/lib/timecode"
 import { cn } from "@/lib/utils"
 import { castEdit, plural } from "./cast"
@@ -23,8 +24,10 @@ export function ReviewPage() {
   const { pid } = useParams({ from: "/p/$pid/cast/review" })
   const { c } = useSearch({ from: "/p/$pid/cast/review" })
   const navigate = useNavigate()
-  const { data: cast } = useCast(pid)
-  const { data: media } = useMediaList(pid)
+  const castQuery = useCast(pid)
+  const mediaQuery = useMediaList(pid)
+  const { data: cast } = castQuery
+  const { data: media } = mediaQuery
   const queue = useCastTracks(pid, c ? { kind: "unsure", id: c } : { kind: "all_unsure" })
   const [skipped, setSkipped] = useState<Set<number>>(new Set())
   // Answered faces leave at once, before the list is fetched again: a quick
@@ -102,7 +105,17 @@ export function ReviewPage() {
 
   const toolbar = <TopBar back={{ label: "Cast", to: `/p/${pid}/cast` }} title="Review faces" />
 
-  if (!queue.isPending && !current) {
+  const failure = firstFailure(queue, castQuery, mediaQuery)
+  if (failure) {
+    return (
+      <Page topbar={toolbar}>
+        <ProjectLoadError error={failure.error} onRetry={failure.retry} />
+      </Page>
+    )
+  }
+
+  // Only a queue that loaded can be empty.
+  if (queue.isSuccess && !current) {
     return (
       <Page topbar={toolbar}>
         <EmptyState

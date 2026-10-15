@@ -45,11 +45,14 @@ impl std::fmt::Display for AppError {
 
 impl From<std::io::Error> for AppError {
     fn from(e: std::io::Error) -> Self {
+        log::warn!("file: {e}");
         let code = if e.kind() == std::io::ErrorKind::NotFound { ErrorCode::NotFound } else { ErrorCode::Io };
-        Self::new(code, e.to_string())
+        Self::new(code, as_core::io_message(&e))
     }
 }
 
+/// People read the error's `Display`; the log gets its technical side, so
+/// "Details are in the log" holds for commands as it does for jobs.
 impl From<ProjectError> for AppError {
     fn from(e: ProjectError) -> Self {
         let code = match &e {
@@ -61,6 +64,13 @@ impl From<ProjectError> for AppError {
             ProjectError::Io(_) => ErrorCode::Io,
             ProjectError::Db(_) => ErrorCode::Internal,
         };
+        match code {
+            // Expected answers (a stale id, a file still indexing): no noise.
+            ErrorCode::NotFound | ErrorCode::Invalid | ErrorCode::NotReady | ErrorCode::Cancelled => {
+                log::debug!("{}", e.detail());
+            }
+            _ => log::warn!("{}", e.detail()),
+        }
         Self::new(code, e.to_string())
     }
 }

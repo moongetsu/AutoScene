@@ -564,9 +564,15 @@ const handlers: Record<string, Handler> = {
 }
 
 export function installMockBackend() {
+  // `?mockFail=cast_get,media_list` (before the `#`) makes those commands fail
+  // the way a broken project database does, to see every error screen.
+  const failing = new Set((new URLSearchParams(window.location.search).get("mockFail") ?? "").split(",").filter(Boolean))
   mockWindows("main")
   mockIPC(
     (cmd, payload) => {
+      if (failing.has(cmd)) {
+        throw { code: "internal", message: "AutoScene couldn't read or save its data. Details are in the log." }
+      }
       const h = handlers[cmd]
       if (h) return h((payload ?? {}) as Record<string, unknown>)
       // Other built-in plugin calls (window controls…) are no-ops in the browser.

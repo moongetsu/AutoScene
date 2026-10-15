@@ -96,8 +96,11 @@ function DeleteForm({ project, onDone }: { project: ProjectSummary; onDone: () =
     >
       <label className="flex items-center justify-between gap-4 rounded-lg border border-hairline bg-inset px-3.5 py-3">
         <span>
-          <span className="block text-sm text-fg-1">Delete project files</span>
-          <span className="block text-xs text-fg-3">The analysis, posters and previews in the .autoscene folder.</span>
+          <span className="block text-sm text-fg-1">Delete its analysis too</span>
+          <span className="block text-xs text-fg-3">
+            Shots, faces, the cast with your names and decisions, posters and previews (the .autoscene folder). Added
+            again later, the videos are analysed from scratch.
+          </span>
         </span>
         <Switch checked={deleteFiles} onCheckedChange={setDeleteFiles} />
       </label>
@@ -107,7 +110,7 @@ function DeleteForm({ project, onDone }: { project: ProjectSummary; onDone: () =
         </Button>
         <Button variant="danger" disabled={busy} onClick={() => void remove()}>
           {busy && <CircleNotch className="animate-spin" />}
-          Remove project
+          {deleteFiles ? "Delete project" : "Remove from library"}
         </Button>
       </DialogFooter>
     </DialogContent>

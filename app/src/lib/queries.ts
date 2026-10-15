@@ -129,3 +129,12 @@ export function useCharacterShots(pid: ProjectId, cid: CharacterId, enabled = tr
 export function usePresence(pid: ProjectId, mid: MediaId, enabled: boolean) {
   return useQuery({ queryKey: qk.presence(pid, mid), queryFn: () => commands.mediaPresence(pid, mid), enabled })
 }
+
+type Refetchable = { isError: boolean; error: unknown; refetch: () => unknown }
+
+/** The first failure among a view's queries, and a retry that fetches the failed ones again. */
+export function firstFailure(...queries: Refetchable[]): { error: unknown; retry: () => void } | null {
+  const failed = queries.filter((q) => q.isError)
+  if (failed.length === 0) return null
+  return { error: failed[0].error, retry: () => failed.forEach((q) => void q.refetch()) }
+}

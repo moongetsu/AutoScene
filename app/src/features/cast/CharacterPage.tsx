@@ -32,18 +32,20 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { EmptyState } from "@/components/ui/empty-state"
+import { ErrorState } from "@/components/ui/error-state"
 import { Hero } from "@/components/ui/hero"
 import { Input } from "@/components/ui/input"
 import { Page } from "@/components/ui/page"
 import { Segmented } from "@/components/ui/segmented"
 import { TopBar } from "@/components/ui/topbar"
 import { ExportDialog, type ExportClip } from "@/features/export/ExportDialog"
+import { ProjectLoadError } from "@/features/project/ProjectLoadError"
 import { ShotCard } from "@/features/shots/ShotCard"
 import { formatShotLength } from "@/features/shots/shots"
 import { useAmbient } from "@/lib/ambient"
 import { commands, errorMessage } from "@/lib/ipc"
 import { assetUrl } from "@/lib/media"
-import { useCast, useCastTracks, useCharacterShots, useMediaList, useProject } from "@/lib/queries"
+import { firstFailure, useCast, useCastTracks, useCharacterShots, useMediaList, useProject } from "@/lib/queries"
 import { timecode } from "@/lib/timecode"
 import { cn } from "@/lib/utils"
 import { castEdit, formatScreenTime, plural } from "./cast"
@@ -60,8 +62,10 @@ let lastView: View = "shots"
 export function CharacterPage() {
   const { pid, cid } = useParams({ from: "/p/$pid/cast/$cid" })
   const navigate = useNavigate()
-  const { data: cast, isPending } = useCast(pid)
-  const { data: media } = useMediaList(pid)
+  const castQuery = useCast(pid)
+  const mediaQuery = useMediaList(pid)
+  const { data: cast } = castQuery
+  const { data: media } = mediaQuery
   const everyone = cid === "unassigned"
   const character = cast?.characters.find((c) => c.id === cid)
   const tracks = useCastTracks(pid, everyone ? { kind: "unassigned" } : { kind: "character", id: cid })
@@ -108,7 +112,17 @@ export function CharacterPage() {
     <TopBar overlay back={{ label: "Cast", to: `/p/${pid}/cast` }} title={everyone ? "Everyone else" : (character?.label ?? " ")} />
   )
 
-  if (!everyone && !isPending && !character) {
+  const failure = firstFailure(castQuery, mediaQuery, tracks)
+  if (failure) {
+    return (
+      <Page topbar={toolbar}>
+        <ProjectLoadError error={failure.error} onRetry={failure.retry} />
+      </Page>
+    )
+  }
+
+  // Only a cast that loaded can say someone left it.
+  if (!everyone && cast && !character) {
     return (
       <Page topbar={toolbar}>
         <EmptyState
@@ -270,6 +284,9 @@ function Shots({
         ))}
       </div>
     )
+  }
+  if (shots.isError) {
+    return <ErrorState error={shots.error} title="Their shots couldn't be loaded" onRetry={() => void shots.refetch()} />
   }
   if (list.length === 0) {
     return (

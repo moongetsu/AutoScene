@@ -167,5 +167,8 @@ pub fn allow_asset_tree(app: &AppHandle, dir: &Path) {
 
 /// Run blocking work (database, filesystem scans) off the async runtime.
 pub async fn blocking<T: Send + 'static>(f: impl FnOnce() -> AppResult<T> + Send + 'static) -> AppResult<T> {
-    tauri::async_runtime::spawn_blocking(f).await.map_err(|e| AppError::internal(e.to_string()))?
+    tauri::async_runtime::spawn_blocking(f).await.map_err(|e| {
+        log::error!("a command failed unexpectedly: {e}");
+        AppError::internal("Something went wrong. Details are in the log.")
+    })?
 }

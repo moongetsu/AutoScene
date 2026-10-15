@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import { Link, useParams, useSearch } from "@tanstack/react-router"
 import {
   ArrowCounterClockwise,
+  ArrowLeft,
   CaretLeft,
   CaretLineLeft,
   CaretLineRight,
@@ -33,7 +34,7 @@ import { Tooltip } from "@/components/ui/tooltip"
 import { ExportDialog, type ExportClip } from "@/features/export/ExportDialog"
 import { COPY_TIMECODES_REQUEST, EXPORT_REQUEST, REVEAL_REQUEST } from "@/lib/actions"
 import { FrameClock } from "@/lib/frame-clock"
-import { formatPercent } from "@/lib/format"
+import { formatDuration, formatPercent } from "@/lib/format"
 import { commands, errorMessage, isAppError } from "@/lib/ipc"
 import {
   assetUrl,
@@ -72,7 +73,8 @@ function suggestedName(title: string, m: MediaItem, tc: string): string {
 export function PlayerPage() {
   const { pid, mid } = useParams({ from: "/p/$pid/timeline/$mid" })
   const { f: openAt } = useSearch({ from: "/p/$pid/timeline/$mid" })
-  const { data: media } = useMediaList(pid)
+  const mediaQuery = useMediaList(pid)
+  const { data: media } = mediaQuery
   const { data: project } = useProject(pid)
   const m = media?.find((x) => x.id === mid)
   const ready = m?.status === "ready"
@@ -128,7 +130,14 @@ export function PlayerPage() {
           inspector={inspector}
         />
       ) : (
-        <NotReady pid={pid} media={m} error={map.error} />
+        <NotReady
+          pid={pid}
+          media={m}
+          error={map.error}
+          gone={mediaQuery.isSuccess && !m}
+          listError={mediaQuery.error}
+          onRetryList={() => void mediaQuery.refetch()}
+        />
       )}
     </div>
   )
@@ -156,12 +165,34 @@ function EpisodeNav({ pid, target, dir }: { pid: string; target?: MediaItem; dir
 }
 
 /** Poster with what's happening instead of a player. */
-function NotReady({ pid, media: m, error }: { pid: string; media?: MediaItem; error: unknown }) {
+function NotReady({
+  pid,
+  media: m,
+  error,
+  gone,
+  listError,
+  onRetryList,
+}: {
+  pid: string
+  media?: MediaItem
+  error: unknown
+  /** The project's episodes loaded, and this one isn't among them. */
+  gone: boolean
+  /** The episodes couldn't be loaded. */
+  listError: unknown
+  onRetryList: () => void
+}) {
   const job = useMediaJob(m?.id)
   const needsPreview = m?.status === "ready" && isAppError(error) && error.code === "not_ready"
   let title = "Loading…"
   let body: React.ReactNode = null
-  if (m?.status === "queued" || m?.status === "indexing") {
+  if (listError) {
+    title = "This episode couldn't be loaded"
+    body = errorMessage(listError)
+  } else if (gone) {
+    title = "This episode isn't in the project any more"
+    body = "It may have been removed from the project."
+  } else if (m?.status === "queued" || m?.status === "indexing") {
     title = "Indexing"
     body = "Every frame is being indexed so cuts land exactly. Playback starts when it's done."
   } else if (m?.status === "failed") {
@@ -209,6 +240,18 @@ function NotReady({ pid, media: m, error }: { pid: string; media?: MediaItem; er
             onClick={() => void commands.mediaPreparePreview(pid, m!.id).catch((e) => toast.error(errorMessage(e)))}
           >
             <ArrowCounterClockwise /> Prepare preview
+          </Button>
+        )}
+        {listError ? (
+          <Button className="mt-6" variant="primary" onClick={onRetryList}>
+            <ArrowCounterClockwise /> Try again
+          </Button>
+        ) : null}
+        {gone && (
+          <Button className="mt-6" variant="primary" asChild>
+            <Link to="/p/$pid/episodes" params={{ pid }}>
+              <ArrowLeft /> Back to the episodes
+            </Link>
           </Button>
         )}
         {!job && retryable && (
@@ -285,14 +328,23 @@ function ReadyPlayer({
   const end = (outFrame ?? last) + 1
   const length = end - start
 
+  const seconds = clock.rel(end) - clock.rel(start)
   const clip: ExportClip = {
     mediaId: m.id,
     start,
     end,
     name: null,
-    summary: `${m.label ? `${m.label} · ` : ""}${tc(start)} – ${tc(end - 1)} · ${length} frames`,
+    summary: `${m.label ? `${m.label} · ` : ""}${tc(start)} – ${tc(end - 1)} · ${formatDuration(seconds)} (${length} frames)`,
     suggestedName: suggestedName(project?.title ?? "", m, tc(start)),
   }
+  // One mark alone runs the clip to the episode's edge: say so before an
+  // export of most of an episode starts.
+  const oneSided =
+    inFrame != null && outFrame == null
+      ? "Only an in point is marked, so the clip runs to the end of the episode. Press O to mark an out point."
+      : outFrame != null && inFrame == null
+        ? "Only an out point is marked, so the clip starts at the beginning of the episode. Press I to mark an in point."
+        : undefined
   const canExport = hasMarks && length > 0
 
   useEffect(() => {
@@ -733,7 +785,7 @@ function ReadyPlayer({
         </aside>
       )}
 
-      <ExportDialog projectId={pid} clips={[clip]} open={exportOpen} onOpenChange={setExportOpen} />
+      <ExportDialog projectId={pid} clips={[clip]} notice={oneSided} open={exportOpen} onOpenChange={setExportOpen} />
     </div>
   )
 }

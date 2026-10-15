@@ -5,6 +5,7 @@ import { FilmSlate, Plus, Scissors, UserFocus, Users } from "@/components/icons"
 import type { ProjectSummary } from "@/bindings"
 import { AutoSceneMark } from "@/components/brand/AutoSceneMark"
 import { Button } from "@/components/ui/button"
+import { ErrorState } from "@/components/ui/error-state"
 import { Hero } from "@/components/ui/hero"
 import { Page } from "@/components/ui/page"
 import { Section } from "@/components/ui/shelf"
@@ -31,16 +32,17 @@ const STEPS: { icon: React.ReactNode; title: string; body: string }[] = [
   {
     icon: <Scissors />,
     title: "Export packs",
-    body: "Frame-exact clips in ProRes, DNxHR or H.264, with timelines for Premiere, Resolve and Final Cut.",
+    body: "Frame-exact clips in ProRes, DNxHR or H.264, named by character and episode, ready for any editor.",
   },
 ]
 
 export function LibraryPage() {
-  const { data: projects, isPending } = useProjects()
+  const { data: projects, isPending, isError, error, refetch } = useProjects()
   const newProject = useNewProject((s) => s.show)
   const [renaming, setRenaming] = useState<ProjectSummary | null>(null)
   const [deleting, setDeleting] = useState<ProjectSummary | null>(null)
-  const empty = !isPending && (projects?.length ?? 0) === 0
+  // Only a library that loaded and has nothing in it is new; a failed load says so.
+  const empty = projects?.length === 0
   const latest = projects?.[0]
 
   return (
@@ -55,7 +57,9 @@ export function LibraryPage() {
         </TopBar>
       }
     >
-      {empty ? (
+      {isError ? (
+        <ErrorState error={error} title="The library couldn't be loaded" className="h-full" onRetry={() => void refetch()} />
+      ) : empty ? (
         <Welcome onCreate={() => newProject()} />
       ) : (
         <>
