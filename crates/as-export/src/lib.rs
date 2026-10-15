@@ -1,9 +1,11 @@
 //! Export: turning frame ranges into files editors can trust.
 
 pub mod clip;
+pub mod estimate;
 pub mod preset;
 
 pub use clip::{ClipJob, ClipOutcome, export_clip};
+pub use estimate::estimate_bytes;
 pub use preset::{ExportPreset, builtin_presets};
 
 use thiserror::Error;

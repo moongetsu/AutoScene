@@ -14,7 +14,9 @@ import { castEdit, castGet, castPortrait, castTracks, characterClips, characterS
 import type {
   AppInfo,
   AppSettings,
+  ClipRequest,
   ExportItem,
+  ExportPlan,
   ExportPreset,
   ExportRequest,
   ExportSummary,
@@ -369,12 +371,35 @@ function tcName(f: number) {
   return `${pad(Math.floor(s / 3600))}-${pad(Math.floor(s / 60) % 60)}-${pad(s % 60)}-${pad(f % 24)}`
 }
 
+/** The backend's default clip name: `Title_S01E03_00-00-02-00`. */
+function clipName(p: MockProject, c: ClipRequest): string {
+  const m = findMedia(p, c.mediaId)
+  return c.name ?? `${p.title}_${m.label || m.fileName.replace(/\.[^.]+$/, "")}_${tcName(c.start)}`.replace(/\s+/g, "_")
+}
+
+/** Rough bytes per frame for a preset (ProRes HQ 1080p ≈ 920 KB). */
+const BYTES_PER_FRAME: Record<string, number> = {
+  "prores-hq": 9.2e5,
+  "dnxhr-hq": 9.1e5,
+  "h264-edit": 1.0e5,
+  "h264-mobile": 6.0e4,
+  "h264-intra": 2.6e5,
+  hevc10: 6.0e4,
+}
+
+function exportPlan(p: MockProject, clips: ClipRequest[]): ExportPlan {
+  const frames = clips.reduce((sum, c) => sum + (c.end - c.start), 0)
+  return {
+    names: clips.map((c) => clipName(p, c)),
+    sizes: presets.map((pr) => ({ presetId: pr.id, bytes: frames * (BYTES_PER_FRAME[pr.id] ?? 2e5) })),
+  }
+}
+
 function startExport(p: MockProject, req: ExportRequest): ExportSummary {
   const pr = presets.find((x) => x.id === req.presetId) ?? presets[0]
   const outDir = req.outDir ?? `${ROOT}\\Exports\\${p.title}`
   const items: ExportItem[] = req.clips.map((c, i) => {
-    const m = findMedia(p, c.mediaId)
-    const name = c.name ?? `${p.title}_${m.label || m.fileName.replace(/\.[^.]+$/, "")}_${tcName(c.start)}`.replace(/\s+/g, "_")
+    const name = clipName(p, c)
     return { id: i + 1, mediaId: c.mediaId, start: c.start, end: c.end, name, status: "queued", path: null, verified: false, encoder: null, bytes: null, error: null }
   })
   const ex: ExportSummary = { id: id(), projectId: p.id, createdAt: Date.now(), preset: pr, outDir, status: "running", items }
@@ -528,6 +553,7 @@ const handlers: Record<string, Handler> = {
   export_presets: () => presets,
   export_default_dir: ({ projectId }) => `${settings.libraryRoot}\\Exports\\${find(projectId).title}`,
   export_start: ({ projectId, req }) => startExport(find(projectId), req as ExportRequest),
+  export_plan: ({ projectId, clips }) => exportPlan(find(projectId), clips as ClipRequest[]),
   exports_list: ({ projectId }) => find(projectId).exports,
   jobs_list: () => jobs,
   job_cancel: ({ jobId }) => {

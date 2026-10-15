@@ -108,6 +108,90 @@ pub fn episode_cmp(a: (Option<u32>, Option<u32>, &str), b: (Option<u32>, Option<
     key(a).cmp(&key(b)).then_with(|| natural_cmp(a.2, b.2))
 }
 
+// -- clip names ---------------------------------------------------------------
+
+/// What a clip's file name is made of. A template names these parts as
+/// `{series}`, `{character}`, `{episode}`, `{index}`, `{tc}` and `{frame}`.
+#[derive(Clone, Copy, Debug)]
+pub struct NameParts<'a> {
+    pub series: &'a str,
+    pub character: Option<&'a str>,
+    /// The episode's label (`S01E03`), or the file's name without extension.
+    pub episode: &'a str,
+    /// The clip's place in its export (from 1) and how many there are.
+    pub index: (usize, usize),
+    /// Source timecode of the first frame (see [`clip_timecode`]).
+    pub tc: &'a str,
+    pub frame: u32,
+}
+
+/// The template tokens, in the order a template editor offers them.
+pub const NAME_TOKENS: &[&str] = &["series", "character", "episode", "index", "tc", "frame"];
+
+/// Single clips: `Title_S01E03_00-12-03-05`.
+pub const CLIP_TEMPLATE: &str = "{series} {episode} {tc}";
+/// Clips of a character's pack: `Title_Walter_S01E03_00-12-03-05`.
+pub const PACK_TEMPLATE: &str = "{series} {character} {episode} {tc}";
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum NameError {
+    #[error("“{{{0}}}” isn't a name part. Use {{series}}, {{character}}, {{episode}}, {{index}}, {{tc}} or {{frame}}.")]
+    UnknownToken(String),
+    #[error("A “{{” isn't closed with “}}”.")]
+    Unclosed,
+    #[error("The name would be empty.")]
+    Empty,
+}
+
+/// A file name (without extension) from `template`, safe on Windows and
+/// macOS; spaces become `_`.
+pub fn render_name(template: &str, parts: &NameParts) -> Result<String, NameError> {
+    let mut out = String::with_capacity(template.len() + 32);
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        let close = after.find('}').ok_or(NameError::Unclosed)?;
+        match &after[..close] {
+            "series" => out.push_str(parts.series),
+            "character" => out.push_str(parts.character.unwrap_or_default()),
+            "episode" => out.push_str(parts.episode),
+            "index" => {
+                // Zero-padded to the count's width (at least 3), so names sort in order.
+                let width = parts.index.1.to_string().len().max(3);
+                out.push_str(&format!("{:0width$}", parts.index.0));
+            }
+            "tc" => out.push_str(parts.tc),
+            "frame" => out.push_str(&parts.frame.to_string()),
+            other => return Err(NameError::UnknownToken(other.to_string())),
+        }
+        rest = &after[close + 1..];
+    }
+    out.push_str(rest);
+    if out.trim().is_empty() {
+        return Err(NameError::Empty);
+    }
+    Ok(safe_component(&out, "_", 120))
+}
+
+/// Is `template` usable (every token known, every brace closed)?
+pub fn check_template(template: &str) -> Result<(), NameError> {
+    let parts = NameParts { series: "S", character: Some("C"), episode: "E", index: (1, 1), tc: "T", frame: 0 };
+    render_name(template, &parts).map(|_| ())
+}
+
+/// 29.97 and 59.94 count timecode drop-frame (SMPTE).
+pub fn is_drop_frame(fps: as_core::Rational) -> bool {
+    let base = fps.to_f64().round() as i64;
+    fps.den == 1001 && (base == 30 || base == 60)
+}
+
+/// Source timecode of frame `f` for a file name: `00-12-03-05` (drop-frame
+/// where the rate counts it, with `-` for `:` and `;`).
+pub fn clip_timecode(f: u32, fps: as_core::Rational) -> String {
+    as_core::Timecode::from_frame(u64::from(f), fps, is_drop_frame(fps)).to_string().replace([':', ';'], "-")
+}
+
 /// A string safe to use as one path component on Windows and macOS.
 /// `sep` replaces whitespace (use `" "` to keep spaces).
 pub fn safe_component(s: &str, sep: &str, max_chars: usize) -> String {
@@ -149,6 +233,44 @@ fn is_reserved_device(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parts<'a>(character: Option<&'a str>, index: (usize, usize)) -> NameParts<'a> {
+        NameParts { series: "Breaking Bad", character, episode: "S01E03", index, tc: "00-12-03-05", frame: 17357 }
+    }
+
+    #[test]
+    fn names_from_templates() {
+        assert_eq!(render_name(CLIP_TEMPLATE, &parts(None, (1, 1))).unwrap(), "Breaking_Bad_S01E03_00-12-03-05");
+        assert_eq!(
+            render_name(PACK_TEMPLATE, &parts(Some("Walter"), (7, 48))).unwrap(),
+            "Breaking_Bad_Walter_S01E03_00-12-03-05"
+        );
+        // No character: no double separator.
+        assert_eq!(render_name(PACK_TEMPLATE, &parts(None, (7, 48))).unwrap(), "Breaking_Bad_S01E03_00-12-03-05");
+        assert_eq!(render_name("{character}-{index}", &parts(Some("Jesse"), (7, 48))).unwrap(), "Jesse-007");
+        assert_eq!(render_name("{index} {frame}", &parts(None, (42, 1200))).unwrap(), "0042_17357");
+        // Characters a file system refuses go.
+        assert_eq!(render_name("{series}: {character}?", &parts(Some("W/H"), (1, 1))).unwrap(), "Breaking_Bad_W_H");
+    }
+
+    #[test]
+    fn templates_are_checked() {
+        assert_eq!(check_template("{series} {nme}"), Err(NameError::UnknownToken("nme".into())));
+        assert_eq!(check_template("{series"), Err(NameError::Unclosed));
+        assert_eq!(check_template("   "), Err(NameError::Empty));
+        assert!(check_template(PACK_TEMPLATE).is_ok());
+        assert!(check_template("{series} - {index}").is_ok());
+    }
+
+    #[test]
+    fn timecodes_in_names_count_like_the_source() {
+        let ntsc = as_core::Rational::new(30000, 1001);
+        assert!(is_drop_frame(ntsc) && is_drop_frame(as_core::Rational::new(60000, 1001)));
+        assert!(!is_drop_frame(as_core::Rational::new(24000, 1001)) && !is_drop_frame(as_core::Rational::new(30, 1)));
+        // One minute of 29.97 drops two frame numbers: frame 1800 is 00:01:00;02.
+        assert_eq!(clip_timecode(1800, ntsc), "00-01-00-02");
+        assert_eq!(clip_timecode(1800, as_core::Rational::new(30, 1)), "00-01-00-00");
+    }
 
     fn ep(name: &str) -> (Option<u32>, Option<u32>) {
         parse_episode(name, None)

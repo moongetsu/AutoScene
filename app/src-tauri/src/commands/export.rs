@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use as_api::{ExportPreset, ExportRequest, ExportSummary};
+use as_api::{ClipRequest, ExportPlan, ExportPreset, ExportRequest, ExportSummary};
 use as_core::ProjectId;
 use as_export::builtin_presets;
 use tauri::{AppHandle, State};
@@ -55,6 +55,19 @@ pub async fn export_start(
     work::queue_export(&app, &project, summary.id, summary.items.len());
     let _ = ExportChanged { project_id, export_id: summary.id }.emit(&app);
     Ok(summary)
+}
+
+/// What an export of `clips` would make before it starts: the file names
+/// and roughly how big it gets with each preset.
+#[tauri::command]
+#[specta::specta]
+pub async fn export_plan(
+    state: State<'_, AppState>,
+    project_id: ProjectId,
+    clips: Vec<ClipRequest>,
+) -> AppResult<ExportPlan> {
+    let lib = state.library.clone();
+    blocking(move || Ok(lib.project(project_id)?.export_plan(&clips, &builtin_presets())?)).await
 }
 
 /// Newest first.

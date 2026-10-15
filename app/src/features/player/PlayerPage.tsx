@@ -41,7 +41,6 @@ import {
   audioOption,
   codecLabel,
   currentAudio,
-  fileStem,
   formatFlags,
   mediaTitle,
   releaseTitle,
@@ -61,15 +60,6 @@ import { CharacterLanes } from "./CharacterLanes"
 import { Scrubber } from "./Scrubber"
 import { ShotStrip } from "./ShotStrip"
 import { usePlayer } from "./use-player"
-
-/** Same shape as the backend's default clip names: `Title_S01E03_00-12-03-05`. */
-function suggestedName(title: string, m: MediaItem, tc: string): string {
-  const what = m.label || fileStem(m.fileName)
-  return `${title} ${what} ${tc.replace(/[:;]/g, "-")}`
-    .replace(/[<>:"/\\|?*]+/g, " ")
-    .trim()
-    .replace(/\s+/g, "_")
-}
 
 export function PlayerPage() {
   const { pid, mid } = useParams({ from: "/p/$pid/timeline/$mid" })
@@ -306,7 +296,6 @@ function ReadyPlayer({
   const gotoRef = useRef<HTMLInputElement | null>(null)
   const [gotoOpen, setGotoOpen] = useState(false)
   const { volume, muted, setVolume, toggleMute } = usePlayback()
-  const { data: project } = useProject(pid)
   const { data: segments } = useSegments(pid, m.id, m.shots === "ready")
   const shots = m.shots === "ready" ? (segments ?? []) : []
   const fps = map.fps
@@ -336,7 +325,6 @@ function ReadyPlayer({
     end,
     name: null,
     summary: `${m.label ? `${m.label} · ` : ""}${tc(start)} – ${tc(end - 1)} · ${formatDuration(seconds)} (${length} frames)`,
-    suggestedName: suggestedName(project?.title ?? "", m, tc(start)),
   }
   // One mark alone runs the clip to the episode's edge: say so before an
   // export of most of an episode starts.

@@ -1,4 +1,5 @@
 import { useState } from "react"
+import { keepPreviousData, useQuery } from "@tanstack/react-query"
 import { CircleNotch, FolderOpen, Info } from "@/components/icons"
 import { toast } from "sonner"
 import type { ClipRequest } from "@/bindings"
@@ -7,6 +8,7 @@ import { Dialog, DialogContent, DialogFooter } from "@/components/ui/dialog"
 import { Field, Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { commands, errorMessage } from "@/lib/ipc"
+import { formatBytes } from "@/lib/format"
 import { pickFolder } from "@/lib/media"
 import { qk, queryClient, useExportDir, usePresets, useSettings } from "@/lib/queries"
 import { useUi } from "@/state/ui"
@@ -14,8 +16,6 @@ import { useUi } from "@/state/ui"
 export type ExportClip = ClipRequest & {
   /** What the user sees: "S01E03 · 00:12:03:05 – 00:12:07:11". */
   summary: string
-  /** Default file name the backend would choose (shown as placeholder). */
-  suggestedName: string
 }
 
 /** Choose preset, name and destination, then queue the export. */
@@ -65,6 +65,16 @@ function ExportForm({
 
   const preset = presets?.find((p) => p.id === presetId)
   const outDir = dir ?? defaultDir ?? ""
+  // The names the files get and the size per format, from the backend.
+  const requests = clips.map(({ mediaId, start, end, name }) => ({ mediaId, start, end, name }))
+  const plan = useQuery({
+    queryKey: ["exportPlan", projectId, requests],
+    queryFn: () => commands.exportPlan(projectId, requests),
+    placeholderData: keepPreviousData,
+    retry: false,
+  })
+  const suggested = plan.data?.names[0] ?? ""
+  const bytes = plan.data?.sizes.find((s) => s.presetId === presetId)?.bytes
 
   const start = async () => {
     if (!presetId) return
@@ -81,7 +91,7 @@ function ExportForm({
         void commands.settingsUpdate({ ...settings, exportPresetId: presetId }).then((s) => queryClient.setQueryData(qk.settings, s))
       }
       onDone()
-      toast(single ? `Exporting “${name.trim() || clips[0].suggestedName}”` : `Exporting ${clips.length} clips`, {
+      toast(single ? `Exporting “${name.trim() || suggested || "the clip"}”` : `Exporting ${clips.length} clips`, {
         action: { label: "Show", onClick: () => useUi.getState().setActivityOpen(true) },
       })
     } catch (e) {
@@ -115,12 +125,22 @@ function ExportForm({
               id="export-name"
               autoFocus
               value={name}
-              placeholder={clips[0].suggestedName}
+              placeholder={suggested}
               onChange={(e) => setName(e.target.value)}
             />
           </Field>
         )}
-        <Field label="Format" hint={preset?.description}>
+        <Field
+          label="Format"
+          hint={
+            preset && (
+              <>
+                {preset.description}
+                {bytes != null && bytes > 0 && <span className="text-fg-2"> About {formatBytes(bytes)} in all.</span>}
+              </>
+            )
+          }
+        >
           <Select
             aria-label="Export format"
             value={presetId}

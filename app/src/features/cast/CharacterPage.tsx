@@ -464,7 +464,6 @@ function toExportClip(
     end: clip.end,
     name,
     summary: `${m?.label ? `${m.label} · ` : ""}${tc} · ${clip.end - clip.start} frames`,
-    suggestedName: name,
   }
 }
 

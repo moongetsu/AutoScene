@@ -94,6 +94,11 @@ export const commands = {
 	 *  results as `export:changed`.
 	 */
 	exportStart: (projectId: ProjectId, req: ExportRequest) => __TAURI_INVOKE<ExportSummary>("export_start", { projectId, req }),
+	/**
+	 *  What an export of `clips` would make before it starts: the file names
+	 *  and roughly how big it gets with each preset.
+	 */
+	exportPlan: (projectId: ProjectId, clips: ClipRequest[]) => __TAURI_INVOKE<ExportPlan>("export_plan", { projectId, clips }),
 	/**  Newest first. */
 	exportsList: (projectId: ProjectId) => __TAURI_INVOKE<ExportSummary[]>("exports_list", { projectId }),
 	/**  Newest first. Live updates arrive as `job:changed` / `job:progress`. */
@@ -353,6 +358,17 @@ export type ExportItem = {
 	encoder: string | null,
 	bytes: number | null,
 	error: string | null,
+};
+
+/**  What an export would make, worked out before it starts. */
+export type ExportPlan = {
+	/**
+	 *  File names (without extension) in clip order, as the export names
+	 *  them (a name already in the destination folder gets `_2` then).
+	 */
+	names: string[],
+	/**  Roughly how big it would be with each preset. */
+	sizes: PresetSize[],
 };
 
 export type ExportPreset = {
@@ -620,6 +636,11 @@ export type Presence = {
 	trackId: number,
 	start: number,
 	end: number,
+};
+
+export type PresetSize = {
+	presetId: string,
+	bytes: number | null,
 };
 
 export type ProResProfile = "proxy" | "lt" | "standard" | "hq" | "p4444";

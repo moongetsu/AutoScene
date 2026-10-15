@@ -510,6 +510,24 @@ pub struct ExportItem {
     pub error: Option<String>,
 }
 
+/// What an export would make, worked out before it starts.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportPlan {
+    /// File names (without extension) in clip order, as the export names
+    /// them (a name already in the destination folder gets `_2` then).
+    pub names: Vec<String>,
+    /// Roughly how big it would be with each preset.
+    pub sizes: Vec<PresetSize>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PresetSize {
+    pub preset_id: String,
+    pub bytes: f64,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ExportSummary {

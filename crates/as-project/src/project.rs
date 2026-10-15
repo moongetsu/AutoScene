@@ -3,16 +3,17 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use as_api::{
-    ExportRequest, ExportStatus, ExportSummary, FrameMap, MediaItem, MediaStatus, ProjectSummary, ProxyState,
+    ClipRequest, ExportPlan, ExportRequest, ExportStatus, ExportSummary, FrameMap, MediaItem, MediaStatus, PresetSize,
+    ProjectSummary, ProxyState,
 };
-use as_core::{CancelToken, ExportId, FrameIndex, FrameRange, MediaId, ProjectId, Rational, Timecode};
+use as_core::{CancelToken, ExportId, FrameIndex, FrameRange, MediaId, ProjectId};
 use as_db::{IngestRecord, NewExportItem, ProjectDb};
-use as_export::{ClipJob, ExportPreset, export_clip};
+use as_export::{ClipJob, ExportPreset, estimate_bytes, export_clip};
 use as_media::poster::{StillSize, extract_frame_jpegs};
 use as_media::{MediaInfo, MediaResult, Source, Tools, build_frame_index, idet, probe, proxy};
 use parking_lot::Mutex;
 
-use crate::naming::safe_component;
+use crate::naming::{CLIP_TEMPLATE, NameParts, clip_timecode, is_drop_frame, render_name, safe_component};
 use crate::{ProjectError, ProjectResult};
 
 pub(crate) const PROJECT_DB: &str = "project.db";
@@ -571,6 +572,42 @@ impl Project {
         self.export(id)
     }
 
+    /// What an export of `clips` would make: the names its files get (as
+    /// [`Project::create_export`] names them, before telling them apart from
+    /// files already in the folder) and its size with each of `presets`.
+    pub fn export_plan(&self, clips: &[ClipRequest], presets: &[ExportPreset]) -> ProjectResult<ExportPlan> {
+        let title = self.title()?;
+        let mut sources: HashMap<MediaId, (MediaItem, MediaInfo, Arc<FrameIndex>)> = HashMap::new();
+        let mut used: HashSet<String> = HashSet::new();
+        let mut names = Vec::with_capacity(clips.len());
+        let mut sizes = vec![0.0; presets.len()];
+        for c in clips {
+            if let std::collections::hash_map::Entry::Vacant(e) = sources.entry(c.media_id) {
+                e.insert(self.ready_source(c.media_id)?);
+            }
+            let (m, info, index) = &sources[&c.media_id];
+            if c.start >= c.end || c.end > index.len() {
+                return Err(ProjectError::Invalid(format!(
+                    "Frames {}–{} are outside {}.",
+                    c.start, c.end, m.file_name
+                )));
+            }
+            let base = match c.name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+                Some(n) => safe_component(n, " ", 120),
+                None => default_clip_name(&title, m, index, c.start),
+            };
+            let name = unique_name(&base, |n| used.contains(&n.to_lowercase()));
+            used.insert(name.to_lowercase());
+            names.push(name);
+            let seconds = index.t(c.end) - index.t(c.start);
+            for (size, preset) in sizes.iter_mut().zip(presets) {
+                *size += estimate_bytes(preset, info, m.audio_ordinal, u64::from(c.end - c.start), seconds);
+            }
+        }
+        let sizes = presets.iter().zip(sizes).map(|(p, bytes)| PresetSize { preset_id: p.id.clone(), bytes }).collect();
+        Ok(ExportPlan { names, sizes })
+    }
+
     /// Mark an export failed before it could start (e.g. ffmpeg missing).
     pub fn fail_export(&self, id: ExportId, message: &str) -> ProjectResult<()> {
         for item in self.export(id)?.items {
@@ -678,21 +715,21 @@ fn plays_direct(info: &MediaInfo, index: &FrameIndex, audio_ordinal: Option<u32>
     proxy::playable_direct(info, index) && (audio_ordinal.is_none() || audio_ordinal == default_audio)
 }
 
-fn is_drop_frame(fps: Rational) -> bool {
-    let base = fps.to_f64().round() as i64;
-    fps.den == 1001 && (base == 30 || base == 60)
-}
-
 /// `Title_S01E03_00-12-03-05`: project, episode (or file name), source timecode.
 fn default_clip_name(title: &str, m: &MediaItem, index: &FrameIndex, start: u32) -> String {
-    let fps = index.nominal_fps;
-    let tc = Timecode::from_frame(start as u64, fps, is_drop_frame(fps)).to_string().replace([':', ';'], "-");
-    let what = if m.label.is_empty() {
+    let (tc, episode) = (clip_timecode(start, index.nominal_fps), episode_name(m));
+    let parts = NameParts { series: title, character: None, episode: &episode, index: (1, 1), tc: &tc, frame: start };
+    render_name(CLIP_TEMPLATE, &parts).expect("the built-in template is valid")
+}
+
+/// An episode as clip names show it: its label (`S01E03`), or the file's
+/// name without extension.
+pub(crate) fn episode_name(m: &MediaItem) -> String {
+    if m.label.is_empty() {
         Path::new(&m.file_name).file_stem().and_then(|s| s.to_str()).unwrap_or("clip").to_string()
     } else {
         m.label.clone()
-    };
-    safe_component(&format!("{title} {what} {tc}"), "_", 120)
+    }
 }
 
 fn unique_name(base: &str, taken: impl Fn(&str) -> bool) -> String {
@@ -704,7 +741,32 @@ fn unique_name(base: &str, taken: impl Fn(&str) -> bool) -> String {
 
 #[cfg(test)]
 mod tests {
+    use as_core::Rational;
+
     use super::*;
+
+    #[test]
+    fn an_export_plan_names_like_the_export_and_sizes_each_preset() {
+        let (_dir, project, m) = crate::analysis::tests::project_with_media(2400);
+        let clip = |start, end, name: Option<&str>| ClipRequest { media_id: m, start, end, name: name.map(Into::into) };
+        let presets = as_export::builtin_presets();
+        let plan = project
+            .export_plan(
+                &[clip(48, 96, None), clip(48, 96, None), clip(240, 480, Some("Opening: shot")), clip(0, 24, None)],
+                &presets,
+            )
+            .unwrap();
+        // The default name; the same twice gets told apart; a given name is kept, made safe.
+        assert_eq!(
+            plan.names,
+            ["Show_E01_00-00-02-00", "Show_E01_00-00-02-00_2", "Opening shot", "Show_E01_00-00-00-00"]
+        );
+        assert_eq!(plan.sizes.len(), presets.len());
+        let size = |id: &str| plan.sizes.iter().find(|s| s.preset_id == id).unwrap().bytes;
+        assert!(size("prores-hq") > size("h264-edit") && size("h264-edit") > 0.0);
+        // Out of range: refused, like the export itself would.
+        assert!(project.export_plan(&[clip(2390, 2500, None)], &presets).is_err());
+    }
 
     #[test]
     fn unique_names() {
