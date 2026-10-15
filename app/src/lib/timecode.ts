@@ -26,8 +26,23 @@ export function isDropFrameRate(fps: Fps): boolean {
 export function timecode(f: number, fps: Fps, dropFrame: boolean): string {
   const base = Math.max(1, Math.round(fpsValue(fps)))
   const df = dropFrame && isDropFrameRate(fps)
+  const n = timecodeCount(f, fps, dropFrame)
+  const hh = Math.floor(n / (base * 3600))
+  const mm = Math.floor(n / (base * 60)) % 60
+  const ss = Math.floor(n / base) % 60
+  const ff = n % base
+  const p = (v: number) => String(v).padStart(2, "0")
+  return `${p(hh)}:${p(mm)}:${p(ss)}${df ? ";" : ":"}${p(ff)}`
+}
+
+/**
+ * The count frame `f`'s timecode spells: frames at the nominal rate, which
+ * drop-frame runs ahead of `f` by the labels it skips.
+ */
+export function timecodeCount(f: number, fps: Fps, dropFrame: boolean): number {
   let n = Math.max(0, Math.floor(f))
-  if (df) {
+  if (dropFrame && isDropFrameRate(fps)) {
+    const base = Math.round(fpsValue(fps))
     const drop = base / 15
     const per10 = base * 600 - drop * 9
     const perMin = base * 60 - drop
@@ -35,12 +50,22 @@ export function timecode(f: number, fps: Fps, dropFrame: boolean): string {
     const rem = n % per10
     n += drop * 9 * tens + (rem > drop ? drop * Math.floor((rem - drop) / perMin) : 0)
   }
-  const hh = Math.floor(n / (base * 3600))
-  const mm = Math.floor(n / (base * 60)) % 60
-  const ss = Math.floor(n / base) % 60
-  const ff = n % base
-  const p = (v: number) => String(v).padStart(2, "0")
-  return `${p(hh)}:${p(mm)}:${p(ss)}${df ? ";" : ":"}${p(ff)}`
+  return n
+}
+
+/**
+ * The frame whose timecode spells count `n` (see `timecodeCount`); for a
+ * label drop-frame skips, the frame that comes instead.
+ */
+export function frameAtCount(n: number, fps: Fps, dropFrame: boolean): number {
+  if (!(dropFrame && isDropFrameRate(fps))) return n
+  const base = Math.round(fpsValue(fps))
+  const drop = base / 15
+  const minutes = Math.floor(n / (base * 60))
+  const inMinute = n % (base * 60)
+  // Labels 00 and 01 (00-03 at 59.94) don't exist in minutes not divisible by ten.
+  const skipped = minutes % 10 !== 0 && inMinute < drop ? drop - inMinute : 0
+  return n + skipped - drop * (minutes - Math.floor(minutes / 10))
 }
 
 /**
@@ -61,13 +86,5 @@ export function parseTimecode(text: string, fps: Fps, dropFrame: boolean, curren
   const [hh, mm, ss, ff] = parts
   const base = Math.max(1, Math.round(fpsValue(fps)))
   if (mm > 59 || ss > 59 || ff >= base) return null
-  let n = ((hh * 60 + mm) * 60 + ss) * base + ff
-  if (dropFrame && isDropFrameRate(fps)) {
-    const drop = base / 15
-    const minutes = hh * 60 + mm
-    // Labels 00 and 01 (00-03 at 59.94) don't exist in minutes not divisible by ten.
-    if (mm % 10 !== 0 && ss === 0 && ff < drop) n += drop - ff
-    n -= drop * (minutes - Math.floor(minutes / 10))
-  }
-  return n
+  return frameAtCount(((hh * 60 + mm) * 60 + ss) * base + ff, fps, dropFrame)
 }

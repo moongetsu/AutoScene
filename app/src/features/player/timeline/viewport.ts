@@ -30,12 +30,19 @@ export function panBy(v: View, dt: number, length: number): View {
 }
 
 /**
- * Keep time `t` in view the way a playing timeline does: when it runs off
- * either edge, turn to the page that starts just before it.
+ * Keep the playhead in view the way a playing timeline does, as it moves
+ * from `prev` to `t`: when it runs off the page, turn to the next one in the
+ * direction it runs (forwards it starts just before the playhead, backwards
+ * it ends just after it); when it jumps, centre it. A playhead the user
+ * scrolled or zoomed away from stays out of view until it comes back.
  */
-export function follow(v: View, t: number, length: number): View {
-  if (t >= v.t0 && t <= v.t0 + v.span) return v
-  return clampView({ t0: t - v.span * 0.05, span: v.span }, length, 0)
+export function follow(v: View, t: number, prev: number, length: number): View {
+  const inView = (x: number) => x >= v.t0 && x <= v.t0 + v.span
+  if (inView(t)) return v
+  if (Math.abs(t - prev) > v.span / 2) return centerOn(v, t, length)
+  if (!inView(prev)) return v
+  const lead = v.span * 0.05
+  return clampView({ t0: t < prev ? t + lead - v.span : t - lead, span: v.span }, length, 0)
 }
 
 /** Centre the view on `t` (a click in the overview). */

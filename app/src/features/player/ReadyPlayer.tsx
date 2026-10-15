@@ -11,7 +11,7 @@ import { lanesOf, useCharacterMap } from "@/lib/presence"
 import { useCast, usePresence, useSegments } from "@/lib/queries"
 import { nextShotStart, prevShotStart, shotAt } from "@/lib/segments"
 import { PLAYER_SHORTCUTS, useShortcuts } from "@/lib/shortcuts"
-import { parseTimecode, timecode } from "@/lib/timecode"
+import { frameAtCount, parseTimecode, timecode, timecodeCount } from "@/lib/timecode"
 import { NO_MARKS, useMarks } from "@/state/marks"
 import { usePlayback } from "@/state/playback"
 import { Ambilight } from "./Ambilight"
@@ -74,6 +74,10 @@ export function ReadyPlayer({
   const fps = map.fps
   const tc = useCallback((f: number) => timecode(f, fps, map.dropFrame), [fps, map.dropFrame])
   const parse = useCallback((text: string, from: number) => parseTimecode(text, fps, map.dropFrame, from), [fps, map.dropFrame])
+  const counting = useMemo(
+    () => ({ count: (f: number) => timecodeCount(f, fps, map.dropFrame), frame: (n: number) => frameAtCount(n, fps, map.dropFrame) }),
+    [fps, map.dropFrame],
+  )
   const last = clock.frames - 1
   const oneSecond = Math.max(1, Math.round(fps.num / fps.den))
 
@@ -168,7 +172,8 @@ export function ReadyPlayer({
   const kHeld = useRef(false)
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
-      if (e.key.toLowerCase() === "k") kHeld.current = true
+      // Not a chord (Ctrl/⌘+K): its key-up may never come while ⌘ is down.
+      if (e.key.toLowerCase() === "k" && !e.ctrlKey && !e.metaKey && !e.altKey) kHeld.current = true
     }
     const up = (e: KeyboardEvent) => {
       if (e.key.toLowerCase() === "k") kHeld.current = false
@@ -278,6 +283,7 @@ export function ReadyPlayer({
           <Timeline
             clock={clock}
             fps={fps.num / fps.den}
+            counting={counting}
             store={store}
             segments={shots}
             lanes={lanes}

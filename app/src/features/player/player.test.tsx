@@ -19,7 +19,7 @@ describe("J/K/L", () => {
   })
 
   it("goes back whole frames, carrying the rest", () => {
-    // 24 fps backwards at 1×: 10 ms is a quarter frame; four of them make one.
+    // 24 fps backwards at 1×: 1/96 s is a quarter frame; four of them make one.
     let carry = 0
     let frames = 0
     for (let i = 0; i < 4; i++) {
@@ -29,6 +29,35 @@ describe("J/K/L", () => {
     }
     expect(frames).toBe(1)
     expect(reverseFrames(0, 0.5, 24, -2).frames).toBe(24)
+    // After a stall (a hidden window) no more than a second's worth at once.
+    expect(reverseFrames(0, 30, 24, -2).frames).toBe(48)
+  })
+
+  it("keeps the speed it shows while seeks take several ticks", () => {
+    // 60 Hz ticks, 24 fps; each seek lands `ticks` ticks after it was asked.
+    const run = (rate: number, ticks: number) => {
+      let carry = 0
+      let back = 0
+      let busy = 0
+      for (let i = 0; i < 120; i++) {
+        if (busy > 0) busy--
+        const r = reverseFrames(carry, 1 / 60, 24, rate, busy === 0)
+        carry = r.carry
+        if (r.frames > 0) {
+          back += r.frames
+          busy = ticks
+        }
+      }
+      return back / 48 // frames in two seconds at 1×
+    }
+    // Within 5 % (what is still owed when the two seconds end).
+    for (const ticks of [1, 2, 3]) {
+      for (const rate of [-1, -2, -4]) {
+        const speed = run(rate, ticks) / -rate
+        expect(speed).toBeGreaterThan(0.95)
+        expect(speed).toBeLessThanOrEqual(1)
+      }
+    }
   })
 })
 

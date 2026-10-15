@@ -22,10 +22,20 @@ export function rateLabel(rate: number): string | null {
 
 /**
  * Frames to go back after `elapsed` seconds of reverse play at `rate` (< 0):
- * whole frames only; the rest carries over to the next tick.
+ * whole frames once the previous seek has landed (`ready`), the rest carried
+ * over to the next tick. While a seek is still on its way the frames are
+ * owed, up to a second's worth: slow seeks skip frames instead of slowing
+ * the shuttle down.
  */
-export function reverseFrames(carry: number, elapsed: number, fps: number, rate: number): { frames: number; carry: number } {
-  const exact = carry + elapsed * fps * Math.abs(rate)
+export function reverseFrames(
+  carry: number,
+  elapsed: number,
+  fps: number,
+  rate: number,
+  ready = true,
+): { frames: number; carry: number } {
+  const exact = Math.min(carry + elapsed * fps * Math.abs(rate), fps * Math.abs(rate))
+  if (!ready) return { frames: 0, carry: exact }
   const frames = Math.floor(exact)
   return { frames, carry: exact - frames }
 }

@@ -29,6 +29,9 @@ export function usePlayer(clock: FrameClock | null) {
   const [ready, setReady] = useState(false)
   const target = useRef<number | null>(null)
   const backwards = useRef<{ frame: number; carry: number } | null>(null)
+  // The latest `play()` asked of the video: a refusal of an older one (undone
+  // by K or J meanwhile) says nothing about what plays now.
+  const playRequest = useRef(0)
 
   // Track the presented frame.
   useEffect(() => {
@@ -73,10 +76,16 @@ export function usePlayer(clock: FrameClock | null) {
   useEffect(() => {
     const v = videoRef.current
     if (!v) return
-    const onPlay = () => setRate((r) => (r > 0 ? r : 1))
+    // Events arrive a moment after what caused them: one for a play or a
+    // pause already undone (J right after L, L right after K) is old news.
+    // A play from elsewhere (a media key) shows the speed the video plays at.
+    const onPlay = () => {
+      if (v.paused) return
+      setRate((r) => (r > 0 ? r : v.playbackRate))
+    }
     const onPause = () => {
       // Playing backwards is a run of seeks on a paused video.
-      if (backwards.current) return
+      if (backwards.current || !v.paused) return
       setRate(0)
       // rVFC can lag behind (throttled tabs) and doesn't fire on pause: snap
       // to the frame actually on screen so stepping continues from there.
@@ -122,10 +131,11 @@ export function usePlayer(clock: FrameClock | null) {
     const tick = (now: number) => {
       const b = backwards.current
       if (!b) return
-      const r = reverseFrames(b.carry, (now - last) / 1000, fps, rate)
+      const ready = target.current == null && !v.seeking
+      const r = reverseFrames(b.carry, (now - last) / 1000, fps, rate, ready)
       last = now
       b.carry = r.carry
-      if (r.frames > 0 && target.current == null && !v.seeking) {
+      if (r.frames > 0) {
         b.frame = Math.max(0, store.get() - r.frames)
         go(b.frame)
         if (b.frame === 0) {
@@ -136,6 +146,8 @@ export function usePlayer(clock: FrameClock | null) {
       }
       raf = requestAnimationFrame(tick)
     }
+    playRequest.current++
+    v.playbackRate = 1
     v.pause()
     raf = requestAnimationFrame(tick)
     return () => {
@@ -146,6 +158,7 @@ export function usePlayer(clock: FrameClock | null) {
 
   const stop = useCallback(() => {
     backwards.current = null
+    playRequest.current++
     setRate(0)
     const v = videoRef.current
     if (v) {
@@ -173,7 +186,11 @@ export function usePlayer(clock: FrameClock | null) {
       if (store.get() >= clock.frames - 1) go(0)
       v.playbackRate = at
       setRate(at)
-      void v.play()
+      const request = ++playRequest.current
+      // Refused (no source yet, the format can't play): it shows as stopped.
+      v.play().catch(() => {
+        if (playRequest.current === request && v.paused) setRate(0)
+      })
     },
     [clock, store, go],
   )
@@ -198,6 +215,7 @@ export function usePlayer(clock: FrameClock | null) {
       if (next === 0) stop()
       else if (next > 0) play(next)
       else {
+        playRequest.current++
         videoRef.current?.pause()
         setRate(next)
       }

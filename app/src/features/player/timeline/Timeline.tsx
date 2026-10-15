@@ -12,7 +12,7 @@ import { cn } from "@/lib/utils"
 import { type FrameStore, useFrame, useFrameSelector } from "../frame-store"
 import { SEGMENT_LABEL } from "../labels"
 import { drawSegments, drawSpans, prepare } from "./draw"
-import { ticks } from "./ticks"
+import { type Counting, ticks } from "./ticks"
 import { type View, centerOn, fit, follow, panBy, tAt, xOf, zoomAt } from "./viewport"
 
 /** Lanes shown under the shots; everyone else is listed in the details panel. */
@@ -41,6 +41,7 @@ type Axis = {
 export function Timeline({
   clock,
   fps,
+  counting,
   store,
   segments,
   lanes,
@@ -55,6 +56,8 @@ export function Timeline({
   clock: FrameClock
   /** The nominal frame rate, which the timecode counts. */
   fps: number
+  /** How frames count on the timecode (drop-frame skips labels). */
+  counting: Counting
   store: FrameStore
   segments: Segment[]
   lanes: Lane[]
@@ -102,17 +105,18 @@ export function Timeline({
 
   // The playhead stays in view: the page turns when it runs off (checked
   // on every frame without drawing anything until it does).
-  useEffect(
-    () =>
-      store.subscribe(() => {
-        const next = follow(current.current, clock.rel(store.get()), length)
-        if (next !== current.current) {
-          current.current = next
-          setView(next)
-        }
-      }),
-    [store, clock, length],
-  )
+  useEffect(() => {
+    let prev = clock.rel(store.get())
+    return store.subscribe(() => {
+      const t = clock.rel(store.get())
+      const next = follow(current.current, t, prev, length)
+      prev = t
+      if (next !== current.current) {
+        current.current = next
+        setView(next)
+      }
+    })
+  }, [store, clock, length])
 
   // Ctrl/⌘ + wheel (and a pinch) zooms where the pointer is; the wheel scrolls.
   useEffect(() => {
@@ -133,8 +137,31 @@ export function Timeline({
       const d = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY
       setView((v) => panBy(v, (d / r.width) * v.span, length))
     }
+    // macOS's WebKit reports a trackpad pinch as gesture events, not as
+    // Ctrl + wheel; `scale` grows from 1 over the whole pinch.
+    let scale = 1
+    const onGestureStart = (e: Event) => {
+      e.preventDefault()
+      scale = 1
+    }
+    const onGestureChange = (e: Event) => {
+      e.preventDefault()
+      const g = e as Event & { scale: number; clientX: number }
+      const r = track.current?.getBoundingClientRect()
+      if (!r || r.width === 0 || !(g.scale > 0)) return
+      const factor = g.scale / scale
+      scale = g.scale
+      const at = tAt(current.current, g.clientX - r.left, r.width)
+      setView((v) => zoomAt(v, factor, at, length, minSpan))
+    }
     el.addEventListener("wheel", onWheel, { passive: false })
-    return () => el.removeEventListener("wheel", onWheel)
+    el.addEventListener("gesturestart", onGestureStart)
+    el.addEventListener("gesturechange", onGestureChange)
+    return () => {
+      el.removeEventListener("wheel", onWheel)
+      el.removeEventListener("gesturestart", onGestureStart)
+      el.removeEventListener("gesturechange", onGestureChange)
+    }
   }, [length, minSpan])
 
   const zoom = useCallback(
@@ -182,7 +209,7 @@ export function Timeline({
           {zoomed ? (
             <Overview axis={axis} length={length} store={store} inFrame={inFrame} outFrame={outFrame} onView={setView} />
           ) : null}
-          <Ruler axis={axis} fps={fps} tc={tc} under={zoomed} />
+          <Ruler axis={axis} fps={fps} counting={counting} tc={tc} under={zoomed} />
         </div>
       </Row>
       <Row label="Playhead">
@@ -265,8 +292,20 @@ function HeadLine({ axis, store }: { axis: Axis; store: FrameStore }) {
 }
 
 /** Round timecodes on the axis; the overview lies over it while zoomed. */
-function Ruler({ axis, fps, tc, under }: { axis: Axis; fps: number; tc: (f: number) => string; under: boolean }) {
-  const { frames } = ticks(axis.view, axis.width, fps, axis.frameAt, axis.t)
+function Ruler({
+  axis,
+  fps,
+  counting,
+  tc,
+  under,
+}: {
+  axis: Axis
+  fps: number
+  counting: Counting
+  tc: (f: number) => string
+  under: boolean
+}) {
+  const { frames } = ticks(axis.view, axis.width, fps, axis.frameAt, axis.t, counting)
   return (
     <div className={cn("pointer-events-none absolute inset-x-0 bottom-0 h-3", under && "opacity-60")} aria-hidden>
       {frames.map((f) => (
@@ -303,9 +342,10 @@ function Overview({
   const pct = (t: number) => (t / Math.max(length, 1e-9)) * 100
   const { view } = axis
   const range = inFrame != null || outFrame != null
+  const release = () => (drag.current = null)
   return (
     <div
-      className="absolute inset-x-0 top-0 h-2.5 cursor-pointer touch-none rounded-full bg-white/[0.06]"
+      className="absolute inset-x-0 top-0 h-2.5 cursor-pointer touch-none rounded-full bg-white/[0.06] select-none"
       onPointerDown={(e) => {
         const r = e.currentTarget.getBoundingClientRect()
         const t = ((e.clientX - r.left) / r.width) * length
@@ -323,7 +363,10 @@ function Overview({
         const dt = ((e.clientX - d.x) / r.width) * length
         onView((v) => panBy({ ...v, t0: d.t0 }, dt, length))
       }}
-      onPointerUp={() => (drag.current = null)}
+      onPointerUp={release}
+      // A drag the system took over (a native drag, a touch turned scroll) ends too.
+      onPointerCancel={release}
+      onLostPointerCapture={release}
       role="scrollbar"
       aria-orientation="horizontal"
       aria-label="Part of the episode in view"
@@ -425,6 +468,8 @@ function Scrub({
         e.currentTarget.releasePointerCapture(e.pointerId)
         setDragging(false)
       }}
+      onPointerCancel={() => setDragging(false)}
+      onLostPointerCapture={() => setDragging(false)}
       onPointerLeave={() => !dragging && setHover(null)}
     >
       <div className="absolute inset-x-0 top-1/2 h-1.5 -translate-y-1/2 overflow-hidden rounded-full bg-white/10 transition-[height] duration-[var(--dur-fast)] group-hover/scrub:h-2">
@@ -460,16 +505,34 @@ function Scrub({
   )
 }
 
-/** A canvas filling its track, drawn again when `draw` (its data) or the axis change. */
+/**
+ * A canvas filling its track, drawn again when `draw` (its data), the axis
+ * or the screen's pixel density (another monitor, the webview zoomed) change.
+ */
 function TrackCanvas({ axis, height, draw }: { axis: Axis; height: number; draw: (ctx: CanvasRenderingContext2D, width: number) => void }) {
   const ref = useRef<HTMLCanvasElement>(null)
+  const dpr = usePixelRatio()
   useLayoutEffect(() => {
     const c = ref.current
     if (!c || axis.width === 0) return
     const ctx = prepare(c, axis.width, height)
     if (ctx) draw(ctx, axis.width)
-  }, [axis, height, draw])
+  }, [axis, height, draw, dpr])
   return <canvas ref={ref} aria-hidden className="absolute inset-0 size-full" />
+}
+
+/** `devicePixelRatio`, as it changes. */
+function usePixelRatio(): number {
+  const [dpr, setDpr] = useState(() => window.devicePixelRatio || 1)
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return
+    // Matches until the ratio moves away from this one.
+    const q = window.matchMedia(`(resolution: ${dpr}dppx)`)
+    const onChange = () => setDpr(window.devicePixelRatio || 1)
+    q.addEventListener("change", onChange)
+    return () => q.removeEventListener("change", onChange)
+  }, [dpr])
+  return dpr
 }
 
 /**
@@ -496,6 +559,9 @@ function Shots({
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const [hover, setHover] = useState<{ x: number; i: number } | null>(null)
+  // The shot a click was on: the page may turn under the pointer before the
+  // second click of a double-click (going to a shot that starts off view).
+  const clicked = useRef(-1)
   const numbers = useMemo(() => shotNumbers(segments), [segments])
   const current = useFrameSelector(
     store,
@@ -523,14 +589,15 @@ function Shots({
       onPointerMove={(e) => setHover(indexAt(e.clientX))}
       onPointerLeave={() => setHover(null)}
       onClick={(e) => {
-        const { i } = indexAt(e.clientX)
+        const i = e.detail > 1 && clicked.current >= 0 ? clicked.current : indexAt(e.clientX).i
+        clicked.current = i
         if (i < 0) return
         onScrub()
         onSeek(segments[i].start)
       }}
       onDoubleClick={(e) => {
-        const { i } = indexAt(e.clientX)
-        if (i >= 0 && segments[i].kind === "shot") onMarkShot(segments[i])
+        const i = clicked.current >= 0 ? clicked.current : indexAt(e.clientX).i
+        if (segments[i]?.kind === "shot") onMarkShot(segments[i])
       }}
     >
       <TrackCanvas axis={axis} height={20} draw={draw} />
