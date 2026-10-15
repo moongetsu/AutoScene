@@ -75,10 +75,16 @@ pub fn queue_ingest(app: &AppHandle, project: &Arc<Project>, media_id: MediaId) 
     state.jobs.submit(spec, move |ctx| {
         let state = app2.state::<AppState>();
         let tools = state.tools().map_err(|e| JobError::Failed(e.message))?;
-        let language = state.library.audio_language().unwrap_or_default();
+        let language = state.library.audio_language().unwrap_or_else(|e| {
+            log::warn!("preferred audio language: {}", e.detail());
+            String::new()
+        });
         let result = project.ingest(&tools, media_id, &language, &ctx.cancel, &|stage, p| ctx.progress(stage, p));
-        if matches!(result, Err(ProjectError::Cancelled)) && !state.jobs.is_shutting_down() {
-            let _ = project.set_media_failed(media_id, "Indexing was cancelled.");
+        if matches!(result, Err(ProjectError::Cancelled))
+            && !state.jobs.is_shutting_down()
+            && let Err(e) = project.set_media_failed(media_id, "Indexing was cancelled.")
+        {
+            log::warn!("marking a cancelled ingest: {}", e.detail());
         }
         media_changed(&app2, &project, Some(media_id));
         library_changed(&app2, &project);
@@ -621,7 +627,9 @@ pub fn queue_export(app: &AppHandle, project: &Arc<Project>, export_id: ExportId
         let tools = match state.tools() {
             Ok(t) => t,
             Err(e) => {
-                let _ = project.fail_export(export_id, &e.message);
+                if let Err(fail) = project.fail_export(export_id, &e.message) {
+                    log::warn!("marking export {export_id} failed: {}", fail.detail());
+                }
                 notify();
                 return Err(JobError::Failed(e.message));
             }

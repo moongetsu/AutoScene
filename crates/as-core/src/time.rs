@@ -221,7 +221,12 @@ impl FrameIndex {
         let n = self.len();
         assert!(f <= n, "frame {f} out of range (len {n})");
         if f == n {
-            return self.pts(n - 1) + self.last_dur;
+            // The end of the last frame; an empty index ends where it starts.
+            return match (n.checked_sub(1), &self.pts) {
+                (Some(last), _) => self.pts(last) + self.last_dur,
+                (None, PtsStore::Cfr { first, .. }) => *first,
+                (None, PtsStore::Explicit(_)) => 0,
+            };
         }
         match &self.pts {
             PtsStore::Cfr { first, step, .. } => first + f as i64 * step,
@@ -338,23 +343,51 @@ impl FrameIndex {
         for v in &mut h {
             *v = r.i64().ok_or_else(|| bad("header"))?;
         }
-        let tb = Rational::new(h[0], h[1]);
-        let nominal_fps = Rational::new(h[2], h[3]);
+        // Stored data can hold anything (a damaged file, a bad disk): every
+        // field is checked here, so the index keeps the invariants the rest
+        // of the app relies on (positive rates, at least one frame, strictly
+        // increasing timestamps) instead of panicking later.
+        let positive = |num: i64, den: i64, what: &str| {
+            if num > 0 && den > 0 { Ok(Rational::new(num, den)) } else { Err(bad(what)) }
+        };
+        let tb = positive(h[0], h[1], "time base")?;
+        let nominal_fps = positive(h[2], h[3], "frame rate")?;
         let last_dur = h[4];
+        if last_dur <= 0 {
+            return Err(bad("last frame duration"));
+        }
         let pts = match r.take(1).ok_or_else(|| bad("kind"))?[0] {
             0 => {
                 let first = r.i64().ok_or_else(|| bad("cfr"))?;
                 let step = r.i64().ok_or_else(|| bad("cfr"))?;
                 let n = r.u32().ok_or_else(|| bad("cfr"))?;
+                if n == 0 {
+                    return Err(CoreError::EmptyIndex);
+                }
+                if step <= 0 || step.checked_mul(i64::from(n)).and_then(|span| first.checked_add(span)).is_none() {
+                    return Err(bad("cfr step"));
+                }
                 PtsStore::Cfr { first, step, n }
             }
             1 => {
                 let n = r.u32().ok_or_else(|| bad("len"))? as usize;
+                if n == 0 {
+                    return Err(CoreError::EmptyIndex);
+                }
+                // A damaged length must not reserve gigabytes: the first
+                // timestamp takes 8 bytes, every later one 4.
+                if r.b.len() - r.i < 8 + (n - 1) * 4 {
+                    return Err(bad("len"));
+                }
                 let mut v = Vec::with_capacity(n);
                 v.push(r.i64().ok_or_else(|| bad("first"))?);
                 for _ in 1..n {
                     let d = r.u32().ok_or_else(|| bad("delta"))? as i64;
-                    v.push(v[v.len() - 1] + d);
+                    let prev = v[v.len() - 1];
+                    match prev.checked_add(d) {
+                        Some(next) if d > 0 => v.push(next),
+                        _ => return Err(CoreError::NonMonotonic(v.len())),
+                    }
                 }
                 PtsStore::Explicit(v)
             }
@@ -555,6 +588,53 @@ mod tests {
         let idx = FrameIndex::cfr(TB, FPS, 0, 64_800);
         assert_eq!(FrameIndex::from_bytes(&idx.to_bytes()).unwrap(), idx);
         assert!(idx.to_bytes().len() < 80);
+    }
+
+    #[test]
+    fn damaged_blobs_are_errors_not_panics() {
+        // Raw layouts (before zstd): "ASFI", tb num/den, fps num/den, last
+        // duration (5 × i64), the kind byte, then per kind
+        //   explicit: n (u32) @45, first (i64) @49, deltas (u32) from @57;
+        //   cfr:      first (i64) @45, step (i64) @53, n (u32) @61.
+        let raw = |idx: &FrameIndex| zstd::decode_all(idx.to_bytes().as_slice()).unwrap();
+        let explicit = raw(&FrameIndex::from_pts(
+            Rational::new(1, 1000),
+            Rational::new(24, 1),
+            vec![0, 41, 83, 125, 167],
+        )
+        .unwrap());
+        let cfr = raw(&FrameIndex::cfr(TB, FPS, 0, 100));
+        assert_eq!((explicit[44], cfr[44]), (1, 0), "layouts as described");
+        let patched = |base: &[u8], at: usize, bytes: &[u8]| {
+            let mut b = base.to_vec();
+            b[at..at + bytes.len()].copy_from_slice(bytes);
+            zstd::encode_all(b.as_slice(), 1).unwrap()
+        };
+        let cases: Vec<(&str, Vec<u8>)> = vec![
+            ("zero time base", patched(&explicit, 12, &0i64.to_le_bytes())),
+            ("negative frame rate", patched(&explicit, 20, &(-24i64).to_le_bytes())),
+            ("zero frame rate", patched(&explicit, 28, &0i64.to_le_bytes())),
+            ("no last frame duration", patched(&explicit, 36, &0i64.to_le_bytes())),
+            ("no frames", patched(&explicit, 45, &0u32.to_le_bytes())),
+            ("a length that would reserve gigabytes", patched(&explicit, 45, &u32::MAX.to_le_bytes())),
+            ("time standing still", patched(&explicit, 57, &0u32.to_le_bytes())),
+            ("constant rate without frames", patched(&cfr, 61, &0u32.to_le_bytes())),
+            ("constant rate standing still", patched(&cfr, 53, &0i64.to_le_bytes())),
+            ("constant rate past the end of time", patched(&cfr, 45, &(i64::MAX - 10).to_le_bytes())),
+            ("cut short", zstd::encode_all(&explicit[..explicit.len() - 2], 1).unwrap()),
+            ("not an index at all", b"hello".to_vec()),
+        ];
+        for (what, blob) in cases {
+            assert!(FrameIndex::from_bytes(&blob).is_err(), "{what}");
+        }
+        // Untouched, both load.
+        assert_eq!(FrameIndex::from_bytes(&zstd::encode_all(explicit.as_slice(), 1).unwrap()).unwrap().len(), 5);
+        assert_eq!(FrameIndex::from_bytes(&zstd::encode_all(cfr.as_slice(), 1).unwrap()).unwrap().len(), 100);
+    }
+
+    #[test]
+    fn an_empty_index_ends_where_it_starts() {
+        assert_eq!(FrameIndex::cfr(TB, FPS, 7, 0).pts(0), 7);
     }
 
     #[test]

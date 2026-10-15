@@ -98,11 +98,16 @@ pub fn serve(cfg: Config, input: impl BufRead + Send + 'static, output: impl Wri
             Err(false) => break,
         };
         let id = job.id().expect("only jobs are queued");
-        let result = match job {
+        let run = guarded(|| match job {
             Request::Shots(j) => run_shots(&tools, &rt, &mut models, *j, &cancel, &out),
             Request::Faces(j) => run_faces(&tools, &rt, &mut models, *j, &cancel, &out),
             Request::Cancel { .. } | Request::Shutdown => Ok(()),
-        };
+        });
+        let result = run.unwrap_or_else(|panic| {
+            // A model may have been left mid-batch: the next job loads fresh ones.
+            models.unload();
+            Err(AnalysisError::Internal(format!("panicked: {panic}")))
+        });
         let reply = match result {
             Ok(()) => Reply::Done { id },
             Err(e) => {
@@ -119,6 +124,20 @@ pub fn serve(cfg: Config, input: impl BufRead + Send + 'static, output: impl Wri
     // reader thread ends with stdin.
     drop(reader);
     0
+}
+
+/// Run one job; what it panicked with, if it did. A bug in one job's pre- or
+/// post-processing must not take the engine down: the app would restart it
+/// and run the same job into the same panic three times, and the person would
+/// only see "the engine stopped". The job fails with its own error instead.
+fn guarded(job: impl FnOnce() -> Result<(), AnalysisError>) -> Result<Result<(), AnalysisError>, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)).map_err(|panic| {
+        panic
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_string())
+            .or_else(|| panic.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "unknown panic".into())
+    })
 }
 
 fn read_requests(
@@ -176,6 +195,10 @@ struct Models {
 }
 
 impl Models {
+    fn unload(&mut self) {
+        (self.transnet, self.scrfd, self.arcface) = (None, None, None);
+    }
+
     fn path(&self, id: &str) -> Result<PathBuf, AnalysisError> {
         self.store
             .installed(id)
@@ -292,4 +315,18 @@ fn run_faces(
     let secs = started.elapsed().as_secs_f64();
     tracing::info!(id, frames, tracks = found, secs, fps = frames as f64 / secs.max(1e-3), "faces found");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_job_that_panics_fails_with_its_message() {
+        assert_eq!(guarded(|| panic!("index out of bounds")).unwrap_err(), "index out of bounds");
+        let n = 3;
+        assert_eq!(guarded(|| panic!("frame {n} is missing")).unwrap_err(), "frame 3 is missing");
+        assert!(guarded(|| Ok(())).unwrap().is_ok());
+        assert!(guarded(|| Err(AnalysisError::Internal("no".into()))).unwrap().is_err());
+    }
 }
