@@ -1,4 +1,4 @@
-//! In-app updates for macOS and Windows.
+//! In-app updates for Windows, macOS and Linux (AppImage, .deb, .rpm).
 //!
 //! Wraps `tauri-plugin-updater` in three commands the webview drives:
 //! `update_check`, `update_install`, `update_relaunch`. Keeping the logic in

@@ -1,10 +1,10 @@
 name: Release
 
-# A pushed tag `vX.Y.Z` builds the installers on Windows, macOS (Apple
-# Silicon) and Linux and publishes them as one GitHub release, with the
-# `latest.json` the in-app updater reads (`vX.Y.Z-…` tags: a pre-release the
-# updater doesn't offer). A pull request that changes how the app is
-# packaged, or a manual run, builds everything without publishing.
+# A pushed tag `vX.Y.Z` (or `vX.Y.Z-BETA`) builds the installers on Windows,
+# macOS (Apple Silicon) and Linux and publishes them as the latest GitHub
+# release, with the `latest.json` the in-app updater reads: every tag is
+# what people download and update to. A pull request that changes how the
+# app is packaged, or a manual run, builds everything without publishing.
 on:
   push:
     tags: ["v*"]
@@ -160,8 +160,6 @@ jobs:
           if gh release view "$tag" >/dev/null 2>&1; then
             # A run again after a publish that broke off: replace the files.
             gh release upload "$tag" out/* --clobber
-          elif [[ "$tag" == *-* ]]; then
-            gh release create "$tag" out/* --verify-tag --prerelease --title "AutoScene ${tag#v}" --notes-file "$notes"
           else
             gh release create "$tag" out/* --verify-tag --latest --title "AutoScene ${tag#v}" --notes-file "$notes"
           fi
