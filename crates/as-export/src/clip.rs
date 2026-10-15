@@ -19,7 +19,7 @@
 use std::path::{Path, PathBuf};
 
 use as_core::{CancelToken, FrameIndex, FrameRange, Rational, Timecode};
-use as_media::filters::display_chain;
+use as_media::filters::{deinterlace, picture_chain};
 use as_media::{Caps, CodecFamily, HdrKind, MediaInfo, Source, Tools, Vendor, run_ffmpeg};
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -216,8 +216,12 @@ pub fn export_clip(
     let tonemap = hdr_in && (preset.hdr == HdrMode::ToneMap || !preset.video.supports_hdr());
 
     let (trim_start, trim_end) = index.trim_us(*range);
-    let mut vchain = vec![format!("trim=start={trim_start}us:end={trim_end}us"), "setpts=PTS-STARTPTS".to_string()];
-    vchain.extend(display_chain(info, preset.max_height, tonemap));
+    // Deinterlace before the trim: the clip's first and last frames are made
+    // from the fields around them, like every other frame (a one-frame clip
+    // would otherwise come out as two fields woven together).
+    let mut vchain: Vec<String> = deinterlace(info).into_iter().collect();
+    vchain.extend([format!("trim=start={trim_start}us:end={trim_end}us"), "setpts=PTS-STARTPTS".to_string()]);
+    vchain.extend(picture_chain(info, preset.max_height, tonemap));
     vchain.push(format!("format={}", enc.pix_fmt));
     let mut graph = format!("[0:{}]{}[v]", info.video.index, vchain.join(","));
 

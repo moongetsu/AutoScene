@@ -399,6 +399,54 @@ fn interlaced_sources_are_deinterlaced() {
     }
 }
 
+/// However a clip of an interlaced source is cut, its frames look the same:
+/// the first and last frame are deinterlaced from the fields around them,
+/// like the frames inside a longer clip, and a one-frame clip isn't two
+/// fields woven together (combed: neighbouring rows differ more than rows
+/// two apart, from the same field).
+#[test]
+fn interlaced_clip_edges_look_like_the_frames_inside_a_clip() {
+    let Some((tools, _)) = setup() else { return };
+    let work = tempfile::tempdir().unwrap();
+    // Every frame of a 640×360 clip as grey.
+    let luma = |file: &Path| -> Vec<Vec<u8>> {
+        let out = tools
+            .ffmpeg()
+            .args(["-v", "error", "-i"])
+            .arg(file)
+            .args(["-map", "0:v:0", "-fps_mode", "passthrough", "-vf", "format=gray", "-f", "rawvideo", "-"])
+            .output()
+            .unwrap();
+        out.stdout.as_chunks::<{ 640 * 360 }>().0.iter().map(|f| f.to_vec()).collect()
+    };
+    let rows = |g: &[u8], gap: usize| -> u64 {
+        (0..358)
+            .flat_map(|y| (0..640).map(move |x| (y, x)))
+            .map(|(y, x)| g[y * 640 + x].abs_diff(g[(y + gap) * 640 + x]) as u64)
+            .sum()
+    };
+    let comb = |g: &[u8]| rows(g, 1) as f64 / rows(g, 2).max(1) as f64;
+    let diff = |a: &[u8], b: &[u8]| a.iter().zip(b).map(|(&x, &y)| x.abs_diff(y) as f64).sum::<f64>() / a.len() as f64;
+
+    let prores = preset("prores-hq");
+    for file in ["interlaced_h264.ts", "interlaced_xvid.avi"] {
+        let fx = load(&tools, file, work.path());
+        let long = FrameRange::new(240, 270);
+        let inside = luma(&check(&tools, &fx, long, &prores, work.path()));
+        assert_eq!(inside.len(), 30);
+        for range in [FrameRange::new(250, 258), FrameRange::new(255, 256)] {
+            let clip = luma(&check(&tools, &fx, range, &prores, work.path()));
+            for (i, f) in [(0, range.start), (clip.len() - 1, range.end - 1)] {
+                let (got, want) = (&clip[i], &inside[(f - long.start) as usize]);
+                let c = comb(got);
+                assert!(c < 0.85, "{file} {range:?}: frame {f} combed ({c:.2})");
+                let d = diff(got, want);
+                assert!(d < 1.0, "{file} {range:?}: frame {f} differs from the same frame in a longer clip ({d:.2})");
+            }
+        }
+    }
+}
+
 /// A lost audio frame (64 ms of nothing in the middle of the stream) must
 /// not pull the rest of the sound forward — in exports and in previews.
 #[test]
