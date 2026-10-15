@@ -3,6 +3,7 @@ import { Outlet } from "@tanstack/react-router"
 import { NewProjectDialog } from "@/features/library/NewProjectDialog"
 import { useGlobalBindings } from "@/lib/actions"
 import { startEventBridge } from "@/lib/events"
+import { useLayerSafetyNet } from "@/lib/layers"
 import { isTauri, isWindows } from "@/lib/platform"
 import { startUpdateSchedule } from "@/state/updates"
 import { useUi } from "@/state/ui"
@@ -21,6 +22,7 @@ import { WindowTitle } from "./WindowTitle"
  */
 export function AppShell() {
   useGlobalBindings()
+  useLayerSafetyNet()
   useEffect(() => startUpdateSchedule(), [])
   useEffect(() => startEventBridge(), [])
   const railHidden = useUi((s) => s.sidebarCollapsed)
