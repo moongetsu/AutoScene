@@ -1,9 +1,11 @@
 import type * as React from "react"
 import { DropdownMenu as M } from "radix-ui"
+import { Check } from "@/components/icons"
 import { cn } from "@/lib/utils"
 
 export const DropdownMenu = M.Root
 export const DropdownMenuTrigger = M.Trigger
+export const DropdownMenuRadioGroup = M.RadioGroup
 
 export function DropdownMenuContent({
   className,
@@ -26,6 +28,12 @@ export function DropdownMenuContent({
   )
 }
 
+const item = cn(
+  "flex h-9 cursor-default items-center gap-3 rounded-lg px-3 text-md text-fg-2 outline-none select-none",
+  "data-[highlighted]:bg-active data-[highlighted]:text-fg-1 data-[disabled]:opacity-40",
+  "[&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-fg-3 data-[highlighted]:[&_svg]:text-fg-2",
+)
+
 export function DropdownMenuItem({
   className,
   destructive,
@@ -34,14 +42,51 @@ export function DropdownMenuItem({
   return (
     <M.Item
       className={cn(
-        "flex h-9 cursor-default items-center gap-3 rounded-lg px-3 text-md text-fg-2 outline-none select-none",
-        "data-[highlighted]:bg-active data-[highlighted]:text-fg-1 data-[disabled]:opacity-40",
-        "[&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-fg-3 data-[highlighted]:[&_svg]:text-fg-2",
+        item,
         destructive && "text-danger data-[highlighted]:bg-danger-subtle data-[highlighted]:text-danger [&_svg]:text-danger",
         className,
       )}
       {...props}
     />
+  )
+}
+
+/** A choice to tick among several. The menu stays open: one usually ticks more than one. */
+export function DropdownMenuCheckboxItem({
+  className,
+  children,
+  onSelect,
+  ...props
+}: React.ComponentProps<typeof M.CheckboxItem>) {
+  return (
+    <M.CheckboxItem
+      className={cn(item, "relative pl-9 data-[state=checked]:text-fg-1 data-[state=checked]:[&_svg]:text-accent", className)}
+      onSelect={(e) => {
+        e.preventDefault()
+        onSelect?.(e)
+      }}
+      {...props}
+    >
+      <M.ItemIndicator className="absolute left-3 flex items-center">
+        <Check weight="bold" />
+      </M.ItemIndicator>
+      {children}
+    </M.CheckboxItem>
+  )
+}
+
+/** One choice of a `DropdownMenuRadioGroup`. */
+export function DropdownMenuRadioItem({ className, children, ...props }: React.ComponentProps<typeof M.RadioItem>) {
+  return (
+    <M.RadioItem
+      className={cn(item, "relative pl-9 data-[state=checked]:text-fg-1 data-[state=checked]:[&_svg]:text-accent", className)}
+      {...props}
+    >
+      <M.ItemIndicator className="absolute left-3 flex items-center">
+        <Check weight="bold" />
+      </M.ItemIndicator>
+      {children}
+    </M.RadioItem>
   )
 }
 

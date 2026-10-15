@@ -4,7 +4,6 @@ import {
   ArrowLeft,
   ArrowsMerge,
   Check,
-  CircleNotch,
   DotsThree,
   Eye,
   EyeSlash,
@@ -18,12 +17,10 @@ import {
   Users,
   X,
 } from "@/components/icons"
-import { toast } from "sonner"
 import type { CastEdit, Character, CharacterShot, FaceTrackItem, MediaItem } from "@/bindings"
 import { Artwork } from "@/components/ui/artwork"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Dialog, DialogContent } from "@/components/ui/dialog"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -39,19 +36,17 @@ import { Page } from "@/components/ui/page"
 import { Segmented } from "@/components/ui/segmented"
 import { TopBar } from "@/components/ui/topbar"
 import { VirtualGrid } from "@/components/ui/virtual-grid"
-import { ExportDialog, type ExportClip } from "@/features/export/ExportDialog"
 import { ProjectLoadError } from "@/features/project/ProjectLoadError"
 import { ShotCard } from "@/features/shots/ShotCard"
 import { formatShotLength } from "@/features/shots/shots"
 import { useAmbient } from "@/lib/ambient"
-import { commands, errorMessage } from "@/lib/ipc"
 import { assetUrl } from "@/lib/media"
-import { firstFailure, useCast, useCastTracks, useCharacterShots, useMediaList, useProject } from "@/lib/queries"
+import { firstFailure, useCast, useCastTracks, useCharacterShots, useMediaList } from "@/lib/queries"
 import { FACES_SHORTCUTS, useShortcuts } from "@/lib/shortcuts"
-import { timecode } from "@/lib/timecode"
 import { cn } from "@/lib/utils"
 import { castEdit, formatScreenTime, plural } from "./cast"
 import { FaceGrid } from "./FaceGrid"
+import { PickCharacter } from "./PickCharacter"
 
 const NO_TRACKS: FaceTrackItem[] = []
 const NO_SHOTS: CharacterShot[] = []
@@ -328,26 +323,8 @@ function Header({
   onMerge: () => void
 }) {
   const [editing, setEditing] = useState(false)
-  const [exportClips, setExportClips] = useState<ExportClip[] | null>(null)
-  const [loading, setLoading] = useState(false)
-  const { data: project } = useProject(pid)
-  const { data: media } = useMediaList(pid)
   // The backdrop is blurred: the small face does, and stays put when the portrait arrives.
   const ambient = useAmbient(c?.coverSmall)
-
-  const startExport = async () => {
-    if (!c) return
-    setLoading(true)
-    try {
-      const clips = await commands.characterClips(pid, c.id)
-      const byId = new Map((media ?? []).map((m) => [m.id, m]))
-      setExportClips(clips.map((clip) => toExportClip(clip, byId.get(clip.mediaId), project?.title ?? "", c.label)))
-    } catch (e) {
-      toast.error("Couldn't list the shots", { description: errorMessage(e) })
-    } finally {
-      setLoading(false)
-    }
-  }
 
   return (
     <Hero path={c?.coverSmall} ambient={ambient} blur className="min-h-[clamp(320px,44vh,460px)]">
@@ -401,9 +378,17 @@ function Header({
         </div>
         {c && (
           <div className="flex shrink-0 items-center gap-2.5 pb-1">
-            <Button size="lg" variant="primary" disabled={loading || c.shots === 0} onClick={() => void startExport()}>
-              {loading ? <CircleNotch className="animate-spin" /> : <Package weight="bold" />} Export {plural(c.shots, "shot")}
-            </Button>
+            {c.shots > 0 ? (
+              <Button size="lg" variant="primary" asChild>
+                <Link to="/p/$pid/cast/$cid/pack" params={{ pid, cid: c.id }}>
+                  <Package weight="bold" /> Build a scenepack
+                </Link>
+              </Button>
+            ) : (
+              <Button size="lg" variant="primary" disabled>
+                <Package weight="bold" /> Build a scenepack
+              </Button>
+            )}
             <Button size="lg" variant="glass" onClick={onMerge}>
               <ArrowsMerge /> Same person as…
             </Button>
@@ -431,40 +416,8 @@ function Header({
           </div>
         )}
       </div>
-      {exportClips && (
-        <ExportDialog
-          projectId={pid}
-          clips={exportClips}
-          open={exportClips.length > 0}
-          onOpenChange={(o) => !o && setExportClips(null)}
-        />
-      )}
     </Hero>
   )
-}
-
-/** `Show_Character_S01E03_00-12-03-05`, the clip's file name in a character pack. */
-function toExportClip(
-  clip: { mediaId: string; start: number; end: number },
-  m: MediaItem | undefined,
-  title: string,
-  who: string,
-): ExportClip {
-  const tc = m?.fps ? timecode(clip.start, m.fps, false) : String(clip.start)
-  const what = m ? m.label || m.fileName.replace(/\.[^.]+$/, "") : ""
-  const name = [title, who, what, tc.replace(/[:;]/g, "-")]
-    .filter(Boolean)
-    .join(" ")
-    .replace(/[<>:"/\\|?*]+/g, " ")
-    .trim()
-    .replace(/\s+/g, "_")
-  return {
-    mediaId: clip.mediaId,
-    start: clip.start,
-    end: clip.end,
-    name,
-    summary: `${m?.label ? `${m.label} · ` : ""}${tc} · ${clip.end - clip.start} frames`,
-  }
 }
 
 function NameField({ character: c, pid, onDone }: { character: Character; pid: string; onDone: () => void }) {
@@ -567,146 +520,5 @@ function Maybe({
         </button>
       )}
     </section>
-  )
-}
-
-type Pick = { kind: "existing"; id: string } | { kind: "new"; name: string }
-
-/** Choose a character (or start a new one), optionally confirming the choice. */
-export function PickCharacter({
-  pid,
-  open,
-  onOpenChange,
-  title,
-  description,
-  exclude,
-  allowNew,
-  confirm,
-  onPick,
-}: {
-  pid: string
-  open: boolean
-  onOpenChange: (open: boolean) => void
-  title: string
-  description?: string
-  exclude?: string
-  allowNew?: boolean
-  /** Ask before an existing character is taken (for what can't be undone). */
-  confirm?: (target: Character) => { question: string; detail: string; action: string }
-  onPick: (p: Pick) => void
-}) {
-  const { data: cast } = useCast(pid)
-  const [query, setQuery] = useState("")
-  // The row arrows moved to (an index into `options`); null: none yet.
-  const [active, setActive] = useState<number | null>(null)
-  const [pending, setPending] = useState<Character | null>(null)
-  const q = query.trim().toLowerCase()
-  const options = (cast?.characters ?? []).filter((c) => c.id !== exclude && (!q || c.label.toLowerCase().includes(q)))
-  // Enter takes the row the arrows chose, else an exact name — never just
-  // the first partial match (typing a new name must not pick an old one).
-  const exact = options.findIndex((c) => c.label.toLowerCase() === q)
-  const selected = active ?? (exact >= 0 ? exact : null)
-  const reset = () => {
-    setQuery("")
-    setActive(null)
-    setPending(null)
-  }
-  const choose = (c: Character) => (confirm ? setPending(c) : onPick({ kind: "existing", id: c.id }))
-  const asked = pending && confirm?.(pending)
-  return (
-    <Dialog open={open} onOpenChange={(o) => (onOpenChange(o), reset())}>
-      <DialogContent title={title} description={description} className="w-[min(440px,calc(100vw-32px))]">
-        {pending && asked ? (
-          <div className="flex flex-col gap-4">
-            <div className="flex items-center gap-3">
-              <span className="size-14 shrink-0 overflow-hidden rounded-full bg-inset picture-edge">
-                {pending.coverSmall && <img src={assetUrl(pending.coverSmall)} alt="" className="size-full object-cover" />}
-              </span>
-              <div>
-                <p className="text-md font-medium text-fg-1">{asked.question}</p>
-                <p className="mt-1 text-sm text-fg-3">{asked.detail}</p>
-              </div>
-            </div>
-            <div className="flex justify-end gap-2">
-              <Button variant="ghost" onClick={() => setPending(null)}>
-                Back
-              </Button>
-              <Button variant="primary" autoFocus onClick={() => onPick({ kind: "existing", id: pending.id })}>
-                {asked.action}
-              </Button>
-            </div>
-          </div>
-        ) : (
-          <>
-            <Input
-              autoFocus
-              placeholder={allowNew ? "Search, or type a new name" : "Search"}
-              value={query}
-              role="combobox"
-              aria-expanded
-              aria-controls="pick-character-list"
-              aria-activedescendant={selected != null && options[selected] ? `pick-${options[selected].id}` : undefined}
-              onChange={(e) => {
-                setQuery(e.target.value)
-                setActive(null)
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-                  e.preventDefault()
-                  if (options.length === 0) return
-                  const from = selected ?? (e.key === "ArrowDown" ? -1 : options.length)
-                  setActive(Math.min(options.length - 1, Math.max(0, from + (e.key === "ArrowDown" ? 1 : -1))))
-                } else if (e.key === "Enter") {
-                  e.preventDefault()
-                  if (selected != null && options[selected]) choose(options[selected])
-                  else if (allowNew && q) onPick({ kind: "new", name: query.trim() })
-                }
-              }}
-            />
-            <div id="pick-character-list" role="listbox" className="-mx-2 mt-3 max-h-[360px] overflow-y-auto px-1">
-              {allowNew && (
-                <button
-                  onClick={() => onPick({ kind: "new", name: query.trim() })}
-                  className={cn(
-                    "flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left text-md text-fg-1 hover:bg-hover",
-                    selected == null && q && "bg-hover",
-                  )}
-                >
-                  <span className="flex size-10 items-center justify-center rounded-full border border-dashed border-white/25 text-fg-3">
-                    <UserPlus className="size-4" />
-                  </span>
-                  {query.trim() ? <>New character “{query.trim()}”</> : "New character"}
-                </button>
-              )}
-              {options.map((c, i) => (
-                <button
-                  key={c.id}
-                  id={`pick-${c.id}`}
-                  role="option"
-                  aria-selected={i === selected}
-                  onClick={() => choose(c)}
-                  onMouseMove={() => active !== i && setActive(i)}
-                  className={cn(
-                    "flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left hover:bg-hover",
-                    i === selected && "bg-active",
-                  )}
-                >
-                  <span className="size-10 shrink-0 overflow-hidden rounded-full bg-inset picture-edge">
-                    {c.coverSmall && <img src={assetUrl(c.coverSmall)} alt="" className="size-full object-cover" />}
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className={cn("block truncate text-md font-medium", c.name ? "text-fg-1" : "text-fg-2")}>{c.label}</span>
-                    <span className="block text-xs text-fg-3">
-                      {formatScreenTime(c.screenSec ?? 0)} · {plural(c.shots, "shot")}
-                    </span>
-                  </span>
-                </button>
-              ))}
-              {!allowNew && options.length === 0 && <p className="px-3 py-4 text-md text-fg-3">Nobody matches.</p>}
-            </div>
-          </>
-        )}
-      </DialogContent>
-    </Dialog>
   )
 }

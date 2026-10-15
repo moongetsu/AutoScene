@@ -48,8 +48,10 @@ export function VirtualGrid<T>({
     measure()
     const ro = new ResizeObserver(measure)
     ro.observe(el)
-    // Content above the grid changing height moves it without resizing it.
-    if (scroller.firstElementChild) ro.observe(scroller.firstElementChild)
+    // Content above the grid changing height (a section that loads late, a
+    // header that wraps) moves it without resizing it: the page's content
+    // grows with it.
+    for (const child of scroller.children) ro.observe(child)
     return () => ro.disconnect()
   }, [scroller])
 

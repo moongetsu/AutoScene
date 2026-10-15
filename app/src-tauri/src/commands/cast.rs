@@ -1,7 +1,7 @@
 //! The cast: characters found across a project's media, their face tracks,
 //! and the user's decisions about them.
 
-use as_api::{Cast, CastEdit, CharacterShot, ClipRequest, FaceTrackItem, Presence, TrackFilter};
+use as_api::{Cast, CastEdit, CharacterShot, FaceTrackItem, Presence, TrackFilter};
 use as_core::{CancelToken, CharacterId, MediaId, ProjectId};
 use tauri::{AppHandle, State};
 
@@ -112,16 +112,4 @@ pub async fn character_shots(
     .await?;
     allow_asset_tree(&app, &faces);
     Ok(shots)
-}
-
-/// Every shot a character is seen in, as clips ready to export.
-#[tauri::command]
-#[specta::specta]
-pub async fn character_clips(
-    state: State<'_, AppState>,
-    project_id: ProjectId,
-    character_id: CharacterId,
-) -> AppResult<Vec<ClipRequest>> {
-    let lib = state.library.clone();
-    blocking(move || Ok(lib.project(project_id)?.character_clips(character_id)?)).await
 }

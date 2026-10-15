@@ -11,8 +11,8 @@ use as_analysis::tracker::TrackerParams;
 use as_analysis::tracks::{self, FaceTrack};
 use as_analysis::{FaceDet, ShotSprite, portrait_region};
 use as_api::{
-    Cast, CastEdit, Character, CharacterShot, ClipRequest, FaceTrackItem, MediaInfo, MediaStatus, Presence,
-    SegmentKind, StageState, TrackAssign, TrackFilter,
+    Cast, CastEdit, Character, CharacterShot, FaceTrackItem, MediaInfo, MediaStatus, Presence, SegmentKind, StageState,
+    TrackAssign, TrackFilter,
 };
 use as_core::{CancelToken, CharacterId, FrameIdx, FrameRange, MediaId};
 use as_db::{EditKind, IdentityTrack, NewTrack, TrackRow};
@@ -695,16 +695,6 @@ impl Project {
         }
         Ok(shots)
     }
-
-    /// Every shot a character is seen in, as clips (the shot's clean range),
-    /// in episode order.
-    pub fn character_clips(&self, c: CharacterId) -> ProjectResult<Vec<ClipRequest>> {
-        Ok(self
-            .character_shots(c)?
-            .into_iter()
-            .map(|s| ClipRequest { media_id: s.media_id, start: s.start, end: s.end, name: None })
-            .collect())
-    }
 }
 
 #[cfg(test)]
@@ -947,11 +937,9 @@ pub(crate) mod tests {
         assert_eq!(walter.tracks, 11);
         assert!(std::path::Path::new(walter.cover.as_deref().unwrap()).is_file());
         project.cast_edit(&CastEdit::Rename { character_id: walter.id, name: Some(" Walter ".into()) }).unwrap();
-        let clips = project.character_clips(walter.id).unwrap();
-        assert_eq!(clips.len(), 11);
-        assert_eq!((clips[0].start, clips[0].end), (0, 100));
         let shots = project.character_shots(walter.id).unwrap();
         assert_eq!(shots.len(), 11);
+        assert_eq!((shots[0].start, shots[0].end), (0, 100));
         assert!(std::path::Path::new(shots[0].sprite.as_deref().unwrap()).is_file());
         assert_eq!(shots[0].cells, 8);
         assert!(shots[1..].iter().all(|s| s.sprite.is_none() && s.cells == 0));

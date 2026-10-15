@@ -1,7 +1,7 @@
 import type * as React from "react"
 import { useState } from "react"
-import { Link, useParams } from "@tanstack/react-router"
-import { CaretRight, DotsThree, FilePlus, FolderOpen, FolderPlus, PencilSimple, Plus, UserFocus } from "@/components/icons"
+import { Link, useNavigate, useParams } from "@tanstack/react-router"
+import { CaretRight, DotsThree, FilePlus, FolderOpen, FolderPlus, Package, PencilSimple, Plus } from "@/components/icons"
 import type { ProjectSummary } from "@/bindings"
 import { Button } from "@/components/ui/button"
 import {
@@ -17,6 +17,7 @@ import { Section, Shelf } from "@/components/ui/shelf"
 import { TopBar } from "@/components/ui/topbar"
 import { CharacterCard } from "@/features/cast/CharacterCard"
 import { plural, splitHidden } from "@/features/cast/cast"
+import { PickCharacter } from "@/features/cast/PickCharacter"
 import { RenameProjectDialog } from "@/features/library/ProjectDialogs"
 import { useAmbient } from "@/lib/ambient"
 import { formatDuration } from "@/lib/format"
@@ -39,6 +40,8 @@ export function OverviewPage() {
   const { data: media } = mediaQuery
   const { data: cast } = castQuery
   const [renaming, setRenaming] = useState<ProjectSummary | null>(null)
+  const [choosing, setChoosing] = useState(false)
+  const navigate = useNavigate()
   const pictured = project?.poster ? project : media?.find((m) => m.poster)
   const backdrop = pictured?.poster ?? null
   const ambient = useAmbient(pictured?.posterSmall ?? backdrop)
@@ -68,13 +71,18 @@ export function OverviewPage() {
             </p>
           )}
           <div className="mt-7 flex flex-wrap items-center gap-3">
-            {live && (
-              <Button size="lg" variant="primary" asChild>
-                <Link to="/p/$pid/cast" params={{ pid }}>
-                  <UserFocus weight="bold" /> Build a scenepack
-                </Link>
-              </Button>
-            )}
+            {live &&
+              (shown.length > 0 ? (
+                <Button size="lg" variant="primary" onClick={() => setChoosing(true)}>
+                  <Package weight="bold" /> Build a scenepack
+                </Button>
+              ) : (
+                <Button size="lg" variant="primary" asChild>
+                  <Link to="/p/$pid/cast" params={{ pid }}>
+                    <Package weight="bold" /> Build a scenepack
+                  </Link>
+                </Button>
+              ))}
             <Button size="lg" variant="glass" onClick={() => void pickFolder().then((p) => (p ? addToProject(pid, [p]) : undefined))}>
               <FolderPlus /> Add {movie ? "a folder" : "episodes"}
             </Button>
@@ -152,6 +160,17 @@ export function OverviewPage() {
         </Section>
       </div>
       <RenameProjectDialog project={renaming} onOpenChange={(o) => !o && setRenaming(null)} />
+      <PickCharacter
+        pid={pid}
+        open={choosing}
+        onOpenChange={setChoosing}
+        title="Whose scenepack?"
+        description="Their shots are picked in the next step."
+        onPick={(p) => {
+          setChoosing(false)
+          if (p.kind === "existing") void navigate({ to: "/p/$pid/cast/$cid/pack", params: { pid, cid: p.id } })
+        }}
+      />
     </Page>
   )
 }

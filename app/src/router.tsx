@@ -16,10 +16,11 @@ import { PlayerPage } from "@/features/player/PlayerPage"
 import { EpisodesPage } from "@/features/project/EpisodesPage"
 import { ExportsPage } from "@/features/project/ExportsPage"
 import { OverviewPage } from "@/features/project/OverviewPage"
-import { CharacterCrumb, MediaCrumb, ProjectCrumb } from "@/features/project/crumbs"
+import { CharacterCrumb, MediaCrumb, PackCrumb, ProjectCrumb } from "@/features/project/crumbs"
 import { SettingsPage } from "@/features/settings/SettingsPage"
 import { settingsLabel } from "@/features/settings/sections"
 import { NotFound } from "@/features/not-found"
+import { PackPage } from "@/features/pack/PackPage"
 import { RouteError } from "@/features/route-error"
 import { SETTINGS_SECTIONS, type SettingsSection } from "@/lib/actions"
 
@@ -95,6 +96,13 @@ const characterRoute = createRoute({
   component: CharacterPage,
 })
 
+const packRoute = createRoute({
+  getParentRoute: () => projectRoute,
+  path: "/cast/$cid/pack",
+  staticData: { crumb: (p) => <PackCrumb pid={p.pid} cid={p.cid} /> },
+  component: PackPage,
+})
+
 const exportsRoute = createRoute({
   getParentRoute: () => projectRoute,
   path: "/exports",
@@ -132,6 +140,7 @@ const routeTree = rootRoute.addChildren([
     castRoute,
     reviewRoute,
     characterRoute,
+    packRoute,
     exportsRoute,
   ]),
   settingsIndexRoute,

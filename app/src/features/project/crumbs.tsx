@@ -13,6 +13,12 @@ export function MediaCrumb({ pid, mid }: { pid: string; mid: string }) {
   return <>{m ? mediaTitle(m) : "Episode"}</>
 }
 
+export function PackCrumb({ pid, cid }: { pid: string; cid: string }) {
+  const { data } = useCast(pid)
+  const c = data?.characters.find((x) => x.id === cid)
+  return <>{c?.label ?? "Character"} · Scenepack</>
+}
+
 export function CharacterCrumb({ pid, cid }: { pid: string; cid: string }) {
   const { data } = useCast(pid)
   if (cid === "unassigned") return <>Cast · Everyone else</>

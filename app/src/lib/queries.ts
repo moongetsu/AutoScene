@@ -32,7 +32,6 @@ export const qk = {
   portrait: (pid: ProjectId, t: Pick<FaceTrackItem, "id" | "mediaId" | "start">) =>
     ["portrait", pid, t.id, t.mediaId, t.start] as const,
   presence: (pid: ProjectId, mid: MediaId) => ["cast", pid, "presence", mid] as const,
-  characterClips: (pid: ProjectId, cid: CharacterId) => ["cast", pid, "clips", cid] as const,
   characterShots: (pid: ProjectId, cid: CharacterId) => ["cast", pid, "shots", cid] as const,
   // Under the cast: a pack is made from it, so every cast change refreshes it.
   pack: (pid: ProjectId, cid: CharacterId) => ["cast", pid, "pack", cid] as const,

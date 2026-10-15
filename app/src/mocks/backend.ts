@@ -15,13 +15,12 @@ import {
   castGet,
   castPortrait,
   castTracks,
-  characterClips,
   characterLabel,
   characterShots,
   mediaPresence,
   seedCast,
 } from "./cast"
-import { packGet, packNames, packOverride, packPlan, packPreview, packSave } from "./pack"
+import { packGet, packNames, packOverride, packPlan, packPreview, packSave, templateProblem } from "./pack"
 import type {
   AppInfo,
   PackExportRequest,
@@ -563,8 +562,6 @@ const handlers: Record<string, Handler> = {
   },
   cast_portrait: ({ projectId, trackId }) => castPortrait(String(find(projectId).id), Number(trackId)),
   media_presence: ({ projectId, mediaId }) => mediaPresence(String(find(projectId).id), String(mediaId)),
-  character_clips: ({ projectId, characterId }) =>
-    characterClips(String(projectId), String(characterId), find(projectId).media, SEGMENTS),
   character_shots: ({ projectId, characterId }) =>
     characterShots(String(projectId), String(characterId), find(projectId).media, SEGMENTS),
   export_presets: () => presets,
@@ -585,6 +582,8 @@ const handlers: Record<string, Handler> = {
     return null
   },
   pack_plan: ({ projectId, characterId, spec, naming }) => {
+    const problem = templateProblem((naming as PackNaming).template)
+    if (problem) throw { code: "invalid", message: problem }
     const p = find(projectId)
     const preview = packPreview(p.id, String(characterId), spec as PackSpec, p.media, SEGMENTS)
     return packPlan(packNames(p.id, String(characterId), p.title, preview, naming as PackNaming, p.media, tcName), preview, BYTES_PER_FRAME)
@@ -597,6 +596,8 @@ const handlers: Record<string, Handler> = {
     if (preview.stamp !== r.stamp) throw { code: "invalid", message: "The pack changed meanwhile. Check it and export again." }
     const taken = preview.clips.filter((c) => c.included)
     if (taken.length === 0) throw { code: "invalid", message: "There's nothing in the pack to export." }
+    const problem = templateProblem(r.naming.template)
+    if (problem) throw { code: "invalid", message: problem }
     const names = packNames(p.id, cid, p.title, preview, r.naming, p.media, tcName)
     const label = characterLabel(p.id, cid)
     packSave(p.id, cid, { spec: r.spec, naming: r.naming })

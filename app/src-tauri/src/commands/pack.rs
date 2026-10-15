@@ -10,7 +10,7 @@ use tauri_specta::Event;
 
 use crate::error::{AppError, AppResult, ErrorCode};
 use crate::events::{ExportChanged, PackChanged};
-use crate::state::{AppState, blocking};
+use crate::state::{AppState, allow_asset_tree, blocking};
 use crate::work;
 
 /// A character's pack settings as last used (the defaults the first time).
@@ -42,13 +42,21 @@ pub async fn pack_save(
 #[tauri::command]
 #[specta::specta]
 pub async fn pack_preview(
+    app: AppHandle,
     state: State<'_, AppState>,
     project_id: ProjectId,
     character_id: CharacterId,
     spec: PackSpec,
 ) -> AppResult<PackPreview> {
     let lib = state.library.clone();
-    blocking(move || Ok(lib.project(project_id)?.pack_preview(character_id, &spec)?)).await
+    let (preview, faces) = blocking(move || {
+        let p = lib.project(project_id)?;
+        Ok((p.pack_preview(character_id, &spec)?, p.faces_dir()))
+    })
+    .await?;
+    // The grid shows the shots' sprites and faces.
+    allow_asset_tree(&app, &faces);
+    Ok(preview)
 }
 
 /// Pick (`true`), drop (`false`) or hand back to the filters (`null`) shots of a pack.

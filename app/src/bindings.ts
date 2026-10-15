@@ -79,8 +79,6 @@ export const commands = {
 	castPortrait: (projectId: ProjectId, trackId: number) => __TAURI_INVOKE<string | null>("cast_portrait", { projectId, trackId }),
 	/**  Where characters are on screen in one media (for the timeline). */
 	mediaPresence: (projectId: ProjectId, mediaId: MediaId) => __TAURI_INVOKE<Presence[]>("media_presence", { projectId, mediaId }),
-	/**  Every shot a character is seen in, as clips ready to export. */
-	characterClips: (projectId: ProjectId, characterId: CharacterId) => __TAURI_INVOKE<ClipRequest[]>("character_clips", { projectId, characterId }),
 	/**
 	 *  Every shot a character is seen in, with its sprite and the character's
 	 *  clearest face there.

@@ -8,7 +8,6 @@ import type {
   CastEdit,
   Character,
   CharacterShot,
-  ClipRequest,
   FaceTrackItem,
   MediaItem,
   Presence,
@@ -248,19 +247,6 @@ export function mediaPresence(projectId: string, mediaId: string): Presence[] {
     .tracks.filter((t) => assigned(t) && t.mediaId === mediaId && t.characterId)
     .sort((a, b) => a.start - b.start)
     .map((t) => ({ characterId: t.characterId!, trackId: t.id, start: t.start, end: t.end }))
-}
-
-export function characterClips(projectId: string, characterId: string, media: MediaItem[], segments: Segment[]): ClipRequest[] {
-  const mine = get(projectId).tracks.filter((t) => assigned(t) && t.characterId === characterId)
-  const out: ClipRequest[] = []
-  for (const m of media) {
-    const starts = [...new Set(mine.filter((t) => t.mediaId === m.id).map((t) => t.start))].sort((a, b) => a - b)
-    for (const s of starts) {
-      const seg = segments.find((x) => x.start === s && x.kind === "shot")
-      if (seg) out.push({ mediaId: m.id, start: seg.start, end: seg.end, name: null })
-    }
-  }
-  return out
 }
 
 export function characterShots(projectId: string, characterId: string, media: MediaItem[], segments: Segment[]): CharacterShot[] {

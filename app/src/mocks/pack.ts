@@ -129,6 +129,23 @@ export function packPreview(pid: string, cid: string, spec: PackSpec, media: Med
   }
 }
 
+const NAME_TOKENS = ["series", "character", "episode", "index", "tc", "frame"]
+
+/** What the backend says about a template that doesn't work (as_project::naming), or null. */
+export function templateProblem(template: string): string | null {
+  let rest = template
+  for (let open = rest.indexOf("{"); open >= 0; open = rest.indexOf("{")) {
+    const close = rest.indexOf("}", open)
+    if (close < 0) return "A “{” isn't closed with “}”."
+    const token = rest.slice(open + 1, close)
+    if (!NAME_TOKENS.includes(token)) {
+      return `“{${token}}” isn't a name part. Use {series}, {character}, {episode}, {index}, {tc} or {frame}.`
+    }
+    rest = rest.slice(close + 1)
+  }
+  return template.trim() === "" ? "The name would be empty." : null
+}
+
 /** The backend's template names, simply. */
 export function packNames(
   pid: string,

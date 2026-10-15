@@ -102,12 +102,27 @@ export const FACES_SHORTCUTS: Shortcut<FacesId>[] = [
   { id: "clearSelection", label: "Clear the selection", keys: ["Esc"], bindings: [key("escape")] },
 ]
 
+export type PackId = "toggle" | "watch" | "export"
+
+/** While building a scenepack (the first two on the focused shot). */
+export const PACK_SHORTCUTS: Shortcut<PackId>[] = [
+  {
+    id: "toggle",
+    label: "Take the shot in or out (Shift: every shot since the last)",
+    keys: ["Space"],
+    bindings: [key(" "), key(" ", { shift: true })],
+  },
+  { id: "watch", label: "Watch the shot", keys: ["Enter"], bindings: [key("enter")] },
+  { id: "export", label: "Export the pack", keys: [modKey, "E"], bindings: [key("e", { mod: true })] },
+]
+
 /** Settings → Shortcuts, in this order. */
 export const SHORTCUT_GROUPS: { title: string; description: string; shortcuts: Shortcut[] }[] = [
   { title: "Everywhere", description: "Work faster without leaving the keyboard.", shortcuts: GLOBAL_SHORTCUTS },
   { title: "Player", description: "While an episode is open.", shortcuts: PLAYER_SHORTCUTS },
   { title: "Review faces", description: "Answer with one key; every answer is kept.", shortcuts: REVIEW_SHORTCUTS },
   { title: "A character's faces", description: "In a character's Faces view.", shortcuts: FACES_SHORTCUTS },
+  { title: "Scenepack", description: "While picking a character's shots.", shortcuts: PACK_SHORTCUTS },
 ]
 
 export function shortcutKeys(id: GlobalId): string[] {
