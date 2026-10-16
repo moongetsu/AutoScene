@@ -3,7 +3,6 @@ import { FileX, FilmStrip, Play, Warning } from "@/components/icons"
 import type { MediaItem } from "@/bindings"
 import { Artwork } from "@/components/ui/artwork"
 import { Badge } from "@/components/ui/badge"
-import { Progress } from "@/components/ui/progress"
 import { formatDuration } from "@/lib/format"
 import { releaseTitle } from "@/lib/media"
 import { cn } from "@/lib/utils"
@@ -56,8 +55,46 @@ export function EpisodeCard({ pid, media: m, className }: { pid: string; media: 
           </span>
         )}
         {working && (
-          <div className="absolute inset-x-3 bottom-3">
-            <Progress value={job.progress} className="bg-white/20" />
+          <div className="absolute inset-0 flex items-center justify-center p-3">
+            <div className="flex items-center gap-2 rounded-full border border-white/15 bg-black/60 px-3.5 py-1.5 shadow-2xl backdrop-blur-md">
+              <div className="relative size-4 shrink-0">
+                <svg viewBox="0 0 16 16" className="size-full overflow-visible">
+                  <circle
+                    cx="8"
+                    cy="8"
+                    r="6"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    className="text-white/15"
+                  />
+                  <circle
+                    cx="8"
+                    cy="8"
+                    r="6"
+                    pathLength={100}
+                    fill="none"
+                    stroke="var(--accent)"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeDasharray={
+                      job.progress == null
+                        ? "28 72"
+                        : `${Math.max(4, Math.round(job.progress * 100))} 100`
+                    }
+                    className={cn(
+                      "drop-shadow-[0_0_6px_var(--accent)] transition-[stroke-dasharray] duration-[var(--dur-slow)]",
+                      job.progress == null
+                        ? "origin-center animate-spin [animation-duration:1.4s]"
+                        : "-rotate-90 origin-center",
+                    )}
+                  />
+                </svg>
+              </div>
+              <span className="timecode text-xs font-semibold tracking-wider text-fg-1">
+                {job.progress != null ? `${Math.round(job.progress * 100)}%` : "Working…"}
+              </span>
+            </div>
           </div>
         )}
       </Artwork>
