@@ -100,7 +100,8 @@ Rules:
   shot sizes as chips, length, episodes, limit, handles, "only them", flash cuts), then every shot of the character:
   the ones the pack takes bright with a gold tick, the rest dimmed with the reason. A click takes a shot in or out,
   Shift every shot since the last. A glass bar floats at the bottom with the count, length and size, the picks by
-  hand and Export as the white pill; the export dialog names the files from a template with name-part buttons.
+  hand and Export as the white pill; the export dialog makes one file with a chapter per shot (a switch at the top,
+  on by default) or a file per shot, named from templates with name-part buttons.
 - **Review:** one face against the suggestion, both big, the face lighting the room; answers on the keyboard.
 - **Player:** a dark room — the picture on a rounded screen with its own ambilight, a large timecode and a white
   play button, the timeline in one card (ruler, scrubber, shots, character lanes), details on the right (shown or

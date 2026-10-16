@@ -3,12 +3,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use as_api::{
-    ClipRequest, ExportPlan, ExportRequest, ExportStatus, ExportSummary, FrameMap, ImportCandidate, MediaItem,
-    MediaStatus, PresetSize, ProjectKind, ProjectSummary, ProxyState, Relink, RelinkSummary,
+    ClipRequest, ExportItem, ExportPlan, ExportRequest, ExportStatus, ExportSummary, FrameMap, ImportCandidate,
+    MediaItem, MediaStatus, MergedFile, PresetSize, ProjectKind, ProjectSummary, ProxyState, Relink, RelinkSummary,
 };
 use as_core::{CancelToken, ExportId, FrameIndex, FrameRange, MediaId, ProjectId};
 use as_db::{IngestRecord, NewExportItem, ProjectDb};
-use as_export::{ClipJob, ExportPreset, estimate_bytes, export_clip};
+use as_export::clip::PARTIAL_DIR;
+use as_export::{
+    ClipJob, ExportPreset, JoinJob, JoinPart, MergeSource, Part, estimate_bytes, export_clip, join_parts, plan_merge,
+};
 use as_media::poster::{StillSize, extract_frame_jpegs};
 use as_media::{MediaInfo, MediaResult, Source, Tools, build_frame_index, idet, probe, proxy};
 use parking_lot::Mutex;
@@ -27,6 +30,10 @@ const SAME_PICTURE: f64 = 0.85;
 
 /// Progress callback: `(stage, fraction 0..1)`.
 pub type Progress<'a> = &'a dyn Fn(&str, f64);
+
+/// Share of a merged export's progress that rendering its clips takes; the
+/// join (a copy, and the sound encoded once) takes the rest.
+const RENDER_SHARE: f64 = 0.95;
 
 /// Work a project still owes after a quit, a crash or an update.
 #[derive(Debug, Default)]
@@ -109,8 +116,16 @@ impl Project {
             portraits: Mutex::default(),
         };
         p.ensure_dirs()?;
-        // Exports can't resume mid-way (M1): close them out.
+        // Exports can't resume mid-way (M1): close them out. No export runs
+        // yet, so any parts of a file still on disk (a crash, a folder that
+        // couldn't be removed) go.
         p.db.close_stale_exports()?;
+        for (id, out_dir) in p.db.merged_exports()? {
+            let work = merge_work_dir(Path::new(&out_dir), id);
+            if Path::new(&out_dir).is_absolute() && work.is_dir() {
+                drop(WorkDir(work));
+            }
+        }
         p.clean_proxies();
         Ok(p)
     }
@@ -689,17 +704,36 @@ impl Project {
         }
         let title = self.title()?;
         let ext = preset.container.ext();
-        // Names already promised to exports that haven't written their files yet.
+        // Names already promised to exports that haven't written their files
+        // yet: their clips', or the one file they join them into. Compared
+        // case-insensitively, like Windows and macOS file names.
         let out_str = out_dir.display().to_string();
-        let mut used: HashSet<String> = self
-            .exports()?
-            .into_iter()
-            .filter(|e| e.out_dir == out_str && e.preset.container == preset.container)
-            .flat_map(|e| e.items)
-            .filter(|i| matches!(i.status, ExportStatus::Queued | ExportStatus::Running))
-            // Compared case-insensitively, like Windows and macOS file names.
-            .map(|i| i.name.to_lowercase())
-            .collect();
+        let mut promised: HashSet<String> = HashSet::new();
+        for e in self.exports()?.into_iter().filter(|e| e.out_dir == out_str && e.preset.container == preset.container)
+        {
+            let live = |s: ExportStatus| matches!(s, ExportStatus::Queued | ExportStatus::Running);
+            match &e.merged {
+                Some(file) if live(e.status) => {
+                    promised.insert(file.name.to_lowercase());
+                }
+                Some(_) => {}
+                None => promised.extend(e.items.iter().filter(|i| live(i.status)).map(|i| i.name.to_lowercase())),
+            }
+        }
+        let taken = |n: &str, promised: &HashSet<String>| {
+            promised.contains(&n.to_lowercase()) || out_dir.join(format!("{n}.{ext}")).exists()
+        };
+        let merged = match req.merge.as_deref().map(str::trim) {
+            Some("") => return Err(ProjectError::Invalid("The file needs a name.".into())),
+            Some(name) => {
+                let name = unique_name(&safe_component(name, " ", 120), |n| taken(n, &promised));
+                Some(MergedFile { name, path: None, verified: false, bytes: None, error: None })
+            }
+            None => None,
+        };
+        // The clips of one file only name its chapters: they only need to
+        // differ from each other.
+        let mut used: HashSet<String> = if merged.is_some() { HashSet::new() } else { promised.clone() };
         let mut items = Vec::with_capacity(req.clips.len());
         for c in &req.clips {
             let (m, _, index) = self.ready_source(c.media_id)?;
@@ -717,8 +751,10 @@ impl Project {
                 None => default_clip_name(&title, &m, &index, c.start),
             };
             // Windows and macOS file names ignore case.
-            let name =
-                unique_name(&base, |n| used.contains(&n.to_lowercase()) || out_dir.join(format!("{n}.{ext}")).exists());
+            let name = unique_name(&base, |n| match merged {
+                Some(_) => used.contains(&n.to_lowercase()),
+                None => taken(n, &used),
+            });
             used.insert(name.to_lowercase());
             items.push(NewExportItem {
                 media_id: c.media_id,
@@ -731,7 +767,7 @@ impl Project {
         std::fs::create_dir_all(out_dir)
             .map_err(|e| ProjectError::Invalid(format!("Can't write to {}: {e}", out_dir.display())))?;
         let id = ExportId::new();
-        self.db.insert_export(id, &preset, &out_str, req.label.as_deref(), &items)?;
+        self.db.insert_export(id, &preset, &out_str, req.label.as_deref(), merged.as_ref(), &items)?;
         self.export(id)
     }
 
@@ -768,13 +804,17 @@ impl Project {
             }
         }
         let sizes = presets.iter().zip(sizes).map(|(p, bytes)| PresetSize { preset_id: p.id.clone(), bytes }).collect();
-        Ok(ExportPlan { names, sizes, folder: None })
+        Ok(ExportPlan { names, sizes, folder: None, file: None })
     }
 
     /// Mark an export failed before it could start (e.g. ffmpeg missing).
     pub fn fail_export(&self, id: ExportId, message: &str) -> ProjectResult<()> {
-        for item in self.export(id)?.items {
+        let ex = self.export(id)?;
+        for item in &ex.items {
             self.db.update_export_item(item.id, ExportStatus::Failed, None, Some(message))?;
+        }
+        if let Some(file) = ex.merged {
+            self.db.set_export_merged(id, &MergedFile { error: Some(message.into()), ..file }, &[])?;
         }
         Ok(self.db.set_export_status(id, ExportStatus::Failed)?)
     }
@@ -787,9 +827,10 @@ impl Project {
         Ok(self.db.exports(self.id)?)
     }
 
-    /// Render every clip of an export. A failing clip doesn't stop the others;
-    /// cancelling marks the remaining clips cancelled. `changed` runs whenever
-    /// a clip starts or finishes, so the UI can follow along.
+    /// Render every clip of an export (and join them into one file, if it
+    /// asks for that). A failing clip doesn't stop the others; cancelling
+    /// marks the remaining clips cancelled. `changed` runs whenever a clip
+    /// starts or finishes, so the UI can follow along.
     pub fn run_export(
         &self,
         tools: &Tools,
@@ -800,6 +841,9 @@ impl Project {
     ) -> ProjectResult<ExportSummary> {
         let ex = self.export(id)?;
         self.db.set_export_status(id, ExportStatus::Running)?;
+        if let Some(file) = ex.merged.clone() {
+            return self.run_merged(tools, &ex, file, cancel, progress, changed);
+        }
         let n = ex.items.len().max(1) as f64;
         let out_dir = PathBuf::from(&ex.out_dir);
         let mut failed = false;
@@ -821,6 +865,7 @@ impl Project {
                     preset: &ex.preset,
                     out_stem: out_dir.join(&item.name),
                     title: Some(item.name.clone()),
+                    part: None,
                 };
                 Ok(export_clip(tools, &job, cancel, |p| progress(&stage, (i as f64 + p) / n))?)
             })();
@@ -849,6 +894,219 @@ impl Project {
         }
         self.db.set_export_status(id, if failed { ExportStatus::Failed } else { ExportStatus::Done })?;
         self.export(id)
+    }
+
+    /// Render every clip of `ex` as a part of one file, then join them, with
+    /// a chapter per clip. A clip that fails is left out of the file; the
+    /// parts go once the file is made (or not).
+    fn run_merged(
+        &self,
+        tools: &Tools,
+        ex: &ExportSummary,
+        file: MergedFile,
+        cancel: &CancelToken,
+        progress: Progress,
+        changed: &dyn Fn(),
+    ) -> ProjectResult<ExportSummary> {
+        let id = ex.id;
+        let out_dir = PathBuf::from(&ex.out_dir);
+        let work = WorkDir(merge_work_dir(&out_dir, id));
+        let fail = |item: &ExportItem, e: &ProjectError| -> ProjectResult<()> {
+            tracing::warn!(clip = %item.name, error = %e, detail = %e.detail(), "clip export failed");
+            Ok(self.db.update_export_part(item.id, ExportStatus::Failed, None, Some(&e.to_string()))?)
+        };
+        let finish = |file: MergedFile, in_file: &[i64]| -> ProjectResult<ExportSummary> {
+            let failed = file.error.is_some() || self.export(id)?.items.iter().any(|i| i.error.is_some());
+            self.db.set_export_merged(id, &file, in_file)?;
+            self.db.set_export_status(id, if failed { ExportStatus::Failed } else { ExportStatus::Done })?;
+            changed();
+            self.export(id)
+        };
+        let none_left = || MergedFile { error: Some("None of the clips could be exported.".into()), ..file.clone() };
+        if let Err(e) = std::fs::create_dir_all(&work.0) {
+            let e = ProjectError::Invalid(format!("Can't write to {}: {e}", out_dir.display()));
+            for item in &ex.items {
+                fail(item, &e)?;
+            }
+            return finish(MergedFile { error: Some(e.to_string()), ..file }, &[]);
+        }
+
+        let mut sources = Vec::with_capacity(ex.items.len());
+        for item in &ex.items {
+            let source = self.ready_source(item.media_id).and_then(|(m, info, index)| {
+                Ok((PathBuf::from(&m.path), info, index, self.db.export_item_audio(item.id)?))
+            });
+            match source {
+                Ok(s) => sources.push((item, s)),
+                Err(e) => fail(item, &e)?,
+            }
+        }
+        if sources.is_empty() {
+            return finish(none_left(), &[]);
+        }
+        let merge_sources: Vec<MergeSource> = sources
+            .iter()
+            .map(|(item, (_, info, index, audio))| MergeSource {
+                info,
+                index,
+                range: FrameRange::new(item.start, item.end),
+                audio_ordinal: *audio,
+            })
+            .collect();
+        let plan = match plan_merge(tools.caps(), &ex.preset, &merge_sources) {
+            Ok(plan) => plan,
+            Err(e) => {
+                let e = ProjectError::from(e);
+                for (item, _) in &sources {
+                    fail(item, &e)?;
+                }
+                return finish(MergedFile { error: Some(e.to_string()), ..file }, &[]);
+            }
+        };
+
+        let n = sources.len();
+        let mut parts = Vec::with_capacity(n);
+        let mut in_file = Vec::with_capacity(n);
+        let mut verified = true;
+        for (i, ((item, (path, info, index, audio)), timing)) in sources.iter().zip(&plan.parts).enumerate() {
+            if cancel.is_cancelled() {
+                break;
+            }
+            let stage = if n > 1 { format!("Clip {} of {n}", i + 1) } else { "Rendering".into() };
+            self.db.update_export_part(item.id, ExportStatus::Running, None, None)?;
+            changed();
+            let job = ClipJob {
+                src: Source { path, info, index },
+                range: FrameRange::new(item.start, item.end),
+                audio_ordinal: *audio,
+                preset: &ex.preset,
+                out_stem: work.0.join(format!("part-{:05}", i + 1)),
+                title: None,
+                part: Some(Part { shape: &plan.shape, samples: timing.samples }),
+            };
+            let share = |p: f64| (i as f64 + p) / n as f64 * RENDER_SHARE;
+            match export_clip(tools, &job, cancel, |p| progress(&stage, share(p))).map_err(ProjectError::from) {
+                Ok(outcome) => {
+                    self.db.update_export_part(item.id, ExportStatus::Done, Some(&outcome), None)?;
+                    verified &= outcome.verified;
+                    in_file.push(item.id);
+                    parts.push(JoinPart {
+                        path: PathBuf::from(&outcome.path),
+                        frames: outcome.frames,
+                        timing: *timing,
+                        title: item.name.clone(),
+                    });
+                }
+                Err(ProjectError::Cancelled) => break,
+                Err(e) => fail(item, &e)?,
+            }
+            changed();
+        }
+        if cancel.is_cancelled() {
+            return self.cancel_merged(id);
+        }
+        if parts.is_empty() {
+            return finish(none_left(), &[]);
+        }
+
+        let stage = "Joining into one file";
+        progress(stage, RENDER_SHARE);
+        let job = JoinJob {
+            parts: &parts,
+            shape: &plan.shape,
+            preset: &ex.preset,
+            out_stem: out_dir.join(&file.name),
+            work_dir: &work.0,
+            title: ex.label.clone(),
+        };
+        match join_parts(tools, &job, cancel, |p| progress(stage, RENDER_SHARE + (1.0 - RENDER_SHARE) * p))
+            .map_err(ProjectError::from)
+        {
+            Ok(outcome) => {
+                // A name taken meanwhile got a `_2`.
+                let name = Path::new(&outcome.path).file_stem().map(|s| s.to_string_lossy().into_owned());
+                let done = MergedFile {
+                    name: name.unwrap_or(file.name),
+                    verified: verified && outcome.verified,
+                    bytes: Some(outcome.bytes),
+                    path: Some(outcome.path),
+                    error: None,
+                };
+                finish(done, &in_file)
+            }
+            Err(ProjectError::Cancelled) => self.cancel_merged(id),
+            Err(e) => {
+                tracing::warn!(error = %e, detail = %e.detail(), "joining the clips failed");
+                for item in ex.items.iter().filter(|i| in_file.contains(&i.id)) {
+                    let message = "It couldn't be joined into the file.";
+                    self.db.update_export_part(item.id, ExportStatus::Failed, None, Some(message))?;
+                }
+                finish(MergedFile { error: Some(e.to_string()), ..file }, &[])
+            }
+        }
+    }
+
+    /// An export that stopped on an error of its own (the database, the
+    /// disk): what hadn't finished failed, so nothing stays "exporting".
+    pub fn abandon_export(&self, id: ExportId, message: &str) -> ProjectResult<()> {
+        let ex = self.export(id)?;
+        for item in &ex.items {
+            let live = matches!(item.status, ExportStatus::Queued | ExportStatus::Running);
+            match &ex.merged {
+                // Rendered clips of a file that wasn't made are in no file.
+                Some(file) if live || (item.status == ExportStatus::Done && file.path.is_none()) => {
+                    self.db.update_export_part(item.id, ExportStatus::Failed, None, Some(message))?
+                }
+                None if live => self.db.update_export_item(item.id, ExportStatus::Failed, None, Some(message))?,
+                _ => {}
+            }
+        }
+        if let Some(file) = ex.merged.filter(|f| f.path.is_none() && f.error.is_none()) {
+            self.db.set_export_merged(id, &MergedFile { error: Some(message.into()), ..file }, &[])?;
+        }
+        Ok(self.db.set_export_status(id, ExportStatus::Failed)?)
+    }
+
+    /// A merged export stopped: none of its clips is in a file.
+    fn cancel_merged(&self, id: ExportId) -> ProjectResult<ExportSummary> {
+        for item in self.export(id)?.items.iter().filter(|i| i.status != ExportStatus::Failed) {
+            self.db.update_export_part(item.id, ExportStatus::Cancelled, None, None)?;
+        }
+        self.db.set_export_status(id, ExportStatus::Cancelled)?;
+        Err(ProjectError::Cancelled)
+    }
+}
+
+/// Where a merged export renders its parts: a folder of its own in the
+/// destination's hidden work folder (on the same drive as the file, so it
+/// is moved into place, not copied).
+fn merge_work_dir(out_dir: &Path, id: ExportId) -> PathBuf {
+    out_dir.join(PARTIAL_DIR).join(id.to_string())
+}
+
+/// A merged export's work folder, removed with everything in it however the
+/// export ends; the shared hidden folder goes too once nothing else uses it.
+struct WorkDir(PathBuf);
+
+impl Drop for WorkDir {
+    fn drop(&mut self) {
+        // A virus scanner or the search indexer may still hold a new part
+        // open for a moment: try again before giving up (until the next
+        // launch, which looks again).
+        for attempt in 1..=5 {
+            match std::fs::remove_dir_all(&self.0) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound && attempt < 5 => {
+                    std::thread::sleep(std::time::Duration::from_millis(100 * attempt));
+                }
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                    tracing::warn!(dir = %self.0.display(), error = %e, "couldn't remove an export's work folder");
+                }
+                _ => break,
+            }
+        }
+        if let Some(shared) = self.0.parent() {
+            let _ = std::fs::remove_dir(shared);
+        }
     }
 }
 

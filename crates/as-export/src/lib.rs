@@ -2,10 +2,12 @@
 
 pub mod clip;
 pub mod estimate;
+pub mod merge;
 pub mod preset;
 
-pub use clip::{ClipJob, ClipOutcome, export_clip};
+pub use clip::{ClipJob, ClipOutcome, Part, export_clip};
 pub use estimate::estimate_bytes;
+pub use merge::{JoinJob, JoinPart, MergePlan, MergeShape, MergeSource, PartTiming, join_parts, plan_merge};
 pub use preset::{ExportPreset, builtin_presets};
 
 use thiserror::Error;
@@ -20,6 +22,9 @@ pub enum ExportError {
     BadRange(String),
     #[error("This export preset can't be used: {0}.")]
     BadPreset(String),
+    /// The parts of a merged export couldn't be joined (the detail says why).
+    #[error("The clips couldn't be joined into one file.")]
+    Join(String),
     #[error(transparent)]
     Media(#[from] as_media::MediaError),
     #[error("{}", as_core::io_message(.0))]

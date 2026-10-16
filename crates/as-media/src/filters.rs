@@ -4,8 +4,13 @@ use crate::{HdrKind, MediaInfo};
 
 /// HDR (PQ/HLG) → SDR BT.709 with Hable tone mapping. Identical on every
 /// platform (zimg), so posters, proxies and exports look the same everywhere.
-pub const TONEMAP_SDR: &str =
-    "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv";
+/// The HDR metadata goes too: an SDR picture claiming HDR light levels
+/// confuses players and editors.
+pub const TONEMAP_SDR: &str = "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=hable:desat=0,\
+     zscale=t=bt709:m=bt709:r=tv,sidedata=mode=delete:type=MASTERING_DISPLAY_METADATA,\
+     sidedata=mode=delete:type=CONTENT_LIGHT_LEVEL,sidedata=mode=delete:type=DYNAMIC_HDR_PLUS,\
+     sidedata=mode=delete:type=DYNAMIC_HDR_VIVID,sidedata=mode=delete:type=DOVI_RPU_BUFFER,\
+     sidedata=mode=delete:type=DOVI_METADATA";
 
 /// Filters that turn decoded frames into what a viewer should see, without
 /// changing the number of frames:

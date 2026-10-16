@@ -20,7 +20,7 @@ import {
   mediaPresence,
   seedCast,
 } from "./cast"
-import { packGet, packNames, packOverride, packPlan, packPreview, packSave, templateProblem } from "./pack"
+import { fileProblem, packFileName, packGet, packNames, packOverride, packPlan, packPreview, packSave, templateProblem } from "./pack"
 import type {
   AppInfo,
   PackExportRequest,
@@ -408,6 +408,7 @@ function exportPlan(p: MockProject, clips: ClipRequest[]): ExportPlan {
     names: clips.map((c) => clipName(p, c)),
     sizes: presets.map((pr) => ({ presetId: pr.id, bytes: frames * (BYTES_PER_FRAME[pr.id] ?? 2e5) })),
     folder: null,
+    file: null,
   }
 }
 
@@ -418,16 +419,21 @@ function startExport(p: MockProject, req: ExportRequest): ExportSummary {
     const name = clipName(p, c)
     return { id: i + 1, mediaId: c.mediaId, start: c.start, end: c.end, name, status: "queued", path: null, verified: false, encoder: null, bytes: null, error: null }
   })
-  const ex: ExportSummary = { id: id(), projectId: p.id, createdAt: Date.now(), preset: pr, outDir, status: "running", items, label: req.label }
+  const merged = req.merge ? { name: req.merge, path: null, verified: false, bytes: null, error: null } : null
+  const ex: ExportSummary = { id: id(), projectId: p.id, createdAt: Date.now(), preset: pr, outDir, status: "running", items, label: req.label, merged }
   p.exports.unshift(ex)
   items.forEach((it) => (it.status = "running"))
-  startJob("export", items.length === 1 ? "Exporting 1 clip" : `Exporting ${items.length} clips`, p, 3500, { exportId: ex.id, stage: "Rendering" }, () => {
+  const title = `${items.length === 1 ? "Exporting 1 clip" : `Exporting ${items.length} clips`}${merged ? " into one file" : ""}`
+  startJob("export", title, p, 3500, { exportId: ex.id, stage: "Rendering" }, () => {
     for (const it of items) {
       it.status = "done"
       it.verified = true
-      it.path = `${outDir}\\${it.name}.${pr.container}`
+      it.path = merged ? `${outDir}\\${merged.name}.${pr.container}` : `${outDir}\\${it.name}.${pr.container}`
       it.encoder = pr.container === "mov" ? "prores_ks" : "h264_nvenc"
-      it.bytes = (it.end - it.start) * 1.4e6
+      it.bytes = merged ? null : (it.end - it.start) * 1.4e6
+    }
+    if (merged) {
+      ex.merged = { ...merged, path: `${outDir}\\${merged.name}.${pr.container}`, verified: true, bytes: items.reduce((s, it) => s + (it.end - it.start) * 1.4e6, 0) }
     }
     ex.status = "done"
     void emit("export:changed", { projectId: p.id, exportId: ex.id })
@@ -435,8 +441,37 @@ function startExport(p: MockProject, req: ExportRequest): ExportSummary {
   return ex
 }
 
-// Seed: one finished export so the Exports screen has history.
-projects[0].exports.push(seedExport(projects[0]))
+// Seed: finished exports so the Exports screen has history (one file, then a file per clip).
+projects[0].exports.push(seedMergedExport(projects[0]), seedExport(projects[0]))
+
+function seedMergedExport(p: MockProject): ExportSummary {
+  const m = p.media[0]
+  const path = `${ROOT}\\Exports\\${p.title}\\Sousou_no_Frieren_Himmel_scenepack.mov`
+  const item = (i: number, start: number, end: number): ExportItem => ({
+    id: i,
+    mediaId: m.id,
+    start,
+    end,
+    name: `Sousou_no_Frieren_Himmel_E01_${tcName(start)}`,
+    status: "done",
+    path,
+    verified: true,
+    encoder: "prores_ks",
+    bytes: null,
+    error: null,
+  })
+  return {
+    id: id(),
+    projectId: p.id,
+    createdAt: now - 1_800_000,
+    label: "Himmel · scenepack",
+    preset: presets[0],
+    outDir: `${ROOT}\\Exports\\${p.title}`,
+    status: "done",
+    items: [item(1, 84, 144), item(2, 220, 268), item(3, 346, 394)],
+    merged: { name: "Sousou_no_Frieren_Himmel_scenepack", path, verified: true, bytes: 1.9e8, error: null },
+  }
+}
 
 function seedExport(p: MockProject): ExportSummary {
   const m = p.media[0]
@@ -452,6 +487,7 @@ function seedExport(p: MockProject): ExportSummary {
       { id: 1, mediaId: m.id, start: 48, end: 84, name: `Sousou_no_Frieren_E01_${tcName(48)}`, status: "done", path: `${ROOT}\\Exports\\x.mov`, verified: true, encoder: "prores_ks", bytes: 5.2e7, error: null },
       { id: 2, mediaId: m.id, start: 156, end: 204, name: `Sousou_no_Frieren_E01_${tcName(156)}`, status: "done", path: `${ROOT}\\Exports\\y.mov`, verified: true, encoder: "prores_ks", bytes: 6.9e7, error: null },
     ],
+    merged: null,
   }
 }
 
@@ -608,13 +644,16 @@ const handlers: Record<string, Handler> = {
     return null
   },
   pack_plan: ({ projectId, characterId, spec, naming }) => {
-    const problem = templateProblem((naming as PackNaming).template)
+    const n = naming as PackNaming
+    const problem = templateProblem(n.template) ?? (n.merge ? fileProblem(n.file) : null)
     if (problem) throw { code: "invalid", message: problem }
     const p = find(projectId)
-    const preview = packPreview(p.id, String(characterId), spec as PackSpec, p.media, SEGMENTS)
-    const names = packNames(p.id, String(characterId), p.title, preview, naming as PackNaming, p.media, tcName)
-    const folder = (naming as PackNaming).folder ? characterLabel(p.id, String(characterId)) : null
-    return packPlan(names.slice(0, 3), preview, BYTES_PER_FRAME, folder)
+    const cid = String(characterId)
+    const preview = packPreview(p.id, cid, spec as PackSpec, p.media, SEGMENTS)
+    const names = packNames(p.id, cid, p.title, preview, n, p.media, tcName)
+    const folder = n.folder && !n.merge ? characterLabel(p.id, cid) : null
+    const file = n.merge ? packFileName(p.id, cid, p.title, n) : null
+    return packPlan(names.slice(0, 3), preview, BYTES_PER_FRAME, folder, file)
   },
   pack_export: ({ projectId, characterId, req }) => {
     const p = find(projectId)
@@ -624,7 +663,7 @@ const handlers: Record<string, Handler> = {
     if (preview.stamp !== r.stamp) throw { code: "invalid", message: "The pack changed meanwhile. Check it and export again." }
     const taken = preview.clips.filter((c) => c.included)
     if (taken.length === 0) throw { code: "invalid", message: "There's nothing in the pack to export." }
-    const problem = templateProblem(r.naming.template)
+    const problem = templateProblem(r.naming.template) ?? (r.naming.merge ? fileProblem(r.naming.file) : null)
     if (problem) throw { code: "invalid", message: problem }
     const names = packNames(p.id, cid, p.title, preview, r.naming, p.media, tcName)
     const label = characterLabel(p.id, cid)
@@ -633,9 +672,11 @@ const handlers: Record<string, Handler> = {
     const base = r.outDir ?? `${settings.libraryRoot}\\Exports\\${p.title}`
     return startExport(p, {
       presetId: r.presetId,
-      outDir: r.naming.folder ? `${base}\\${label}` : base,
+      // One file needs no folder of its own.
+      outDir: r.naming.folder && !r.naming.merge ? `${base}\\${label}` : base,
       clips: taken.map((c, i) => ({ mediaId: c.shot.mediaId, start: c.start, end: c.end, name: names[i] })),
       label: `${label} · scenepack`,
+      merge: r.naming.merge ? packFileName(p.id, cid, p.title, r.naming) : null,
     })
   },
   jobs_list: () => jobs,

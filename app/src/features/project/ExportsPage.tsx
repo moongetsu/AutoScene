@@ -1,7 +1,7 @@
 import { useParams } from "@tanstack/react-router"
 import { Check, CircleNotch, Clock, FolderOpen, Package, Prohibit, ShieldWarning, Warning } from "@/components/icons"
 import { toast } from "sonner"
-import type { ExportItem, ExportSummary, MediaItem } from "@/bindings"
+import type { ExportItem, ExportStatus, ExportSummary, MediaItem, MergedFile } from "@/bindings"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { EmptyState } from "@/components/ui/empty-state"
@@ -64,7 +64,10 @@ function ExportCard({ ex, media }: { ex: ExportSummary; media: Map<string, Media
   const job = useActivity((s) => s.order.map((id) => s.jobs[id]).find((j) => j.exportId === ex.id))
   const done = ex.items.filter((i) => i.status === "done").length
   const running = ex.status === "running" || ex.status === "queued"
-  const unverified = ex.items.filter((i) => i.status === "done" && !i.verified).length
+  const file = ex.merged
+  const unverified = file
+    ? Number(file.path != null && !file.verified)
+    : ex.items.filter((i) => i.status === "done" && !i.verified).length
 
   return (
     <section className="overflow-hidden rounded-3xl border border-white/[0.07] bg-white/[0.03]">
@@ -80,6 +83,7 @@ function ExportCard({ ex, media }: { ex: ExportSummary; media: Map<string, Media
           <p className="mt-0.5 text-sm text-fg-3">
             {ex.label && `${ex.preset.name} · `}
             {formatDateTime(ex.createdAt)} · {done} of {ex.items.length} {ex.items.length === 1 ? "clip" : "clips"}
+            {file && " in one file"}
           </p>
         </div>
         <Button variant="secondary" onClick={() => reveal(ex.outDir)}>
@@ -92,9 +96,10 @@ function ExportCard({ ex, media }: { ex: ExportSummary; media: Map<string, Media
           <span className="timecode w-12 text-right text-sm text-fg-2">{formatPercent(job.progress)}</span>
         </div>
       )}
+      {file && <FileRow ex={ex} file={file} />}
       <ul className="p-2">
         {ex.items.map((it) => (
-          <ItemRow key={it.id} item={it} media={media.get(it.mediaId)} />
+          <ItemRow key={it.id} item={it} media={media.get(it.mediaId)} ownFile={!file} />
         ))}
       </ul>
     </section>
@@ -104,12 +109,47 @@ function ExportCard({ ex, media }: { ex: ExportSummary; media: Map<string, Media
 function ExportStatusBadge({ ex, unverified }: { ex: ExportSummary; unverified: number }) {
   if (ex.status === "running" || ex.status === "queued") return <Badge tone="accent">{ex.status === "queued" ? "Queued" : "Exporting"}</Badge>
   if (ex.status === "cancelled") return <Badge>Cancelled</Badge>
+  if (ex.status === "failed" && ex.merged?.error) return <Badge tone="danger">File not made</Badge>
   if (ex.status === "failed") return <Badge tone="danger">Some clips failed</Badge>
   if (unverified > 0) return <Badge tone="accent">{unverified} unverified</Badge>
   return null
 }
 
-function ItemRow({ item: it, media: m }: { item: ExportItem; media?: MediaItem }) {
+/** The one file an export joins its clips into: there once every clip is rendered. */
+function FileRow({ ex, file }: { ex: ExportSummary; file: MergedFile }) {
+  const status: ExportStatus = file.path ? "done" : file.error || ex.status === "done" ? "failed" : ex.status
+  const chapters = ex.items.filter((i) => i.path != null && i.path === file.path).length
+  const rendered = ex.items.every((i) => i.status !== "queued" && i.status !== "running")
+  const what =
+    status === "done"
+      ? `${chapters} ${chapters === 1 ? "chapter" : "chapters"}${file.bytes ? ` · ${formatBytes(file.bytes)}` : ""}`
+      : status === "cancelled"
+        ? "Not made"
+        : status === "failed"
+          ? "Couldn't be made"
+          : rendered
+            ? "Joining the clips…"
+            : "Made once every clip is rendered"
+  return (
+    <div className="flex items-center gap-3.5 border-b border-white/[0.06] px-6 py-3.5">
+      <ItemIcon item={{ status, verified: file.verified }} />
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-md font-medium text-fg-1" title={file.path ?? undefined} data-selectable>
+          {file.name}.{ex.preset.container}
+        </div>
+        <div className="mt-0.5 truncate text-xs text-fg-3">{what}</div>
+        {file.error && <div className="mt-0.5 truncate text-sm text-danger">{file.error}</div>}
+      </div>
+      {file.path && (
+        <Button size="sm" variant="secondary" onClick={() => reveal(file.path!)}>
+          <FolderOpen /> Show
+        </Button>
+      )}
+    </div>
+  )
+}
+
+function ItemRow({ item: it, media: m, ownFile }: { item: ExportItem; media?: MediaItem; ownFile: boolean }) {
   const fps = m?.fps
   const tc = (f: number) => (fps ? timecode(f, fps, isDropFrameRate(fps)) : String(f))
   return (
@@ -126,7 +166,7 @@ function ItemRow({ item: it, media: m }: { item: ExportItem; media?: MediaItem }
         </div>
         {it.error && <div className="mt-0.5 truncate text-sm text-danger">{it.error}</div>}
       </div>
-      {it.path && it.status === "done" && (
+      {ownFile && it.path && it.status === "done" && (
         <Button size="sm" variant="ghost" className="opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100" onClick={() => reveal(it.path!)}>
           <FolderOpen /> Show
         </Button>
@@ -135,7 +175,7 @@ function ItemRow({ item: it, media: m }: { item: ExportItem; media?: MediaItem }
   )
 }
 
-function ItemIcon({ item: it }: { item: ExportItem }) {
+function ItemIcon({ item: it }: { item: Pick<ExportItem, "status" | "verified"> }) {
   const box = "flex size-8 shrink-0 items-center justify-center rounded-full [&_svg]:size-4"
   switch (it.status) {
     case "done":

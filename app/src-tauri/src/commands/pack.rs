@@ -115,7 +115,7 @@ pub async fn pack_export(
         Ok((project, summary))
     })
     .await?;
-    work::queue_export(&app, &project, summary.id, summary.items.len());
+    work::queue_export(&app, &project, &summary);
     let _ = ExportChanged { project_id, export_id: summary.id }.emit(&app);
     // The settings it was made with are kept.
     let _ = PackChanged { project_id, character_id }.emit(&app);

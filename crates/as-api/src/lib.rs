@@ -525,6 +525,10 @@ pub struct ExportRequest {
     pub clips: Vec<ClipRequest>,
     /// What it is, for the export history ("Walter · scenepack").
     pub label: Option<String>,
+    /// Join every clip into one file of this name (without extension), with
+    /// a chapter per clip named after it; `None`: a file per clip.
+    #[serde(default)]
+    pub merge: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -535,6 +539,21 @@ pub enum ExportStatus {
     Done,
     Failed,
     Cancelled,
+}
+
+/// The one file of an export that joins its clips.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct MergedFile {
+    /// File name without extension.
+    pub name: String,
+    /// Where it is, once it's made.
+    pub path: Option<String>,
+    /// Every frame of every clip was checked, and so was the joined file.
+    pub verified: bool,
+    pub bytes: Option<f64>,
+    /// Why it couldn't be made.
+    pub error: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -566,6 +585,9 @@ pub struct ExportPlan {
     /// The folder the files go into inside the destination (a scenepack's
     /// folder named after its character), as it will be named.
     pub folder: Option<String>,
+    /// The one file's name (without extension) when the clips are joined
+    /// into one; `names` are then its chapters.
+    pub file: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -587,6 +609,8 @@ pub struct ExportSummary {
     pub items: Vec<ExportItem>,
     /// What it is ("Walter · scenepack"); `None` for single clips.
     pub label: Option<String>,
+    /// The one file the clips are joined into; `None`: a file per clip.
+    pub merged: Option<MergedFile>,
 }
 
 // ---------------------------------------------------------------------------
@@ -736,15 +760,25 @@ pub struct PackPreview {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct PackNaming {
-    /// With `{series}`, `{character}`, `{episode}`, `{index}`, `{tc}`, `{frame}`.
+    /// Each clip's name (its file's, or its chapter's in one file), with
+    /// `{series}`, `{character}`, `{episode}`, `{index}`, `{tc}`, `{frame}`.
     pub template: String,
-    /// Into a folder named after the character.
+    /// Into a folder named after the character (a file per clip only).
     pub folder: bool,
+    /// Every clip in one file, with a chapter each.
+    pub merge: bool,
+    /// The one file's name, with `{series}` and `{character}`.
+    pub file: String,
 }
 
 impl Default for PackNaming {
     fn default() -> Self {
-        Self { template: "{series} {character} {episode} {tc}".into(), folder: true }
+        Self {
+            template: "{series} {character} {episode} {tc}".into(),
+            folder: true,
+            merge: true,
+            file: "{series} {character} scenepack".into(),
+        }
     }
 }
 

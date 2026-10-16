@@ -24,7 +24,7 @@ const picks = new Map<string, Map<string, boolean>>()
 export function defaultPackState(): PackState {
   return {
     spec: { minSec: null, maxSec: null, sizes: [], solo: false, skipTiny: true, media: [], order: "episodes", limit: null, handles: 0 },
-    naming: { template: "{series} {character} {episode} {tc}", folder: true },
+    naming: { template: "{series} {character} {episode} {tc}", folder: true, merge: true, file: "{series} {character} scenepack" },
   }
 }
 
@@ -146,6 +146,19 @@ export function templateProblem(template: string): string | null {
   return template.trim() === "" ? "The name would be empty." : null
 }
 
+/** Why a name for one file holding the whole pack won't do (as_project::naming::render_file_name). */
+export function fileProblem(template: string): string | null {
+  const shot = /\{(episode|index|tc|frame)\}/.exec(template)
+  if (shot) return `“{${shot[1]}}” names a shot, not the file. The file's name can use {series} and {character}.`
+  return templateProblem(template)
+}
+
+/** The one file's name, simply. */
+export function packFileName(pid: string, cid: string, title: string, naming: PackNaming): string {
+  const name = naming.file.replaceAll("{series}", title).replaceAll("{character}", characterLabel(pid, cid))
+  return name.trim().replace(/[<>:"/\\|?*]+/g, " ").replace(/\s+/g, "_")
+}
+
 /** The backend's template names, simply. */
 export function packNames(
   pid: string,
@@ -171,10 +184,17 @@ export function packNames(
   })
 }
 
-export function packPlan(names: string[], preview: PackPreview, sizes: Record<string, number>, folder: string | null): ExportPlan {
+export function packPlan(
+  names: string[],
+  preview: PackPreview,
+  sizes: Record<string, number>,
+  folder: string | null,
+  file: string | null,
+): ExportPlan {
   return {
     names,
     sizes: Object.entries(sizes).map(([presetId, perFrame]) => ({ presetId, bytes: (preview.totals.frames ?? 0) * perFrame })),
     folder,
+    file,
   }
 }

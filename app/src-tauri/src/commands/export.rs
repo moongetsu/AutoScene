@@ -52,7 +52,7 @@ pub async fn export_start(
         Ok((project, summary))
     })
     .await?;
-    work::queue_export(&app, &project, summary.id, summary.items.len());
+    work::queue_export(&app, &project, &summary);
     let _ = ExportChanged { project_id, export_id: summary.id }.emit(&app);
     Ok(summary)
 }

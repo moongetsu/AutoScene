@@ -15,6 +15,11 @@
 //!
 //! If verification fails (unusual seek behaviour in a broken file), we retry
 //! with a longer pre-roll and finally with no seek at all.
+//!
+//! A clip can also be rendered as a *part* of one file made of many clips
+//! ([`Part`], see [`crate::merge`]): the same cut, in a picture, colour,
+//! sound and time base every part shares, so the parts join without being
+//! encoded again.
 
 use std::path::{Path, PathBuf};
 
@@ -24,12 +29,13 @@ use as_media::{Caps, CodecFamily, HdrKind, MediaInfo, Source, Tools, Vendor, run
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
+use crate::merge::MergeShape;
 use crate::preset::{
     AudioCodec, Container, DnxProfile, EncoderPref, ExportPreset, Gop, HdrMode, ProResProfile, VideoCodec,
 };
 use crate::{ExportError, ExportResult};
 
-const AUDIO_RATE: u32 = 48_000;
+pub(crate) const AUDIO_RATE: u32 = 48_000;
 
 /// What to cut and where to write it.
 #[derive(Clone, Debug)]
@@ -43,6 +49,16 @@ pub struct ClipJob<'a> {
     /// Dots in the name are kept ("Mr. Robot" stays "Mr. Robot.mov").
     pub out_stem: PathBuf,
     pub title: Option<String>,
+    /// Render it as a part of one file made of many clips (always a MOV).
+    pub part: Option<Part<'a>>,
+}
+
+/// How a clip is rendered as a part of a merged file.
+#[derive(Clone, Copy, Debug)]
+pub struct Part<'a> {
+    pub shape: &'a MergeShape,
+    /// Audio samples the part carries (see [`crate::merge::PartTiming`]).
+    pub samples: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -57,10 +73,11 @@ pub struct ClipOutcome {
 }
 
 /// Which encoder and arguments a preset resolves to on this machine.
-struct Encoding {
-    encoder: String,
-    args: Vec<String>,
-    pix_fmt: &'static str,
+#[derive(Clone, Debug)]
+pub(crate) struct Encoding {
+    pub(crate) encoder: String,
+    pub(crate) args: Vec<String>,
+    pub(crate) pix_fmt: &'static str,
 }
 
 fn gop_args(gop: Gop, fps: f64, hardware: Option<Vendor>, args: &mut Vec<String>) {
@@ -81,7 +98,7 @@ fn gop_args(gop: Gop, fps: f64, hardware: Option<Vendor>, args: &mut Vec<String>
     }
 }
 
-fn resolve_encoding(codec: &VideoCodec, caps: &Caps, fps: f64) -> ExportResult<Encoding> {
+pub(crate) fn resolve_encoding(codec: &VideoCodec, caps: &Caps, fps: f64) -> ExportResult<Encoding> {
     let sw = |name: &str| -> ExportResult<String> {
         if caps.has_sw(name) { Ok(name.to_string()) } else { Err(ExportError::EncoderMissing(name.into())) }
     };
@@ -194,20 +211,20 @@ fn source_timecode(index: &FrameIndex, f: u32) -> String {
     Timecode::from_frame(f as u64, Rational::new(fps.num, fps.den), ntsc).to_string()
 }
 
-pub fn export_clip(
-    tools: &Tools,
-    job: &ClipJob,
-    cancel: &CancelToken,
-    mut progress: impl FnMut(f64),
-) -> ExportResult<ClipOutcome> {
-    let ClipJob { src: Source { path: src, info, index }, range, preset, .. } = job;
-    if range.is_empty() || range.end > index.len() {
-        return Err(ExportError::BadRange(format!("{range:?} outside 0..{}", index.len())));
-    }
-    if preset.container == Container::Mp4 && preset.audio == AudioCodec::Pcm24 {
-        return Err(ExportError::BadPreset("uncompressed audio needs a MOV file".into()));
-    }
-    let n = range.len();
+/// The ffmpeg recipe of a clip: what is filtered and encoded how.
+struct Recipe {
+    encoder: String,
+    graph: String,
+    audio: bool,
+    /// Everything between the maps and the stats file: timing, codecs, tags, metadata.
+    args: Vec<String>,
+    format: &'static str,
+    ext: &'static str,
+}
+
+/// A clip as a file of its own, in the preset's container.
+fn clip_recipe(tools: &Tools, job: &ClipJob) -> ExportResult<Recipe> {
+    let ClipJob { src: Source { info, index, .. }, range, preset, .. } = job;
     let (s, e) = (range.start, range.end);
     let fps = index.nominal_fps.to_f64();
     let enc = resolve_encoding(&preset.video, tools.caps(), fps)?;
@@ -248,15 +265,117 @@ pub fn export_clip(
         .and_then(|a| a.language.as_deref())
         .and_then(as_media::lang::canonical);
 
-    let ext = preset.container.ext();
-    let out = with_suffix(&job.out_stem, &format!(".{ext}"));
+    // No `-frames:v`: it ends the mux as soon as video is done and clips the
+    // interleaved audio tail. `trim` bounds the frames; `verify` proves it.
+    let mut a: Vec<String> = vec!["-fps_mode".into(), "passthrough".into()];
+    a.extend(as_media::proxy::timing_args(index));
+    a.extend(enc.args.iter().cloned());
+    a.extend(color_args(info, tonemap));
+    match audio.map(|(_, c)| c) {
+        Some(AudioCodec::Pcm24) => a.extend(["-c:a", "pcm_s24le"].map(String::from)),
+        Some(AudioCodec::Aac { kbps }) => a.extend(["-c:a".into(), "aac".into(), "-b:a".into(), format!("{kbps}k")]),
+        _ => {}
+    }
+    a.extend(["-map_metadata", "-1", "-map_chapters", "-1"].map(String::from));
+    if let Some(lang) = &audio_language {
+        a.extend(["-metadata:s:a:0".into(), format!("language={lang}")]);
+    }
+    if preset.container == Container::Mov {
+        a.extend(["-timecode".into(), source_timecode(index, s), "-movflags".into(), "+write_colr".into()]);
+    } else {
+        a.extend(["-movflags".into(), "+faststart".into()]);
+    }
+    if let Some(t) = &job.title {
+        a.extend(["-metadata".into(), format!("title={t}")]);
+    }
+    Ok(Recipe {
+        encoder: enc.encoder,
+        graph,
+        audio: audio.is_some(),
+        args: a,
+        format: if preset.container == Container::Mov { "mov" } else { "mp4" },
+        ext: preset.container.ext(),
+    })
+}
+
+/// A clip as a part of a merged file: in the shape every part shares, with
+/// PCM sound (silence when its episode has none), no timecode and no names.
+fn part_recipe(job: &ClipJob, part: Part) -> Recipe {
+    let ClipJob { src: Source { info, index, .. }, range, .. } = job;
+    let Part { shape, samples } = part;
+    let (s, e) = (range.start, range.end);
+    let (trim_start, trim_end) = index.trim_us(*range);
+    let mut vchain: Vec<String> = deinterlace(info).into_iter().collect();
+    vchain.extend([format!("trim=start={trim_start}us:end={trim_end}us"), "setpts=PTS-STARTPTS".to_string()]);
+    vchain.extend(shape.picture(info, index));
+    let mut graph = format!("[0:{}]{}[v]", info.video.index, vchain.join(","));
+    if let Some(layout) = &shape.audio {
+        match crate::merge::audio_stream(info, job.audio_ordinal) {
+            Some(stream) => {
+                graph += &format!(
+                    ";[0:a:{ord}]atrim=start={ts:.9}:end={te:.9},asetpts=PTS-{ts:.9}/TB,aresample={AUDIO_RATE}:{fill}:first_pts=0{upmix},aformat=channel_layouts={layout},apad=whole_len={samples},atrim=end_sample={samples}[a]",
+                    ord = stream.ordinal,
+                    fill = as_media::proxy::AUDIO_GAP_FILL,
+                    ts = index.t(s),
+                    te = index.t(e),
+                    // Mono at full level on both sides, as loud as the stereo
+                    // episodes next to it (a plain upmix is 3 dB quieter).
+                    upmix = if stream.channels == 1 && layout != "mono" { ",pan=stereo|c0=c0|c1=c0" } else { "" },
+                )
+            }
+            // An episode without sound is silent in the file, for exactly as long.
+            None => graph += &format!(";anullsrc=r={AUDIO_RATE}:cl={layout},atrim=end_sample={samples}[a]"),
+        }
+    }
+    let mut a: Vec<String> = vec!["-fps_mode".into(), "passthrough".into()];
+    // Every part's frames on whole ticks of one time base: the join needs it.
+    a.extend(["-enc_time_base:v".into(), format!("1/{}", shape.timescale)]);
+    a.extend(shape.encoding.args.iter().cloned());
+    a.extend(shape.color_args());
+    if shape.audio.is_some() {
+        a.extend(["-c:a", "pcm_s24le"].map(String::from));
+    }
+    a.extend(["-map_metadata", "-1", "-map_chapters", "-1"].map(String::from));
+    a.extend(["-video_track_timescale".into(), shape.timescale.to_string()]);
+    a.extend(["-movflags", "+write_colr"].map(String::from));
+    Recipe {
+        encoder: shape.encoding.encoder.clone(),
+        graph,
+        audio: shape.audio.is_some(),
+        args: a,
+        format: "mov",
+        ext: "mov",
+    }
+}
+
+pub fn export_clip(
+    tools: &Tools,
+    job: &ClipJob,
+    cancel: &CancelToken,
+    mut progress: impl FnMut(f64),
+) -> ExportResult<ClipOutcome> {
+    let ClipJob { src: Source { path: src, index, .. }, range, preset, .. } = job;
+    if range.is_empty() || range.end > index.len() {
+        return Err(ExportError::BadRange(format!("{range:?} outside 0..{}", index.len())));
+    }
+    if job.part.is_none() && preset.container == Container::Mp4 && preset.audio == AudioCodec::Pcm24 {
+        return Err(ExportError::BadPreset("uncompressed audio needs a MOV file".into()));
+    }
+    let n = range.len();
+    let s = range.start;
+    let recipe = match job.part {
+        Some(part) => part_recipe(job, part),
+        None => clip_recipe(tools, job)?,
+    };
+
+    let out = with_suffix(&job.out_stem, &format!(".{}", recipe.ext));
     // Work files live in a hidden folder next to the clips, so no clip name
     // (not even "X.part") can collide with another clip's unfinished file.
     let out_dir = out.parent().map(Path::to_path_buf).unwrap_or_default();
     let work = out_dir.join(PARTIAL_DIR);
     std::fs::create_dir_all(&work)?;
     let stem_name = job.out_stem.file_name().map(PathBuf::from).unwrap_or_default();
-    let part = with_suffix(&work.join(&stem_name), &format!(".{ext}"));
+    let part = with_suffix(&work.join(&stem_name), &format!(".{}", recipe.ext));
     let stats = with_suffix(&work.join(&stem_name), ".stats.txt");
 
     let build = |preroll: Option<f64>| -> Vec<String> {
@@ -265,43 +384,19 @@ pub fn export_clip(
             let seek = (index.t(s) - index.t0() - pre).max(0.0);
             a.extend(["-noaccurate_seek".into(), "-ss".into(), format!("{seek:.6}")]);
         }
-        a.extend(["-i".into(), src.display().to_string(), "-filter_complex".into(), graph.clone()]);
+        a.extend(["-i".into(), src.display().to_string(), "-filter_complex".into(), recipe.graph.clone()]);
         a.extend(["-map".into(), "[v]".into()]);
-        if audio.is_some() {
+        if recipe.audio {
             a.extend(["-map".into(), "[a]".into()]);
         }
-        // No `-frames:v`: it ends the mux as soon as video is done and clips the
-        // interleaved audio tail. `trim` bounds the frames; `verify` proves it.
-        a.extend(["-fps_mode".into(), "passthrough".into()]);
-        a.extend(as_media::proxy::timing_args(index));
-        a.extend(enc.args.iter().cloned());
-        a.extend(color_args(info, tonemap));
-        match audio.map(|(_, c)| c) {
-            Some(AudioCodec::Pcm24) => a.extend(["-c:a", "pcm_s24le"].map(String::from)),
-            Some(AudioCodec::Aac { kbps }) => {
-                a.extend(["-c:a".into(), "aac".into(), "-b:a".into(), format!("{kbps}k")])
-            }
-            _ => {}
-        }
-        a.extend(["-map_metadata", "-1", "-map_chapters", "-1"].map(String::from));
-        if let Some(lang) = &audio_language {
-            a.extend(["-metadata:s:a:0".into(), format!("language={lang}")]);
-        }
-        if preset.container == Container::Mov {
-            a.extend(["-timecode".into(), source_timecode(index, s), "-movflags".into(), "+write_colr".into()]);
-        } else {
-            a.extend(["-movflags".into(), "+faststart".into()]);
-        }
-        if let Some(t) = &job.title {
-            a.extend(["-metadata".into(), format!("title={t}")]);
-        }
+        a.extend(recipe.args.iter().cloned());
         a.extend([
             "-stats_enc_pre:v:0".into(),
             stats.display().to_string(),
             "-stats_enc_pre_fmt:v:0".into(),
             "{ptsi}".into(),
             "-f".into(),
-            if preset.container == Container::Mov { "mov".into() } else { "mp4".into() },
+            recipe.format.into(),
             part.display().to_string(),
         ]);
         a
@@ -330,7 +425,7 @@ pub fn export_clip(
                     path: out.display().to_string(),
                     frames: n,
                     verified: true,
-                    encoder: enc.encoder,
+                    encoder: recipe.encoder,
                     bytes,
                 });
             }
@@ -346,7 +441,7 @@ pub fn export_clip(
     tidy();
     tracing::error!(clip = %out.display(), reason = %last_err, "clip could not be verified");
     let bytes = std::fs::metadata(&out).map(|m| m.len() as f64).unwrap_or(0.0);
-    Ok(ClipOutcome { path: out.display().to_string(), frames: n, verified: false, encoder: enc.encoder, bytes })
+    Ok(ClipOutcome { path: out.display().to_string(), frames: n, verified: false, encoder: recipe.encoder, bytes })
 }
 
 /// Hidden folder (inside the export folder) for unfinished clips.
@@ -354,7 +449,7 @@ pub const PARTIAL_DIR: &str = ".autoscene-partial";
 
 /// `stem` + `suffix` as a path. Unlike `with_extension`, never cuts a stem
 /// at its own dots ("Mr. Robot" + ".mov", not "Mr.mov").
-fn with_suffix(stem: &Path, suffix: &str) -> PathBuf {
+pub(crate) fn with_suffix(stem: &Path, suffix: &str) -> PathBuf {
     let mut s = stem.as_os_str().to_owned();
     s.push(suffix);
     PathBuf::from(s)

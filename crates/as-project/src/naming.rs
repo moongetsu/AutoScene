@@ -132,6 +132,8 @@ pub const NAME_TOKENS: &[&str] = &["series", "character", "episode", "index", "t
 pub const CLIP_TEMPLATE: &str = "{series} {episode} {tc}";
 /// Clips of a character's pack: `Title_Walter_S01E03_00-12-03-05`.
 pub const PACK_TEMPLATE: &str = "{series} {character} {episode} {tc}";
+/// A character's pack in one file: `Title_Walter_scenepack`.
+pub const PACK_FILE_TEMPLATE: &str = "{series} {character} scenepack";
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum NameError {
@@ -141,6 +143,8 @@ pub enum NameError {
     Unclosed,
     #[error("The name would be empty.")]
     Empty,
+    #[error("“{{{0}}}” names a shot, not the file. The file's name can use {{series}} and {{character}}.")]
+    NotForFile(String),
 }
 
 /// A file name (without extension) from `template`, safe on Windows and
@@ -172,6 +176,24 @@ pub fn render_name(template: &str, parts: &NameParts) -> Result<String, NameErro
         return Err(NameError::Empty);
     }
     Ok(safe_component(&out, "_", 120))
+}
+
+/// The name (without extension) of one file holding a character's whole
+/// pack, from `template`: only `{series}` and `{character}` mean anything
+/// for all of its clips at once.
+pub fn render_file_name(template: &str, series: &str, character: &str) -> Result<String, NameError> {
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        let after = &rest[open + 1..];
+        let close = after.find('}').ok_or(NameError::Unclosed)?;
+        let token = &after[..close];
+        if NAME_TOKENS.contains(&token) && !matches!(token, "series" | "character") {
+            return Err(NameError::NotForFile(token.to_string()));
+        }
+        rest = &after[close + 1..];
+    }
+    let parts = NameParts { series, character: Some(character), episode: "", index: (1, 1), tc: "", frame: 0 };
+    render_name(template, &parts)
 }
 
 /// Is `template` usable (every token known, every brace closed)?
@@ -260,6 +282,18 @@ mod tests {
         assert_eq!(check_template("   "), Err(NameError::Empty));
         assert!(check_template(PACK_TEMPLATE).is_ok());
         assert!(check_template("{series} - {index}").is_ok());
+    }
+
+    #[test]
+    fn one_file_is_named_after_the_pack() {
+        assert_eq!(render_file_name(PACK_FILE_TEMPLATE, "Mr. Robot", "Elliot").unwrap(), "Mr._Robot_Elliot_scenepack");
+        assert_eq!(render_file_name("{character} – best of", "S", "Jesse").unwrap(), "Jesse_–_best_of");
+        assert_eq!(render_file_name("{series} {tc}", "S", "C"), Err(NameError::NotForFile("tc".into())));
+        assert_eq!(render_file_name("{index}", "S", "C"), Err(NameError::NotForFile("index".into())));
+        assert_eq!(render_file_name("{series} {nme}", "S", "C"), Err(NameError::UnknownToken("nme".into())));
+        assert_eq!(render_file_name("{series", "S", "C"), Err(NameError::Unclosed));
+        assert_eq!(render_file_name(" ", "S", "C"), Err(NameError::Empty));
+        assert!(NameError::NotForFile("tc".into()).to_string().starts_with("“{tc}” names a shot"));
     }
 
     #[test]

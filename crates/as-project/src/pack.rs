@@ -15,7 +15,7 @@ use as_db::PackRow;
 use as_export::{ExportPreset, estimate_bytes};
 
 use crate::cast::track_id;
-use crate::naming::{NameParts, check_template, clip_timecode, render_name, safe_component};
+use crate::naming::{NameParts, check_template, clip_timecode, render_file_name, render_name, safe_component};
 use crate::project::episode_name;
 use crate::{Project, ProjectError, ProjectResult};
 
@@ -111,8 +111,8 @@ impl Project {
         Ok(PackPreview { clips, totals, stamp })
     }
 
-    /// The first names the pack's files get (in its order), the character's
-    /// folder and the pack's size per preset.
+    /// The first names the pack's files (or chapters) get, in its order; the
+    /// one file's name or the character's folder; the pack's size per preset.
     pub fn pack_plan(
         &self,
         c: CharacterId,
@@ -120,6 +120,9 @@ impl Project {
         naming: &PackNaming,
         presets: &[ExportPreset],
     ) -> ProjectResult<ExportPlan> {
+        // The file's name first: the dialog shows its problem under it.
+        let label = self.db().character_label(c)?.ok_or_else(gone)?;
+        let file = self.pack_file_name(&label, naming)?;
         let made = self.make_pack(c, spec)?;
         let clips = self.named_clips(c, &made, naming)?;
         let mut sizes = vec![0.0; presets.len()];
@@ -131,22 +134,21 @@ impl Project {
                 *size += estimate_bytes(preset, info, media.audio_ordinal, u64::from(clip.end - clip.start), seconds);
             }
         }
-        let folder = match naming.folder {
-            true => Some(safe_component(&self.db().character_label(c)?.ok_or_else(gone)?, " ", 80)),
-            false => None,
-        };
+        let folder = (naming.folder && file.is_none()).then(|| safe_component(&label, " ", 80));
         Ok(ExportPlan {
             names: clips.into_iter().filter_map(|c| c.name).take(PLAN_NAMES).collect(),
             sizes: presets.iter().zip(sizes).map(|(p, bytes)| PresetSize { preset_id: p.id.clone(), bytes }).collect(),
             folder,
+            file,
         })
     }
 
     /// The export of a character's pack, made again from the analysis: what
     /// the grid showed (`req.stamp`), or an error when the pack changed since.
     /// Returns the request and the folder it goes to (inside `default_dir`
-    /// unless the request names another, in the character's own folder if
-    /// asked). The settings are kept for next time.
+    /// unless the request names another; a file per clip goes into the
+    /// character's own folder if asked, one file for all of them doesn't).
+    /// The settings are kept for next time.
     pub fn pack_export_request(
         &self,
         c: CharacterId,
@@ -162,6 +164,7 @@ impl Project {
             return Err(ProjectError::Invalid("There's nothing in the pack to export.".into()));
         }
         let label = self.db().character_label(c)?.ok_or_else(gone)?;
+        let merge = self.pack_file_name(&label, &req.naming)?;
         let clips = self.named_clips(c, &made, &req.naming)?;
         let base = req
             .out_dir
@@ -169,15 +172,26 @@ impl Project {
             .map(str::trim)
             .filter(|d| !d.is_empty())
             .map_or(default_dir.to_path_buf(), PathBuf::from);
-        let out_dir = if req.naming.folder { base.join(safe_component(&label, " ", 80)) } else { base };
+        let out_dir =
+            if req.naming.folder && merge.is_none() { base.join(safe_component(&label, " ", 80)) } else { base };
         self.save_pack_state(c, &PackState { spec: req.spec.clone(), naming: req.naming.clone() })?;
         let request = ExportRequest {
             preset_id: req.preset_id.clone(),
             out_dir: Some(out_dir.display().to_string()),
             clips,
             label: Some(format!("{label} · scenepack")),
+            merge,
         };
         Ok((request, out_dir))
+    }
+
+    /// The one file's name when `naming` joins the pack into one.
+    fn pack_file_name(&self, label: &str, naming: &PackNaming) -> ProjectResult<Option<String>> {
+        if !naming.merge {
+            return Ok(None);
+        }
+        let name = render_file_name(&naming.file, &self.title()?, label);
+        name.map(Some).map_err(|e| ProjectError::Invalid(e.to_string()))
     }
 
     /// The pack's clips (the ones it takes, in its order), named by `naming`.
@@ -716,7 +730,7 @@ mod tests {
     fn an_export_takes_exactly_what_the_pack_showed() {
         let p = pack();
         let spec = with(|s| s.handles = 2);
-        let naming = PackNaming::default();
+        let naming = PackNaming { merge: false, ..PackNaming::default() };
         let v = preview(&p, &spec);
         let out = p.dir.path().join("Exports");
         let req = |spec: &PackSpec, stamp: &str| PackExportRequest {
@@ -732,6 +746,7 @@ mod tests {
         assert_eq!(exported, shown);
         assert_eq!(dir, out.join("Walter"), "in the character's own folder");
         assert_eq!(request.label.as_deref(), Some("Walter · scenepack"));
+        assert_eq!(request.merge, None, "a file per clip");
         assert_eq!(
             request.clips.iter().map(|c| c.name.clone().unwrap()).collect::<Vec<_>>(),
             ["Show_Walter_E01_00-00-00-00", "Show_Walter_E01_00-00-02-00", "Show_Walter_E01_00-00-12-00"]
@@ -748,6 +763,47 @@ mod tests {
     }
 
     #[test]
+    fn a_pack_in_one_file_has_a_chapter_per_shot() {
+        let p = pack();
+        let v = preview(&p, &PackSpec::default());
+        let out = p.dir.path().join("Exports");
+        let mut req = PackExportRequest {
+            spec: PackSpec::default(),
+            naming: PackNaming::default(),
+            preset_id: "h264-edit".into(),
+            out_dir: None,
+            stamp: v.stamp.clone(),
+        };
+        assert!(req.naming.merge && req.naming.folder, "one file by default; the folder waits for a file per clip");
+        let (request, dir) = p.project.pack_export_request(p.walter, &req, &out).unwrap();
+        assert_eq!(request.merge.as_deref(), Some("Show_Walter_scenepack"));
+        assert_eq!(dir, out, "one file needs no folder of its own");
+        // The clips' names are the file's chapters.
+        assert_eq!(
+            request.clips.iter().map(|c| c.name.clone().unwrap()).collect::<Vec<_>>(),
+            ["Show_Walter_E01_00-00-00-00", "Show_Walter_E01_00-00-02-02", "Show_Walter_E01_00-00-12-02"]
+        );
+        let plan = p.project.pack_plan(p.walter, &req.spec, &req.naming, &as_export::builtin_presets()).unwrap();
+        assert_eq!((plan.file.as_deref(), plan.folder), (Some("Show_Walter_scenepack"), None));
+        assert_eq!(plan.names.len(), 3);
+        // A file name can't use what only names a shot.
+        req.naming.file = "{series} {tc}".into();
+        let err = p.project.pack_export_request(p.walter, &req, &out).unwrap_err();
+        assert!(err.to_string().contains("names a shot"), "{err}");
+        // With the shots' names broken too, the file's problem comes first.
+        req.naming.template = "{series} {nme}".into();
+        let err = p.project.pack_plan(p.walter, &req.spec, &req.naming, &[]).unwrap_err();
+        assert!(err.to_string().contains("names a shot"), "{err}");
+        // Settings saved before there was a choice load with one file.
+        let naming: PackNaming = with_defaults(r#"{"template":"{character} {index}","folder":false}"#);
+        assert_eq!(
+            naming,
+            PackNaming { template: "{character} {index}".into(), folder: false, ..PackNaming::default() }
+        );
+        assert!(naming.merge);
+    }
+
+    #[test]
     fn settings_of_another_version_load_with_the_defaults_filled_in() {
         let spec: PackSpec = with_defaults(r#"{"solo":true,"pickedColour":"red"}"#);
         assert_eq!(spec, PackSpec { solo: true, ..PackSpec::default() });
@@ -761,9 +817,11 @@ mod tests {
     #[test]
     fn a_plan_names_and_sizes_the_pack() {
         let p = pack();
-        let naming = PackNaming { template: "{character} {index}".into(), folder: false };
+        let naming =
+            PackNaming { template: "{character} {index}".into(), folder: true, merge: false, ..PackNaming::default() };
         let plan = p.project.pack_plan(p.walter, &PackSpec::default(), &naming, &as_export::builtin_presets()).unwrap();
         assert_eq!(plan.names, ["Walter_001", "Walter_002", "Walter_003"]);
+        assert_eq!((plan.file, plan.folder.as_deref()), (None, Some("Walter")));
         assert!(plan.sizes.iter().all(|s| s.bytes > 0.0));
     }
 }

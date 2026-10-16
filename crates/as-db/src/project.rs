@@ -4,8 +4,8 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use as_api::{
-    ClipOutcome, ExportItem, ExportPreset, ExportStatus, ExportSummary, MediaInfo, MediaItem, MediaStatus, ProxyState,
-    Segment, StageState, now_ms,
+    ClipOutcome, ExportItem, ExportPreset, ExportStatus, ExportSummary, MediaInfo, MediaItem, MediaStatus, MergedFile,
+    ProxyState, Segment, StageState, now_ms,
 };
 use as_core::{ExportId, FrameIdx, MediaId, ProjectId, Rational};
 use rusqlite::{OptionalExtension, Row, params};
@@ -217,6 +217,8 @@ const STEPS: &[M<'static>] = &[
            SELECT 'track_seq', CAST(COALESCE((SELECT MAX(id) FROM tracks), 0) AS TEXT)
             WHERE NOT EXISTS (SELECT 1 FROM meta WHERE key = 'track_seq');",
     ),
+    // 11: an export can join its clips into one file (MergedFile JSON).
+    M::up("ALTER TABLE exports ADD COLUMN merged TEXT;"),
 ];
 const MIGRATIONS: Migrations<'static> = Migrations::from_slice(STEPS);
 
@@ -691,13 +693,14 @@ impl ProjectDb {
         preset: &ExportPreset,
         out_dir: &str,
         label: Option<&str>,
+        merged: Option<&MergedFile>,
         items: &[NewExportItem],
     ) -> DbResult<()> {
         self.0.write(|tx| {
             tx.execute(
-                "INSERT INTO exports (id, created_at, preset, out_dir, status, label)
-                 VALUES (?1, ?2, ?3, ?4, 'queued', ?5)",
-                params![id.to_string(), now_ms(), json_to_sql(preset), out_dir, label],
+                "INSERT INTO exports (id, created_at, preset, out_dir, status, label, merged)
+                 VALUES (?1, ?2, ?3, ?4, 'queued', ?5, ?6)",
+                params![id.to_string(), now_ms(), json_to_sql(preset), out_dir, label, merged.map(json_to_sql)],
             )?;
             let mut st = tx.prepare(
                 "INSERT INTO export_items (export_id, media_id, start_frame, end_frame, name, status, audio_ordinal)
@@ -755,6 +758,44 @@ impl ProjectDb {
         })
     }
 
+    /// A clip of an export that joins them into one file: rendered (or not)
+    /// as a part of it, which has no path or size of its own.
+    pub fn update_export_part(
+        &self,
+        item_id: i64,
+        status: ExportStatus,
+        outcome: Option<&ClipOutcome>,
+        error: Option<&str>,
+    ) -> DbResult<()> {
+        self.0.write(|tx| {
+            tx.execute(
+                "UPDATE export_items SET status = ?2, path = NULL, verified = ?3, encoder = ?4, bytes = NULL, error = ?5
+                 WHERE id = ?1",
+                params![
+                    item_id,
+                    enum_to_sql(status),
+                    outcome.is_some_and(|o| o.verified),
+                    outcome.map(|o| o.encoder.as_str()),
+                    error,
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// The joined file of an export, and the clips that are in it (their
+    /// `path` is the file's).
+    pub fn set_export_merged(&self, id: ExportId, merged: &MergedFile, in_file: &[i64]) -> DbResult<()> {
+        self.0.write(|tx| {
+            tx.execute("UPDATE exports SET merged = ?2 WHERE id = ?1", params![id.to_string(), json_to_sql(merged)])?;
+            let mut st = tx.prepare("UPDATE export_items SET path = ?2 WHERE id = ?1")?;
+            for item in in_file {
+                st.execute(params![item, merged.path])?;
+            }
+            Ok(())
+        })
+    }
+
     /// Newest first.
     pub fn exports(&self, project_id: ProjectId) -> DbResult<Vec<ExportSummary>> {
         let ids: Vec<String> = self.0.read(|c| {
@@ -767,14 +808,15 @@ impl ProjectDb {
 
     pub fn export(&self, project_id: ProjectId, id: ExportId) -> DbResult<Option<ExportSummary>> {
         self.0.read(|c| {
-            let head: Option<(i64, String, String, String, Option<String>)> = c
+            type Head = (i64, String, String, String, Option<String>, Option<String>);
+            let head: Option<Head> = c
                 .query_row(
-                    "SELECT created_at, preset, out_dir, status, label FROM exports WHERE id = ?1",
+                    "SELECT created_at, preset, out_dir, status, label, merged FROM exports WHERE id = ?1",
                     [id.to_string()],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
                 )
                 .optional()?;
-            let Some((created_at, preset, out_dir, status, label)) = head else { return Ok(None) };
+            let Some((created_at, preset, out_dir, status, label, merged)) = head else { return Ok(None) };
             let mut st = c.prepare(
                 "SELECT id, media_id, start_frame, end_frame, name, status, path, verified, encoder, bytes, error
                  FROM export_items WHERE export_id = ?1 ORDER BY id",
@@ -793,17 +835,37 @@ impl ProjectDb {
                 status: enum_from_sql(&status)?,
                 items,
                 label,
+                merged: merged.as_deref().map(json_from_sql).transpose()?,
             }))
         })
     }
 
     /// Exports left `queued`/`running` by a crash or quit can't resume (M1);
-    /// mark them cancelled so the UI doesn't show them as live.
+    /// mark them cancelled so the UI doesn't show them as live. The clips an
+    /// unfinished file was made of are in no file either.
     pub fn close_stale_exports(&self) -> DbResult<()> {
         self.0.write(|tx| {
+            tx.execute(
+                "UPDATE export_items SET status = 'cancelled'
+                 WHERE status = 'done' AND export_id IN
+                   (SELECT id FROM exports WHERE status IN ('queued', 'running') AND merged IS NOT NULL)",
+                [],
+            )?;
             tx.execute("UPDATE export_items SET status = 'cancelled' WHERE status IN ('queued', 'running')", [])?;
             tx.execute("UPDATE exports SET status = 'cancelled' WHERE status IN ('queued', 'running')", [])?;
             Ok(())
+        })
+    }
+
+    /// Every export that joins its clips into one file, with its folder
+    /// (where its parts are rendered).
+    pub fn merged_exports(&self) -> DbResult<Vec<(ExportId, String)>> {
+        self.0.read(|c| {
+            let mut st = c.prepare("SELECT id, out_dir FROM exports WHERE merged IS NOT NULL")?;
+            let rows = st
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows.into_iter().map(|(id, dir)| Ok((parse_id(&id)?, dir))).collect()
         })
     }
 
@@ -1034,7 +1096,7 @@ pub(crate) mod tests {
             NewExportItem { media_id: m.id, start: 10, end: 34, name: "a_1".into(), audio_ordinal: Some(1) },
             NewExportItem { media_id: m.id, start: 50, end: 60, name: "a_2".into(), audio_ordinal: None },
         ];
-        db.insert_export(eid, &preset, "/out", Some("Walter · scenepack"), &items).unwrap();
+        db.insert_export(eid, &preset, "/out", Some("Walter · scenepack"), None, &items).unwrap();
         let pid = ProjectId::new();
         let ex = db.export(pid, eid).unwrap().unwrap();
         assert_eq!(ex.items.len(), 2);
@@ -1059,6 +1121,51 @@ pub(crate) mod tests {
         assert_eq!(ex.items[0].path.as_deref(), Some("/out/a_1.mov"));
         assert_eq!(ex.items[1].error.as_deref(), Some("disk full"));
         assert_eq!(ex.status, ExportStatus::Failed);
+        assert_eq!(ex.merged, None);
+    }
+
+    #[test]
+    fn merged_exports_round_trip() {
+        let db = ProjectDb::memory();
+        let m = new_media("/a.mp4", None, None);
+        db.add_media(std::slice::from_ref(&m)).unwrap();
+        let preset = as_export::builtin_presets().remove(0);
+        let eid = ExportId::new();
+        let items = [
+            NewExportItem { media_id: m.id, start: 10, end: 34, name: "a_1".into(), audio_ordinal: None },
+            NewExportItem { media_id: m.id, start: 50, end: 60, name: "a_2".into(), audio_ordinal: None },
+        ];
+        let file =
+            MergedFile { name: "Show_Walter_scenepack".into(), path: None, verified: false, bytes: None, error: None };
+        db.insert_export(eid, &preset, "/out", None, Some(&file), &items).unwrap();
+        let pid = ProjectId::new();
+        let ex = db.export(pid, eid).unwrap().unwrap();
+        assert_eq!(ex.merged.as_ref(), Some(&file));
+
+        let part = ClipOutcome {
+            path: "/out/.autoscene-partial/x/part-00001.mov".into(),
+            frames: 24,
+            verified: true,
+            encoder: "prores_ks".into(),
+            bytes: 9e6,
+        };
+        db.update_export_part(ex.items[0].id, ExportStatus::Done, Some(&part), None).unwrap();
+        db.update_export_part(ex.items[1].id, ExportStatus::Failed, None, Some("gone")).unwrap();
+        let ex = db.export(pid, eid).unwrap().unwrap();
+        assert_eq!((ex.items[0].path.as_deref(), ex.items[0].bytes), (None, None), "a part isn't a file of its own");
+        assert!(ex.items[0].verified);
+
+        let done = MergedFile {
+            path: Some("/out/Show_Walter_scenepack.mov".into()),
+            verified: true,
+            bytes: Some(1e7),
+            ..file
+        };
+        db.set_export_merged(eid, &done, &[ex.items[0].id]).unwrap();
+        let ex = db.export(pid, eid).unwrap().unwrap();
+        assert_eq!(ex.merged.as_ref(), Some(&done));
+        assert_eq!(ex.items[0].path, done.path, "a clip in the file points at it");
+        assert_eq!(ex.items[1].path, None);
     }
 
     #[test]
@@ -1068,18 +1175,24 @@ pub(crate) mod tests {
         db.add_media(std::slice::from_ref(&m)).unwrap();
         let eid = ExportId::new();
         let preset = as_export::builtin_presets().remove(0);
-        db.insert_export(
-            eid,
-            &preset,
-            "/out",
-            None,
-            &[NewExportItem { media_id: m.id, start: 0, end: 5, name: "x".into(), audio_ordinal: None }],
-        )
-        .unwrap();
+        let item = [NewExportItem { media_id: m.id, start: 0, end: 5, name: "x".into(), audio_ordinal: None }];
+        db.insert_export(eid, &preset, "/out", None, None, &item).unwrap();
+        // A file of two clips, one of them rendered already.
+        let joining = ExportId::new();
+        let file = MergedFile { name: "x".into(), path: None, verified: false, bytes: None, error: None };
+        let two = [item[0].clone(), item[0].clone()];
+        db.insert_export(joining, &preset, "/joined", None, Some(&file), &two).unwrap();
+        let pid = ProjectId::new();
+        let rendered = db.export(pid, joining).unwrap().unwrap().items[0].id;
+        db.update_export_part(rendered, ExportStatus::Done, None, None).unwrap();
         db.close_stale_exports().unwrap();
-        let ex = db.export(ProjectId::new(), eid).unwrap().unwrap();
+        let ex = db.export(pid, eid).unwrap().unwrap();
         assert_eq!(ex.status, ExportStatus::Cancelled);
         assert_eq!(ex.items[0].status, ExportStatus::Cancelled);
+        let ex = db.export(pid, joining).unwrap().unwrap();
+        assert_eq!(ex.status, ExportStatus::Cancelled);
+        assert!(ex.items.iter().all(|i| i.status == ExportStatus::Cancelled), "no clip is in a file that wasn't made");
+        assert_eq!(db.merged_exports().unwrap(), vec![(joining, "/joined".to_string())]);
     }
 
     #[test]

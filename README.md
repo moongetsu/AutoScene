@@ -42,7 +42,8 @@ through DirectML on Windows and Core ML on macOS; on Linux it runs on the CPU.
   analysis wasn't sure about with one key each. Your decisions survive every
   later analysis. Anime characters come in a later version.
 - **Scenepacks.** For each character you get their shots, filters and your own
-  picks, then one export with file names from a template.
+  picks, then one export: a single video with a chapter for each shot, or a
+  file per shot, named from a template.
 - **A player for editors.** It has J/K/L shuttle, frame stepping, in and out
   points, and a zoomable timeline with shots and character lanes.
 

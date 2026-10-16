@@ -5,7 +5,10 @@ use std::process::Stdio;
 
 use as_core::{CancelToken, FrameIndex, FrameRange};
 use as_export::preset::{EncoderPref, Gop, VideoCodec};
-use as_export::{ClipJob, ExportPreset, builtin_presets, export_clip};
+use as_export::{
+    ClipJob, ExportPreset, JoinJob, JoinPart, MergePlan, MergeSource, Part, builtin_presets, export_clip, join_parts,
+    plan_merge,
+};
 use as_media::{MediaInfo, Source, Tools, build_frame_index, idet, probe};
 use as_testkit::{Truth, barcode, fixtures_dir, load_truth};
 
@@ -116,6 +119,7 @@ fn check(tools: &Tools, fx: &Fixture, range: FrameRange, preset: &ExportPreset, 
         preset,
         out_stem: work.join(format!("{}_{}_{}_{}", fx.file.replace('.', "_"), preset.id, range.start, range.end)),
         title: None,
+        part: None,
     };
     let out = export_clip(tools, &job, &CancelToken::new(), |_| {}).unwrap();
     assert!(out.verified, "{} {range:?} {}: self-verification failed", fx.file, preset.id);
@@ -228,6 +232,7 @@ fn audio_is_cut_with_the_video() {
                 preset: &p,
                 out_stem: work.path().join(format!("a_{}_{}", file.replace('.', "_"), shot.start)),
                 title: None,
+                part: None,
             };
             let out = export_clip(&tools, &job, &CancelToken::new(), |_| {}).unwrap();
             let pcm = audio_pcm(&tools, Path::new(&out.path));
@@ -259,6 +264,7 @@ fn dotted_names_get_their_own_files() {
             preset: &p,
             out_stem: work.path().join(stem),
             title: None,
+            part: None,
         };
         let out = export_clip(&tools, &job, &CancelToken::new(), |_| {}).unwrap();
         assert!(out.verified);
@@ -300,6 +306,7 @@ fn late_audio_stays_in_sync() {
             preset: &p,
             out_stem: work.path().join(format!("late_{}", p.id)),
             title: None,
+            part: None,
         };
         let out = export_clip(&tools, &job, &CancelToken::new(), |_| {}).unwrap();
         assert!(out.verified);
@@ -357,6 +364,7 @@ fn mobile_preset_mixes_surround_to_stereo() {
             preset: &p,
             out_stem: work.path().join(format!("surround_{id}")),
             title: None,
+            part: None,
         };
         let out = export_clip(&tools, &job, &CancelToken::new(), |_| {}).unwrap();
         assert!(out.verified);
@@ -480,6 +488,7 @@ fn audio_dropouts_keep_sync() {
         preset: &preset("prores-hq"),
         out_stem: work.path().join("dropout_clip"),
         title: None,
+        part: None,
     };
     let out = export_clip(&tools, &job, &CancelToken::new(), |_| {}).unwrap();
     assert!(out.verified);
@@ -499,4 +508,391 @@ fn audio_dropouts_keep_sync() {
     .unwrap();
     let at = onset(&audio_pcm(&tools, &proxy_out));
     assert!((at - (2.0 + r.t0)).abs() < 0.006, "preview: tone starts at {at:.4} s, want {:.4} s", 2.0 + r.t0);
+}
+
+// -- merged exports -------------------------------------------------------------
+
+/// An episode a merged export cuts from: a fixture, or a file made in a test.
+struct Media {
+    path: PathBuf,
+    info: MediaInfo,
+    index: FrameIndex,
+}
+
+fn media(tools: &Tools, path: PathBuf, work: &Path) -> Media {
+    let mut info = probe(tools, &path).unwrap();
+    if info.video.field_order.is_none()
+        && let Some(order) = idet::detect_field_order(tools, &path, &info).unwrap()
+    {
+        info.video.field_order = Some(order.into());
+    }
+    let index = build_frame_index(tools, &path, &info, work, &CancelToken::new(), |_| {}).unwrap();
+    Media { path, info, index }
+}
+
+fn fixture(tools: &Tools, file: &str, work: &Path) -> Media {
+    media(tools, fixtures_dir().join(file), work)
+}
+
+/// A clip of a merged export: frames of an episode, and its audio track.
+type Cut<'a> = (&'a Media, FrameRange, Option<u32>);
+
+struct Merged {
+    path: PathBuf,
+    plan: MergePlan,
+}
+
+/// Render every clip as a part and join them, as a merged export does.
+fn merge(tools: &Tools, cuts: &[Cut], preset: &ExportPreset, work: &Path, name: &str) -> Merged {
+    let sources: Vec<MergeSource> = cuts
+        .iter()
+        .map(|(m, range, audio)| MergeSource { info: &m.info, index: &m.index, range: *range, audio_ordinal: *audio })
+        .collect();
+    let plan = plan_merge(tools.caps(), preset, &sources).unwrap();
+    let dir = work.join(format!("{name}-parts"));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut parts = Vec::new();
+    for (i, ((m, range, audio), timing)) in cuts.iter().zip(&plan.parts).enumerate() {
+        let job = ClipJob {
+            src: Source { path: &m.path, info: &m.info, index: &m.index },
+            range: *range,
+            audio_ordinal: *audio,
+            preset,
+            out_stem: dir.join(format!("part-{:05}", i + 1)),
+            title: None,
+            part: Some(Part { shape: &plan.shape, samples: timing.samples }),
+        };
+        let out = export_clip(tools, &job, &CancelToken::new(), |_| {}).unwrap();
+        assert!(out.verified, "{name}: part {} ({range:?}) failed its self-verification", i + 1);
+        parts.push(JoinPart {
+            path: out.path.into(),
+            frames: out.frames,
+            timing: *timing,
+            title: format!("Shot {} = {}", i + 1, range.start),
+        });
+    }
+    let job = JoinJob {
+        parts: &parts,
+        shape: &plan.shape,
+        preset,
+        out_stem: work.join(name),
+        work_dir: &dir,
+        title: Some(format!("{name} · scenepack")),
+    };
+    let out = join_parts(tools, &job, &CancelToken::new(), |_| {}).unwrap();
+    assert!(out.verified, "{name}: the joined file failed its check");
+    let left: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| !n.starts_with("part-"))
+        .collect();
+    assert!(left.is_empty(), "{name}: join files left behind: {left:?}");
+    Merged { path: out.path.into(), plan }
+}
+
+/// Where each cut starts in the merged file, in seconds.
+fn starts(m: &Merged) -> Vec<f64> {
+    let t = f64::from(m.plan.shape.timescale);
+    let mut at = 0u64;
+    m.plan
+        .parts
+        .iter()
+        .map(|p| {
+            let s = at as f64 / t;
+            at += p.ticks;
+            s
+        })
+        .collect()
+}
+
+/// Every frame of every cut, in order and at its own time; a chapter per cut.
+fn check_merged(tools: &Tools, m: &Merged, cuts: &[Cut], name: &str) {
+    let want: Vec<u32> = cuts.iter().flat_map(|(_, r, _)| r.start..r.end).collect();
+    assert_eq!(barcodes(tools, &m.path), want, "{name}: decoded frames");
+    let times = frame_times(tools, &m.path);
+    assert_eq!(times.len(), want.len(), "{name}: frame count");
+    let mut i = 0;
+    for ((media, r, _), start) in cuts.iter().zip(starts(m)) {
+        for f in r.start..r.end {
+            let offset = if media.index.is_vfr() {
+                media.index.t(f) - media.index.t(r.start)
+            } else {
+                f64::from(f - r.start) / media.index.nominal_fps.to_f64()
+            };
+            let want = start + offset;
+            assert!((times[i] - want).abs() < 2e-6, "{name}: frame {f} of {r:?} at {:.6}, want {want:.6}", times[i]);
+            i += 1;
+        }
+    }
+    let out = tools
+        .ffprobe()
+        .args(["-show_entries", "chapter=start_time,end_time:chapter_tags=title", "-of", "json"])
+        .arg(&m.path)
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let chapters = v["chapters"].as_array().unwrap();
+    assert_eq!(chapters.len(), cuts.len(), "{name}: a chapter per cut");
+    for (k, (c, start)) in chapters.iter().zip(starts(m)).enumerate() {
+        let at: f64 = c["start_time"].as_str().unwrap().parse().unwrap();
+        assert!((at - start).abs() < 2e-6, "{name}: chapter {k} starts at {at}, want {start}");
+        let title = format!("Shot {} = {}", k + 1, cuts[k].1.start);
+        assert_eq!(c["tags"]["title"].as_str(), Some(title.as_str()), "{name}: chapter {k}'s title");
+    }
+}
+
+/// The sound of every cut, where it belongs: exact length (to the sample
+/// for PCM), silence for an episode without sound, each shot's own tone.
+fn check_merged_audio(tools: &Tools, m: &Merged, cuts: &[Cut], truth: &Truth, pcm_exact: bool, name: &str) {
+    let pcm = audio_pcm(tools, &m.path);
+    let samples: u64 = m.plan.parts.iter().map(|p| p.samples).sum();
+    if pcm_exact {
+        assert_eq!(pcm.len() as u64, samples, "{name}: audio length");
+    } else {
+        assert!((pcm.len() as u64).abs_diff(samples) < 2048, "{name}: audio length {} vs {samples}", pcm.len());
+    }
+    let peak = |a: &[i16]| a.iter().map(|v| v.unsigned_abs()).max().unwrap_or(0);
+    let mut at = 0usize;
+    for ((media, r, _), part) in cuts.iter().zip(&m.plan.parts) {
+        let span = at..at + part.samples as usize;
+        at = span.end;
+        // Clear of the edges: the shot before, AAC's ramps.
+        let inner = span.start + 1440..span.end.saturating_sub(1440).max(span.start + 1440);
+        if media.info.audio.is_empty() {
+            assert!(peak(&pcm[inner]) < 300, "{name}: sound in {r:?} of an episode without any");
+            continue;
+        }
+        // Its sound starts half a second in: silent at first.
+        let late = media.path.ends_with("late_audio_h264.mkv");
+        let Some(shot) = truth.shots().find(|s| s.start <= r.start && r.end <= s.end && s.tone_hz.is_some()) else {
+            continue;
+        };
+        if late || inner.len() < 960 {
+            continue;
+        }
+        let hz = tone_hz(&pcm[inner.start..inner.start + 960]);
+        let want = f64::from(shot.tone_hz.unwrap());
+        assert!((hz - want).abs() / want < 0.12, "{name}: tone {hz:.0} Hz in {r:?}, want {want}");
+    }
+}
+
+#[test]
+fn merged_parts_join_frame_exact() {
+    let Some((tools, truth)) = setup() else { return };
+    let work = tempfile::tempdir().unwrap();
+    let n = truth.frame_count;
+    let fx = |f| fixture(&tools, f, work.path());
+    let (cfr24, ntsc, vfr, ts, two, late, prores, avi) = (
+        fx("cfr24_h264.mp4"),
+        fx("cfr23976_h264.mp4"),
+        fx("vfr_h264.mkv"),
+        fx("interlaced_h264.ts"),
+        fx("two_audio_h264.mkv"),
+        fx("late_audio_h264.mkv"),
+        fx("prores.mov"),
+        fx("interlaced_xvid.avi"),
+    );
+    let cuts: Vec<Cut> = vec![
+        (&cfr24, FrameRange::new(0, 12), None),
+        (&ntsc, FrameRange::new(90, 130), None),
+        // No sound at all; across its 24 → 60 → 30 fps changes.
+        (&vfr, FrameRange::new(180, 260), None),
+        (&cfr24, FrameRange::new(268, 269), None),
+        (&ts, FrameRange::new(250, 258), None),
+        (&two, FrameRange::new(160, 200), Some(1)),
+        (&late, FrameRange::new(6, 30), None),
+        (&prores, FrameRange::new(346, 394), None),
+        (&avi, FrameRange::new(100, 112), None),
+        (&ntsc, FrameRange::new(n - 11, n), None),
+    ];
+    for (p, exact) in [(preset("prores-hq"), true), (software_h264(), false)] {
+        let name = format!("merged-{}", p.id);
+        let m = merge(&tools, &cuts, &p, work.path(), &name);
+        // 24, 23.976 and MKV's milliseconds.
+        assert_eq!(m.plan.shape.timescale, 24_000);
+        assert!(m.path.extension().is_some_and(|e| e == p.container.ext()), "{name}: {}", m.path.display());
+        check_merged(&tools, &m, &cuts, &name);
+        check_merged_audio(&tools, &m, &cuts, &truth, exact, &name);
+        // The second track was taken: it's the first at half the level.
+        let pcm = audio_pcm(&tools, &m.path);
+        let span = |k: usize| {
+            let at: u64 = m.plan.parts[..k].iter().map(|p| p.samples).sum();
+            let (a, b) = (at as usize + 2400, (at + m.plan.parts[k].samples) as usize - 2400);
+            pcm[a..b].iter().map(|v| v.unsigned_abs()).max().unwrap() as f64
+        };
+        let (half, full) = (span(5), span(1));
+        assert!((0.4..0.6).contains(&(half / full)), "{name}: the second track's level {half} vs {full}");
+        let info = probe(&tools, &m.path).unwrap();
+        assert_eq!((info.video.width, info.video.height), (640, 360));
+        assert_eq!(info.audio.len(), 1, "{name}: one sound track");
+        assert!(!info.is_interlaced(), "{name}: deinterlaced");
+    }
+    // A second join of the same name takes a free one.
+    let again = merge(&tools, &cuts[..2], &preset("prores-hq"), work.path(), "merged-prores-hq");
+    assert!(again.path.ends_with("merged-prores-hq_2.mov"), "{}", again.path.display());
+}
+
+/// Episodes of other sizes and pixel shapes come out in one frame: scaled to
+/// fit, letterboxed or pillarboxed, square pixels; mono and stereo episodes
+/// share one stereo track.
+#[test]
+fn merged_sizes_and_pixel_shapes_become_one() {
+    let Some((tools, _)) = setup() else { return };
+    let work = tempfile::tempdir().unwrap();
+    let make = |name: &str, args: &[&str]| -> Media {
+        let path = work.path().join(name);
+        let status = tools.ffmpeg().args(["-v", "error", "-y"]).args(args).arg(&path).status().unwrap();
+        assert!(status.success(), "{name}");
+        media(&tools, path, work.path())
+    };
+    let master = fixtures_dir().join("cfr24_h264.mp4");
+    let master = master.to_str().unwrap();
+    let base = fixture(&tools, "cfr24_h264.mp4", work.path());
+    let hd = make("hd.mp4", &["-i", master, "-vf", "scale=1280:720", "-c:v", "libx264", "-crf", "12", "-c:a", "copy"]);
+    // Anamorphic: 480×360 stored, 640×360 shown.
+    let squeezed = make(
+        "squeezed.mkv",
+        &["-i", master, "-vf", "scale=480:360,setsar=4/3", "-c:v", "libx264", "-crf", "12", "-c:a", "copy"],
+    );
+    assert_eq!(squeezed.info.video.sar, as_core::Rational::new(4, 3));
+    // 4:3 with stereo sound and no barcode: pillarboxed.
+    let four_three = make(
+        "four_three.mp4",
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=s=480x360:r=24:d=2",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=f=440:r=48000:d=2",
+            "-ac",
+            "2",
+            "-c:v",
+            "libx264",
+            "-c:a",
+            "aac",
+        ],
+    );
+    let cuts: Vec<Cut> = vec![
+        (&base, FrameRange::new(0, 40), None),
+        (&hd, FrameRange::new(48, 60), None),
+        (&squeezed, FrameRange::new(84, 100), None),
+        (&four_three, FrameRange::new(0, 12), None),
+    ];
+    let p = preset("prores-hq");
+    let m = merge(&tools, &cuts, &p, work.path(), "shapes");
+    assert_eq!((m.plan.shape.width, m.plan.shape.height), (640, 360));
+    assert_eq!(m.plan.shape.audio.as_deref(), Some("stereo"), "mono and stereo episodes");
+    let info = probe(&tools, &m.path).unwrap();
+    assert_eq!((info.video.width, info.video.height), (640, 360));
+    assert_eq!(info.video.sar, as_core::Rational::new(1, 1));
+    assert_eq!(info.audio[0].channels, 2);
+    // Every frame as grey: the barcode parts read back, the 4:3 one is pillarboxed.
+    let out = tools
+        .ffmpeg()
+        .args(["-v", "error", "-i"])
+        .arg(&m.path)
+        .args(["-map", "0:v:0", "-fps_mode", "passthrough", "-vf", "format=gray", "-f", "rawvideo", "-"])
+        .output()
+        .unwrap();
+    let frames: Vec<&[u8; 640 * 360]> = out.stdout.as_chunks::<{ 640 * 360 }>().0.iter().collect();
+    assert_eq!(frames.len(), 40 + 12 + 16 + 12);
+    let want: Vec<u32> = cuts[..3].iter().flat_map(|(_, r, _)| r.start..r.end).collect();
+    for (i, (f, want)) in frames.iter().zip(&want).enumerate() {
+        let code = barcode::read_luma(&f[..], 640, 360, 640).unwrap_or_else(|| panic!("frame {i}: no barcode"));
+        assert_eq!(u32::from(code.frame), *want, "frame {i}");
+    }
+    for f in &frames[68..] {
+        let bars = (0..360).flat_map(|y| (0..76).chain(564..640).map(move |x| f[y * 640 + x]));
+        assert!(bars.max().unwrap() < 24, "pillarbox bars are black");
+        assert!(f[180 * 640 + 320] > 24 || f[100 * 640 + 300] > 24, "the picture is inside");
+    }
+    let pcm = audio_pcm(&tools, &m.path);
+    let start = m.plan.parts[..3].iter().map(|p| p.samples as usize).sum::<usize>();
+    let hz = tone_hz(&pcm[start + 1440..start + 1440 + 4800]);
+    assert!((hz - 440.0).abs() < 25.0, "the 4:3 episode's tone: {hz:.0} Hz");
+    // A mono episode plays at its own level on both sides, not 3 dB down.
+    let peak = |a: &[i16]| a.iter().map(|v| v.unsigned_abs()).max().unwrap() as f64;
+    let source = audio_pcm(&tools, &base.path);
+    let ratio = peak(&pcm[2400..72_000]) / peak(&source[2400..72_000]);
+    assert!((0.9..1.1).contains(&ratio), "mono episode at {ratio:.2} of its level");
+}
+
+/// Folders named like people name them ("#1", "it's", accents) hold the
+/// parts and the file like any other.
+#[test]
+fn merged_files_join_in_any_folder() {
+    let Some((tools, _)) = setup() else { return };
+    let work = tempfile::tempdir().unwrap();
+    let dir = work.path().join("Scenes #1 it's ü");
+    std::fs::create_dir_all(&dir).unwrap();
+    let fx = fixture(&tools, "cfr24_h264.mp4", work.path());
+    let cuts: Vec<Cut> = vec![(&fx, FrameRange::new(0, 12), None), (&fx, FrameRange::new(48, 60), None)];
+    let m = merge(&tools, &cuts, &preset("prores-hq"), &dir, "Show #1");
+    assert_eq!(m.path, dir.join("Show #1.mov"));
+    check_merged(&tools, &m, &cuts, "special folder");
+}
+
+/// HDR and SDR episodes in one file: tone mapped together (BT.709); HDR
+/// episodes alone in a preset that keeps HDR stay HDR.
+#[test]
+fn merged_hdr_and_sdr_are_tone_mapped_together() {
+    let Some((tools, _)) = setup() else { return };
+    let work = tempfile::tempdir().unwrap();
+    let hdr = fixture(&tools, "hevc10_hdr.mkv", work.path());
+    assert_ne!(hdr.info.video.hdr, as_media::HdrKind::None, "the fixture is HDR");
+    let sdr = fixture(&tools, "cfr24_h264.mp4", work.path());
+    let mut hevc = preset("hevc10");
+    hevc.video = VideoCodec::Hevc { quality: 18, gop: Gop::Editing, encoder: EncoderPref::Software, ten_bit: true };
+
+    let mixed: Vec<Cut> = vec![(&hdr, FrameRange::new(0, 20), None), (&sdr, FrameRange::new(20, 30), None)];
+    let m = merge(&tools, &mixed, &hevc, work.path(), "mixed");
+    assert!(m.plan.shape.tonemap);
+    check_merged(&tools, &m, &mixed, "mixed");
+    let info = probe(&tools, &m.path).unwrap();
+    assert_eq!(info.video.hdr, as_media::HdrKind::None);
+    assert_eq!(info.video.color_transfer.as_deref(), Some("bt709"));
+    assert_eq!(info.video.color_primaries.as_deref(), Some("bt709"));
+    // No HDR light levels left on an SDR picture.
+    let side = tools.ffprobe().args(["-show_entries", "stream_side_data_list", "-of", "json"]).arg(&m.path).output();
+    let side = String::from_utf8_lossy(&side.unwrap().stdout).to_lowercase();
+    assert!(!side.contains("light level") && !side.contains("mastering"), "HDR metadata left: {side}");
+
+    let all_hdr: Vec<Cut> = vec![(&hdr, FrameRange::new(0, 20), None), (&hdr, FrameRange::new(300, 310), None)];
+    let m = merge(&tools, &all_hdr, &preset("prores-hq"), work.path(), "hdr");
+    assert!(!m.plan.shape.tonemap);
+    check_merged(&tools, &m, &all_hdr, "hdr");
+    let info = probe(&tools, &m.path).unwrap();
+    assert_eq!(info.video.hdr, hdr.info.video.hdr, "HDR kept");
+}
+
+/// Hardware encoders write the frame rate into the stream headers, so parts
+/// of 24 and 23.976 fps episodes differ there; the file still decodes cleanly.
+#[test]
+fn merged_hardware_parts_join() {
+    let Some((tools, _)) = setup() else { return };
+    if tools.caps().hw_encoder(as_media::CodecFamily::H264).is_none() {
+        eprintln!("no hardware H.264 encoder on this machine");
+        return;
+    }
+    let work = tempfile::tempdir().unwrap();
+    let a = fixture(&tools, "cfr24_h264.mp4", work.path());
+    let b = fixture(&tools, "cfr23976_h264.mp4", work.path());
+    let cuts: Vec<Cut> = vec![
+        (&a, FrameRange::new(0, 30), None),
+        (&b, FrameRange::new(30, 60), None),
+        (&a, FrameRange::new(60, 70), None),
+    ];
+    for id in ["h264-edit", "hevc10"] {
+        let name = format!("hw-{id}");
+        let m = merge(&tools, &cuts, &preset(id), work.path(), &name);
+        check_merged(&tools, &m, &cuts, &name);
+        let out = tools.ffmpeg().args(["-v", "error", "-i"]).arg(&m.path).args(["-f", "null", "-"]).output().unwrap();
+        let log = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success() && log.trim().is_empty(), "{name}: decoding complains: {log}");
+    }
 }

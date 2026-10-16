@@ -193,7 +193,13 @@ fn import_preview_and_export_three_episodes() {
     let prores = builtin_presets().into_iter().find(|p| p.id == "prores-hq").unwrap();
     let out_dir = lib.default_export_dir(&summary).unwrap();
     for preset in [prores, h264] {
-        let req = ExportRequest { preset_id: preset.id.clone(), out_dir: None, clips: clips.clone(), label: None };
+        let req = ExportRequest {
+            preset_id: preset.id.clone(),
+            out_dir: None,
+            clips: clips.clone(),
+            label: None,
+            merge: None,
+        };
         let ex = project.create_export(&req, preset, &out_dir).unwrap();
         assert_eq!(ex.status, ExportStatus::Queued);
         let updates = std::cell::Cell::new(0);
@@ -218,7 +224,13 @@ fn import_preview_and_export_three_episodes() {
 
     // Exporting the same range again with the same preset picks a new name.
     let prores = builtin_presets().into_iter().find(|p| p.id == "prores-hq").unwrap();
-    let req = ExportRequest { preset_id: prores.id.clone(), out_dir: None, clips: clips[..1].to_vec(), label: None };
+    let req = ExportRequest {
+        preset_id: prores.id.clone(),
+        out_dir: None,
+        clips: clips[..1].to_vec(),
+        label: None,
+        merge: None,
+    };
     let again = project.create_export(&req, prores.clone(), &out_dir).unwrap();
     assert_eq!(again.items[0].name, "Fixture_Show_cfr24_h264_00-00-04-04_2");
     // …and a second one queued before the first has written anything gets its own name too.
@@ -258,6 +270,7 @@ fn bad_ranges_and_missing_files_are_refused() {
         out_dir: None,
         clips: vec![ClipRequest { media_id: id, start: s, end: e, name: Some("x".into()) }],
         label: None,
+        merge: None,
     };
     let out = tmp.path().join("out");
     assert!(project.create_export(&req(10, 10), preset.clone(), &out).is_err(), "empty range");
@@ -484,4 +497,165 @@ fn a_moved_episode_keeps_its_analysis() {
     project.ingest(&tools, id, "eng", &cancel, &|_, _| {}).unwrap();
     assert_eq!(walters(&project), 0);
     assert_eq!(project.cast().unwrap().characters[0].name.as_deref(), Some("Walter"));
+}
+
+/// Names in a folder, sorted (hidden work folders included).
+fn folder_names(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|e| e.file_name().to_string_lossy().into())
+        .collect();
+    names.sort();
+    names
+}
+
+/// A scenepack in one file: the folder holds that file and nothing else,
+/// with every clip's frames in order and a chapter each. A clip whose
+/// episode went missing is left out (and the export says so); a cancelled
+/// export leaves nothing behind.
+#[test]
+fn a_merged_export_is_one_file_with_every_clip() {
+    let Some(_truth) = load_truth() else { return };
+    let tools = Tools::locate(None).expect("ffmpeg on PATH");
+    let tmp = tempfile::tempdir().unwrap();
+    let lib = Library::open(&AppPaths::at(tmp.path().join("data"))).unwrap();
+    lib.update_settings(&AppSettings {
+        library_root: tmp.path().join("Library").display().to_string(),
+        export_preset_id: "prores-hq".into(),
+        audio_language: "eng".into(),
+    })
+    .unwrap();
+    // Copies, so one can go missing.
+    let files: Vec<std::path::PathBuf> = FILES
+        .iter()
+        .map(|f| {
+            let copy = tmp.path().join(f);
+            std::fs::copy(fixtures_dir().join(f), &copy).unwrap();
+            copy
+        })
+        .collect();
+    let (_, project, added) = lib
+        .create_project(&NewProject {
+            title: "Joined".into(),
+            kind: ProjectKind::Series,
+            content: ContentKind::Live,
+            files: files.iter().map(|f| f.display().to_string()).collect(),
+        })
+        .unwrap();
+    let cancel = CancelToken::new();
+    for &id in &added {
+        project.ingest(&tools, id, "eng", &cancel, &|_, _| {}).unwrap();
+    }
+    let media = project.media_list().unwrap();
+    // MP4, MPEG-TS with a start offset, VFR without sound.
+    let ranges = [(100u32, 148u32), (199, 201), (0, 24)];
+    let clips: Vec<ClipRequest> = media
+        .iter()
+        .zip(ranges)
+        .enumerate()
+        .map(|(i, (m, (s, e)))| ClipRequest { media_id: m.id, start: s, end: e, name: Some(format!("Clip {i}")) })
+        .collect();
+    let prores = builtin_presets().into_iter().find(|p| p.id == "prores-hq").unwrap();
+    let out = tmp.path().join("out");
+    let req = ExportRequest {
+        preset_id: prores.id.clone(),
+        out_dir: None,
+        clips: clips.clone(),
+        label: Some("Walter · scenepack".into()),
+        merge: Some("Joined Walter".into()),
+    };
+    let ex = project.create_export(&req, prores.clone(), &out).unwrap();
+    assert_eq!(ex.merged.as_ref().map(|f| f.name.as_str()), Some("Joined Walter"));
+    let updates = std::cell::Cell::new(0);
+    let ex = project.run_export(&tools, ex.id, &cancel, &|_, _| {}, &|| updates.set(updates.get() + 1)).unwrap();
+    assert_eq!(ex.status, ExportStatus::Done);
+    assert_eq!(updates.get(), 2 * ranges.len() + 1, "every clip reports its start and end, the file its end");
+    let file = ex.merged.clone().unwrap();
+    assert!(file.verified && file.error.is_none() && file.bytes.is_some_and(|b| b > 0.0), "{file:?}");
+    let path = file.path.clone().unwrap();
+    assert_eq!(folder_names(&out), ["Joined Walter.mov"], "one file and nothing else");
+    for item in &ex.items {
+        assert_eq!((item.status, item.path.as_deref(), item.verified), (ExportStatus::Done, Some(path.as_str()), true));
+    }
+    let got: Vec<u32> = frames_with_times(&tools, Path::new(&path)).into_iter().map(|(_, c)| c).collect();
+    assert_eq!(got, ranges.iter().flat_map(|&(s, e)| s..e).collect::<Vec<_>>());
+    let chapters =
+        tools.ffprobe().args(["-show_entries", "chapter_tags=title", "-of", "csv=p=0"]).arg(&path).output().unwrap();
+    let titles: Vec<String> =
+        String::from_utf8_lossy(&chapters.stdout).lines().map(|l| l.trim_end_matches(',').to_string()).collect();
+    assert_eq!(titles, ["Clip 0", "Clip 1", "Clip 2"]);
+
+    // The name is taken: the next file gets its own, and so does one queued
+    // before that one has written anything.
+    let again = project.create_export(&req, prores.clone(), &out).unwrap();
+    assert_eq!(again.merged.as_ref().unwrap().name, "Joined Walter_2");
+    let queued = project.create_export(&req, prores.clone(), &out).unwrap();
+    assert_eq!(queued.merged.as_ref().unwrap().name, "Joined Walter_3");
+
+    // Stopped halfway: nothing is left, none of its clips is in a file.
+    let stop = CancelToken::new();
+    let r = project.run_export(
+        &tools,
+        again.id,
+        &stop,
+        &|_, p| {
+            if p > 0.4 {
+                stop.cancel()
+            }
+        },
+        &|| {},
+    );
+    assert!(matches!(r, Err(as_project::ProjectError::Cancelled)), "{r:?}");
+    let stopped = project.export(again.id).unwrap();
+    assert_eq!(stopped.status, ExportStatus::Cancelled);
+    assert!(stopped.items.iter().all(|i| i.status == ExportStatus::Cancelled && i.path.is_none()));
+    assert_eq!(folder_names(&out), ["Joined Walter.mov"], "the stopped export's parts are gone");
+
+    // An episode went missing: the file holds the other clips, and the
+    // export says one couldn't be made.
+    std::fs::remove_file(&files[1]).unwrap();
+    let ex = project.run_export(&tools, queued.id, &cancel, &|_, _| {}, &|| {}).unwrap();
+    assert_eq!(ex.status, ExportStatus::Failed);
+    assert_eq!(ex.items[1].status, ExportStatus::Failed);
+    assert!(ex.items[1].error.as_deref().is_some_and(|e| e.contains("can't be found")), "{:?}", ex.items[1]);
+    assert!(ex.items[1].path.is_none());
+    let file = ex.merged.unwrap();
+    assert_eq!(file.error, None);
+    let path = file.path.unwrap();
+    assert!(path.ends_with("Joined Walter_3.mov"), "{path}");
+    let got: Vec<u32> = frames_with_times(&tools, Path::new(&path)).into_iter().map(|(_, c)| c).collect();
+    assert_eq!(got, [ranges[0], ranges[2]].iter().flat_map(|&(s, e)| s..e).collect::<Vec<_>>());
+    assert_eq!(folder_names(&out), ["Joined Walter.mov", "Joined Walter_3.mov"]);
+
+    // Stopped while the clips are joined: nothing is left either.
+    let still_there = ExportRequest { clips: vec![clips[0].clone(), clips[2].clone()], ..req.clone() };
+    let joining = project.create_export(&still_there, prores.clone(), &out).unwrap();
+    let stop = CancelToken::new();
+    let r = project.run_export(
+        &tools,
+        joining.id,
+        &stop,
+        &|stage, _| {
+            if stage.starts_with("Joining") {
+                stop.cancel()
+            }
+        },
+        &|| {},
+    );
+    assert!(matches!(r, Err(as_project::ProjectError::Cancelled)), "{r:?}");
+    let stopped = project.export(joining.id).unwrap();
+    assert_eq!(stopped.status, ExportStatus::Cancelled);
+    assert!(stopped.merged.unwrap().path.is_none());
+    assert_eq!(folder_names(&out), ["Joined Walter.mov", "Joined Walter_3.mov"]);
+
+    // Parts a crash left behind go when the project is opened again.
+    let left = out.join(".autoscene-partial").join(ex.id.to_string());
+    std::fs::create_dir_all(&left).unwrap();
+    std::fs::write(left.join("part-00001.mov"), b"part").unwrap();
+    drop((project, lib));
+    let lib = Library::open(&AppPaths::at(tmp.path().join("data"))).unwrap();
+    let id = lib.projects().unwrap()[0].id;
+    lib.project(id).unwrap();
+    assert_eq!(folder_names(&out), ["Joined Walter.mov", "Joined Walter_3.mov"], "the parts are gone");
 }

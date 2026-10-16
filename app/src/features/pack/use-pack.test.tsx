@@ -34,7 +34,7 @@ const clip = (start: number, included: boolean, manual: boolean | null = null): 
   manual,
 })
 const preview = (clips: PackClip[], stamp: string): PackPreview => ({ clips, totals: totalsOf(clips, () => 24), stamp })
-const state: PackState = { spec: DEFAULT_SPEC, naming: { template: "{tc}", folder: true } }
+const state: PackState = { spec: DEFAULT_SPEC, naming: { template: "{tc}", folder: true, merge: true, file: "{character}" } }
 
 const wrapper = ({ children }: { children: React.ReactNode }) => (
   <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>

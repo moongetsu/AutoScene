@@ -398,6 +398,11 @@ export type ExportPlan = {
 	 *  folder named after its character), as it will be named.
 	 */
 	folder: string | null,
+	/**
+	 *  The one file's name (without extension) when the clips are joined
+	 *  into one; `names` are then its chapters.
+	 */
+	file: string | null,
 };
 
 export type ExportPreset = {
@@ -422,6 +427,11 @@ export type ExportRequest = {
 	clips: ClipRequest[],
 	/**  What it is, for the export history ("Walter · scenepack"). */
 	label: string | null,
+	/**
+	 *  Join every clip into one file of this name (without extension), with
+	 *  a chapter per clip named after it; `None`: a file per clip.
+	 */
+	merge?: string | null,
 };
 
 export type ExportStatus = "queued" | "running" | "done" | "failed" | "cancelled";
@@ -436,6 +446,8 @@ export type ExportSummary = {
 	items: ExportItem[],
 	/**  What it is ("Walter · scenepack"); `None` for single clips. */
 	label: string | null,
+	/**  The one file the clips are joined into; `None`: a file per clip. */
+	merged: MergedFile | null,
 };
 
 /**  One face followed through one shot. */
@@ -645,6 +657,19 @@ export type MediaToolsStatus = {
 /**  A native menu item was chosen (macOS). Payload is the item id, e.g. `view:cast`. */
 export type MenuAction = string;
 
+/**  The one file of an export that joins its clips. */
+export type MergedFile = {
+	/**  File name without extension. */
+	name: string,
+	/**  Where it is, once it's made. */
+	path: string | null,
+	/**  Every frame of every clip was checked, and so was the joined file. */
+	verified: boolean,
+	bytes: number | null,
+	/**  Why it couldn't be made. */
+	error: string | null,
+};
+
 export type NewProject = {
 	title: string,
 	kind: ProjectKind,
@@ -708,10 +733,17 @@ export type PackKey = {
 
 /**  How a pack's files are named and where they go. */
 export type PackNaming = {
-	/**  With `{series}`, `{character}`, `{episode}`, `{index}`, `{tc}`, `{frame}`. */
+	/**
+	 *  Each clip's name (its file's, or its chapter's in one file), with
+	 *  `{series}`, `{character}`, `{episode}`, `{index}`, `{tc}`, `{frame}`.
+	 */
 	template: string,
-	/**  Into a folder named after the character. */
+	/**  Into a folder named after the character (a file per clip only). */
 	folder: boolean,
+	/**  Every clip in one file, with a chapter each. */
+	merge: boolean,
+	/**  The one file's name, with `{series}` and `{character}`. */
+	file: string,
 };
 
 export type PackOrder = 

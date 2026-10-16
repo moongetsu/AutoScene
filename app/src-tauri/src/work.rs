@@ -7,8 +7,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use as_api::{AnalysisStage, CastEdit, ContentKind, JobKind, MediaItem, ProxyState, StageState};
-use as_core::{ExportId, MediaId, ProjectId};
+use as_api::{AnalysisStage, CastEdit, ContentKind, ExportSummary, JobKind, MediaItem, ProxyState, StageState};
+use as_core::{MediaId, ProjectId};
 use as_engine::{EngineError, FacesEvent, ShotsEvent};
 use as_jobs::{Class, JobCtx, JobError, JobSpec};
 use as_models::ModelError;
@@ -649,12 +649,20 @@ fn sync_library_posters(app: &AppHandle, project: &Project) {
 }
 
 /// Render an export created with `Project::create_export`.
-pub fn queue_export(app: &AppHandle, project: &Arc<Project>, export_id: ExportId, clips: usize) {
+pub fn queue_export(app: &AppHandle, project: &Arc<Project>, export: &ExportSummary) {
     let state = app.state::<AppState>();
+    let export_id = export.id;
+    let clips = export.items.len();
+    let title = match (clips, export.merged.is_some()) {
+        (1, false) => "Exporting 1 clip".into(),
+        (1, true) => "Exporting 1 clip into one file".into(),
+        (n, false) => format!("Exporting {n} clips"),
+        (n, true) => format!("Exporting {n} clips into one file"),
+    };
     let spec = JobSpec {
         kind: JobKind::Export,
         class: Class::Export,
-        title: if clips == 1 { "Exporting 1 clip".into() } else { format!("Exporting {clips} clips") },
+        title,
         subtitle: project.title().ok(),
         project_id: Some(project.id),
         media_id: None,
@@ -678,18 +686,33 @@ pub fn queue_export(app: &AppHandle, project: &Arc<Project>, export_id: ExportId
         };
         notify();
         let result = project.run_export(&tools, export_id, &ctx.cancel, &|stage, p| ctx.progress(stage, p), &notify);
+        if let Err(e) = &result
+            && !matches!(e, ProjectError::Cancelled)
+            && let Err(fail) = project.abandon_export(export_id, &e.to_string())
+        {
+            log::warn!("marking export {export_id} failed: {}", fail.detail());
+        }
         notify();
         let summary = result.map_err(job_error)?;
+        if let Some(error) = summary.merged.as_ref().and_then(|f| f.error.clone()) {
+            return Err(JobError::Failed(error));
+        }
         let failed = summary.items.iter().filter(|i| i.error.is_some()).count();
         if failed > 0 {
-            return Err(JobError::Failed(if failed == 1 {
-                "1 clip failed to export.".into()
-            } else {
-                format!("{failed} clips failed to export.")
-            }));
+            return Err(JobError::Failed(failed_message(failed, summary.items.len(), summary.merged.is_some())));
         }
         Ok(())
     });
+}
+
+/// What an export with `failed` of its `clips` failing says.
+fn failed_message(failed: usize, clips: usize, one_file: bool) -> String {
+    let what = if failed == 1 { "1 clip".to_string() } else { format!("{failed} clips") };
+    match (one_file, clips.saturating_sub(failed)) {
+        (false, _) => format!("{what} failed to export."),
+        (true, 1) => format!("{what} couldn't be exported; the file has the other one."),
+        (true, rest) => format!("{what} couldn't be exported; the file has the other {rest}."),
+    }
 }
 
 /// On launch: reopen every project, resume interrupted indexing, pending
@@ -772,5 +795,18 @@ pub fn recover_all(app: &AppHandle) {
             }
             Err(e) => log::warn!("recovering analysis of '{}': {}", summary.title, e.detail()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::failed_message;
+
+    #[test]
+    fn failures_say_what_the_file_still_has() {
+        assert_eq!(failed_message(1, 3, false), "1 clip failed to export.");
+        assert_eq!(failed_message(2, 3, false), "2 clips failed to export.");
+        assert_eq!(failed_message(1, 2, true), "1 clip couldn't be exported; the file has the other one.");
+        assert_eq!(failed_message(2, 42, true), "2 clips couldn't be exported; the file has the other 40.");
     }
 }
