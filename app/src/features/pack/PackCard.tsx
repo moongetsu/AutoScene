@@ -12,6 +12,7 @@ import {
 import { ShotFrames } from "@/features/shots/ShotFrames"
 import { useScrub } from "@/features/shots/scrub"
 import { formatShotLength } from "@/features/shots/shots"
+import { commands, errorMessage } from "@/lib/ipc"
 import { matchShortcut, PACK_SHORTCUTS } from "@/lib/shortcuts"
 import { timecode } from "@/lib/timecode"
 import { cn } from "@/lib/utils"
@@ -45,7 +46,8 @@ export const PackCard = memo(function PackCard({
   const { start, end } = clip.shot
   const length = fps ? formatShotLength(((end - start) * fps.den) / fps.num) : ""
   // Drop-frame where the rate counts it, like the files' names.
-  const where = fps ? `${media?.label ? `${media.label} · ` : ""}${timecode(start, fps, true)}` : ""
+  const at = fps ? timecode(start, fps, true) : ""
+  const where = at && `${media?.label ? `${media.label} · ` : ""}${at}`
   const why = clip.included ? null : clip.reason ? REASONS[clip.reason] : "Left out"
   const canPick = pickable(clip)
 
@@ -53,84 +55,84 @@ export const PackCard = memo(function PackCard({
     <ContextMenu>
       <ContextMenuTrigger asChild>
         <div className="group relative aspect-video w-full">
-      <button
-        type="button"
-        aria-pressed={clip.included}
-        disabled={!canPick}
-        onClick={(e) => onToggle(index, e.shiftKey)}
-        data-pack-index={index}
-        onKeyDown={(e) => {
-          const id = matchShortcut(PACK_SHORTCUTS, e.nativeEvent)
-          if (id === "toggle") {
-            e.preventDefault()
-            // A held key would take the shot in and out again and again.
-            if (!e.repeat) onToggle(index, e.shiftKey, true)
-          } else if (id === "watch") {
-            e.preventDefault()
-            onOpen(index)
-          }
-        }}
-        {...scrub.handlers}
-        aria-label={`Shot${where ? ` at ${where}` : ""}${length ? `, ${length}` : ""}${clip.included ? ", in the pack" : `, left out: ${why}`}`}
-        title={where || undefined}
-        className={cn(
-          "relative block size-full overflow-hidden rounded-xl bg-inset text-left outline-none picture-edge",
-          "transition-[transform,box-shadow] duration-[var(--dur-med)] ease-out focus-visible:ring-2 focus-visible:ring-accent-line",
-          canPick && "hover:-translate-y-0.5 hover:shadow-lift",
-          clip.included && "ring-1 ring-accent-line/70",
-        )}
-      >
-        <span
-          className={cn(
-            "absolute inset-0 transition-[opacity,filter] duration-[var(--dur-med)]",
-            !clip.included && "opacity-40 grayscale-[70%] group-hover:opacity-70",
-          )}
-        >
-          <ShotFrames shot={clip.shot} scrub={scrub} />
-        </span>
-        <span className="absolute top-2 left-2 flex items-center gap-1.5">
-          {clip.included ? (
-            <span className="flex size-5 items-center justify-center rounded-full bg-accent text-on-accent shadow-1">
-              <Check weight="bold" className="size-3" />
-            </span>
-          ) : (
-            <span className="rounded-full bg-black/65 px-2 text-[11px] leading-5 text-white/90 backdrop-blur-md">{why}</span>
-          )}
-          {clip.manual === true && (
-            <span className="rounded-full bg-black/55 px-2 text-[11px] leading-5 text-white/80 backdrop-blur-md">Added</span>
-          )}
-        </span>
-        <span className="absolute right-2 bottom-2 flex items-center gap-1.5">
-          <span
-            title={SIZE_LABEL.get(clip.size)}
-            className="rounded-full bg-black/50 px-2 text-[11px] leading-5 font-medium text-white/80 backdrop-blur-md"
+          <button
+            type="button"
+            aria-pressed={clip.included}
+            disabled={!canPick}
+            onClick={(e) => onToggle(index, e.shiftKey)}
+            data-pack-index={index}
+            onKeyDown={(e) => {
+              const id = matchShortcut(PACK_SHORTCUTS, e.nativeEvent)
+              if (id === "toggle") {
+                e.preventDefault()
+                // A held key would take the shot in and out again and again.
+                if (!e.repeat) onToggle(index, e.shiftKey, true)
+              } else if (id === "watch") {
+                e.preventDefault()
+                onOpen(index)
+              }
+            }}
+            {...scrub.handlers}
+            aria-label={`Shot${where ? ` at ${where}` : ""}${length ? `, ${length}` : ""}${clip.included ? ", in the pack" : `, left out: ${why}`}`}
+            title={where || undefined}
+            className={cn(
+              "relative block size-full overflow-hidden rounded-xl bg-inset text-left outline-none picture-edge",
+              "transition-[transform,box-shadow] duration-[var(--dur-med)] ease-out focus-visible:ring-2 focus-visible:ring-accent-line",
+              canPick && "hover:-translate-y-0.5 hover:shadow-lift",
+              clip.included && "ring-1 ring-accent-line/70",
+            )}
           >
-            {SIZE_SHORT.get(clip.size)}
-          </span>
-          {length && (
-            <span className="timecode rounded-full bg-black/50 px-2 text-[11px] leading-5 text-white backdrop-blur-md">{length}</span>
-          )}
-        </span>
-      </button>
-      <button
-        type="button"
-        onClick={() => onOpen(index)}
-        aria-label={`Watch the shot${where ? ` at ${where}` : ""}`}
-        className={cn(
-          "absolute top-2 right-2 flex size-7 items-center justify-center rounded-full bg-black/55 text-white backdrop-blur-md",
-          "opacity-0 transition-opacity group-hover:opacity-100 hover:bg-black/75 focus-visible:opacity-100",
-        )}
-      >
-        <Play weight="fill" className="size-3.5" />
-      </button>
-    </div>
+            <span
+              className={cn(
+                "absolute inset-0 transition-[opacity,filter] duration-[var(--dur-med)]",
+                !clip.included && "opacity-40 grayscale-[70%] group-hover:opacity-70",
+              )}
+            >
+              <ShotFrames shot={clip.shot} scrub={scrub} />
+            </span>
+            <span className="absolute top-2 left-2 flex items-center gap-1.5">
+              {clip.included ? (
+                <span className="flex size-5 items-center justify-center rounded-full bg-accent text-on-accent shadow-1">
+                  <Check weight="bold" className="size-3" />
+                </span>
+              ) : (
+                <span className="rounded-full bg-black/65 px-2 text-[11px] leading-5 text-white/90 backdrop-blur-md">{why}</span>
+              )}
+              {clip.manual === true && (
+                <span className="rounded-full bg-black/55 px-2 text-[11px] leading-5 text-white/80 backdrop-blur-md">Added</span>
+              )}
+            </span>
+            <span className="absolute right-2 bottom-2 flex items-center gap-1.5">
+              <span
+                title={SIZE_LABEL.get(clip.size)}
+                className="rounded-full bg-black/50 px-2 text-[11px] leading-5 font-medium text-white/80 backdrop-blur-md"
+              >
+                {SIZE_SHORT.get(clip.size)}
+              </span>
+              {length && (
+                <span className="timecode rounded-full bg-black/50 px-2 text-[11px] leading-5 text-white backdrop-blur-md">{length}</span>
+              )}
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => onOpen(index)}
+            aria-label={`Watch the shot${where ? ` at ${where}` : ""}`}
+            className={cn(
+              "absolute top-2 right-2 flex size-7 items-center justify-center rounded-full bg-black/55 text-white backdrop-blur-md",
+              "opacity-0 transition-opacity group-hover:opacity-100 hover:bg-black/75 focus-visible:opacity-100",
+            )}
+          >
+            <Play weight="fill" className="size-3.5" />
+          </button>
+        </div>
       </ContextMenuTrigger>
       <ContextMenuContent>
-        <ContextMenuItem onSelect={() => onOpen(index)} shortcut="Enter">
+        <ContextMenuItem onSelect={() => onOpen(index)} shortcut={["Enter"]}>
           <Play /> Watch shot
         </ContextMenuItem>
         {canPick && (
-          <ContextMenuItem onSelect={() => onToggle(index, false)} shortcut="Space">
+          <ContextMenuItem onSelect={() => onToggle(index, false)} shortcut={["Space"]}>
             <Check /> {clip.included ? "Remove from pack" : "Add to pack"}
           </ContextMenuItem>
         )}
@@ -138,9 +140,12 @@ export const PackCard = memo(function PackCard({
           <>
             <ContextMenuSeparator />
             <ContextMenuItem
-              onSelect={() => {
-                void navigator.clipboard.writeText(where).then(() => toast.success("Timecode copied"))
-              }}
+              onSelect={() =>
+                commands
+                  .clipboardWrite(at)
+                  .then(() => toast("Copied timecode", { description: where }))
+                  .catch((e) => toast.error("Couldn't copy the timecode", { description: errorMessage(e) }))
+              }
             >
               <Copy /> Copy timecode
             </ContextMenuItem>

@@ -259,7 +259,7 @@ export function ReviewPage() {
                     }
                   >
                     <Check weight="bold" /> Yes, {suggestion.label}
-                    <Kbd keys={["Y"]} className="ml-1 [&_kbd]:border-black/10 [&_kbd]:bg-black/10 [&_kbd]:text-black/60" />
+                    <Kbd keys={["Y"]} className="ml-1" />
                   </Button>
                   <Button
                     size="lg"

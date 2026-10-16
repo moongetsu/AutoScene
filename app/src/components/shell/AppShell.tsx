@@ -47,15 +47,10 @@ export function AppShell() {
   useEffect(() => startEventBridge(), [])
   const railHidden = useUi((s) => s.sidebarCollapsed)
 
+  // The browser's own menu (Save as, Print, Inspect…) has no place in an app.
   useEffect(() => {
     const onContextMenu = (e: MouseEvent) => {
-      const target = e.target as HTMLElement | null
-      // Let text inputs and textareas keep native context menu for cut/copy/paste
-      if (target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.isContentEditable) {
-        return
-      }
-      // Prevent the default browser context menu everywhere else
-      e.preventDefault()
+      if (!wantsNativeMenu(e.target)) e.preventDefault()
     }
     window.addEventListener("contextmenu", onContextMenu)
     return () => window.removeEventListener("contextmenu", onContextMenu)
@@ -63,8 +58,12 @@ export function AppShell() {
 
   return (
     <ContextMenu>
-      <ContextMenuTrigger asChild>
-        <div className="flex h-full select-none">
+      <ContextMenuTrigger
+        asChild
+        // Text keeps the system menu: stop before any of our menus takes the click.
+        onContextMenuCapture={(e) => wantsNativeMenu(e.target) && e.stopPropagation()}
+      >
+        <div className="flex h-full">
           {!railHidden && <Rail />}
           <main className="relative min-w-0 flex-1 overflow-hidden bg-canvas">
             <Outlet />
@@ -80,30 +79,30 @@ export function AppShell() {
         </div>
       </ContextMenuTrigger>
       <ContextMenuContent>
-        <ContextMenuItem onSelect={() => window.history.back()} shortcut="Alt+←">
+        <ContextMenuItem onSelect={() => window.history.back()}>
           <ArrowLeft /> Back
         </ContextMenuItem>
-        <ContextMenuItem onSelect={() => window.location.reload()} shortcut="Ctrl+R">
+        <ContextMenuItem onSelect={() => window.location.reload()}>
           <ArrowCounterClockwise /> Reload
         </ContextMenuItem>
         <ContextMenuSeparator />
-        <ContextMenuItem onSelect={actions.openPalette} shortcut={shortcutKeys("palette").join("+")}>
+        <ContextMenuItem onSelect={actions.openPalette} shortcut={shortcutKeys("palette")}>
           <MagnifyingGlass /> Command palette…
         </ContextMenuItem>
-        <ContextMenuItem onSelect={actions.newProject} shortcut={shortcutKeys("newProject").join("+")}>
+        <ContextMenuItem onSelect={actions.newProject} shortcut={shortcutKeys("newProject")}>
           <Plus /> New project…
         </ContextMenuItem>
-        <ContextMenuItem onSelect={actions.goLibrary} shortcut={shortcutKeys("library").join("")}>
+        <ContextMenuItem onSelect={actions.goLibrary} shortcut={shortcutKeys("library")}>
           <SquaresFour /> Library
         </ContextMenuItem>
-        <ContextMenuItem onSelect={actions.toggleActivity} shortcut={shortcutKeys("activity").join("+")}>
+        <ContextMenuItem onSelect={actions.toggleActivity} shortcut={shortcutKeys("activity")}>
           <Queue /> Activity
         </ContextMenuItem>
         <ContextMenuSeparator />
-        <ContextMenuItem onSelect={() => actions.goSettings("shortcuts")} shortcut="?">
+        <ContextMenuItem onSelect={() => actions.goSettings("shortcuts")}>
           <Keyboard /> Shortcuts
         </ContextMenuItem>
-        <ContextMenuItem onSelect={() => actions.goSettings("general")} shortcut={shortcutKeys("settings").join("")}>
+        <ContextMenuItem onSelect={() => actions.goSettings("general")} shortcut={shortcutKeys("settings")}>
           <GearSix /> Settings
         </ContextMenuItem>
       </ContextMenuContent>
@@ -111,3 +110,13 @@ export function AppShell() {
   )
 }
 
+const TEXT_INPUTS = new Set(["text", "search", "url", "email", "password", "tel", "number"])
+
+/** Text fields and selected text keep the system menu: cut, copy and paste. */
+function wantsNativeMenu(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false
+  const field = target.closest("input, textarea")
+  if (field instanceof HTMLTextAreaElement || (field instanceof HTMLInputElement && TEXT_INPUTS.has(field.type))) return true
+  if (target instanceof HTMLElement && target.isContentEditable) return true
+  return target.closest("[data-selectable], code, pre") != null && !!window.getSelection()?.toString()
+}

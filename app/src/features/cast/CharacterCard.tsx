@@ -29,36 +29,36 @@ export function CharacterCard({ pid, character: c, className }: { pid: string; c
             className,
           )}
         >
-      <Artwork
-        path={c.cover}
-        className="aspect-[3/4] rounded-2xl picture-edge transition-shadow duration-[var(--dur-med)] group-hover:shadow-lift"
-        imgClassName="group-hover:scale-[1.05] duration-[600ms]"
-        fallback={
-          <div className="flex size-full items-center justify-center artwork-fallback text-fg-3 [&_svg]:size-12">
-            {refinding ? <UserFocus /> : <User />}
-          </div>
-        }
-      >
-        <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/90 via-black/15 to-transparent" />
-        {c.unsure > 0 && (
-          <Badge tone="media" className="absolute top-2.5 right-2.5">
-            +{c.unsure} to review
-          </Badge>
-        )}
-        <div className="absolute inset-x-0 bottom-0 p-3.5">
-          <div className={cn("display truncate text-2xl leading-7", c.name ? "text-white" : "text-white/70 italic")}>{c.label}</div>
-          <div className="mt-0.5 truncate text-xs text-white/70">
-            {refinding ? (
-              "Being found again…"
-            ) : (
-              <>
-                {formatScreenTime(c.screenSec ?? 0)} · {plural(c.shots, "shot")}
-              </>
+          <Artwork
+            path={c.cover}
+            className="aspect-[3/4] rounded-2xl picture-edge transition-shadow duration-[var(--dur-med)] group-hover:shadow-lift"
+            imgClassName="group-hover:scale-[1.05] duration-[600ms]"
+            fallback={
+              <div className="flex size-full items-center justify-center artwork-fallback text-fg-3 [&_svg]:size-12">
+                {refinding ? <UserFocus /> : <User />}
+              </div>
+            }
+          >
+            <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/90 via-black/15 to-transparent" />
+            {c.unsure > 0 && (
+              <Badge tone="media" className="absolute top-2.5 right-2.5">
+                +{c.unsure} to review
+              </Badge>
             )}
-          </div>
-        </div>
-      </Artwork>
-    </Link>
+            <div className="absolute inset-x-0 bottom-0 p-3.5">
+              <div className={cn("display truncate text-2xl leading-7", c.name ? "text-white" : "text-white/70 italic")}>{c.label}</div>
+              <div className="mt-0.5 truncate text-xs text-white/70">
+                {refinding ? (
+                  "Being found again…"
+                ) : (
+                  <>
+                    {formatScreenTime(c.screenSec ?? 0)} · {plural(c.shots, "shot")}
+                  </>
+                )}
+              </div>
+            </div>
+          </Artwork>
+        </Link>
       </ContextMenuTrigger>
       <ContextMenuContent>
         <ContextMenuItem onSelect={() => void navigate({ to: "/p/$pid/cast/$cid", params: { pid, cid: c.id } })}>

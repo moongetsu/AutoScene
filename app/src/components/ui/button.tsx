@@ -4,9 +4,9 @@ import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "@/lib/utils"
 
 /**
- * Pills. `primary` is the one main action of a screen (warm white, like a
- * player's Play button); `secondary` and `glass` sit on the dark and on
- * pictures; `accent` (gold) is for what is selected or running.
+ * Glass pills. `primary` is the one main action of a screen (bright white
+ * glass); `secondary` and `glass` are dark glass that sits back, on the dark
+ * and on pictures; `accent` (gold glass) is for what is selected or running.
  */
 const buttonVariants = cva(
   [

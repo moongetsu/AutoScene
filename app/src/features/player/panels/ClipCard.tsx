@@ -61,7 +61,7 @@ export function ClipCard({
       </dl>
       <Button variant="primary" size="lg" className="mt-4 w-full" disabled={!canExport} onClick={onExport}>
         <Scissors weight="bold" /> Export clip
-        <Kbd keys={[modKey, "E"]} className="ml-auto [&_kbd]:border-black/10 [&_kbd]:bg-black/10 [&_kbd]:text-black/60" />
+        <Kbd keys={[modKey, "E"]} className="ml-auto" />
       </Button>
       {!hasMarks && <p className="mt-2.5 text-center text-xs text-fg-3">Mark an in or out point, or a whole shot (X).</p>}
     </Card>

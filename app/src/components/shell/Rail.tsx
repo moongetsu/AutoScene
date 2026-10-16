@@ -1,3 +1,4 @@
+import type * as React from "react"
 import { useState } from "react"
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router"
 import {
@@ -16,6 +17,7 @@ import {
   Television,
   Trash,
 } from "@/components/icons"
+import { toast } from "sonner"
 import type { ProjectSummary } from "@/bindings"
 import { AutoSceneMark } from "@/components/brand/AutoSceneMark"
 import { Artwork } from "@/components/ui/artwork"
@@ -26,10 +28,11 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu"
+import { ProgressRing } from "@/components/ui/progress"
 import { Tooltip } from "@/components/ui/tooltip"
 import { DeleteProjectDialog, RenameProjectDialog } from "@/features/library/ProjectDialogs"
 import { useAppActions } from "@/lib/actions"
-import { commands } from "@/lib/ipc"
+import { commands, errorMessage } from "@/lib/ipc"
 import { useProjects } from "@/lib/queries"
 import { shortcutKeys } from "@/lib/shortcuts"
 import { cn } from "@/lib/utils"
@@ -70,21 +73,7 @@ export function Rail() {
         </Link>
       </Tooltip>
 
-      <ContextMenu>
-        <ContextMenuTrigger asChild>
-          <div>
-            <RailLink to="/" icon={<SquaresFour />} label="Library" active={path === "/"} shortcut={shortcutKeys("library")} />
-          </div>
-        </ContextMenuTrigger>
-        <ContextMenuContent>
-          <ContextMenuItem onSelect={actions.goLibrary} shortcut={shortcutKeys("library").join("")}>
-            <SquaresFour /> Library
-          </ContextMenuItem>
-          <ContextMenuItem onSelect={actions.newProject} shortcut={shortcutKeys("newProject").join("+")}>
-            <Plus /> New project…
-          </ContextMenuItem>
-        </ContextMenuContent>
-      </ContextMenu>
+      <RailLink to="/" icon={<SquaresFour />} label="Library" active={path === "/"} shortcut={shortcutKeys("library")} />
 
       <div className="my-3 h-px w-8 bg-white/10" />
 
@@ -110,32 +99,8 @@ export function Rail() {
       </div>
 
       <div className="flex flex-col items-center gap-1 pt-2">
-        <ContextMenu>
-          <ContextMenuTrigger asChild>
-            <div>
-              <RailButton icon={<MagnifyingGlass />} label="Search" onClick={actions.openPalette} shortcut={shortcutKeys("palette")} />
-            </div>
-          </ContextMenuTrigger>
-          <ContextMenuContent>
-            <ContextMenuItem onSelect={actions.openPalette} shortcut={shortcutKeys("palette").join("+")}>
-              <MagnifyingGlass /> Command palette
-            </ContextMenuItem>
-          </ContextMenuContent>
-        </ContextMenu>
-
-        <ContextMenu>
-          <ContextMenuTrigger asChild>
-            <div>
-              <ActivityButton />
-            </div>
-          </ContextMenuTrigger>
-          <ContextMenuContent>
-            <ContextMenuItem onSelect={actions.toggleActivity} shortcut={shortcutKeys("activity").join("+")}>
-              <Queue /> Activity drawer
-            </ContextMenuItem>
-          </ContextMenuContent>
-        </ContextMenu>
-
+        <RailButton icon={<MagnifyingGlass />} label="Search" onClick={actions.openPalette} shortcut={shortcutKeys("palette")} />
+        <ActivityButton />
         <ContextMenu>
           <ContextMenuTrigger asChild>
             <div>
@@ -148,11 +113,11 @@ export function Rail() {
               />
             </div>
           </ContextMenuTrigger>
-          <ContextMenuContent>
+          <ContextMenuContent onCloseAutoFocus={(e) => e.preventDefault()}>
             <ContextMenuItem onSelect={() => actions.goSettings("general")}>
               <GearSix /> General
             </ContextMenuItem>
-            <ContextMenuItem onSelect={() => actions.goSettings("shortcuts")} shortcut="?">
+            <ContextMenuItem onSelect={() => actions.goSettings("shortcuts")}>
               <Keyboard /> Shortcuts
             </ContextMenuItem>
             <ContextMenuItem onSelect={() => actions.goSettings("updates")}>
@@ -262,34 +227,7 @@ function ActivityButton() {
       {active > 0 && (
         <>
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-            <svg aria-hidden viewBox="0 0 32 32" className="!size-8 overflow-visible">
-              <circle
-                cx="16"
-                cy="16"
-                r="14"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                className="text-white/[0.08]"
-              />
-              <circle
-                cx="16"
-                cy="16"
-                r="14"
-                pathLength={100}
-                fill="none"
-                stroke="var(--accent)"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeDasharray={progress == null ? "24 76" : `${Math.max(2, progress * 100)} 100`}
-                className={cn(
-                  "drop-shadow-[0_0_6px_var(--accent)] transition-[stroke-dasharray] duration-[var(--dur-slow)]",
-                  progress == null
-                    ? "origin-center animate-spin [animation-duration:1.6s]"
-                    : "-rotate-90 origin-center",
-                )}
-              />
-            </svg>
+            <ProgressRing aria-hidden value={progress} grid={32} className="size-8" trackClassName="text-white/[0.08]" />
           </div>
           <span className="timecode absolute -top-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-accent px-1 text-[10px] leading-none font-semibold text-on-accent shadow-[0_0_6px_var(--accent)]">
             {active}
@@ -371,11 +309,11 @@ function ProjectTile({
           </Tooltip>
         </div>
       </ContextMenuTrigger>
-      <ContextMenuContent>
+      <ContextMenuContent onCloseAutoFocus={(e) => e.preventDefault()}>
         <ContextMenuItem onSelect={() => void navigate({ to: "/p/$pid", params: { pid: p.id } })}>
           <Play /> Open project
         </ContextMenuItem>
-        <ContextMenuItem onSelect={() => void commands.revealPath(p.dir)}>
+        <ContextMenuItem onSelect={() => void commands.revealPath(p.dir).catch((e) => toast.error(errorMessage(e)))}>
           <FolderOpen /> Show project folder
         </ContextMenuItem>
         <ContextMenuItem onSelect={onRename}>
