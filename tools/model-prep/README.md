@@ -34,3 +34,18 @@ PYTHONIOENCODING=utf-8 uv run adaface.py model.safetensors adaface_ir101_webface
 Result on the identity bench (`bench/identity`): AdaFace IR-101 separates
 the main cast less well than InsightFace glintr100 (per-track F 0.887 vs
 0.925), so the app ships glintr100. The exporter stays for later models.
+
+## Looking inside a graph
+
+`inspect_onnx.py` checks an upstream ONNX file before the app loads it
+(paths are data; run it with `python -I`):
+
+```sh
+uv run python -I inspect_onnx.py info <model.onnx>            # inputs, batch-1 shapes, risky ops
+uv run python -I inspect_onnx.py run <model.onnx> --batch 4   # does a batch give what single runs give?
+uv run python -I inspect_onnx.py free-batch <in.onnx> <out.onnx>
+```
+
+`free-batch` makes old PyTorch exports that pin the batch at 1 in their
+Reshapes (OpenVINO's person ReID, `bench/bodies`) run in batches, checked
+against the original graph.

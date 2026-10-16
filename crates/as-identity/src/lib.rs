@@ -20,6 +20,7 @@
 //! Pure computation; the project layer loads tracks and stores the result.
 
 mod ahc;
+pub mod bodies;
 pub mod metrics;
 mod proto;
 

@@ -64,16 +64,26 @@ pub struct FaceTrack {
 /// detection, clipped to the track's `end`. A longer gap is a face that was
 /// gone and came back (linked by identity alone); someone else may fill it.
 pub fn presence_spans(dets: &[FaceDet], end: FrameIdx, stride: u32, max_gap: u32) -> Vec<(FrameIdx, FrameIdx)> {
+    spans(dets.iter().map(|d| d.frame), end, stride, max_gap)
+}
+
+/// [`presence_spans`] of any sightings: their frames, in order.
+pub fn spans(
+    frames: impl IntoIterator<Item = FrameIdx>,
+    end: FrameIdx,
+    stride: u32,
+    max_gap: u32,
+) -> Vec<(FrameIdx, FrameIdx)> {
     let stride = stride.max(1);
     let mut out: Vec<(FrameIdx, FrameIdx)> = Vec::new();
     let mut prev: Option<FrameIdx> = None;
-    for d in dets {
-        let until = (d.frame + stride).min(end).max(d.frame + 1);
+    for frame in frames {
+        let until = (frame + stride).min(end).max(frame + 1);
         match (out.last_mut(), prev) {
-            (Some(last), Some(p)) if d.frame >= p && (d.frame - p) / stride <= max_gap => last.1 = last.1.max(until),
-            _ => out.push((d.frame, until)),
+            (Some(last), Some(p)) if frame >= p && (frame - p) / stride <= max_gap => last.1 = last.1.max(until),
+            _ => out.push((frame, until)),
         }
-        prev = Some(d.frame);
+        prev = Some(frame);
     }
     out
 }

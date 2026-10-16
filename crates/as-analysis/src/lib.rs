@@ -1,8 +1,12 @@
 //! Analysis: the resumable passes over a media and what they produce —
-//! frame signals fused into shots and transitions, face tracks.
+//! frame signals fused into shots and transitions, face tracks, and the
+//! people around the faces (body tracks tied to them).
 
+pub mod bodies;
+pub mod body_tracker;
 pub mod faces;
 pub mod fusion;
+pub mod link;
 pub mod pipeline;
 pub mod portrait;
 pub mod signals;

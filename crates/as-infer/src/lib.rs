@@ -109,6 +109,12 @@ impl Runtime {
         Ok(Self { env, gpu })
     }
 
+    /// The same runtime with every session on the CPU (one runtime per
+    /// process: there is no second `load`), e.g. to check GPU results.
+    pub fn on_cpu(&self) -> Self {
+        Self { env: self.env.clone(), gpu: false }
+    }
+
     /// The device sessions will try first.
     pub fn preferred_device(&self) -> Device {
         match self.gpu {

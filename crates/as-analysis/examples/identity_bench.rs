@@ -27,51 +27,16 @@
 //! norm_floor`, `norm_full`) over to another embedder: the lengths at the
 //! same share of all faces.
 
+#[path = "common/labels.rs"]
+mod labels;
+
 use std::collections::HashMap;
 use std::path::Path;
 
-use as_analysis::tracks::{self, FaceTrack};
+use as_analysis::tracks::FaceTrack;
 use as_identity::metrics::bcubed;
-use as_identity::{Assign, Params, TrackIn, identify};
-
-const STRIDE: u32 = 3;
-const MAX_GAP: u32 = 8;
-const FPS: f64 = 24000.0 / 1001.0;
-
-fn input(tracks: &[FaceTrack]) -> Vec<TrackIn> {
-    tracks
-        .iter()
-        .map(|t| TrackIn {
-            media: 0,
-            start: t.start,
-            end: t.end,
-            spans: tracks::presence_spans(&t.dets, t.end, STRIDE, MAX_GAP),
-            embedding: t.embedding.clone(),
-            quality: t.quality,
-            dets: t.dets.len() as u32,
-            pin: None,
-            forbid: vec![],
-            previous: None,
-        })
-        .collect()
-}
-
-fn box_iou(a: &[f32; 4], b: &[f32; 4]) -> f32 {
-    let iw = (a[2].min(b[2]) - a[0].max(b[0])).max(0.0);
-    let ih = (a[3].min(b[3]) - a[1].max(b[1])).max(0.0);
-    let inter = iw * ih;
-    let union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter;
-    if union <= 0.0 { 0.0 } else { inter / union }
-}
-
-/// Characters as per-track groups (index into the outcome's characters).
-fn members(o: &as_identity::Outcome) -> Vec<Option<usize>> {
-    o.tracks.iter().map(|(a, _)| a.character()).collect()
-}
-
-fn read_tracks(path: &str) -> Vec<FaceTrack> {
-    tracks::decode(&std::fs::read(path).expect("tracks file")).expect("readable tracks")
-}
+use as_identity::{Assign, Params, identify};
+use labels::{FPS, found_faces, input, members, names_of, read_labels, read_tracks};
 
 fn sheets(tracks: &[FaceTrack], out: &Path) {
     let input = input(tracks);
@@ -169,71 +134,6 @@ fn labels(tracks: &[FaceTrack], out: &Path, answers_path: &str, labels_path: &st
     for (n, (k, f)) in v {
         println!("{n:12} {k:5} tracks {:7.1} s", f as f64 / FPS);
     }
-}
-
-struct Label {
-    span: (u32, u32),
-    /// `(frame, box)` of every detection.
-    boxes: Vec<(u32, [f32; 4])>,
-    name: String,
-}
-
-/// The mean box of `boxes` in `from..to`, or the one nearest to it.
-fn box_in(boxes: &[(u32, [f32; 4])], from: u32, to: u32) -> Option<[f32; 4]> {
-    let inside: Vec<[f32; 4]> = boxes.iter().filter(|(f, _)| (from..to).contains(f)).map(|b| b.1).collect();
-    if inside.is_empty() {
-        let mid = from + (to - from) / 2;
-        return boxes.iter().min_by_key(|(f, _)| f.abs_diff(mid)).map(|b| b.1);
-    }
-    let n = inside.len() as f32;
-    Some(std::array::from_fn(|i| inside.iter().map(|b| b[i]).sum::<f32>() / n))
-}
-
-fn read_labels(path: &str) -> Vec<Label> {
-    std::fs::read_to_string(path)
-        .unwrap()
-        .lines()
-        .skip(1)
-        .map(|l| {
-            let v: Vec<&str> = l.split('\t').collect();
-            let boxes = v[3]
-                .split(' ')
-                .map(|b| {
-                    let (frame, xy) = b.split_once(':').unwrap();
-                    let xy: Vec<f32> = xy.split(',').map(|x| x.parse().unwrap()).collect();
-                    (frame.parse().unwrap(), [xy[0], xy[1], xy[2], xy[3]])
-                })
-                .collect();
-            Label { span: (v[0].parse().unwrap(), v[1].parse().unwrap()), boxes, name: v[2].to_string() }
-        })
-        .collect()
-}
-
-/// The name each track takes from the labels (`None`: no label fits).
-fn names_of<'a>(tracks: &[FaceTrack], labels: &'a [Label]) -> Vec<Option<&'a str>> {
-    // Each track takes the name of the labels it shares most of the shorter
-    // of the two with: the one most of its frames are, among labels whose
-    // face is where the track's face is during the frames they share. Tracks
-    // a tracker change split or joined keep their names, moving or not.
-    let mut truth_name: Vec<Option<&str>> = vec![None; tracks.len()];
-    for (i, t) in tracks.iter().enumerate() {
-        let mut votes: HashMap<&str, u32> = HashMap::new();
-        for l in labels.iter().filter(|l| l.span.0 < t.end && t.start < l.span.1) {
-            let overlap = l.span.1.min(t.end) - l.span.0.max(t.start);
-            let shorter = (l.span.1 - l.span.0).min(t.end - t.start).max(1);
-            if (overlap as f32) < 0.5 * shorter as f32 {
-                continue;
-            }
-            let (from, to) = (l.span.0.max(t.start), l.span.1.min(t.end));
-            let mine: Vec<(u32, [f32; 4])> = t.dets.iter().map(|d| (d.frame, d.bbox)).collect();
-            let (Some(a), Some(b)) = (box_in(&mine, from, to), box_in(&l.boxes, from, to)) else { continue };
-            if box_iou(&a, &b) >= 0.5 {
-                *votes.entry(l.name.as_str()).or_default() += overlap;
-            }
-        }
-        truth_name[i] = votes.into_iter().max_by_key(|&(n, v)| (v, std::cmp::Reverse(n))).map(|(n, _)| n);
-    }
-    truth_name
 }
 
 /// Embedder alone: same-person vs different-person track similarity.
@@ -388,62 +288,6 @@ fn score(tracks: &[FaceTrack], labels_path: &str, p: &Params, detail: bool) {
             }
         }
     }
-}
-
-/// End to end, over the labels rather than the tracks (BCubed only sees
-/// faces that became a track): the share of the main cast's labelled faces
-/// a track still holds, and the share held by a track of the character
-/// named like them (the name most of a character's frames have).
-fn found_faces(tracks: &[FaceTrack], labels: &[Label], truth_name: &[Option<&str>], got: &[Option<usize>]) {
-    let mut frames_of: HashMap<(usize, &str), u32> = HashMap::new();
-    for (i, t) in tracks.iter().enumerate() {
-        if let (Some(c), Some(n)) = (got[i], truth_name[i])
-            && n != "?"
-            && n != "x"
-        {
-            *frames_of.entry((c, n)).or_default() += t.end - t.start;
-        }
-    }
-    let mut char_name: HashMap<usize, (&str, u32)> = HashMap::new();
-    for (&(c, n), &f) in &frames_of {
-        let e = char_name.entry(c).or_insert((n, 0));
-        if (f, std::cmp::Reverse(n)) > (e.1, std::cmp::Reverse(e.0)) {
-            *e = (n, f);
-        }
-    }
-    let mut screen: HashMap<&str, u32> = HashMap::new();
-    for l in labels {
-        *screen.entry(l.name.as_str()).or_default() += l.span.1 - l.span.0;
-    }
-    let main = |n: &str| n != "?" && n != "x" && screen[n] as f64 / FPS >= 30.0;
-    let mut at: HashMap<u32, Vec<(usize, [f32; 4])>> = HashMap::new();
-    for (i, t) in tracks.iter().enumerate() {
-        for d in &t.dets {
-            at.entry(d.frame).or_default().push((i, d.bbox));
-        }
-    }
-    let (mut all, mut held, mut theirs) = (0u32, 0u32, 0u32);
-    for l in labels.iter().filter(|l| main(&l.name)) {
-        for (frame, b) in &l.boxes {
-            all += 1;
-            let best = at
-                .get(frame)
-                .into_iter()
-                .flatten()
-                .map(|&(i, bb)| (i, box_iou(b, &bb)))
-                .filter(|&(_, iou)| iou >= 0.5)
-                .max_by(|x, y| x.1.total_cmp(&y.1));
-            if let Some((i, _)) = best {
-                held += 1;
-                theirs += u32::from(got[i].and_then(|c| char_name.get(&c)).is_some_and(|&(n, _)| n == l.name));
-            }
-        }
-    }
-    println!(
-        "main cast faces (labels)     in a track {:.3} | on their character {:.3}",
-        held as f64 / all as f64,
-        theirs as f64 / all as f64
-    );
 }
 
 /// The share of `sorted` below `v`, and the value at share `q`.

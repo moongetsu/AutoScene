@@ -48,3 +48,6 @@ Results on S01E01 (main cast; defaults of each embedder):
 Lowering `FaceParams::min_track_quality` (0.05 → 0.02) or the norm floor
 (14 → 13) for glintr100 moves `in a track` by at most 0.003 and costs
 per-track F; the faces it drops are below any usable quality.
+
+Characters without a visible face (bodies tracked through shots, found
+again by their clothes): see `bench/bodies`.

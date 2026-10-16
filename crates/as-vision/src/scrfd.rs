@@ -1,22 +1,49 @@
-//! SCRFD-10G (Guo et al. 2021, InsightFace `det_10g`): face boxes plus five
-//! landmarks (eyes, nose tip, mouth corners) at three strides.
+//! SCRFD (Guo et al. 2021): boxes plus five points, from heads at several
+//! strides. One graph family, two jobs: InsightFace `det_10g` (SCRFD-10G)
+//! finds faces with their landmarks (eyes, nose tip, mouth corners), and
+//! `scrfd_person_2.5g` finds people — the box of the whole body, with the
+//! corners of the part that is visible as its first and last point (see
+//! [`crate::person::from_scrfd`]).
 //!
-//! The graph takes any input size that is a multiple of 32, so frames are
-//! fed at their own aspect ratio (padded at the right and bottom) instead of
-//! letterboxed into a square — no compute is spent on padding. A session is
-//! planned for one frame size and batch: with the whole shape known, the GPU
-//! provider runs the graph as one unit, and batches of a few frames keep it
-//! busy (on an RTX 3060 Ti: 4.7 ms per 640×360 frame one at a time with a
-//! free shape, 2.2 ms in fixed batches of 4).
+//! The graph takes any input size that is a multiple of its largest stride,
+//! so frames are fed at their own aspect ratio (padded at the right and
+//! bottom) instead of letterboxed into a square — no compute is spent on
+//! padding. A session is planned for one frame size and batch: with the
+//! whole shape known, the GPU provider runs the graph as one unit, and
+//! batches of a few frames keep it busy (on an RTX 3060 Ti: 4.7 ms per
+//! 640×360 face frame one at a time with a free shape, 2.2 ms in fixed
+//! batches of 4).
 
 use std::path::Path;
 
 use as_infer::onnx::InputShape;
 use as_infer::{Device, InferError, InferResult, Runtime, Session, TensorRef};
 
-/// Strides of the three output levels, two anchors per location.
-const STRIDES: [usize; 3] = [8, 16, 32];
-const ANCHORS: usize = 2;
+/// The heads of a SCRFD graph: `levels` strides, 8 and each next one
+/// twice the last, with `anchors` boxes per location.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Heads {
+    pub levels: usize,
+    pub anchors: usize,
+}
+
+impl Heads {
+    /// InsightFace `det_10g`: strides 8, 16 and 32, two anchors.
+    pub const FACES: Self = Self { levels: 3, anchors: 2 };
+    /// InsightFace `scrfd_person_2.5g`: strides 8 to 128, one anchor.
+    pub const PERSONS: Self = Self { levels: 5, anchors: 1 };
+
+    fn stride(self, level: usize) -> usize {
+        8 << level
+    }
+
+    /// Input sides are padded to multiples of the largest stride.
+    fn max_stride(self) -> usize {
+        self.stride(self.levels - 1)
+    }
+}
+
+/// Overlap at which the weaker of two faces is dropped.
 const NMS_IOU: f32 = 0.4;
 
 /// Input value of each byte: (v − 127.5) / 128.
@@ -30,9 +57,9 @@ const NORM: [f32; 256] = {
     t
 };
 
-/// The input size for a `w`×`h` frame: both sides padded to multiples of 32.
-fn padded(w: usize, h: usize) -> (usize, usize) {
-    (w.div_ceil(32) * 32, h.div_ceil(32) * 32)
+/// The input size for a `w`×`h` frame: both sides padded to multiples of `m`.
+fn padded(w: usize, h: usize, m: usize) -> (usize, usize) {
+    (w.div_ceil(m) * m, h.div_ceil(m) * m)
 }
 
 /// One detected face, in the pixel coordinates of the frame given to
@@ -89,36 +116,59 @@ pub struct Scrfd {
     session: Session,
     input: String,
     device: Device,
+    heads: Heads,
     /// The frame size the session is planned for.
     size: (usize, usize),
     /// Frames per inference.
     batch: usize,
+    nms_iou: f32,
     /// Input buffer (NCHW float). Frames only ever overwrite their own area,
     /// so the padding stays black.
     x: Vec<f32>,
 }
 
 impl Scrfd {
-    /// Load SCRFD for `w`×`h` RGB24 frames, `batch` per inference. Frames of
-    /// another size need another `Scrfd`.
-    pub fn load(rt: &Runtime, model: &Path, (w, h): (usize, usize), batch: usize) -> InferResult<Self> {
-        assert!(w > 0 && h > 0 && batch > 0, "SCRFD shape {w}×{h}, batch {batch}");
-        let (pw, ph) = padded(w, h);
+    /// Load the face detector (`det_10g`) for `w`×`h` RGB24 frames, `batch`
+    /// per inference. Frames of another size need another `Scrfd`.
+    pub fn load(rt: &Runtime, model: &Path, size: (usize, usize), batch: usize) -> InferResult<Self> {
+        Self::load_heads(rt, model, size, batch, Heads::FACES)
+    }
+
+    /// Load a SCRFD graph with these `heads` (see [`Heads::PERSONS`]).
+    pub fn load_heads(
+        rt: &Runtime,
+        model: &Path,
+        (w, h): (usize, usize),
+        batch: usize,
+        heads: Heads,
+    ) -> InferResult<Self> {
+        assert!(w > 0 && h > 0 && batch > 0 && heads.levels > 0, "SCRFD shape {w}×{h}, batch {batch}, {heads:?}");
+        let (pw, ph) = padded(w, h, heads.max_stride());
         let (session, device) = rt.session_shaped(model, InputShape::Fixed(&[batch, 3, ph, pw]))?;
         let input = session
             .inputs()
             .first()
             .map(|i| i.name().to_string())
             .ok_or_else(|| InferError::Model(format!("{}: no input", model.display())))?;
-        if session.outputs().len() != 9 {
+        if session.outputs().len() != 3 * heads.levels {
             return Err(InferError::Model(format!(
-                "{}: expected 9 outputs (scores, boxes, landmarks × 3 strides), got {}",
+                "{}: expected {} outputs (scores, boxes, points × {} strides), got {}",
                 model.display(),
+                3 * heads.levels,
+                heads.levels,
                 session.outputs().len()
             )));
         }
-        tracing::info!(device = ?device, w, h, batch, "SCRFD ready");
-        Ok(Self { session, input, device, size: (w, h), batch, x: vec![NORM[0]; batch * 3 * pw * ph] })
+        tracing::info!(device = ?device, w, h, batch, ?heads, "SCRFD ready");
+        let x = vec![NORM[0]; batch * 3 * pw * ph];
+        Ok(Self { session, input, device, heads, size: (w, h), batch, nms_iou: NMS_IOU, x })
+    }
+
+    /// Drop the weaker of two boxes that overlap more than `iou` (faces: 0.4;
+    /// people stand closer together than faces).
+    pub fn with_nms_iou(mut self, iou: f32) -> Self {
+        self.nms_iou = iou;
+        self
     }
 
     pub fn device(&self) -> Device {
@@ -149,7 +199,7 @@ impl Scrfd {
     /// keep earlier pixels; their results are ignored.
     fn infer(&mut self, frames: &[&[u8]], threshold: f32) -> InferResult<Vec<Vec<FaceBox>>> {
         let (w, h) = self.size;
-        let (pw, ph) = padded(w, h);
+        let (pw, ph) = padded(w, h, self.heads.max_stride());
         let plane = pw * ph;
         for (slot, rgb) in self.x.chunks_exact_mut(3 * plane).zip(frames) {
             assert_eq!(rgb.len(), w * h * 3, "SCRFD frame size");
@@ -169,15 +219,18 @@ impl Scrfd {
         let t = TensorRef::from_array_view(([batch, 3, ph, pw], &self.x[..]))?;
         let outs = self.session.run(as_infer::inputs![self.input.as_str() => t])?;
         let mut faces: Vec<Vec<FaceBox>> = vec![Vec::new(); frames.len()];
-        // Outputs: scores for strides 8/16/32, then boxes, then landmarks.
-        // Each head is transposed to (y, x, frame, anchor) before flattening.
-        for (level, &stride) in STRIDES.iter().enumerate() {
+        // Outputs: scores for every stride (smallest first), then boxes, then
+        // points. Each head is transposed to (y, x, frame, anchor) before
+        // flattening.
+        let (levels, anchors) = (self.heads.levels, self.heads.anchors);
+        for level in 0..levels {
+            let stride = self.heads.stride(level);
             let (gw, gh) = (pw / stride, ph / stride);
             let locs = gw * gh;
-            let n = locs * batch * ANCHORS;
+            let n = locs * batch * anchors;
             let (_, scores) = outs[level].try_extract_tensor::<f32>()?;
-            let (_, boxes) = outs[level + 3].try_extract_tensor::<f32>()?;
-            let (_, kps) = outs[level + 6].try_extract_tensor::<f32>()?;
+            let (_, boxes) = outs[level + levels].try_extract_tensor::<f32>()?;
+            let (_, kps) = outs[level + 2 * levels].try_extract_tensor::<f32>()?;
             if scores.len() != n || boxes.len() != n * 4 || kps.len() != n * 10 {
                 return Err(InferError::Run(format!(
                     "SCRFD stride {stride}: {} / {} / {} values for {n} anchors",
@@ -190,8 +243,8 @@ impl Scrfd {
             for loc in 0..locs {
                 let (cx, cy) = (((loc % gw) * stride) as f32, ((loc / gw) * stride) as f32);
                 for (f, found) in faces.iter_mut().enumerate() {
-                    for a in 0..ANCHORS {
-                        let i = (loc * batch + f) * ANCHORS + a;
+                    for a in 0..anchors {
+                        let i = (loc * batch + f) * anchors + a;
                         let score = scores[i];
                         if score < threshold {
                             continue;
@@ -216,16 +269,18 @@ impl Scrfd {
             }
         }
         drop(outs);
-        Ok(faces.into_iter().map(nms).collect())
+        let max_iou = self.nms_iou;
+        Ok(faces.into_iter().map(|f| nms(f, max_iou)).collect())
     }
 }
 
-/// Greedy non-maximum suppression, strongest first.
-fn nms(mut faces: Vec<FaceBox>) -> Vec<FaceBox> {
+/// Greedy non-maximum suppression, strongest first: a box overlapping a
+/// stronger one kept before by more than `max_iou` goes.
+fn nms(mut faces: Vec<FaceBox>, max_iou: f32) -> Vec<FaceBox> {
     faces.sort_by(|a, b| b.score.total_cmp(&a.score));
     let mut keep: Vec<FaceBox> = Vec::with_capacity(faces.len());
     for f in faces {
-        if keep.iter().all(|k| iou(&k.bbox, &f.bbox) <= NMS_IOU) {
+        if keep.iter().all(|k| iou(&k.bbox, &f.bbox) <= max_iou) {
             keep.push(f);
         }
     }
@@ -242,15 +297,24 @@ mod tests {
 
     #[test]
     fn nms_keeps_the_strongest_of_overlapping_boxes() {
-        let kept = nms(vec![face(0.0, 0.6), face(1.0, 0.9), face(30.0, 0.7)]);
+        let kept = nms(vec![face(0.0, 0.6), face(1.0, 0.9), face(30.0, 0.7)], NMS_IOU);
         assert_eq!(kept.iter().map(|f| f.score).collect::<Vec<_>>(), [0.9, 0.7]);
+        // Boxes 3 apart overlap by IoU 0.54: one for faces, two at the
+        // looser threshold people get.
+        assert_eq!(nms(vec![face(0.0, 0.6), face(3.0, 0.9)], NMS_IOU).len(), 1);
+        assert_eq!(nms(vec![face(0.0, 0.6), face(3.0, 0.9)], 0.6).len(), 2);
     }
 
     #[test]
-    fn inputs_pad_to_multiples_of_32() {
-        assert_eq!(padded(640, 360), (640, 384));
-        assert_eq!(padded(1280, 720), (1280, 736));
-        assert_eq!(padded(32, 1), (32, 32));
+    fn inputs_pad_to_multiples_of_the_largest_stride() {
+        let face = Heads::FACES.max_stride();
+        assert_eq!(face, 32);
+        assert_eq!(padded(640, 360, face), (640, 384));
+        assert_eq!(padded(1280, 720, face), (1280, 736));
+        assert_eq!(padded(32, 1, face), (32, 32));
+        assert_eq!(Heads::PERSONS.max_stride(), 128);
+        assert_eq!(padded(640, 360, 128), (640, 384));
+        assert_eq!(padded(720, 480, 128), (768, 512));
         assert_eq!((NORM[0], NORM[255]), (-127.5 / 128.0, 127.5 / 128.0));
     }
 
