@@ -20,6 +20,7 @@ export {
   CircleNotch,
   Clock,
   Compass,
+  Copy,
   DotsThree,
   DownloadSimple,
   Eye,

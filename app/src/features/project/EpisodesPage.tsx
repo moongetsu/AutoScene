@@ -18,6 +18,13 @@ import { Artwork } from "@/components/ui/artwork"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu"
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -169,8 +176,10 @@ function EpisodeRow({
   }
 
   return (
-    <li
-      onClick={ready ? onOpen : undefined}
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <li
+          onClick={ready ? onOpen : undefined}
       tabIndex={ready ? 0 : undefined}
       aria-label={ready ? `Open ${m.label ? `${m.label} ` : ""}${releaseTitle(m.fileName)}` : undefined}
       onKeyDown={(e) => {
@@ -294,5 +303,39 @@ function EpisodeRow({
         </DropdownMenu>
       </div>
     </li>
+      </ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuItem disabled={!ready} onSelect={onOpen} shortcut="Enter">
+          <Play /> Open
+        </ContextMenuItem>
+        <ContextMenuItem onSelect={() => void commands.revealPath(m.path).catch(() => toast.error("File not found"))}>
+          <FolderOpen /> Show in folder
+        </ContextMenuItem>
+        {m.status === "missing" && (
+          <ContextMenuItem onSelect={() => void locateFile(projectId, m)}>
+            <MagnifyingGlass /> Locate file…
+          </ContextMenuItem>
+        )}
+        {m.status === "failed" && (
+          <ContextMenuItem onSelect={() => void commands.mediaRetry(projectId, m.id)}>
+            <ArrowCounterClockwise /> Index again
+          </ContextMenuItem>
+        )}
+        {ready && (
+          <ContextMenuItem onSelect={() => redo("shots")}>
+            <Scissors /> Find shots again
+          </ContextMenuItem>
+        )}
+        {ready && faces && m.shots === "ready" && (
+          <ContextMenuItem onSelect={() => redo("faces")}>
+            <UserFocus /> Find characters again
+          </ContextMenuItem>
+        )}
+        <ContextMenuSeparator />
+        <ContextMenuItem destructive onSelect={onRemove}>
+          <Trash /> Remove from project…
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   )
 }

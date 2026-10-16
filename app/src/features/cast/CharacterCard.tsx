@@ -1,25 +1,34 @@
-import { Link } from "@tanstack/react-router"
-import { User, UserFocus } from "@/components/icons"
+import { Link, useNavigate } from "@tanstack/react-router"
+import { FilmStrip, User, UserFocus } from "@/components/icons"
 import type { Character } from "@/bindings"
 import { Artwork } from "@/components/ui/artwork"
 import { Badge } from "@/components/ui/badge"
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu"
 import { cn } from "@/lib/utils"
 import { formatScreenTime, plural } from "./cast"
 
 /** A character as a portrait: the face fills the card, the name sits on it. */
 export function CharacterCard({ pid, character: c, className }: { pid: string; character: Character; className?: string }) {
+  const navigate = useNavigate()
   // Their episode is being analysed again: the faces come back when it's done.
   const refinding = c.tracks === 0 && c.waiting > 0
   return (
-    <Link
-      to="/p/$pid/cast/$cid"
-      params={{ pid, cid: c.id }}
-      className={cn(
-        "group block rounded-2xl transition-transform duration-[var(--dur-med)] ease-out hover:-translate-y-1 focus-visible:-translate-y-1",
-        refinding && "opacity-60",
-        className,
-      )}
-    >
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <Link
+          to="/p/$pid/cast/$cid"
+          params={{ pid, cid: c.id }}
+          className={cn(
+            "group block rounded-2xl transition-transform duration-[var(--dur-med)] ease-out hover:-translate-y-1 focus-visible:-translate-y-1",
+            refinding && "opacity-60",
+            className,
+          )}
+        >
       <Artwork
         path={c.cover}
         className="aspect-[3/4] rounded-2xl picture-edge transition-shadow duration-[var(--dur-med)] group-hover:shadow-lift"
@@ -50,5 +59,20 @@ export function CharacterCard({ pid, character: c, className }: { pid: string; c
         </div>
       </Artwork>
     </Link>
+      </ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuItem onSelect={() => void navigate({ to: "/p/$pid/cast/$cid", params: { pid, cid: c.id } })}>
+          <User /> Open character
+        </ContextMenuItem>
+        <ContextMenuItem onSelect={() => void navigate({ to: "/p/$pid/cast/$cid/pack", params: { pid, cid: c.id } })}>
+          <FilmStrip /> Build scenepack
+        </ContextMenuItem>
+        {c.unsure > 0 && (
+          <ContextMenuItem onSelect={() => void navigate({ to: "/p/$pid/cast/review", params: { pid }, search: { c: c.id } })}>
+            <UserFocus /> Review {c.unsure} faces
+          </ContextMenuItem>
+        )}
+      </ContextMenuContent>
+    </ContextMenu>
   )
 }
