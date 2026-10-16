@@ -19,13 +19,15 @@ const buttonVariants = cva(
     variants: {
       variant: {
         primary:
-          "bg-cta font-semibold text-on-cta shadow-[0_10px_30px_-10px_rgb(255_255_255/0.35)] hover:bg-cta-hover",
-        accent: "bg-accent font-semibold text-on-accent hover:bg-accent-hover active:bg-accent-press",
-        secondary: "border border-soft bg-white/[0.07] text-fg-1 hover:border-strong hover:bg-white/[0.11]",
+          "border border-white/40 bg-white/[0.18] font-semibold text-white shadow-[inset_0_1px_0_rgb(255_255_255/0.3)] backdrop-blur-xl hover:border-white/60 hover:bg-white/[0.26] active:bg-white/[0.22]",
+        accent:
+          "border border-accent/60 bg-accent/[0.18] font-semibold text-accent shadow-[inset_0_1px_0_rgb(224_180_92/0.4)] backdrop-blur-xl hover:border-accent hover:bg-accent/[0.26] active:bg-accent/[0.22]",
+        secondary:
+          "border border-white/10 bg-black/40 text-fg-1 backdrop-blur-xl shadow-lg hover:border-white/20 hover:bg-black/60 active:bg-black/70",
         glass:
-          "border border-white/15 bg-white/[0.12] text-white backdrop-blur-xl backdrop-saturate-150 hover:bg-white/[0.2]",
+          "border border-white/10 bg-black/30 text-white backdrop-blur-xl backdrop-saturate-150 hover:border-white/20 hover:bg-black/50 active:bg-black/60",
         ghost: "text-fg-2 hover:bg-hover hover:text-fg-1 active:bg-active",
-        danger: "border border-danger/30 bg-danger-subtle text-danger hover:bg-danger/20",
+        danger: "border border-danger/40 bg-danger-subtle text-danger hover:border-danger/70 hover:bg-danger/20",
       },
       size: {
         sm: "h-8 px-3.5 text-sm",
