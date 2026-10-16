@@ -79,7 +79,7 @@ export function Rail() {
 
 const itemClass = "group flex w-[64px] flex-col items-center gap-1 rounded-xl py-1.5"
 const pillClass =
-  "flex h-8 w-11 items-center justify-center rounded-full transition-[background-color,color] duration-[var(--dur-fast)] [&_svg]:size-5"
+  "flex h-8 w-11 items-center justify-center rounded-full transition-[background-color,color] duration-[var(--dur-fast)] [&>svg]:size-5"
 
 function RailLink({
   to,
@@ -166,26 +166,37 @@ function ActivityButton() {
     >
       {active > 0 && (
         <>
-          <svg aria-hidden viewBox="0 0 44 32" className="absolute inset-0 size-full overflow-visible">
-            <rect
-              x="1"
-              y="1"
-              width="42"
-              height="30"
-              rx="15"
-              pathLength={100}
-              fill="none"
-              stroke="var(--accent)"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeDasharray={progress == null ? "18 82" : `${Math.max(2, progress * 100)} 100`}
-              className={cn(
-                "drop-shadow-[0_0_6px_var(--accent)] transition-[stroke-dasharray] duration-[var(--dur-slow)]",
-                progress == null && "origin-center animate-spin [animation-duration:2.4s]",
-              )}
-            />
-          </svg>
-          <span className="timecode absolute -top-1.5 -right-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-accent px-1 text-[10px] leading-none font-semibold text-on-accent">
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+            <svg aria-hidden viewBox="0 0 32 32" className="!size-8 overflow-visible">
+              <circle
+                cx="16"
+                cy="16"
+                r="14"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                className="text-white/[0.08]"
+              />
+              <circle
+                cx="16"
+                cy="16"
+                r="14"
+                pathLength={100}
+                fill="none"
+                stroke="var(--accent)"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeDasharray={progress == null ? "24 76" : `${Math.max(2, progress * 100)} 100`}
+                className={cn(
+                  "drop-shadow-[0_0_6px_var(--accent)] transition-[stroke-dasharray] duration-[var(--dur-slow)]",
+                  progress == null
+                    ? "origin-center animate-spin [animation-duration:1.6s]"
+                    : "-rotate-90 origin-center",
+                )}
+              />
+            </svg>
+          </div>
+          <span className="timecode absolute -top-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-accent px-1 text-[10px] leading-none font-semibold text-on-accent shadow-[0_0_6px_var(--accent)]">
             {active}
           </span>
         </>
