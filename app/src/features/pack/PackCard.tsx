@@ -1,6 +1,14 @@
 import { memo } from "react"
-import { Check, Play } from "@/components/icons"
+import { Check, Copy, Play } from "@/components/icons"
+import { toast } from "sonner"
 import type { MediaItem, PackClip } from "@/bindings"
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu"
 import { ShotFrames } from "@/features/shots/ShotFrames"
 import { useScrub } from "@/features/shots/scrub"
 import { formatShotLength } from "@/features/shots/shots"
@@ -42,7 +50,9 @@ export const PackCard = memo(function PackCard({
   const canPick = pickable(clip)
 
   return (
-    <div className="group relative aspect-video w-full">
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <div className="group relative aspect-video w-full">
       <button
         type="button"
         aria-pressed={clip.included}
@@ -114,5 +124,29 @@ export const PackCard = memo(function PackCard({
         <Play weight="fill" className="size-3.5" />
       </button>
     </div>
+      </ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuItem onSelect={() => onOpen(index)} shortcut="Enter">
+          <Play /> Watch shot
+        </ContextMenuItem>
+        {canPick && (
+          <ContextMenuItem onSelect={() => onToggle(index, false)} shortcut="Space">
+            <Check /> {clip.included ? "Remove from pack" : "Add to pack"}
+          </ContextMenuItem>
+        )}
+        {where && (
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuItem
+              onSelect={() => {
+                void navigator.clipboard.writeText(where).then(() => toast.success("Timecode copied"))
+              }}
+            >
+              <Copy /> Copy timecode
+            </ContextMenuItem>
+          </>
+        )}
+      </ContextMenuContent>
+    </ContextMenu>
   )
 })

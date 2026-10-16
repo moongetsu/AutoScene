@@ -1,11 +1,35 @@
-import type * as React from "react"
-import { Link, useRouterState } from "@tanstack/react-router"
-import { FilmStrip, GearSix, MagnifyingGlass, Plus, Queue, SquaresFour, Television } from "@/components/icons"
+import { useState } from "react"
+import { Link, useNavigate, useRouterState } from "@tanstack/react-router"
+import {
+  ArrowCounterClockwise,
+  FilmStrip,
+  FolderOpen,
+  GearSix,
+  Info,
+  Keyboard,
+  MagnifyingGlass,
+  PencilSimple,
+  Play,
+  Plus,
+  Queue,
+  SquaresFour,
+  Television,
+  Trash,
+} from "@/components/icons"
 import type { ProjectSummary } from "@/bindings"
 import { AutoSceneMark } from "@/components/brand/AutoSceneMark"
 import { Artwork } from "@/components/ui/artwork"
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu"
 import { Tooltip } from "@/components/ui/tooltip"
+import { DeleteProjectDialog, RenameProjectDialog } from "@/features/library/ProjectDialogs"
 import { useAppActions } from "@/lib/actions"
+import { commands } from "@/lib/ipc"
 import { useProjects } from "@/lib/queries"
 import { shortcutKeys } from "@/lib/shortcuts"
 import { cn } from "@/lib/utils"
@@ -30,6 +54,9 @@ export function Rail() {
   const current = projects?.find((p) => p.id === currentPid)
   const listed = current && !recent.includes(current) ? [...recent, current] : recent
 
+  const [renaming, setRenaming] = useState<ProjectSummary | null>(null)
+  const [deleting, setDeleting] = useState<ProjectSummary | null>(null)
+
   return (
     <nav
       aria-label="Main"
@@ -43,13 +70,33 @@ export function Rail() {
         </Link>
       </Tooltip>
 
-      <RailLink to="/" icon={<SquaresFour />} label="Library" active={path === "/"} shortcut={shortcutKeys("library")} />
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <div>
+            <RailLink to="/" icon={<SquaresFour />} label="Library" active={path === "/"} shortcut={shortcutKeys("library")} />
+          </div>
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+          <ContextMenuItem onSelect={actions.goLibrary} shortcut={shortcutKeys("library").join("")}>
+            <SquaresFour /> Library
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={actions.newProject} shortcut={shortcutKeys("newProject").join("+")}>
+            <Plus /> New project…
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
 
       <div className="my-3 h-px w-8 bg-white/10" />
 
       <div className="flex min-h-0 w-full flex-1 flex-col items-center gap-3 overflow-y-auto pt-1 pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {listed.map((p) => (
-          <ProjectTile key={p.id} project={p} open={p.id === currentPid} />
+          <ProjectTile
+            key={p.id}
+            project={p}
+            open={p.id === currentPid}
+            onRename={() => setRenaming(p)}
+            onDelete={() => setDeleting(p)}
+          />
         ))}
         <Tooltip label="New project" shortcut={shortcutKeys("newProject")} side="right">
           <button
@@ -63,16 +110,64 @@ export function Rail() {
       </div>
 
       <div className="flex flex-col items-center gap-1 pt-2">
-        <RailButton icon={<MagnifyingGlass />} label="Search" onClick={actions.openPalette} shortcut={shortcutKeys("palette")} />
-        <ActivityButton />
-        <RailLink
-          to="/settings/general"
-          icon={<GearSix />}
-          label="Settings"
-          active={path.startsWith("/settings")}
-          shortcut={shortcutKeys("settings")}
-        />
+        <ContextMenu>
+          <ContextMenuTrigger asChild>
+            <div>
+              <RailButton icon={<MagnifyingGlass />} label="Search" onClick={actions.openPalette} shortcut={shortcutKeys("palette")} />
+            </div>
+          </ContextMenuTrigger>
+          <ContextMenuContent>
+            <ContextMenuItem onSelect={actions.openPalette} shortcut={shortcutKeys("palette").join("+")}>
+              <MagnifyingGlass /> Command palette
+            </ContextMenuItem>
+          </ContextMenuContent>
+        </ContextMenu>
+
+        <ContextMenu>
+          <ContextMenuTrigger asChild>
+            <div>
+              <ActivityButton />
+            </div>
+          </ContextMenuTrigger>
+          <ContextMenuContent>
+            <ContextMenuItem onSelect={actions.toggleActivity} shortcut={shortcutKeys("activity").join("+")}>
+              <Queue /> Activity drawer
+            </ContextMenuItem>
+          </ContextMenuContent>
+        </ContextMenu>
+
+        <ContextMenu>
+          <ContextMenuTrigger asChild>
+            <div>
+              <RailLink
+                to="/settings/general"
+                icon={<GearSix />}
+                label="Settings"
+                active={path.startsWith("/settings")}
+                shortcut={shortcutKeys("settings")}
+              />
+            </div>
+          </ContextMenuTrigger>
+          <ContextMenuContent>
+            <ContextMenuItem onSelect={() => actions.goSettings("general")}>
+              <GearSix /> General
+            </ContextMenuItem>
+            <ContextMenuItem onSelect={() => actions.goSettings("shortcuts")} shortcut="?">
+              <Keyboard /> Shortcuts
+            </ContextMenuItem>
+            <ContextMenuItem onSelect={() => actions.goSettings("updates")}>
+              <ArrowCounterClockwise /> Updates
+            </ContextMenuItem>
+            <ContextMenuSeparator />
+            <ContextMenuItem onSelect={() => actions.goSettings("about")}>
+              <Info /> About AutoScene
+            </ContextMenuItem>
+          </ContextMenuContent>
+        </ContextMenu>
       </div>
+
+      <RenameProjectDialog project={renaming} onOpenChange={(o) => !o && setRenaming(null)} />
+      <DeleteProjectDialog project={deleting} onOpenChange={(o) => !o && setDeleting(null)} />
     </nav>
   )
 }
@@ -195,7 +290,18 @@ function ActivityButton() {
   )
 }
 
-function ProjectTile({ project: p, open }: { project: ProjectSummary; open: boolean }) {
+function ProjectTile({
+  project: p,
+  open,
+  onRename,
+  onDelete,
+}: {
+  project: ProjectSummary
+  open: boolean
+  onRename: () => void
+  onDelete: () => void
+}) {
+  const navigate = useNavigate()
   const indexing = useProjectIndexing(p.id)
   const initials = p.title
     .split(/\s+/)
@@ -204,50 +310,71 @@ function ProjectTile({ project: p, open }: { project: ProjectSummary; open: bool
     .join("")
     .toUpperCase()
   return (
-    <Tooltip
-      side="right"
-      label={
-        <span className="flex flex-col">
-          <span className="font-semibold">{p.title}</span>
-          <span className="text-fg-3">
-            {p.kind === "movie" ? "Movie" : `${p.mediaCount} ${p.mediaCount === 1 ? "episode" : "episodes"}`}
-            {indexing && " · indexing"}
-          </span>
-        </span>
-      }
-    >
-      <Link
-        to="/p/$pid"
-        params={{ pid: p.id }}
-        aria-label={p.title}
-        aria-current={open ? "true" : undefined}
-        className="group relative flex shrink-0 items-center"
-      >
-        <span
-          aria-hidden
-          className={cn(
-            "absolute -left-[16px] w-1 rounded-r-full bg-accent transition-[height,opacity] duration-[var(--dur-med)] ease-out",
-            open ? "h-6 opacity-100" : "h-2 opacity-0 group-hover:opacity-60",
-          )}
-        />
-        <Artwork
-          path={p.posterSmall ?? p.poster}
-          className={cn(
-            "size-11 rounded-[14px] transition-[transform,box-shadow] duration-[var(--dur-med)] ease-out group-hover:scale-105",
-            open
-              ? "shadow-[0_0_0_2px_var(--bg-canvas),0_0_0_4px_var(--accent)]"
-              : "shadow-[inset_0_0_0_1px_rgb(255_255_255/0.1)]",
-          )}
-          fallback={
-            <span className="flex size-full items-center justify-center artwork-fallback text-xs font-semibold text-fg-2">
-              {initials || (p.kind === "movie" ? <FilmStrip /> : <Television />)}
-            </span>
-          }
-        />
-        {indexing && (
-          <span className="absolute -right-0.5 -bottom-0.5 size-3 rounded-full border-2 border-canvas bg-accent" aria-hidden />
-        )}
-      </Link>
-    </Tooltip>
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <div>
+          <Tooltip
+            side="right"
+            label={
+              <span className="flex flex-col">
+                <span className="font-semibold">{p.title}</span>
+                <span className="text-fg-3">
+                  {p.kind === "movie" ? "Movie" : `${p.mediaCount} ${p.mediaCount === 1 ? "episode" : "episodes"}`}
+                  {indexing && " · indexing"}
+                </span>
+              </span>
+            }
+          >
+            <Link
+              to="/p/$pid"
+              params={{ pid: p.id }}
+              aria-label={p.title}
+              aria-current={open ? "true" : undefined}
+              className="group relative flex shrink-0 items-center"
+            >
+              <span
+                aria-hidden
+                className={cn(
+                  "absolute -left-[16px] w-1 rounded-r-full bg-accent transition-[height,opacity] duration-[var(--dur-med)] ease-out",
+                  open ? "h-6 opacity-100" : "h-2 opacity-0 group-hover:opacity-60",
+                )}
+              />
+              <Artwork
+                path={p.posterSmall ?? p.poster}
+                className={cn(
+                  "size-11 rounded-[14px] transition-[transform,box-shadow] duration-[var(--dur-med)] ease-out group-hover:scale-105",
+                  open
+                    ? "shadow-[0_0_0_2px_var(--bg-canvas),0_0_0_4px_var(--accent)]"
+                    : "shadow-[inset_0_0_0_1px_rgb(255_255_255/0.1)]",
+                )}
+                fallback={
+                  <span className="flex size-full items-center justify-center artwork-fallback text-xs font-semibold text-fg-2">
+                    {initials || (p.kind === "movie" ? <FilmStrip /> : <Television />)}
+                  </span>
+                }
+              />
+              {indexing && (
+                <span className="absolute -right-0.5 -bottom-0.5 size-3 rounded-full border-2 border-canvas bg-accent" aria-hidden />
+              )}
+            </Link>
+          </Tooltip>
+        </div>
+      </ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuItem onSelect={() => void navigate({ to: "/p/$pid", params: { pid: p.id } })}>
+          <Play /> Open project
+        </ContextMenuItem>
+        <ContextMenuItem onSelect={() => void commands.revealPath(p.dir)}>
+          <FolderOpen /> Show project folder
+        </ContextMenuItem>
+        <ContextMenuItem onSelect={onRename}>
+          <PencilSimple /> Rename…
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem destructive onSelect={onDelete}>
+          <Trash /> Remove…
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   )
 }
