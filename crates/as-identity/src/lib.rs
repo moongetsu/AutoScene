@@ -1,12 +1,16 @@
 //! Who is who: face tracks → characters.
 //!
 //! 1. **Core tracks** — clear enough to define a character (quality, length)
-//!    — are grouped by constrained average-linkage clustering. Two tracks on
-//!    screen at the same time are two people (cannot-link); tracks the user
-//!    pinned to one character start out together (must-link), pinned to
-//!    different characters never meet.
-//! 2. Groups with enough screen time (or a pin) become characters. Each gets
-//!    a handful of prototypes covering its looks (glasses, lighting, age).
+//!    — are grouped by constrained average-linkage clustering. Two faces
+//!    found in the same frame are two people (cannot-link) — unless their
+//!    groups are clearly one person: then the face in the way was a mirror
+//!    image, a photo, a screen or a stranger, and steps aside (see `ahc`).
+//!    Tracks the user pinned to one character start out together
+//!    (must-link), pinned to different characters never meet.
+//! 2. Groups with enough screen time (or a pin) become characters — except
+//!    a group that is only ever on screen with a bigger one it clearly is
+//!    (a reflection, a face on a screen). Each gets a handful of prototypes
+//!    covering its looks (glasses, lighting, age).
 //! 3. Every other track joins the character it clearly resembles; a close
 //!    call between two goes to *unsure* with a suggestion, the rest stays
 //!    unassigned (extras, background faces).
@@ -31,6 +35,12 @@ pub use ahc::cluster;
 /// A character as the caller knows it (index into its own list).
 pub type CharKey = u32;
 
+/// How faces are grouped into characters, as a number: raised when
+/// [`identify`] groups differently enough that a cast grouped before should
+/// be grouped again (the user's decisions stay). 2: one person seen twice
+/// at once (a mirror, a screen, a face found twice) is no longer two.
+pub const VERSION: u32 = 2;
+
 #[derive(Clone, Debug)]
 pub struct TrackIn {
     /// Media the track belongs to: tracks of one media on screen together can't be one person.
@@ -41,6 +51,11 @@ pub struct TrackIn {
     /// empty means all of `start..end`. A gap is a face that was gone for a
     /// while (see `as_analysis::tracks::presence_spans`).
     pub spans: Vec<(u32, u32)>,
+    /// Frames the face was found in (sorted; the face pass looks at the same
+    /// frames for every face). Two faces found in the same frame are two
+    /// faces at once; a track that only fills another's gap is not. Empty:
+    /// unknown, `spans` stand in.
+    pub seen: Vec<u32>,
     /// Unit-length identity embedding.
     pub embedding: Vec<f32>,
     pub quality: f32,
@@ -76,12 +91,34 @@ pub struct Params {
     /// A group inherits a previous character when that many of its tracks
     /// (quality-weighted share) were that character.
     pub inherit: f32,
+    /// Whole groups whose mean faces are this alike are one person even if
+    /// faces of theirs were seen at the same time (a mirror, a photo, a
+    /// screen, a stranger's face in one of them) ...
+    pub copy_link: f32,
+    /// ... when at most this share of the smaller group's tracks (at least
+    /// one) has to step aside so no two of the merged group's faces are on
+    /// screen at once. People often on screen together (twins) stay two.
+    pub copy_share: f32,
+    /// A group that is on screen with a bigger one at least this share of
+    /// the time it is seen, and most of whose faces are at least
+    /// `copy_alike` like the face of the bigger one beside them — one face
+    /// at one moment, seen twice — is its copy (a reflection, a face on a
+    /// screen) and no character of its own.
+    pub copy_together: f32,
+    pub copy_alike: f32,
 }
 
 impl Default for Params {
     fn default() -> Self {
-        // For ArcFace glintr100, set on bench/identity: precision 0.984,
-        // recall 0.873 for the main cast (per track).
+        // For ArcFace glintr100, set on bench/identity: precision 0.988,
+        // recall 0.899 for the main cast (per track). Mean faces of one
+        // person's groups split by a mirror or a stray face: 0.71 – 0.83 (one
+        // face of 11 – 15 seen together); of two people's: 0.31 at most.
+        // A face and its reflection: 0.53 – 0.64; a face and the one beside
+        // it of people on screen together most of the time (a class, a
+        // party): 0.24 at most. Identical twins who are (nearly) never seen
+        // apart could still look like a copy — that one rule leaves to the
+        // user.
         Self {
             link: 0.30,
             core_quality: 0.45,
@@ -94,6 +131,10 @@ impl Default for Params {
             unsure: 0.30,
             prototypes: 12,
             inherit: 0.3,
+            copy_link: 0.6,
+            copy_share: 0.15,
+            copy_together: 0.8,
+            copy_alike: 0.5,
         }
     }
 }
@@ -132,12 +173,28 @@ pub struct Outcome {
     /// Per input track: assignment (index into `characters`) and the
     /// similarity behind it (1 for pins and clustered tracks).
     pub tracks: Vec<(Assign, f32)>,
+    /// Characters from before (`TrackIn::previous`) that none of
+    /// `characters` is any more, and the one that took more than half of
+    /// their clear tracks as its members (or as copies of it): one person,
+    /// grouped as one now. Only [`identify`] groups; the caller keeps the
+    /// old one's scenepack for it.
+    pub absorbed: Vec<(CharKey, usize)>,
 }
 
 impl TrackIn {
     /// Frames the face is on screen.
     fn presence(&self) -> Vec<(u32, u32)> {
         if self.spans.is_empty() { vec![(self.start, self.end)] } else { self.spans.clone() }
+    }
+
+    /// The frames the face was found in or, without them, every frame it is
+    /// on screen.
+    fn sightings(&self) -> Vec<u32> {
+        if self.seen.is_empty() {
+            self.presence().into_iter().flat_map(|(s, e)| s..e).collect()
+        } else {
+            self.seen.clone()
+        }
     }
 }
 
@@ -146,10 +203,123 @@ fn overlaps(a: &[(u32, u32)], b: &[(u32, u32)]) -> bool {
     a.iter().any(|&(s, e)| b.iter().any(|&(s2, e2)| s < e2 && s2 < e))
 }
 
-/// Two tracks of one media whose faces are on screen at the same time: two
-/// people.
+/// Whether two sorted lists of frames share one.
+fn share_a_frame(a: &[u32], b: &[u32]) -> bool {
+    let (mut i, mut j) = (0, 0);
+    while i < a.len() && j < b.len() {
+        match a[i].cmp(&b[j]) {
+            std::cmp::Ordering::Less => i += 1,
+            std::cmp::Ordering::Greater => j += 1,
+            std::cmp::Ordering::Equal => return true,
+        }
+    }
+    false
+}
+
+/// Two tracks of one media whose faces were found in the same frame: two
+/// faces at once — two people, or one person and their copy (a mirror, a
+/// photo, a screen). A track that only fills the gap of another (the
+/// tracker lost the face for a moment) is not. Without the frames, two
+/// faces on screen at the same time.
 pub(crate) fn together(a: &TrackIn, b: &TrackIn) -> bool {
-    a.media == b.media && a.start < b.end && b.start < a.end && overlaps(&a.presence(), &b.presence())
+    if a.media != b.media || a.start >= b.end || b.start >= a.end {
+        return false;
+    }
+    if a.seen.is_empty() || b.seen.is_empty() {
+        return overlaps(&a.presence(), &b.presence());
+    }
+    share_a_frame(&a.seen, &b.seen)
+}
+
+/// Groups that are (nearly) only ever on screen with a bigger group, most of
+/// whose faces are the face beside them seen twice — a reflection, a face on
+/// a screen — go to `loose`: no character of their own, and their faces
+/// can't join the person they copy (who is on screen in the same frames).
+/// People who are always on screen together (a class, a crowd) are two
+/// faces at every moment. A pinned group always stays. Returns, per track of
+/// a group that went, the index (in `chars` as left) of the group it copied.
+fn drop_copies(
+    tracks: &[TrackIn],
+    chars: &mut Vec<(Vec<usize>, Option<CharKey>)>,
+    loose: &mut Vec<usize>,
+    p: &Params,
+) -> HashMap<usize, usize> {
+    if chars.len() < 2 {
+        return HashMap::new();
+    }
+    let frames: Vec<u32> =
+        chars.iter().map(|(g, _)| g.iter().map(|&i| tracks[i].end - tracks[i].start).sum()).collect();
+    // Per group, where its faces were seen: (media, frame) → its tracks there.
+    let at: Vec<HashMap<(u32, u32), Vec<usize>>> = chars
+        .iter()
+        .map(|(g, _)| {
+            let mut at: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+            for &i in g {
+                for f in tracks[i].sightings() {
+                    at.entry((tracks[i].media, f)).or_default().push(i);
+                }
+            }
+            at
+        })
+        .collect();
+    let dot = |a: &[f32], b: &[f32]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>();
+    // Most of `b`'s faces resemble the face of `a`'s beside them that much.
+    let beside = |a: usize, b: usize| -> Option<f32> {
+        let mut best: Vec<f32> = chars[b]
+            .0
+            .iter()
+            .filter_map(|&i| {
+                let t = &tracks[i];
+                t.sightings()
+                    .iter()
+                    .filter_map(|&f| at[a].get(&(t.media, f)))
+                    .flatten()
+                    .map(|&j| dot(&t.embedding, &tracks[j].embedding))
+                    .max_by(f32::total_cmp)
+            })
+            .collect();
+        best.sort_by(f32::total_cmp);
+        best.get(best.len() / 2).copied()
+    };
+    // The group each one copies, if any.
+    let copy: Vec<Option<usize>> = (0..chars.len())
+        .map(|b| {
+            if chars[b].0.iter().any(|&i| tracks[i].pin.is_some()) {
+                return None;
+            }
+            let total = at[b].len().max(1) as f32;
+            (0..chars.len()).find(|&a| {
+                a != b
+                    && (frames[a], std::cmp::Reverse(a)) > (frames[b], std::cmp::Reverse(b))
+                    && at[b].keys().filter(|f| at[a].contains_key(f)).count() as f32 / total >= p.copy_together
+                    && beside(a, b).is_some_and(|s| s >= p.copy_alike)
+            })
+        })
+        .collect();
+    // Where each group that stays will be.
+    let mut left = vec![None; chars.len()];
+    let mut n = 0;
+    for (b, c) in copy.iter().enumerate() {
+        if c.is_none() {
+            left[b] = Some(n);
+            n += 1;
+        }
+    }
+    let mut copied = HashMap::new();
+    let mut kept = Vec::with_capacity(chars.len());
+    for ((g, key), c) in std::mem::take(chars).into_iter().zip(&copy) {
+        match c {
+            Some(a) => {
+                if let Some(at) = left[*a] {
+                    copied.extend(g.iter().map(|&i| (i, at)));
+                }
+                loose.extend(g);
+            }
+            None => kept.push((g, key)),
+        }
+    }
+    *chars = kept;
+    copied
 }
 
 /// Quality-weighted mean similarity between the different tracks of a group:
@@ -185,7 +355,7 @@ pub fn identify(tracks: &[TrackIn], p: &Params) -> Outcome {
     let core: Vec<usize> = (0..n).filter(|&i| is_core[i]).collect();
 
     // 1. Constrained clustering of the core tracks.
-    let groups = cluster(tracks, &core, p.link);
+    let groups = cluster(tracks, &core, p);
 
     // 2. Which groups are characters; which existing character each one is.
     let frames = |g: &[usize]| -> u32 { g.iter().map(|&i| tracks[i].end - tracks[i].start).sum() };
@@ -200,6 +370,7 @@ pub fn identify(tracks: &[TrackIn], p: &Params) -> Outcome {
             loose.extend(g);
         }
     }
+    let copied = drop_copies(tracks, &mut chars, &mut loose, p);
     // Pins decide first; then the biggest previous overlaps, one to one.
     let mut taken: HashSet<CharKey> = HashSet::new();
     for (g, key) in &mut chars {
@@ -243,7 +414,26 @@ pub fn identify(tracks: &[TrackIn], p: &Params) -> Outcome {
         }
     }
 
-    place(tracks, &chars, loose, p)
+    // Earlier characters no group took, grouped into one that did: more
+    // than half of their clear tracks are its members now (or copies of it).
+    let mut group_of: HashMap<usize, usize> = copied;
+    for (ci, (g, _)) in chars.iter().enumerate() {
+        group_of.extend(g.iter().map(|&i| (i, ci)));
+    }
+    let mut had: HashMap<CharKey, f32> = HashMap::new();
+    let mut went: HashMap<(CharKey, usize), f32> = HashMap::new();
+    for &i in &core {
+        let Some(k) = tracks[i].previous.filter(|k| !taken.contains(k)) else { continue };
+        *had.entry(k).or_default() += tracks[i].quality;
+        if let Some(&ci) = group_of.get(&i) {
+            *went.entry((k, ci)).or_default() += tracks[i].quality;
+        }
+    }
+    let mut absorbed: Vec<(CharKey, usize)> =
+        went.into_iter().filter(|&((k, _), w)| w > 0.5 * had[&k]).map(|(kc, _)| kc).collect();
+    absorbed.sort_unstable();
+
+    Outcome { absorbed, ..place(tracks, &chars, loose, p) }
 }
 
 /// The user decided about some faces: let the others follow at once,
@@ -298,21 +488,29 @@ fn place(tracks: &[TrackIn], chars: &[(Vec<usize>, Option<CharKey>)], loose: Vec
     }
     // Every other track, most similar first: a character already on screen
     // in a frame (a member, or a closer look-alike placed before) can't take
-    // a second face there. A forbidden character never gets a track.
+    // a second face there — on screen with its short gaps bridged, stricter
+    // than clustering's faces found in one frame: a stranger found while
+    // their face was missed for a moment doesn't become them, and a piece
+    // of their own face found there loses nothing (they are on screen
+    // anyway). A forbidden character never gets a track. A face
+    // most like a character on screen in the same frames — their reflection,
+    // a face on a screen, someone beside them who resembles them — goes to
+    // another character only when it clearly is them, never as a guess.
     let mut loose = scored(tracks, loose, &characters, &protos);
     let top = |s: &[(f32, usize)]| s.first().map_or(f32::NEG_INFINITY, |x| x.0);
     loose.sort_by(|a, b| top(&b.1).total_cmp(&top(&a.1)).then(a.0.cmp(&b.0)));
     for (i, scores) in loose {
         let t = &tracks[i];
         let here = t.presence();
-        let mut free =
-            scores.into_iter().filter(|&(_, ci)| spans[ci].get(&t.media).is_none_or(|v| !overlaps(&here, v)));
+        let taken = |ci: usize| spans[ci].get(&t.media).is_some_and(|v| overlaps(&here, v));
+        let beside = scores.first().is_some_and(|&(_, ci)| taken(ci));
+        let mut free = scores.into_iter().filter(|&(_, ci)| !taken(ci));
         let Some((s1, c1)) = free.next() else { continue };
         let s2 = free.next().map_or(-1.0, |x| x.0);
         out[i] = if s1 >= p.assign && s1 - s2 >= p.margin {
             spans[c1].entry(t.media).or_default().extend(here);
             (Assign::Auto(c1), s1)
-        } else if s1 >= p.unsure {
+        } else if s1 >= p.unsure && !beside {
             (Assign::Unsure(c1), s1)
         } else {
             (Assign::None, s1)
@@ -327,7 +525,7 @@ fn place(tracks: &[TrackIn], chars: &[(Vec<usize>, Option<CharKey>)], loose: Vec
             out[i] = (Assign::None, 0.0);
         }
     }
-    Outcome { characters, tracks: out }
+    Outcome { characters, tracks: out, absorbed: Vec::new() }
 }
 
 /// How much each of `loose` resembles each character it may be (best

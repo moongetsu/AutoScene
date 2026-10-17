@@ -32,11 +32,44 @@ pub fn portrait_region(bbox: [f32; 4], (w, h): (u32, u32), aspect: f32) -> Optio
     Some([x0 / w, y0 / h, ((x0 + rw) / w).min(1.0), ((y0 + rh) / h).min(1.0)])
 }
 
+/// How much someone else takes of the portrait of face `bbox` (as
+/// [`portrait_region`] frames it): the most any of `others` — the other
+/// faces of the same frame — covers of the portrait, as a multiple of the
+/// face's own size. 0: alone; 1 or more: another face is as big in the
+/// picture (a guest behind the person in front: the picture shows the
+/// person in front).
+pub fn crowding(bbox: [f32; 4], others: impl IntoIterator<Item = [f32; 4]>, frame: (u32, u32), aspect: f32) -> f32 {
+    let Some(r) = portrait_region(bbox, frame, aspect) else { return 0.0 };
+    let area = |b: [f32; 4]| (b[2] - b[0]).max(0.0) * (b[3] - b[1]).max(0.0);
+    let own = area(bbox);
+    if own <= 0.0 {
+        return 0.0;
+    }
+    others
+        .into_iter()
+        .map(|o| area([o[0].max(r[0]), o[1].max(r[1]), o[2].min(r[2]), o[3].min(r[3])]) / own)
+        .fold(0.0, f32::max)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const FULL_HD: (u32, u32) = (1920, 1080);
+
+    #[test]
+    fn a_bigger_face_in_the_picture_crowds_it() {
+        // A guest's face at the back, and the host's bigger one in front of
+        // it, a little to the left.
+        let guest = [0.50, 0.20, 0.55, 0.29];
+        let host = [0.44, 0.22, 0.53, 0.42];
+        assert!(crowding(guest, [host], FULL_HD, 0.75) > 1.0);
+        // The host's portrait shows the guest small: barely crowded.
+        assert!(crowding(host, [guest], FULL_HD, 0.75) < 0.4);
+        // Someone far away in the frame takes nothing.
+        assert_eq!(crowding(guest, [[0.0, 0.2, 0.1, 0.4]], FULL_HD, 0.75), 0.0);
+        assert_eq!(crowding(guest, [], FULL_HD, 0.75), 0.0);
+    }
 
     /// The region in frame pixels.
     fn px(r: [f32; 4], (w, h): (u32, u32)) -> [f32; 4] {

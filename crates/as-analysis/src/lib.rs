@@ -19,7 +19,7 @@ pub use faces::{
 };
 pub use fusion::{FusionParams, Segment, SegmentKind, TransitionKind, fuse};
 pub use pipeline::{CHUNK, shot_signals};
-pub use portrait::portrait_region;
+pub use portrait::{crowding, portrait_region};
 pub use signals::FrameSignals;
 pub use sprites::ShotSprite;
 pub use tracks::{FaceDet, FaceTrack};

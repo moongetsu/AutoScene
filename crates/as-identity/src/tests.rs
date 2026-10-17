@@ -45,6 +45,8 @@ fn track(media: u32, start: u32, embedding: Vec<f32>, quality: f32) -> TrackIn {
         start,
         end: start + 48,
         spans: vec![],
+        // The face pass looks at every third frame of the media.
+        seen: (start..start + 48).filter(|f| f % 3 == 0).collect(),
         embedding,
         quality,
         dets: 10,
@@ -92,7 +94,8 @@ fn separate_people_become_separate_characters() {
 #[test]
 fn people_on_screen_together_are_never_merged() {
     let mut rng = Rng(11);
-    // Two look-alikes (their centres are 0.8 alike), always in the same shots.
+    // Two look-alikes (their centres are 0.8 alike — as alike as twins),
+    // in the same shots, and now and then one without the other.
     let a = rng.unit();
     let b = around(&mut rng, &a, 0.8);
     let mut tracks = Vec::new();
@@ -102,12 +105,402 @@ fn people_on_screen_together_are_never_merged() {
         tracks.push(track(0, i * 100 + 10, around(&mut rng, &b, 0.8), 0.8));
         truth.extend([0, 1]);
     }
+    for i in 0..4u32 {
+        tracks.push(track(1, i * 100, around(&mut rng, &a, 0.8), 0.8));
+        tracks.push(track(2, i * 100, around(&mut rng, &b, 0.8), 0.8));
+        truth.extend([0, 1]);
+    }
     let o = identify(&tracks, &Params::default());
     let got = chars(&o);
     for i in 0..12 {
         assert_ne!(got[2 * i], got[2 * i + 1], "pair {i} merged");
     }
+    assert_eq!(o.characters.len(), 2);
     assert!(bcubed(&got, &truth) > 0.9);
+}
+
+/// A person in two looks (lighting, angle), each a group of its own at
+/// first: `n` tracks per look, one after another in media `media`. Returns
+/// the tracks' indices per look.
+fn two_looks(rng: &mut Rng, tracks: &mut Vec<TrackIn>, person: &[f32], media: u32, n: u32) -> [Vec<usize>; 2] {
+    let looks = [around(rng, person, 0.9), around(rng, person, 0.9)];
+    let mut out = [Vec::new(), Vec::new()];
+    for i in 0..n {
+        for (l, look) in looks.iter().enumerate() {
+            out[l].push(tracks.len());
+            tracks.push(track(media, (2 * i + l as u32) * 100, around(rng, look, 0.8), 0.8));
+        }
+    }
+    out
+}
+
+/// The character each of `ids` is in (all the same), or a panic.
+fn one_character(o: &Outcome, ids: &[usize]) -> usize {
+    let c = o.tracks[ids[0]].0.character().expect("a character");
+    for &i in ids {
+        assert_eq!(o.tracks[i].0.character(), Some(c), "track {i} is elsewhere");
+    }
+    c
+}
+
+#[test]
+fn a_mirror_does_not_split_a_person() {
+    let mut rng = Rng(41);
+    let person = rng.unit();
+    let other = rng.unit();
+    let mut tracks = Vec::new();
+    let [l1, l2] = two_looks(&mut rng, &mut tracks, &person, 0, 10);
+    for i in 0..10u32 {
+        tracks.push(track(0, 5000 + i * 100, around(&mut rng, &other, 0.8), 0.8));
+    }
+    // In front of a mirror: one face of each look in the same frames, at
+    // two places (the person and their reflection) — and someone else
+    // beside them.
+    let at = tracks[l1[3]].start;
+    let others: Vec<usize> = (20..30).collect();
+    for i in [l2[3], others[0]] {
+        tracks[i].start = at;
+        tracks[i].end = at + 48;
+        tracks[i].seen = tracks[l1[3]].seen.clone();
+    }
+    let o = identify(&tracks, &Params::default());
+    assert_eq!(o.characters.len(), 2, "one character per person");
+    let rest: Vec<usize> = l1.iter().chain(&l2).copied().filter(|&i| i != l1[3] && i != l2[3]).collect();
+    let c = one_character(&o, &rest);
+    assert_ne!(one_character(&o, &others), c);
+    // One of the two faces in the mirror shot is theirs; the other can't be
+    // (a character is on screen once per frame).
+    let mirror = [o.tracks[l1[3]].0.character(), o.tracks[l2[3]].0.character()];
+    assert_eq!(mirror.iter().filter(|&&m| m == Some(c)).count(), 1, "{mirror:?}");
+    assert!(mirror.iter().all(|m| m.is_none() || *m == Some(c)));
+}
+
+#[test]
+fn a_face_the_tracker_found_twice_is_one_person() {
+    let mut rng = Rng(43);
+    let person = rng.unit();
+    let mut tracks = Vec::new();
+    let [l1, l2] = two_looks(&mut rng, &mut tracks, &person, 0, 10);
+    // The tracker lost a face of look 1 for a moment and found it again as
+    // another track (of look 2) inside the gap: never two faces at once.
+    let (s, t) = (l1[5], l2[5]);
+    let at = tracks[s].start;
+    tracks[s].end = at + 150;
+    tracks[s].spans = vec![(at, at + 150)];
+    tracks[s].seen = (at..at + 150).filter(|f| f % 3 == 0 && !(at + 60..at + 90).contains(f)).collect();
+    tracks[t].start = at + 60;
+    tracks[t].end = at + 90;
+    tracks[t].seen = (at + 60..at + 90).filter(|f| f % 3 == 0).collect();
+    let o = identify(&tracks, &Params::default());
+    assert_eq!(o.characters.len(), 1);
+    one_character(&o, &[l1.clone(), l2.clone()].concat());
+}
+
+#[test]
+fn a_strangers_face_in_a_group_does_not_split_a_person() {
+    let mut rng = Rng(47);
+    let person = rng.unit();
+    let stranger = rng.unit();
+    let mut tracks = Vec::new();
+    let [l1, l2] = two_looks(&mut rng, &mut tracks, &person, 0, 12);
+    let strangers: Vec<usize> = (0..10u32)
+        .map(|i| {
+            tracks.push(track(1, i * 100, around(&mut rng, &stranger, 0.8), 0.8));
+            tracks.len() - 1
+        })
+        .collect();
+    // A blurry face of the stranger that resembles look 1 enough to join
+    // it, on screen with a face of look 2.
+    let mut mixed: Vec<f32> = stranger.iter().zip(&tracks[l1[0]].embedding).map(|(s, p)| 0.55 * s + 0.85 * p).collect();
+    proto_normalize(&mut mixed);
+    let stray_at = tracks.len();
+    tracks.push(track(0, tracks[l2[7]].start, mixed, 0.5));
+    let o = identify(&tracks, &Params::default());
+    let c = one_character(&o, &[l1.clone(), l2.clone()].concat());
+    assert_ne!(o.tracks[stray_at].0.character(), Some(c), "a face seen with them is not them");
+    one_character(&o, &strangers);
+    assert_eq!(o.characters.len(), 2);
+}
+
+#[test]
+fn a_reflection_seen_only_with_its_person_is_no_character() {
+    let mut rng = Rng(53);
+    let person = rng.unit();
+    let other = rng.unit();
+    let mut tracks: Vec<TrackIn> = (0..12u32).map(|i| track(0, i * 100, around(&mut rng, &person, 0.8), 0.8)).collect();
+    for i in 0..8u32 {
+        tracks.push(track(0, 5000 + i * 100, around(&mut rng, &other, 0.8), 0.8));
+    }
+    // A long scene in front of a mirror: shot after shot their reflection,
+    // alike to each other (the same mirror, the same light), with them.
+    let mirror = around(&mut rng, &person, 0.85);
+    let reflections: Vec<usize> = (0..5)
+        .map(|i| {
+            let mut t = track(0, tracks[i].start, around(&mut rng, &mirror, 0.9), 0.8);
+            t.seen = tracks[i].seen.clone();
+            tracks.push(t);
+            tracks.len() - 1
+        })
+        .collect();
+    let o = identify(&tracks, &Params::default());
+    assert_eq!(o.characters.len(), 2, "no character for the reflection");
+    one_character(&o, &(0..12).collect::<Vec<_>>());
+    // Nobody's, not even a guess: it is most like someone on screen with it.
+    assert!(reflections.iter().all(|&i| o.tracks[i].0 == Assign::None), "{:?}", o.tracks);
+}
+
+/// `n` tracks of `person`, each seen in the same frames as a track of
+/// `beside` (another person) when `with(i)`, else on its own.
+fn seen_with(
+    rng: &mut Rng,
+    tracks: &mut Vec<TrackIn>,
+    person: &[f32],
+    beside: &[usize],
+    with: impl Fn(usize) -> bool,
+) -> Vec<usize> {
+    (0..beside.len())
+        .map(|i| {
+            let at = tracks[beside[i]].start;
+            let mut t =
+                track(tracks[beside[i]].media, if with(i) { at } else { at + 200_000 }, around(rng, person, 0.8), 0.8);
+            if with(i) {
+                t.seen = tracks[beside[i]].seen.clone();
+            }
+            tracks.push(t);
+            tracks.len() - 1
+        })
+        .collect()
+}
+
+#[test]
+fn look_alikes_always_on_screen_together_stay_two() {
+    let mut rng = Rng(59);
+    // Siblings who look alike (mean faces 0.7 alike), the younger one only
+    // ever seen with the older: two faces at every moment, never one face
+    // seen twice.
+    let a = rng.unit();
+    let b = around(&mut rng, &a, 0.7);
+    let mut tracks: Vec<TrackIn> = (0..14u32).map(|i| track(0, i * 100, around(&mut rng, &a, 0.8), 0.8)).collect();
+    let older: Vec<usize> = (0..14).collect();
+    let younger = seen_with(&mut rng, &mut tracks, &b, &older[..8], |_| true);
+    let o = identify(&tracks, &Params::default());
+    assert_eq!(o.characters.len(), 2);
+    let (ca, cb) = (one_character(&o, &older), one_character(&o, &younger));
+    assert_ne!(ca, cb);
+}
+
+#[test]
+fn a_merge_despite_faces_seen_together_needs_clearly_one_person() {
+    let mut rng = Rng(61);
+    // Two people half alike (mean faces 0.5) — their faces alike enough
+    // to be grouped (average 0.36) — seen together once.
+    let p = rng.unit();
+    let q = around(&mut rng, &p, 0.5);
+    let mut tracks: Vec<TrackIn> = (0..10u32).map(|i| track(0, i * 100, around(&mut rng, &p, 0.85), 0.8)).collect();
+    let first: Vec<usize> = (0..10).collect();
+    let second = seen_with(&mut rng, &mut tracks, &q, &first, |i| i == 4);
+    for &i in &second {
+        tracks[i].embedding = around(&mut rng, &q, 0.85);
+    }
+    let o = identify(&tracks, &Params::default());
+    assert_ne!(one_character(&o, &first[..4]), one_character(&o, &second[..4]), "two people");
+}
+
+#[test]
+fn a_pinned_face_never_steps_aside() {
+    let mut rng = Rng(67);
+    let person = rng.unit();
+    let mut tracks = Vec::new();
+    let [l1, l2] = two_looks(&mut rng, &mut tracks, &person, 0, 10);
+    // The user named look 1. In front of a mirror, a face of look 1 that is
+    // the least typical of all, and one of look 2, at the same moment.
+    for &i in &l1 {
+        tracks[i].pin = Some(7);
+    }
+    tracks[l1[3]].embedding = around(&mut rng, &person, 0.6);
+    let at = tracks[l1[3]].start;
+    tracks[l2[3]].start = at;
+    tracks[l2[3]].end = at + 48;
+    tracks[l2[3]].seen = tracks[l1[3]].seen.clone();
+    let o = identify(&tracks, &Params::default());
+    assert_eq!(o.characters.len(), 1);
+    assert_eq!(o.characters[0].key, Some(7));
+    assert!(l1.iter().all(|&i| o.tracks[i].0 == Assign::Pinned(0)));
+    let rest: Vec<usize> = l2.iter().copied().filter(|&i| i != l2[3]).collect();
+    one_character(&o, &rest);
+    assert_ne!(o.tracks[l2[3]].0.character(), Some(0));
+}
+
+#[test]
+fn a_pinned_copy_stays_a_character() {
+    let mut rng = Rng(71);
+    let person = rng.unit();
+    let mut tracks: Vec<TrackIn> = (0..12u32).map(|i| track(0, i * 100, around(&mut rng, &person, 0.8), 0.8)).collect();
+    // Their face on a screen, shot after shot with them — and the user made
+    // it a character of its own.
+    let screen = around(&mut rng, &person, 0.75);
+    let copies: Vec<usize> = (0..5)
+        .map(|i| {
+            let mut t = track(0, tracks[i].start, around(&mut rng, &screen, 0.9), 0.8);
+            t.seen = tracks[i].seen.clone();
+            t.pin = Some(3);
+            tracks.push(t);
+            tracks.len() - 1
+        })
+        .collect();
+    let o = identify(&tracks, &Params::default());
+    assert_eq!(o.characters.len(), 2);
+    let c = one_character(&o, &copies);
+    assert_eq!(o.characters[c].key, Some(3));
+}
+
+#[test]
+fn a_face_most_like_someone_beside_it_is_no_guess_for_anyone_else() {
+    let mut rng = Rng(73);
+    let (_, mut tracks, truth) = cast(&mut rng, 2, 10);
+    let p0 = (0..tracks.len()).find(|&i| truth[i] == 0).unwrap();
+    // A weak face, most like person 0 but on screen with them, and somewhat
+    // like person 1 — a guess for person 1 if it were alone.
+    let (c0, c1) =
+        (tracks[p0].embedding.clone(), tracks[(0..tracks.len()).find(|&i| truth[i] == 1).unwrap()].embedding.clone());
+    let mut e: Vec<f32> = c0.iter().zip(&c1).map(|(x, y)| 0.75 * x + 0.45 * y).collect();
+    proto_normalize(&mut e);
+    let mut weak = track(0, tracks[p0].start, e.clone(), 0.2);
+    weak.seen = tracks[p0].seen.clone();
+    let alone = track(5, 0, e, 0.2);
+    tracks.extend([weak, alone]);
+    let o = identify(&tracks, &Params::default());
+    let n = tracks.len();
+    assert_eq!(o.tracks[n - 2].0, Assign::None, "beside person 0");
+    assert_eq!(o.tracks[n - 1].0.character(), o.tracks[p0].0.character(), "alone, it is person 0");
+}
+
+#[test]
+fn twins_stay_two_and_a_mirror_splits_no_one_in_a_big_series() {
+    // More clear tracks than one clustering level takes, so each episode is
+    // grouped on its own first: twins (mean faces 0.75 alike), six tracks of
+    // one and three of the other per episode, one of those three on screen
+    // with the other twin — and a person with a mirror in one episode.
+    let mut rng = Rng(79);
+    let mut tracks: Vec<TrackIn> = (0..4100u32).map(|i| track(100 + i % 8, (i / 8) * 100, rng.unit(), 0.9)).collect();
+    let a = rng.unit();
+    let b = around(&mut rng, &a, 0.75);
+    let (mut twin_a, mut twin_b) = (Vec::new(), Vec::new());
+    for m in 0..20u32 {
+        let first = tracks.len();
+        for k in 0..6u32 {
+            tracks.push(track(m, 1_000_000 + k * 100, around(&mut rng, &a, 0.8), 0.8));
+        }
+        twin_a.extend(first..tracks.len());
+        let theirs: Vec<usize> = (first..first + 3).collect();
+        twin_b.extend(seen_with(&mut rng, &mut tracks, &b, &theirs, |i| i == 0));
+    }
+    let person = rng.unit();
+    let [l1, l2] = two_looks(&mut rng, &mut tracks, &person, 50, 10);
+    let at = tracks[l1[3]].start;
+    tracks[l2[3]].start = at;
+    tracks[l2[3]].end = at + 48;
+    tracks[l2[3]].seen = tracks[l1[3]].seen.clone();
+    let o = identify(&tracks, &Params::default());
+    assert_ne!(one_character(&o, &twin_a), one_character(&o, &twin_b), "the twins are two");
+    let rest: Vec<usize> = l1.iter().chain(&l2).copied().filter(|&i| i != l1[3] && i != l2[3]).collect();
+    one_character(&o, &rest);
+}
+
+/// Twins A and B are two characters: B's faces stay off A's (but a stray
+/// blurry one that looks more like A than like B), and most of them are
+/// one character of their own.
+fn twins_are_two(o: &Outcome, a: &[usize], b: &[usize], what: &str) {
+    let ca = one_character(o, a);
+    let on_a = b.iter().filter(|&&i| o.tracks[i].0.character() == Some(ca)).count();
+    assert!(10 * on_a <= b.len(), "{what}: {on_a} of B's {} faces on A", b.len());
+    let mut theirs: HashMap<usize, usize> = HashMap::new();
+    for &i in b {
+        if let Some(c) = o.tracks[i].0.character().filter(|&c| c != ca) {
+            *theirs.entry(c).or_default() += 1;
+        }
+    }
+    let most = theirs.values().max().copied().unwrap_or(0);
+    assert!(2 * most >= b.len(), "{what}: B's own character holds {most} of {}", b.len());
+}
+
+#[test]
+fn twins_stay_two_when_they_are_seen_more_clearly_together() {
+    // Two-shots in good light, the rest of their shots in any light: twins
+    // whose faces side by side are clearer than their faces elsewhere.
+    for (seed, (centres, alone, together)) in [(0.75f32, 0.6f32, 8usize), (0.8, 0.65, 6)].into_iter().enumerate() {
+        let mut rng = Rng(109 + seed as u64);
+        let a = rng.unit();
+        let b = around(&mut rng, &a, centres);
+        let mut tracks: Vec<TrackIn> = (0..20u32).map(|i| track(0, i * 100, around(&mut rng, &a, 0.9), 0.8)).collect();
+        let first: Vec<usize> = (0..20).collect();
+        let second = seen_with(&mut rng, &mut tracks, &b, &first, |i| i < together);
+        for (k, &i) in second.iter().enumerate() {
+            tracks[i].embedding = around(&mut rng, &b, if k < together { 0.9 } else { alone });
+        }
+        let o = identify(&tracks, &Params::default());
+        twins_are_two(&o, &first, &second, &format!("twins {seed}"));
+    }
+}
+
+#[test]
+fn twins_on_screen_together_now_and_then_stay_two() {
+    // In 4 of the 20 shots of the second twin, the first is there too: too
+    // often for one person seen twice.
+    let mut rng = Rng(113);
+    let a = rng.unit();
+    let b = around(&mut rng, &a, 0.75);
+    let mut tracks: Vec<TrackIn> = (0..20u32).map(|i| track(0, i * 100, around(&mut rng, &a, 0.8), 0.8)).collect();
+    let first: Vec<usize> = (0..20).collect();
+    let second = seen_with(&mut rng, &mut tracks, &b, &first, |i| i < 4);
+    let o = identify(&tracks, &Params::default());
+    twins_are_two(&o, &first, &second, "twins");
+}
+
+#[test]
+fn a_person_seen_twice_twice_is_still_one() {
+    // Two moments in front of a mirror, between the same two looks.
+    let mut rng = Rng(127);
+    let person = rng.unit();
+    let mut tracks = Vec::new();
+    let [l1, l2] = two_looks(&mut rng, &mut tracks, &person, 0, 20);
+    for k in [3, 11] {
+        let at = tracks[l1[k]].start;
+        tracks[l2[k]].start = at;
+        tracks[l2[k]].end = at + 48;
+        tracks[l2[k]].seen = tracks[l1[k]].seen.clone();
+    }
+    let o = identify(&tracks, &Params::default());
+    assert_eq!(o.characters.len(), 1);
+    let rest: Vec<usize> =
+        l1.iter().chain(&l2).copied().filter(|&i| ![l1[3], l1[11], l2[3], l2[11]].contains(&i)).collect();
+    one_character(&o, &rest);
+}
+
+#[test]
+fn twins_seen_more_clearly_together_stay_two_in_a_big_series() {
+    // Each episode on its own first: two clear shots of the second twin
+    // beside the first, four blurrier ones alone.
+    let mut rng = Rng(131);
+    let mut tracks: Vec<TrackIn> = (0..4100u32).map(|i| track(100 + i % 8, (i / 8) * 100, rng.unit(), 0.9)).collect();
+    let a = rng.unit();
+    let b = around(&mut rng, &a, 0.75);
+    let (mut twin_a, mut twin_b) = (Vec::new(), Vec::new());
+    for m in 0..20u32 {
+        let first = tracks.len();
+        for k in 0..6u32 {
+            tracks.push(track(m, 1_000_000 + k * 100, around(&mut rng, &a, 0.8), 0.8));
+        }
+        twin_a.extend(first..tracks.len());
+        let theirs: Vec<usize> = (first..first + 6).collect();
+        let second = seen_with(&mut rng, &mut tracks, &b, &theirs, |i| i < 2);
+        for (k, &i) in second.iter().enumerate() {
+            tracks[i].embedding = around(&mut rng, &b, if k < 2 { 0.9 } else { 0.65 });
+        }
+        twin_b.extend(second);
+    }
+    let o = identify(&tracks, &Params::default());
+    twins_are_two(&o, &twin_a, &twin_b, "twins in a series");
 }
 
 #[test]
@@ -231,6 +624,125 @@ fn a_character_is_on_screen_once_per_frame() {
     let c0 = o.tracks[0].0.character().unwrap();
     assert_eq!(o.tracks[n + 1].0, Assign::Auto(c0));
     assert_ne!(o.tracks[n].0.character(), Some(c0));
+}
+
+#[test]
+fn characters_found_to_be_one_say_so() {
+    let mut rng = Rng(83);
+    let person = rng.unit();
+    let other = rng.unit();
+    let mut tracks = Vec::new();
+    let [l1, l2] = two_looks(&mut rng, &mut tracks, &person, 0, 10);
+    for k in 0..6u32 {
+        tracks.push(track(1, k * 100, around(&mut rng, &other, 0.8), 0.8));
+    }
+    // An older grouping made the two looks two characters (keys 100 and
+    // 101, the second bigger now), and the other person 102.
+    for &i in &l1 {
+        tracks[i].previous = Some(100);
+    }
+    for &i in &l2 {
+        tracks[i].previous = Some(101);
+        tracks[i].quality = 0.9;
+    }
+    for t in &mut tracks[20..] {
+        t.previous = Some(102);
+    }
+    let o = identify(&tracks, &Params::default());
+    let c = one_character(&o, &[l1.clone(), l2.clone()].concat());
+    assert_eq!(o.characters[c].key, Some(101));
+    assert_eq!(o.absorbed, [(100, c)], "100 is one with 101 now");
+    // Nothing joined: nothing to say.
+    let again = identify(&tracks[20..], &Params::default());
+    assert!(again.absorbed.is_empty());
+    // Placing faces after a decision groups nothing either, whatever
+    // characters lost their faces.
+    let members = vec![(101, [l1.clone(), l2.clone()].concat()), (102, (20..26).collect())];
+    assert!(reassign(&tracks, &members, &Params::default()).absorbed.is_empty());
+}
+
+#[test]
+fn a_reflection_that_was_a_character_is_one_with_its_person() {
+    let mut rng = Rng(89);
+    let person = rng.unit();
+    let mut tracks: Vec<TrackIn> = (0..12u32).map(|i| track(0, i * 100, around(&mut rng, &person, 0.8), 0.8)).collect();
+    let mirror = around(&mut rng, &person, 0.85);
+    for i in 0..5 {
+        let mut t = track(0, tracks[i].start, around(&mut rng, &mirror, 0.9), 0.8);
+        t.seen = tracks[i].seen.clone();
+        t.previous = Some(9);
+        tracks.push(t);
+    }
+    for t in &mut tracks[..12] {
+        t.previous = Some(8);
+    }
+    let o = identify(&tracks, &Params::default());
+    let c = one_character(&o, &(0..12).collect::<Vec<_>>());
+    assert_eq!(o.characters[c].key, Some(8));
+    assert_eq!(o.absorbed, [(9, c)], "its scenepack goes to them");
+}
+
+#[test]
+fn small_groups_of_one_person_merge_despite_one_mirror() {
+    let mut rng = Rng(97);
+    let person = rng.unit();
+    let mut tracks = Vec::new();
+    // Six faces per look: a tenth of the smaller group is less than one face,
+    // yet one face may always step aside.
+    let [l1, l2] = two_looks(&mut rng, &mut tracks, &person, 0, 6);
+    let at = tracks[l1[2]].start;
+    tracks[l2[2]].start = at;
+    tracks[l2[2]].end = at + 48;
+    tracks[l2[2]].seen = tracks[l1[2]].seen.clone();
+    let o = identify(&tracks, &Params::default());
+    assert_eq!(o.characters.len(), 1);
+    let rest: Vec<usize> = l1.iter().chain(&l2).copied().filter(|&i| i != l1[2] && i != l2[2]).collect();
+    one_character(&o, &rest);
+}
+
+#[test]
+fn look_alikes_stay_two_when_one_of_them_is_seen_less_clearly() {
+    let mut rng = Rng(103);
+    // One actor in two roles (mean faces 0.85 alike): one role always clear
+    // (its faces 0.81 alike), the other often blurry (0.51); the blurry one
+    // on screen with the clear one in 12 of its 20 shots.
+    let a = rng.unit();
+    let b = around(&mut rng, &a, 0.85);
+    let mut tracks: Vec<TrackIn> = (0..20u32).map(|i| track(0, i * 100, around(&mut rng, &a, 0.9), 0.8)).collect();
+    let clear: Vec<usize> = (0..20).collect();
+    let blurry = seen_with(&mut rng, &mut tracks, &b, &clear, |i| i < 12);
+    for &i in &blurry {
+        tracks[i].embedding = around(&mut rng, &b, 0.72);
+    }
+    let o = identify(&tracks, &Params::default());
+    let ca = one_character(&o, &clear);
+    let theirs = blurry.iter().filter(|&&i| o.tracks[i].0.character().is_some_and(|c| c != ca)).count();
+    assert!(theirs >= 15, "the second role keeps its faces: {theirs} of 20");
+}
+
+#[test]
+fn a_noisy_group_does_not_make_look_alikes_copies() {
+    let mut rng = Rng(107);
+    // Look-alikes (mean faces 0.85): one seen clearly (faces 0.81 alike),
+    // the other blurry (0.51), on screen with the first in 12 of its 13
+    // shots. Their faces side by side are as alike as the blurry one's
+    // faces are to each other — but far less than the clear one's: two
+    // people, whose groups must not merge.
+    let a = rng.unit();
+    let b = around(&mut rng, &a, 0.85);
+    let mut tracks: Vec<TrackIn> = (0..20u32).map(|i| track(0, i * 100, around(&mut rng, &a, 0.9), 0.8)).collect();
+    let clear: Vec<usize> = (0..20).collect();
+    let blurry = seen_with(&mut rng, &mut tracks, &b, &clear[..13], |i| i < 12);
+    for &i in &blurry {
+        tracks[i].embedding = around(&mut rng, &b, 0.714);
+    }
+    let core: Vec<usize> = (0..tracks.len()).collect();
+    let groups = cluster(&tracks, &core, &Params::default());
+    let group_of = |t: usize| groups.iter().position(|g| g.contains(&t)).unwrap();
+    let theirs = group_of(blurry[0]);
+    assert!(blurry[..12].iter().all(|&t| group_of(t) == theirs), "their faces seen with the other stay together");
+    assert_ne!(theirs, group_of(clear[0]));
+    assert!(groups[theirs].len() >= 12);
 }
 
 #[test]

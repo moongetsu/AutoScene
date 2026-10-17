@@ -733,7 +733,8 @@ mod tests {
                 rev,
                 &[walter],
                 &[face],
-                &[update(ids[0], Some(walter), BodySource::Face), update(ids[1], Some(walter), BodySource::Clothes)]
+                &[update(ids[0], Some(walter), BodySource::Face), update(ids[1], Some(walter), BodySource::Clothes)],
+                &[]
             )
             .unwrap()
         );
@@ -752,7 +753,7 @@ mod tests {
         db.forbid_bodies(&[ids[0]], walter).unwrap();
         // A new clustering keeps the pin and starts from nothing for the rest.
         let rev = db.cast_rev().unwrap();
-        assert!(db.apply_identity(rev, &[], &[], &[update(ids[1], Some(walter), BodySource::Clothes)]).unwrap());
+        assert!(db.apply_identity(rev, &[], &[], &[update(ids[1], Some(walter), BodySource::Clothes)], &[]).unwrap());
         let got = db.identity_bodies().unwrap();
         assert_eq!(got[1].pin, Some(jesse));
         assert_eq!(got[0].forbids, [walter]);

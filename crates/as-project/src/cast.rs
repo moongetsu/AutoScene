@@ -46,6 +46,10 @@ type NewFace = (i64, FrameRange, Vec<FaceDet>, Option<Vec<f32>>);
 /// keeps its decision).
 const REANCHOR_MIN_COS: f32 = 0.4;
 
+/// The `meta` key of the [`as_identity::VERSION`] the cast was last grouped
+/// with.
+const GROUPED_WITH: &str = "identity_version";
+
 /// Set (in `meta`) while a media's decisions wait for faces from another
 /// file than the one they were made on.
 pub(crate) fn source_changed_key(id: MediaId) -> String {
@@ -191,6 +195,28 @@ fn resolve(mut found: Vec<(u32, i64, EditKind)>) -> Vec<(i64, EditKind)> {
     out
 }
 
+/// How much other faces take of each track's portrait (see
+/// [`as_analysis::crowding`]), among `tracks` — every face of some shots:
+/// the faces of a frame are all in its shot.
+fn rivals(tracks: &[&[FaceDet]], frame: (u32, u32)) -> Vec<f32> {
+    let mut at: HashMap<FrameIdx, Vec<(usize, [f32; 4])>> = HashMap::new();
+    for (i, dets) in tracks.iter().enumerate() {
+        for d in dets.iter() {
+            at.entry(d.frame).or_default().push((i, d.bbox));
+        }
+    }
+    let (w, h) = PORTRAIT;
+    tracks
+        .iter()
+        .enumerate()
+        .map(|(i, dets)| {
+            let Some(d) = tracks::clearest(dets) else { return 0.0 };
+            let others = at.get(&d.frame).into_iter().flatten().filter(|(j, _)| *j != i).map(|(_, b)| *b);
+            as_analysis::crowding(d.bbox, others, frame, w as f32 / h as f32)
+        })
+        .collect()
+}
+
 pub(crate) fn box_iou(a: &[f32; 4], b: &[f32; 4]) -> f32 {
     let iw = (a[2].min(b[2]) - a[0].max(b[0])).max(0.0);
     let ih = (a[3].min(b[3]) - a[1].max(b[1])).max(0.0);
@@ -224,14 +250,18 @@ impl IdentityInput {
             let m = media.len() as u32;
             let m = *media.entry(r.media_id).or_insert(m);
             let assigned = r.character_id.and_then(|c| key.get(&c).copied());
-            let spans = tracks::dets_from_bytes(&r.det_bytes)
-                .map(|d| tracks::presence_spans(&d, r.end, face.stride, max_gap))
-                .unwrap_or_default();
+            let dets = tracks::dets_from_bytes(&r.det_bytes).unwrap_or_default();
+            let spans =
+                if dets.is_empty() { Vec::new() } else { tracks::presence_spans(&dets, r.end, face.stride, max_gap) };
+            let mut seen: Vec<u32> = dets.iter().map(|d| d.frame).collect();
+            seen.sort_unstable();
+            seen.dedup();
             tracks.push(TrackIn {
                 media: m,
                 start: r.start,
                 end: r.end,
                 spans,
+                seen,
                 embedding,
                 quality: r.quality,
                 dets: r.dets,
@@ -396,6 +426,50 @@ impl Project {
         }
     }
 
+    /// The upright, square-pixel size of `id`'s frames (detection boxes are
+    /// fractions of it); 16:9 while it isn't known.
+    fn frame_size(&self, id: MediaId) -> ProjectResult<(u32, u32)> {
+        let info = self.db().media(id)?.and_then(|m| m.info);
+        Ok(info.map_or((16, 9), |info| as_media::frames::sample_size(&info, (u32::MAX, u32::MAX), 2)))
+    }
+
+    /// Look at the portraits of faces found before that was stored for how
+    /// much other faces take of them (see [`rivals`]). Returns how many.
+    pub fn fill_rivals(&self, cancel: &CancelToken) -> ProjectResult<usize> {
+        let mut n = 0;
+        for id in self.db().media_without_rivals()? {
+            cancel.check().map_err(|_| ProjectError::Cancelled)?;
+            let rows = self.db().media_track_dets(id)?;
+            let dets: Vec<Vec<FaceDet>> =
+                rows.iter().map(|(_, _, _, d, _)| tracks::dets_from_bytes(d).unwrap_or_default()).collect();
+            let rival = rivals(&dets.iter().map(Vec::as_slice).collect::<Vec<_>>(), self.frame_size(id)?);
+            let found: Vec<(i64, f32)> = rows.iter().map(|r| r.0).zip(rival).collect();
+            self.db().set_rivals(&found)?;
+            n += found.len();
+        }
+        Ok(n)
+    }
+
+    /// Whether the cast should be gone over on the upkeep worker (see
+    /// [`Self::cast_upkeep`]).
+    pub fn cast_needs_upkeep(&self) -> ProjectResult<bool> {
+        Ok(self.grouped_by_older_version()? || !self.db().media_without_rivals()?.is_empty())
+    }
+
+    /// Bring a cast made by an older version up to date: faces whose
+    /// portraits weren't looked at for other faces are, and a cast grouped
+    /// by an older version of the grouping is grouped again (the user's
+    /// decisions stay). Returns the number of characters when it was
+    /// grouped again.
+    pub fn cast_upkeep(&self, cancel: &CancelToken) -> ProjectResult<Option<usize>> {
+        let looked = self.fill_rivals(cancel)?;
+        if looked > 0 {
+            tracing::info!(project = %self.id, tracks = looked, "portraits looked at for other faces");
+        }
+        cancel.check().map_err(|_| ProjectError::Cancelled)?;
+        if self.grouped_by_older_version()? { self.recluster().map(Some) } else { Ok(None) }
+    }
+
     // -- face pass ----------------------------------------------------------
 
     /// Where the face pass of `id` with embedder `model` resumes.
@@ -456,9 +530,11 @@ impl Project {
     ) -> ProjectResult<usize> {
         let found: Vec<FaceTrack> =
             tracks::decode(blob).ok_or_else(|| ProjectError::Invalid("unreadable face tracks".into()))?;
+        let rival = rivals(&found.iter().map(|t| t.dets.as_slice()).collect::<Vec<_>>(), self.frame_size(id)?);
         let rows: Vec<NewTrack> = found
             .iter()
-            .map(|t| NewTrack {
+            .zip(rival)
+            .map(|(t, rival)| NewTrack {
                 start: t.start,
                 end: t.end,
                 shot: t.shot,
@@ -466,6 +542,7 @@ impl Project {
                 face_h: t.face_height(),
                 dets: tracks::dets_to_bytes(&t.dets),
                 emb: tracks::embedding_to_bytes(&t.embedding),
+                rival,
             })
             .collect();
         let sprites: Vec<&ShotSprite> = sprites.iter().filter(|s| (start..end).contains(&s.shot)).collect();
@@ -633,9 +710,20 @@ impl Project {
         let out = identify(&cast.tracks, &Params::default());
         let people = self.people_outcome(&rows, &cast, &out)?;
         let Some(characters) = self.store_identity(rev, &rows, &cast, &out, people)? else { return Ok(None) };
+        self.db().set_meta(GROUPED_WITH, &as_identity::VERSION.to_string())?;
         let ms = started.elapsed().as_millis() as u64;
         tracing::info!(tracks = cast.tracks.len(), characters, ms, "cast clustered");
         Ok(Some(characters))
+    }
+
+    /// Whether the cast was grouped by an older way of grouping (see
+    /// [`as_identity::VERSION`]) and should be grouped again.
+    pub fn grouped_by_older_version(&self) -> ProjectResult<bool> {
+        let (_, _, media_with_faces, _) = self.db().cast_counts()?;
+        // Unknown (grouped before versions were kept): the first version. A
+        // newer version's grouping is never undone by an older one.
+        let grouped = self.db().meta(GROUPED_WITH)?.and_then(|v| v.parse::<u32>().ok()).unwrap_or(1);
+        Ok(media_with_faces > 0 && grouped < as_identity::VERSION)
     }
 
     /// The cast after a decision: every character keeps its members (pins
@@ -725,8 +813,13 @@ impl Project {
             })
             .collect();
         let bodies = people.as_ref().map(|(b, o)| crate::bodies::body_updates(b, o, &ids)).unwrap_or_default();
-        if !self.db().apply_identity(rev, &new, &updates, &bodies)? {
+        let joined: Vec<(CharacterId, CharacterId)> =
+            out.absorbed.iter().map(|&(k, c)| (cast.existing[k as usize], ids[c])).collect();
+        if !self.db().apply_identity(rev, &new, &updates, &bodies, &joined)? {
             return Ok(None);
+        }
+        if !joined.is_empty() {
+            tracing::info!(joined = joined.len(), "characters found to be one with another");
         }
         if !new.is_empty() {
             tracing::info!(new = new.len(), "new characters");
@@ -1052,6 +1145,62 @@ pub(crate) mod tests {
         assert_eq!(project.missing_portraits().unwrap(), [track]);
         project.portraits.lock().failed.insert(portrait);
         assert!(project.missing_portraits().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_cast_from_an_older_version_is_brought_up_to_date() {
+        let frames = 600;
+        let (_dir, project, id) = project_with_media(frames);
+        let at = |mut t: FaceTrack, bbox: [f32; 4], quality: f32| {
+            t.dets.iter_mut().for_each(|d| (d.bbox, d.quality) = (bbox, quality));
+            t.quality = quality;
+            t
+        };
+        // Person 1, sharp, behind person 2's bigger face; later person 1
+        // alone, a little less sharp.
+        let behind = at(seen(1, 0, 0, 90, 0.0), [0.50, 0.15, 0.56, 0.30], 0.95);
+        let front = at(seen(2, 0, 0, 90, 0.0), [0.40, 0.15, 0.53, 0.50], 0.9);
+        let alone = at(seen(1, 100, 100, 190, 0.0), [0.30, 0.20, 0.45, 0.45], 0.8);
+        project.store_face_chunk(id, 0, frames, &tracks::encode(&[behind, front, alone]), &[], &[]).unwrap();
+        project.finish_faces(id).unwrap();
+        let ids: Vec<u32> = project.cast_tracks(TrackFilter::Unassigned).unwrap().iter().map(|t| t.id).collect();
+        let (behind, alone) = (ids[0].min(ids[1]), ids[2]);
+        project
+            .cast_edit(&CastEdit::NewCharacter { tracks: vec![behind, alone], name: Some("Walter".into()) })
+            .unwrap();
+        let cover = |p: &Project| p.cast().unwrap().characters[0].cover_small.clone().unwrap();
+        let shows = |track: u32| project.thumb_path(id, i64::from(track)).display().to_string();
+        // The picture of them alone, not the one where someone else's face
+        // is bigger than theirs.
+        assert_eq!(cover(&project), shows(alone));
+        project.recluster().unwrap();
+        assert!(!project.cast_needs_upkeep().unwrap());
+
+        // A cast from before: grouped by an older version, no portrait looked
+        // at for other faces.
+        let db = rusqlite::Connection::open(project.dir.join(crate::project::PROJECT_DB)).unwrap();
+        db.execute_batch("UPDATE tracks SET rival = NULL; DELETE FROM meta WHERE key = 'identity_version';").unwrap();
+        drop(db);
+        assert_eq!(cover(&project), shows(behind));
+        assert!(project.cast_needs_upkeep().unwrap());
+        assert_eq!(project.cast_upkeep(&CancelToken::new()).unwrap(), Some(1));
+        assert!(!project.cast_needs_upkeep().unwrap());
+        assert_eq!(project.cast_upkeep(&CancelToken::new()).unwrap(), None, "once");
+        // The decision stays; the cover shows them.
+        let walter = project.cast().unwrap().characters.remove(0);
+        assert_eq!((walter.name.as_deref(), walter.tracks), (Some("Walter"), 2));
+        assert_eq!(cover(&project), shows(alone));
+
+        // A cast grouped by a newer version (the app was downgraded) isn't
+        // grouped again by this one; one marked unreadably is.
+        let db = rusqlite::Connection::open(project.dir.join(crate::project::PROJECT_DB)).unwrap();
+        let mark = |v: &str| {
+            db.execute("UPDATE meta SET value = ?1 WHERE key = 'identity_version'", [v]).unwrap();
+        };
+        mark(&(as_identity::VERSION + 1).to_string());
+        assert!(!project.grouped_by_older_version().unwrap());
+        mark("?");
+        assert!(project.grouped_by_older_version().unwrap());
     }
 
     #[test]

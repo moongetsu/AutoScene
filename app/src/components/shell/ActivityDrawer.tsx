@@ -41,6 +41,7 @@ const KIND_ICON: Record<JobInfo["kind"], React.ReactNode> = {
   analyze: <Scan />,
   posters: <Image />,
   portraits: <UserFocus />,
+  regroup: <Users />,
 }
 
 /** Global view of background work (indexing, previews, analysis, exports). */
@@ -141,7 +142,7 @@ function JobRow({ job: j }: { job: JobInfo }) {
           <Play /> Open in the player
         </ContextMenuItem>
       )}
-      {pid && j.kind === "portraits" && (
+      {pid && (j.kind === "portraits" || j.kind === "regroup") && (
         <ContextMenuItem onSelect={() => go(() => navigate({ to: "/p/$pid/cast", params: { pid } }))}>
           <Users /> Open the cast
         </ContextMenuItem>

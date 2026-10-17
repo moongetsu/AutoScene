@@ -287,6 +287,10 @@ const STEPS: &[M<'static>] = &[
     CREATE INDEX body_edits_by_media ON body_edits(media_id);
     CREATE INDEX body_edits_by_character ON body_edits(character_id);",
     ),
+    // 13: how much another face takes of a track's portrait (the most any
+    // covers of it, as a multiple of the track's own face; NULL: not looked
+    // at yet): a character's cover shows them, not the person in front.
+    M::up("ALTER TABLE tracks ADD COLUMN rival REAL;"),
 ];
 const MIGRATIONS: Migrations<'static> = Migrations::from_slice(STEPS);
 

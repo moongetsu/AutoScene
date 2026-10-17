@@ -879,6 +879,9 @@ pub enum JobKind {
     Posters,
     /// Sharp portraits of a project's characters, cut from the exact frames.
     Portraits,
+    /// A project's characters grouped again: the grouping got better since
+    /// they were grouped (the user's decisions stay).
+    Regroup,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]

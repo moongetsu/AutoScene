@@ -659,6 +659,36 @@ pub fn queue_posters(app: &AppHandle, project: &Arc<Project>, ids: Vec<MediaId>)
     });
 }
 
+/// Bring a project's cast up to date on the upkeep worker (see
+/// [`Project::cast_upkeep`]): grouped by an older version of the grouping,
+/// it is grouped again — the user's decisions stay, characters that turn
+/// out to be one person become one — and covers made before show the
+/// character, not the face in front of them.
+pub fn queue_regroup(app: &AppHandle, project: &Arc<Project>) {
+    let state = app.state::<AppState>();
+    if state.jobs.is_active(|j| j.kind == JobKind::Regroup && j.project_id == Some(project.id)) {
+        return;
+    }
+    let spec = JobSpec {
+        kind: JobKind::Regroup,
+        class: Class::Upkeep,
+        title: "Grouping characters".into(),
+        subtitle: project.title().ok(),
+        project_id: Some(project.id),
+        media_id: None,
+        export_id: None,
+    };
+    let (app2, project) = (app.clone(), project.clone());
+    state.jobs.submit(spec, move |ctx| {
+        ctx.stage("Grouping characters");
+        if let Some(characters) = project.cast_upkeep(&ctx.cancel).map_err(job_error)? {
+            log::info!("characters grouped again; the cast has {characters} characters");
+        }
+        cast_changed(&app2, &project);
+        Ok(())
+    });
+}
+
 /// How often the UI hears of new portraits while they are being made.
 const PORTRAITS_SHOWN_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
 
@@ -899,6 +929,15 @@ pub fn recover_all(app: &AppHandle) {
                 queue_posters(app, &project, r.posters);
             }
             Err(e) => log::warn!("recovering '{}': {}", summary.title, e.detail()),
+        }
+        // Before the portraits: covers may change.
+        match project.cast_needs_upkeep() {
+            Ok(true) => {
+                log::info!("'{}': the cast is brought up to date", summary.title);
+                queue_regroup(app, &project);
+            }
+            Ok(false) => {}
+            Err(e) => log::warn!("checking the cast of '{}': {}", summary.title, e.detail()),
         }
         queue_portraits(app, &project);
         let pending = project.pending_shots().and_then(|mut ids| {

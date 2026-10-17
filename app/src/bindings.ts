@@ -589,7 +589,12 @@ export type JobKind = "ingest" | "proxy" | "export" |
 /**  Posters of a project made again at the current sizes. */
 "posters" | 
 /**  Sharp portraits of a project's characters, cut from the exact frames. */
-"portraits";
+"portraits" | 
+/**
+ *  A project's characters grouped again: the grouping got better since
+ *  they were grouped (the user's decisions stay).
+ */
+"regroup";
 
 /**  Throttled progress for a running job (≤ 4 Hz per job). */
 export type JobProgress = {

@@ -20,6 +20,7 @@ pub fn input(tracks: &[FaceTrack]) -> Vec<TrackIn> {
             start: t.start,
             end: t.end,
             spans: tracks::presence_spans(&t.dets, t.end, STRIDE, MAX_GAP),
+            seen: t.dets.iter().map(|d| d.frame).collect(),
             embedding: t.embedding.clone(),
             quality: t.quality,
             dets: t.dets.len() as u32,

@@ -25,6 +25,7 @@ fn main() {
             start: t.start,
             end: t.end,
             spans: as_analysis::tracks::presence_spans(&t.dets, t.end, 3, 8),
+            seen: t.dets.iter().map(|d| d.frame).collect(),
             embedding: t.embedding.clone(),
             quality: t.quality,
             dets: t.dets.len() as u32,

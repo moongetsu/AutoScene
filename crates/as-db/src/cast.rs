@@ -25,6 +25,8 @@ pub struct NewTrack {
     pub dets: Vec<u8>,
     /// 512 × f16.
     pub emb: Vec<u8>,
+    /// How much another face takes of its portrait (`as_analysis::crowding`).
+    pub rival: f32,
 }
 
 /// What clustering needs of a track.
@@ -148,12 +150,14 @@ fn opt_id(s: Option<String>) -> DbResult<Option<CharacterId>> {
 }
 
 /// A character's (`c`) cover track: the chosen one while it is still theirs,
-/// else their clearest big face.
+/// else their clearest big face — where no one else's face takes half as
+/// much of the picture as theirs (a guest behind the host shows the host).
 pub(crate) const COVER: &str = "COALESCE((SELECT x.id FROM tracks x WHERE x.id = c.cover AND x.character_id = c.id
                                  AND x.assign IN ('auto', 'pinned') AND x.not_face = 0),
                               (SELECT b.id FROM tracks b WHERE b.character_id = c.id AND b.assign IN ('auto', 'pinned')
                                            AND b.not_face = 0
-                                         ORDER BY b.face_h >= 0.12 DESC, b.quality DESC, b.face_h DESC LIMIT 1))";
+                                         ORDER BY COALESCE(b.rival, 0) < 0.5 DESC, b.face_h >= 0.12 DESC,
+                                                  b.quality DESC, b.face_h DESC LIMIT 1))";
 
 /// `?, ?, ?` for an `IN (...)` list.
 pub(crate) fn marks(n: usize) -> String {
@@ -255,19 +259,44 @@ fn insert_character(tx: &Transaction, id: CharacterId, name: Option<&str>) -> Db
     Ok(())
 }
 
-/// Characters nobody is in any more go — unless the user named or hid them,
-/// or decisions on a media being analysed again wait for them. Suggestions
-/// pointing at gone characters are dropped.
-fn drop_empty_characters(tx: &Transaction) -> DbResult<()> {
-    tx.execute(
-        "DELETE FROM characters WHERE name IS NULL AND hidden = 0
+/// A character (`characters` row) nobody is any more, that the user neither
+/// named nor hid and no decision waits for: it goes.
+const GONE: &str = "characters.name IS NULL AND characters.hidden = 0
            AND NOT EXISTS (SELECT 1 FROM tracks t WHERE t.character_id = characters.id
                              AND t.assign IN ('auto', 'pinned') AND t.not_face = 0 AND t.via_body = 0)
            AND NOT EXISTS (SELECT 1 FROM track_edits e WHERE e.character_id = characters.id)
            AND NOT EXISTS (SELECT 1 FROM bodies b WHERE b.character_id = characters.id AND b.source = 'pinned')
-           AND NOT EXISTS (SELECT 1 FROM body_edits e WHERE e.character_id = characters.id AND e.kind = 'pin')",
-        [],
+           AND NOT EXISTS (SELECT 1 FROM body_edits e WHERE e.character_id = characters.id AND e.kind = 'pin')";
+
+/// A grouping made `from` one with `into` (see `as_identity::Outcome::
+/// absorbed`): if `from` goes, its scenepack does not — its filters (unless
+/// `into` has its own) and the shots picked or dropped become `into`'s.
+/// What the user said isn't `from` stays with `from` and goes with it: "not
+/// that duplicate" may well have been said of `into`'s own faces.
+fn carry_over(tx: &Transaction, from: CharacterId, into: CharacterId) -> DbResult<()> {
+    let (f, i) = (from.to_string(), into.to_string());
+    let gone: bool = tx.query_row(
+        &format!("SELECT EXISTS (SELECT 1 FROM characters WHERE characters.id = ?1 AND {GONE})"),
+        [&f],
+        |r| r.get(0),
     )?;
+    if !gone || from == into {
+        return Ok(());
+    }
+    tx.execute("UPDATE OR IGNORE pack_overrides SET character_id = ?2 WHERE character_id = ?1", [&f, &i])?;
+    tx.execute(
+        "INSERT OR IGNORE INTO packs (character_id, spec, naming, updated_at)
+         SELECT ?2, spec, naming, updated_at FROM packs WHERE character_id = ?1",
+        [&f, &i],
+    )?;
+    Ok(())
+}
+
+/// Characters nobody is in any more go — unless the user named or hid them,
+/// or decisions on a media being analysed again wait for them. Suggestions
+/// pointing at gone characters are dropped.
+fn drop_empty_characters(tx: &Transaction) -> DbResult<()> {
+    tx.execute(&format!("DELETE FROM characters WHERE {GONE}"), [])?;
     tx.execute("UPDATE tracks SET assign = 'none', score = 0 WHERE character_id IS NULL AND assign <> 'none'", [])?;
     tx.execute("UPDATE characters SET cover = NULL WHERE cover IS NOT NULL AND NOT EXISTS (SELECT 1 FROM tracks t WHERE t.id = characters.cover AND t.character_id = characters.id AND t.assign IN ('auto', 'pinned'))", [])?;
     Ok(())
@@ -419,13 +448,24 @@ impl ProjectDb {
             }
             drop(st);
             let mut st = tx.prepare(
-                "INSERT INTO tracks (id, media_id, start, end, shot, quality, face_h, dets, emb)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                "INSERT INTO tracks (id, media_id, start, end, shot, quality, face_h, dets, emb, rival)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             )?;
             let mut ids = Vec::with_capacity(tracks.len());
             for t in tracks {
                 last += 1;
-                st.execute(params![last, m, t.start, t.end, t.shot, t.quality as f64, t.face_h as f64, t.dets, t.emb])?;
+                st.execute(params![
+                    last,
+                    m,
+                    t.start,
+                    t.end,
+                    t.shot,
+                    t.quality as f64,
+                    t.face_h as f64,
+                    t.dets,
+                    t.emb,
+                    t.rival as f64
+                ])?;
                 ids.push(last);
             }
             drop(st);
@@ -576,6 +616,27 @@ impl ProjectDb {
         })
     }
 
+    /// Media with tracks whose portraits weren't looked at for other faces
+    /// yet (`rival` is NULL: found before that was stored).
+    pub fn media_without_rivals(&self) -> DbResult<Vec<MediaId>> {
+        self.0.read(|c| {
+            let mut st = c.prepare("SELECT DISTINCT media_id FROM tracks WHERE rival IS NULL")?;
+            let ids = st.query_map([], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+            ids.iter().map(|s| parse_id(s)).collect()
+        })
+    }
+
+    /// Store how much other faces take of tracks' portraits (`(track, rival)`).
+    pub fn set_rivals(&self, rivals: &[(i64, f32)]) -> DbResult<()> {
+        self.0.write(|tx| {
+            let mut st = tx.prepare("UPDATE tracks SET rival = ?2 WHERE id = ?1")?;
+            for &(id, rival) in rivals {
+                st.execute(params![id, rival as f64])?;
+            }
+            Ok(())
+        })
+    }
+
     /// Media ready for the face pass (shots found) that haven't had it (an
     /// interrupted run counts as pending again), in episode order.
     pub fn pending_faces(&self) -> DbResult<Vec<MediaId>> {
@@ -648,14 +709,17 @@ impl ProjectDb {
     /// Store a clustering of the cast at revision `rev`: new characters,
     /// then every track's assignment (pinned tracks and faces that aren't
     /// keep theirs), and who every body is (what was derived before goes;
-    /// the user's pins stay). Characters left empty go. Stores nothing and
-    /// returns `false` when the cast changed since `rev`.
+    /// the user's pins stay). Characters left empty go; one the clustering
+    /// joined with another (`joined`: `(old, now)`) leaves its scenepack to
+    /// that one (see [`carry_over`]). Stores nothing and returns `false`
+    /// when the cast changed since `rev`.
     pub fn apply_identity(
         &self,
         rev: i64,
         new_characters: &[CharacterId],
         tracks: &[TrackUpdate],
         bodies: &[crate::BodyUpdate],
+        joined: &[(CharacterId, CharacterId)],
     ) -> DbResult<bool> {
         self.0.write(|tx| {
             if rev_of(tx)? != rev {
@@ -680,6 +744,9 @@ impl ProjectDb {
             }
             drop(st);
             crate::bodies::apply_bodies(tx, bodies)?;
+            for &(from, into) in joined {
+                carry_over(tx, from, into)?;
+            }
             drop_empty_characters(tx)?;
             bump_rev(tx)?;
             Ok(true)
@@ -1043,7 +1110,7 @@ pub(crate) mod tests {
             .iter()
             .map(|&(id, character, assign, score)| TrackUpdate { id, character, assign, score, via_body: false })
             .collect();
-        db.apply_identity(rev, new, &t, &[])
+        db.apply_identity(rev, new, &t, &[], &[])
     }
 
     pub(crate) fn ready_media(db: &ProjectDb, name: &str) -> MediaId {
@@ -1070,7 +1137,16 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn track(start: FrameIdx, quality: f32) -> NewTrack {
-        NewTrack { start, end: start + 24, shot: start, quality, face_h: 0.3, dets: vec![0; 64], emb: vec![0; 1024] }
+        NewTrack {
+            start,
+            end: start + 24,
+            shot: start,
+            quality,
+            face_h: 0.3,
+            dets: vec![0; 64],
+            emb: vec![0; 1024],
+            rival: 0.0,
+        }
     }
 
     #[test]
@@ -1249,7 +1325,7 @@ pub(crate) mod tests {
         let t =
             |id, c, via_body| TrackUpdate { id, character: Some(c), assign: TrackAssign::Auto, score: 0.9, via_body };
         let updates = [t(ids[0], k, false), t(ids[1], k, true), t(ids[2], j, false), t(ids[3], j, true)];
-        assert!(db.apply_identity(db.cast_rev().unwrap(), &[k, j], &updates, &[]).unwrap());
+        assert!(db.apply_identity(db.cast_rev().unwrap(), &[k, j], &updates, &[], &[]).unwrap());
         let state = |id: i64| {
             let r = db.identity_tracks().unwrap().into_iter().find(|r| r.id == id).unwrap();
             (r.character_id, r.assign, r.via_body)
@@ -1437,5 +1513,79 @@ pub(crate) mod tests {
         got.sort_by_key(|t| t.0);
         assert_eq!(got, [(ids[1], m, vec![0; 64]), (more[0], m, vec![7; 32])]);
         assert!(db.track_dets(&[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_character_grouped_into_another_leaves_it_its_scenepack() {
+        let db = ProjectDb::memory();
+        let m = ready_media(&db, "/v/a.mkv");
+        let chunk = [track(10, 0.9), track(100, 0.8), track(200, 0.7), track(300, 0.6)];
+        let ids = db.put_face_chunk(m, 0, 1000, &chunk, &[], |_| Ok(())).unwrap();
+        let (dup, real, named) = (CharacterId::new(), CharacterId::new(), CharacterId::new());
+        let auto = |i: usize, c: CharacterId| (ids[i], Some(c), TrackAssign::Auto, 1.0);
+        apply(&db, db.cast_rev().unwrap(), &[dup, real], &[auto(0, dup), auto(1, real), auto(2, dup), auto(3, dup)])
+            .unwrap();
+        // `dup` is a second character of `real`'s person. The user filtered
+        // its pack, picked a shot of it, and took one of its faces off it
+        // ("not this one"); `real` has a pack of its own already.
+        assert!(db.set_pack_state(dup, "dup spec", None).unwrap());
+        assert!(db.set_pack_overrides(dup, &[(m, 100, 200)], Some(true)).unwrap());
+        assert!(db.set_pack_state(real, "own spec", None).unwrap());
+        db.forbid_tracks(&[ids[3]], dup).unwrap();
+        // A new grouping makes them one: every face is `real`'s.
+        let all = |c: CharacterId| -> Vec<TrackUpdate> {
+            ids.iter()
+                .map(|&id| TrackUpdate {
+                    id,
+                    character: Some(c),
+                    assign: TrackAssign::Auto,
+                    score: 1.0,
+                    via_body: false,
+                })
+                .collect()
+        };
+        assert!(db.apply_identity(db.cast_rev().unwrap(), &[], &all(real), &[], &[(dup, real)]).unwrap());
+        assert!(!db.character_exists(dup).unwrap());
+        assert_eq!(db.pack_overrides(real).unwrap(), [(m, 100, true)], "the pick is `real`'s");
+        assert_eq!(db.pack_state(real).unwrap().map(|s| s.0).as_deref(), Some("own spec"), "its own filters win");
+        // "Not this duplicate" isn't "not them": the face stays theirs.
+        let t = &db.tracks_by_id(&[ids[3]]).unwrap()[0];
+        assert_eq!((t.character_id, t.assign), (Some(real), TrackAssign::Auto));
+
+        // A character the user named stays, with its scenepack.
+        db.pin_tracks(&[ids[0]], named, Some(Some("Walter"))).unwrap();
+        assert!(db.set_pack_state(named, "named spec", None).unwrap());
+        assert!(db.apply_identity(db.cast_rev().unwrap(), &[], &all(real)[1..], &[], &[(named, real)]).unwrap());
+        assert!(db.character_exists(named).unwrap());
+        assert_eq!(db.pack_state(named).unwrap().map(|s| s.0).as_deref(), Some("named spec"));
+    }
+
+    #[test]
+    fn a_cover_shows_the_character_not_the_face_in_front_of_them() {
+        let db = ProjectDb::memory();
+        let m = ready_media(&db, "/v/a.mkv");
+        // Their clearest face stands behind someone's bigger one; the next
+        // clearest is alone in its picture.
+        let behind = NewTrack { rival: 1.4, ..track(10, 1.0) };
+        let alone = NewTrack { rival: 0.2, ..track(100, 0.8) };
+        let ids = db.put_face_chunk(m, 0, 1000, &[behind, alone], &[], |_| Ok(())).unwrap();
+        let a = CharacterId::new();
+        let both = [(ids[0], Some(a), TrackAssign::Auto, 1.0), (ids[1], Some(a), TrackAssign::Auto, 1.0)];
+        apply(&db, db.cast_rev().unwrap(), &[a], &both).unwrap();
+        assert_eq!(db.characters().unwrap()[0].cover.map(|c| c.0), Some(ids[1]));
+        // Crowded everywhere: the clearest face after all.
+        db.set_rivals(&[(ids[1], 2.0)]).unwrap();
+        assert_eq!(db.characters().unwrap()[0].cover.map(|c| c.0), Some(ids[0]));
+
+        // Tracks found before rivals were stored are looked at again.
+        assert!(db.media_without_rivals().unwrap().is_empty());
+        db.0.write(|tx| {
+            tx.execute("UPDATE tracks SET rival = NULL WHERE id = ?1", [ids[0]])?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(db.media_without_rivals().unwrap(), [m]);
+        db.set_rivals(&[(ids[0], 0.0)]).unwrap();
+        assert!(db.media_without_rivals().unwrap().is_empty());
     }
 }
