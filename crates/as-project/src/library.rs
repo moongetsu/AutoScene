@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use as_api::{AppSettings, ImportCandidate, NewProject, ProjectKind, ProjectSummary, now_ms};
 use as_core::{AppPaths, MediaId, ProjectId};
@@ -15,6 +16,7 @@ const KEY_LIBRARY_ROOT: &str = "library_root";
 const KEY_EXPORT_PRESET: &str = "export_preset_id";
 const DEFAULT_EXPORT_PRESET: &str = "prores-hq";
 const KEY_AUDIO_LANGUAGE: &str = "audio_language";
+const KEY_FIND_BODIES: &str = "find_bodies";
 /// Most series and films people cut are watched in their original English
 /// track; dubbed tracks are often flagged "default" too, so a language
 /// preference beats the file's flag.
@@ -26,12 +28,22 @@ const SCAN_DEPTH: usize = 4;
 pub struct Library {
     db: LibraryDb,
     open: Mutex<HashMap<ProjectId, Arc<Project>>>,
+    /// Whether people are followed by their bodies too (a setting every
+    /// open project reads).
+    find_bodies: Arc<AtomicBool>,
 }
 
 impl Library {
     pub fn open(paths: &AppPaths) -> ProjectResult<Self> {
         std::fs::create_dir_all(&paths.data)?;
-        Ok(Self { db: LibraryDb::open(&paths.library_db())?, open: Mutex::new(HashMap::new()) })
+        let db = LibraryDb::open(&paths.library_db())?;
+        let find_bodies = Arc::new(AtomicBool::new(db.setting(KEY_FIND_BODIES)?.as_deref() == Some("1")));
+        Ok(Self { db, open: Mutex::new(HashMap::new()), find_bodies })
+    }
+
+    /// Whether characters are looked for by their bodies too.
+    pub fn finds_bodies(&self) -> bool {
+        self.find_bodies.load(Ordering::Relaxed)
     }
 
     // -- settings -----------------------------------------------------------
@@ -41,6 +53,7 @@ impl Library {
             library_root: self.library_root()?.display().to_string(),
             export_preset_id: self.db.setting(KEY_EXPORT_PRESET)?.unwrap_or_else(|| DEFAULT_EXPORT_PRESET.into()),
             audio_language: self.audio_language()?,
+            find_bodies: self.finds_bodies(),
         })
     }
 
@@ -57,6 +70,8 @@ impl Library {
         }
         let language = as_media::lang::canonical(&s.audio_language).unwrap_or_default();
         self.db.set_setting(KEY_AUDIO_LANGUAGE, &language)?;
+        self.db.set_setting(KEY_FIND_BODIES, if s.find_bodies { "1" } else { "0" })?;
+        self.find_bodies.store(s.find_bodies, Ordering::Relaxed);
         self.settings()
     }
 
@@ -112,7 +127,7 @@ impl Library {
             poster: None,
             poster_small: None,
         };
-        let project = Arc::new(Project::create(&summary)?);
+        let project = Arc::new(Project::create(&summary, self.find_bodies.clone())?);
         self.db.insert_project(&summary)?;
         self.open.lock().insert(summary.id, project.clone());
         let added = self.add_media(&project, &req.files, req.kind)?;
@@ -137,7 +152,7 @@ impl Library {
                 dir.display()
             )));
         }
-        let project = Arc::new(Project::open(id, dir)?);
+        let project = Arc::new(Project::open(id, dir, self.find_bodies.clone())?);
         open.insert(id, project.clone());
         Ok(project)
     }
@@ -335,6 +350,7 @@ mod tests {
             library_root: dir.path().join("Library").display().to_string(),
             export_preset_id: "h264-edit".into(),
             audio_language: "German".into(),
+            find_bodies: false,
         })
         .unwrap();
         assert_eq!(lib.audio_language().unwrap(), "deu", "stored as an ISO 639-2 code");
@@ -411,6 +427,7 @@ mod tests {
             library_root: "relative/path".into(),
             export_preset_id: "h264-edit".into(),
             audio_language: "eng".into(),
+            find_bodies: false,
         };
         assert!(matches!(lib.update_settings(&bad), Err(ProjectError::Invalid(_))));
         assert_eq!(lib.settings().unwrap().export_preset_id, "h264-edit");

@@ -3,6 +3,7 @@ import { Play } from "@/components/icons"
 import type { CharacterShot, MediaItem } from "@/bindings"
 import { timecode } from "@/lib/timecode"
 import { cn } from "@/lib/utils"
+import { NoFaceBadge } from "./NoFaceBadge"
 import { useScrub } from "./scrub"
 import { ShotFrames } from "./ShotFrames"
 import { formatShotLength } from "./shots"
@@ -31,7 +32,7 @@ export const ShotCard = memo(function ShotCard({
       type="button"
       onClick={() => onOpen(shot)}
       {...scrub.handlers}
-      aria-label={`Shot${where ? ` at ${where}` : ""}${length ? `, ${length}` : ""}`}
+      aria-label={`Shot${where ? ` at ${where}` : ""}${length ? `, ${length}` : ""}${shot.faceless ? ", without their face" : ""}`}
       title={where ? `${where} · click to watch` : undefined}
       className={cn(
         "group relative block aspect-video w-full overflow-hidden rounded-xl bg-inset text-left outline-none picture-edge",
@@ -45,11 +46,14 @@ export const ShotCard = memo(function ShotCard({
           {length}
         </span>
       )}
-      {media?.label && (
-        <span className="timecode absolute top-2 left-2 rounded-full bg-black/50 px-2 text-[11px] leading-5 text-white/90 opacity-0 backdrop-blur-md transition-opacity group-hover:opacity-100">
-          {media.label}
-        </span>
-      )}
+      <span className="absolute top-2 left-2 flex items-center gap-1.5">
+        {shot.faceless && <NoFaceBadge />}
+        {media?.label && (
+          <span className="timecode rounded-full bg-black/50 px-2 text-[11px] leading-5 text-white/90 opacity-0 backdrop-blur-md transition-opacity group-hover:opacity-100">
+            {media.label}
+          </span>
+        )}
+      </span>
       <Play
         weight="fill"
         className="absolute top-2 right-2 size-4 text-white opacity-0 drop-shadow transition-opacity group-hover:opacity-90"

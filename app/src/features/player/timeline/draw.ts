@@ -93,7 +93,10 @@ export function drawSegments(
   }
 }
 
-/** A character's time on screen: rounded bars, gold when they are the focus. */
+/**
+ * A character's time on screen: rounded bars, gold when they are the focus;
+ * fainter where only their body shows (turned away, too small for a face).
+ */
 export function drawSpans(
   ctx: CanvasRenderingContext2D,
   width: number,
@@ -107,20 +110,26 @@ export function drawSpans(
   const end = view.t0 + view.span
   const bar = 10
   const y = (height - bar) / 2
-  ctx.fillStyle = focused ? p.accent : "rgba(255,255,255,0.4)"
-  if (focused) {
-    ctx.shadowColor = p.accent
-    ctx.shadowBlur = 8
+  // Bodies first, faces over them; spans of different faces may overlap:
+  // all of them, those in view drawn.
+  for (const body of [true, false]) {
+    ctx.fillStyle = focused ? p.accent : "rgba(255,255,255,0.4)"
+    ctx.globalAlpha = body ? 0.4 : 1
+    if (focused && !body) {
+      ctx.shadowColor = p.accent
+      ctx.shadowBlur = 8
+    }
+    for (const s of spans) {
+      if ((s.body ?? false) !== body) continue
+      const a = rel(s.start)
+      if (a > end || rel(s.end) < view.t0) continue
+      const x0 = xOf(view, a, width)
+      const w = Math.max(2, xOf(view, rel(s.end), width) - x0)
+      ctx.beginPath()
+      ctx.roundRect(x0, y, w, bar, Math.min(bar / 2, w / 2))
+      ctx.fill()
+    }
+    ctx.shadowBlur = 0
   }
-  // Spans of different faces may overlap: all of them, those in view drawn.
-  for (const s of spans) {
-    const a = rel(s.start)
-    if (a > end || rel(s.end) < view.t0) continue
-    const x0 = xOf(view, a, width)
-    const w = Math.max(2, xOf(view, rel(s.end), width) - x0)
-    ctx.beginPath()
-    ctx.roundRect(x0, y, w, bar, Math.min(bar / 2, w / 2))
-    ctx.fill()
-  }
-  ctx.shadowBlur = 0
+  ctx.globalAlpha = 1
 }

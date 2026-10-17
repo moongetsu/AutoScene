@@ -160,6 +160,7 @@ pub(crate) mod tests {
             library_root: dir.path().join("Library").display().to_string(),
             export_preset_id: "h264-edit".into(),
             audio_language: String::new(),
+            find_bodies: false,
         })
         .unwrap();
         let file = dir.path().join("Show - 01.mkv");

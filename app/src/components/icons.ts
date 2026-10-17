@@ -61,6 +61,7 @@ export {
   Television,
   Trash,
   User,
+  UserCircleDashed,
   UserFocus,
   UserPlus,
   Users,

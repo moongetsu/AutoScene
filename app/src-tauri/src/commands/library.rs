@@ -113,7 +113,17 @@ pub async fn settings_get(state: State<'_, AppState>) -> AppResult<AppSettings> 
 
 #[tauri::command]
 #[specta::specta]
-pub async fn settings_update(state: State<'_, AppState>, settings: AppSettings) -> AppResult<AppSettings> {
+pub async fn settings_update(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    settings: AppSettings,
+) -> AppResult<AppSettings> {
     let lib = state.library.clone();
-    blocking(move || Ok(lib.update_settings(&settings)?)).await
+    let before = lib.finds_bodies();
+    let saved = blocking(move || Ok(lib.update_settings(&settings)?)).await?;
+    // Finding people by their bodies changes every cast.
+    if saved.find_bodies != before {
+        work::bodies_setting_changed(&app, saved.find_bodies);
+    }
+    Ok(saved)
 }

@@ -8,15 +8,20 @@
 //! `arcface_glintr100.onnx` (in `<models_dir>`, next to `det_10g.onnx`);
 //! `NORMS=<floor>,<full>` sets the embedding lengths quality is read from,
 //! `MIN_TRACK_Q=<q>` the quality below which tracks are dropped.
+//! `PEOPLE=<dir with pp_det_med.onnx and reid_0265.onnx>` looks for people
+//! too, as the app does, and writes them to `<out_prefix>.found`
+//! (as_analysis::bodies::encode; faces by their place in `.tracks`).
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use as_analysis::bodies::FoundBody;
+use as_analysis::{BodyModels, Faces, PERSON_INPUT, PeopleParams};
 use as_core::{CancelToken, FrameIndex, FrameRange};
 use as_infer::Runtime;
 use as_media::{MediaInfo, Source, Tools};
-use as_vision::{ArcFace, Scrfd};
+use as_vision::{ArcFace, Fit, Norm, PersonReid, PpDet, Scrfd};
 
 fn main() {
     let a: Vec<String> = std::env::args().skip(1).collect();
@@ -44,20 +49,28 @@ fn main() {
         params.min_track_quality = v.parse().expect("MIN_TRACK_Q=<quality>");
     }
     let embedder = std::env::var("EMBEDDER").map_or_else(|_| models.join("arcface_glintr100.onnx"), PathBuf::from);
-    let (_, det_size) = as_analysis::frame_sizes(&info, &params);
+    let (size, det_size) = as_analysis::frame_sizes(&info, &params);
     let mut det = Scrfd::load(&rt, &models.join("det_10g.onnx"), det_size, as_analysis::DETECT_BATCH).unwrap();
     let mut rec = ArcFace::load(&rt, &embedder, 32).unwrap();
+    let people = std::env::var("PEOPLE").ok().map(PathBuf::from);
+    let mut person_models = people.as_ref().map(|dir| {
+        let d = PpDet::load(&rt, &dir.join("pp_det_med.onnx"), size, PERSON_INPUT, Fit::Pad, Norm::IMAGENET).unwrap();
+        (d, PersonReid::load(&rt, &dir.join("reid_0265.onnx"), 32, Norm::IMAGENET).unwrap())
+    });
+    let mut found: Vec<FoundBody> = Vec::new();
     let t0 = Instant::now();
     let mut all = Vec::new();
     let mut chunks = std::fs::File::create(format!("{out}.chunks")).unwrap();
     let sprites = PathBuf::from(format!("{out}.sprites"));
     std::fs::create_dir_all(&sprites).unwrap();
     let (mut sprite_count, mut sprite_bytes) = (0usize, 0usize);
+    let bodies =
+        person_models.as_mut().map(|(detector, reid)| BodyModels { detector, reid, params: PeopleParams::default() });
     as_analysis::face_tracks(
         &tools,
         Source { path: &path, info: &info, index: &index },
-        &mut det,
-        &mut rec,
+        Faces::Find { detector: &mut det, embedder: &mut rec },
+        bodies,
         &shots,
         resume,
         2400,
@@ -66,6 +79,12 @@ fn main() {
         |p| eprint!("\r{:5.1}% {:5.0}s", 100.0 * p, t0.elapsed().as_secs_f64()),
         |c| {
             writeln!(chunks, "{} {} {} {}", c.start, c.end, c.tracks.len(), c.sprites.len()).unwrap();
+            // The chunk's faces by their place in the whole list.
+            let first = all.len() as u32;
+            found.extend(c.bodies.iter().cloned().map(|mut b| {
+                b.faces.iter_mut().for_each(|f| f.0 += first);
+                b
+            }));
             all.extend_from_slice(c.tracks);
             for s in c.sprites {
                 std::fs::write(sprites.join(format!("{}.jpg", s.shot)), &s.jpeg).unwrap();
@@ -78,6 +97,11 @@ fn main() {
     .unwrap();
     let secs = t0.elapsed().as_secs_f64();
     std::fs::write(format!("{out}.tracks"), as_analysis::tracks::encode(&all)).unwrap();
+    if people.is_some() {
+        std::fs::write(format!("{out}.found"), as_analysis::bodies::encode(&found)).unwrap();
+        let tied = found.iter().filter(|b| !b.faces.is_empty()).count();
+        println!("\n{} people found ({tied} tied to a face)", found.len());
+    }
     let dets: usize = all.iter().map(|t| t.dets.len()).sum();
     let good = all.iter().filter(|t| t.quality >= 0.5).count();
     println!(

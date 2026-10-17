@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use as_api::{
     ClipRequest, ExportItem, ExportPlan, ExportRequest, ExportStatus, ExportSummary, FrameMap, ImportCandidate,
@@ -72,10 +73,12 @@ pub struct Project {
     posters: Mutex<()>,
     /// Portraits being made and ones that failed (see `cast::PortraitWork`).
     pub(crate) portraits: Mutex<crate::cast::PortraitWork>,
+    /// The library's setting: people are followed by their bodies too.
+    find_bodies: Arc<AtomicBool>,
 }
 
 impl Project {
-    pub(crate) fn create(s: &ProjectSummary) -> ProjectResult<Self> {
+    pub(crate) fn create(s: &ProjectSummary, find_bodies: Arc<AtomicBool>) -> ProjectResult<Self> {
         let dir = PathBuf::from(&s.dir);
         let db = ProjectDb::open(&dir.join(PROJECT_DB))?;
         // The folder describes itself, so it can be re-opened without library.db.
@@ -98,12 +101,13 @@ impl Project {
             clustering: Mutex::default(),
             posters: Mutex::default(),
             portraits: Mutex::default(),
+            find_bodies,
         };
         p.ensure_dirs()?;
         Ok(p)
     }
 
-    pub(crate) fn open(id: ProjectId, dir: PathBuf) -> ProjectResult<Self> {
+    pub(crate) fn open(id: ProjectId, dir: PathBuf, find_bodies: Arc<AtomicBool>) -> ProjectResult<Self> {
         let db = ProjectDb::open(&dir.join(PROJECT_DB))?;
         let p = Self {
             id,
@@ -114,6 +118,7 @@ impl Project {
             clustering: Mutex::default(),
             posters: Mutex::default(),
             portraits: Mutex::default(),
+            find_bodies,
         };
         p.ensure_dirs()?;
         // Exports can't resume mid-way (M1): close them out. No export runs
@@ -127,6 +132,15 @@ impl Project {
             }
         }
         p.clean_proxies();
+        // Characters aren't looked for by their bodies any more, but the
+        // setting changed while this project was closed (or its faces
+        // couldn't be placed again then): what the bodies said goes now.
+        if !p.finds_bodies()
+            && p.db.has_body_names()?
+            && let Err(e) = p.reassign()
+        {
+            tracing::warn!(project = %p.id, error = %e, "placing the faces again without their bodies");
+        }
         Ok(p)
     }
 
@@ -139,6 +153,18 @@ impl Project {
 
     pub(crate) fn db(&self) -> &ProjectDb {
         &self.db
+    }
+
+    /// Whether characters are looked for by their bodies too (the library's
+    /// setting): their bodies are found with their faces, and named after
+    /// every clustering.
+    pub fn finds_bodies(&self) -> bool {
+        self.find_bodies.load(Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_finds_bodies(&self, on: bool) {
+        self.find_bodies.store(on, Ordering::Relaxed);
     }
 
     pub fn thumbs_dir(&self) -> PathBuf {
@@ -1269,6 +1295,8 @@ mod tests {
             faces: as_api::StageState::Pending,
             faces_error: None,
             face_count: None,
+            bodies: as_api::StageState::Pending,
+            bodies_error: None,
         }
     }
 

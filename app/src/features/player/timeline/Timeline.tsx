@@ -702,7 +702,11 @@ function LaneRow({
         {hover && (
           <Tip x={hover.x}>
             <span className="text-fg-1">{c.label}</span>
-            <span className="timecode text-fg-3"> · {tc(hover.span.start)}</span>
+            <span className="timecode text-fg-3">
+              {" "}
+              · {tc(hover.span.start)}
+              {hover.span.body ? " · no face" : ""}
+            </span>
           </Tip>
         )}
       </div>

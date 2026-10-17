@@ -23,7 +23,18 @@ const picks = new Map<string, Map<string, boolean>>()
 
 export function defaultPackState(): PackState {
   return {
-    spec: { minSec: null, maxSec: null, sizes: [], solo: false, skipTiny: true, media: [], order: "episodes", limit: null, handles: 0 },
+    spec: {
+      minSec: null,
+      maxSec: null,
+      sizes: [],
+      solo: false,
+      skipTiny: true,
+      skipFaceless: false,
+      media: [],
+      order: "episodes",
+      limit: null,
+      handles: 0,
+    },
     naming: { template: "{series} {character} {episode} {tc}", folder: true, merge: true, file: "{series} {character} scenepack" },
   }
 }
@@ -78,7 +89,9 @@ export function packPreview(pid: string, cid: string, spec: PackSpec, media: Med
           ? "episode"
           : spec.skipTiny && tiny
             ? "tiny"
-            : spec.minSec != null && seconds < spec.minSec
+            : spec.skipFaceless && shot.faceless
+              ? "faceless"
+              : spec.minSec != null && seconds < spec.minSec
               ? "short"
               : spec.maxSec != null && seconds > spec.maxSec
                 ? "long"
@@ -98,7 +111,10 @@ export function packPreview(pid: string, cid: string, spec: PackSpec, media: Med
     }
   })
   if (spec.limit != null) {
-    const kept = cands.filter((c) => c.rule == null && c.clip.manual == null).sort((a, b) => (b.clip.score ?? 0) - (a.clip.score ?? 0))
+    // Shots without the character's face come behind the ones with it.
+    const kept = cands
+      .filter((c) => c.rule == null && c.clip.manual == null)
+      .sort((a, b) => Number(a.clip.shot.faceless ?? false) - Number(b.clip.shot.faceless ?? false) || (b.clip.score ?? 0) - (a.clip.score ?? 0))
     for (const c of kept.slice(spec.limit)) {
       c.rule = "limit"
       c.clip.byRules = false
@@ -112,6 +128,8 @@ export function packPreview(pid: string, cid: string, spec: PackSpec, media: Med
   const episode = (c: PackClip) => [order.get(c.shot.mediaId) ?? 1e9, c.shot.start] as const
   cands.sort((a, b) => {
     const [sa0, sb0] = [a.clip.score ?? 0, b.clip.score ?? 0]
+    const [fa, fb] = [Number(a.clip.shot.faceless ?? false), Number(b.clip.shot.faceless ?? false)]
+    if (spec.order === "best" && fa !== fb) return fa - fb
     if (spec.order === "best" && sb0 !== sa0) return sb0 - sa0
     const [ea, sa] = episode(a.clip)
     const [eb, sb] = episode(b.clip)

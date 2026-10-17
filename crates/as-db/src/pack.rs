@@ -35,14 +35,13 @@ pub struct PackRow {
 }
 
 impl ProjectDb {
-    /// Every assigned face in the shots `c` is seen in, by media and shot;
-    /// within a shot `c`'s own faces come first, clearest first.
+    /// Every assigned face in the shots `c` is seen in (by a face, or by a
+    /// body of theirs), by media and shot; within a shot `c`'s own faces
+    /// come first, clearest first.
     pub fn pack_rows(&self, c: CharacterId) -> DbResult<Vec<PackRow>> {
         self.0.read(|conn| {
-            let mut st = conn.prepare(
-                "WITH mine AS (
-                     SELECT DISTINCT media_id, shot FROM tracks
-                      WHERE character_id = ?1 AND assign IN ('auto', 'pinned') AND not_face = 0)
+            let mut st = conn.prepare(&format!(
+                "WITH mine AS ({})
                  SELECT t.media_id, t.shot, g.end, g.tiny, sp.end, sp.cells, t.id, t.character_id, ch.hidden,
                         t.start, t.end, t.face_h, t.quality
                    FROM mine
@@ -52,7 +51,8 @@ impl ProjectDb {
                    JOIN characters ch ON ch.id = t.character_id
                    LEFT JOIN sprites sp ON sp.media_id = mine.media_id AND sp.shot = mine.shot
                   ORDER BY t.media_id, t.shot, t.character_id = ?1 DESC, t.face_h >= 0.12 DESC, t.quality DESC, t.id",
-            )?;
+                crate::bodies::MINE
+            ))?;
             let mut rows = st.query(params![c.to_string(), enum_to_sql(SegmentKind::Shot)])?;
             let mut out = Vec::new();
             while let Some(r) = rows.next()? {

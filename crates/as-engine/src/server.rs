@@ -12,18 +12,23 @@ use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use as_analysis::{AnalysisError, DETECT_BATCH, FaceParams, face_tracks, frame_sizes, shot_signals, signals, tracks};
+use as_analysis::{
+    AnalysisError, BodyModels, DETECT_BATCH, FaceParams, Faces, PERSON_INPUT, PeopleParams, bodies, face_tracks,
+    frame_sizes, shot_signals, signals, tracks,
+};
 use as_core::{CancelToken, FrameIndex, FrameRange};
 use as_infer::Runtime;
 use as_media::{Source, Tools};
 use as_models::ModelStore;
-use as_vision::{ArcFace, Scrfd, TransNet};
+use as_vision::{ArcFace, Fit, Norm, PersonReid, PpDet, Scrfd, TransNet};
 use parking_lot::Mutex;
 
 use crate::protocol::{Blob, FacesJob, Reply, Request, ShotsJob, Sprite};
 
 /// Faces per embedding call.
 const EMBED_BATCH: usize = 32;
+/// People per appearance (ReID) call.
+const REID_BATCH: usize = 32;
 
 /// How the engine finds its runtime, models and tools.
 #[derive(Clone, Debug)]
@@ -83,7 +88,14 @@ pub fn serve(cfg: Config, input: impl BufRead + Send + 'static, output: impl Wri
         std::thread::spawn(move || read_requests(input, tx, cancels, out))
     };
 
-    let mut models = Models { store: ModelStore::new(&cfg.models_dir), transnet: None, scrfd: None, arcface: None };
+    let mut models = Models {
+        store: ModelStore::new(&cfg.models_dir),
+        transnet: None,
+        scrfd: None,
+        arcface: None,
+        persons: None,
+        person_reid: None,
+    };
     loop {
         let next = match cfg.idle_exit {
             Some(idle) => rx.recv_timeout(idle).map_err(|e| e == mpsc::RecvTimeoutError::Timeout),
@@ -192,11 +204,14 @@ struct Models {
     transnet: Option<TransNet>,
     scrfd: Option<Scrfd>,
     arcface: Option<ArcFace>,
+    persons: Option<PpDet>,
+    person_reid: Option<PersonReid>,
 }
 
 impl Models {
     fn unload(&mut self) {
         (self.transnet, self.scrfd, self.arcface) = (None, None, None);
+        (self.persons, self.person_reid) = (None, None);
     }
 
     fn path(&self, id: &str) -> Result<PathBuf, AnalysisError> {
@@ -206,9 +221,9 @@ impl Models {
             .ok_or_else(|| AnalysisError::Internal(format!("{id} isn't installed in {}", self.store.dir().display())))
     }
 
-    /// The face models, the detector planned for `size` frames (loaded again
-    /// when a media needs another size).
-    fn faces(&mut self, rt: &Runtime, size: (usize, usize)) -> Result<(&mut Scrfd, &mut ArcFace), AnalysisError> {
+    /// Load the face models, the detector planned for `size` frames (loaded
+    /// again when a media needs another size).
+    fn load_faces(&mut self, rt: &Runtime, size: (usize, usize)) -> Result<(), AnalysisError> {
         if self.scrfd.as_ref().is_none_or(|d| d.frame_size() != size) {
             self.scrfd = None;
             self.scrfd = Some(Scrfd::load(rt, &self.path(as_models::ids::SCRFD)?, size, DETECT_BATCH)?);
@@ -216,7 +231,21 @@ impl Models {
         if self.arcface.is_none() {
             self.arcface = Some(ArcFace::load(rt, &self.path(as_models::ids::ARCFACE)?, EMBED_BATCH)?);
         }
-        Ok((self.scrfd.as_mut().expect("loaded"), self.arcface.as_mut().expect("loaded")))
+        Ok(())
+    }
+
+    /// Load the people models, the detector planned for `size` frames.
+    fn load_people(&mut self, rt: &Runtime, size: (usize, usize)) -> Result<(), AnalysisError> {
+        if self.persons.as_ref().is_none_or(|d| d.frame_size() != size) {
+            self.persons = None;
+            let path = self.path(as_models::ids::PERSONS)?;
+            self.persons = Some(PpDet::load(rt, &path, size, PERSON_INPUT, Fit::Pad, Norm::IMAGENET)?);
+        }
+        if self.person_reid.is_none() {
+            let path = self.path(as_models::ids::PERSON_REID)?;
+            self.person_reid = Some(PersonReid::load(rt, &path, REID_BATCH, Norm::IMAGENET)?);
+        }
+        Ok(())
     }
 
     fn transnet(&mut self, rt: &Runtime) -> Result<&mut TransNet, AnalysisError> {
@@ -275,19 +304,46 @@ fn run_faces(
     out: &Out,
 ) -> Result<(), AnalysisError> {
     let params = FaceParams::default();
-    let (_, det_size) = frame_sizes(&job.info, &params);
-    let (detector, embedder) = models.faces(rt, det_size)?;
+    let (size, det_size) = frame_sizes(&job.info, &params);
+    let known = match &job.known {
+        Some(b) => Some(
+            tracks::decode_known(&b.0)
+                .ok_or_else(|| AnalysisError::Internal("unreadable faces found before".into()))?,
+        ),
+        None => None,
+    };
+    if known.is_none() {
+        models.load_faces(rt, det_size)?;
+    }
+    if job.bodies {
+        models.load_people(rt, size)?;
+    }
+    let Models { scrfd, arcface, persons, person_reid, .. } = models;
+    let device = match known {
+        None => scrfd.as_ref().map(Scrfd::device),
+        Some(_) => persons.as_ref().map(PpDet::device),
+    };
+    let faces = match &known {
+        Some(k) => Faces::Known(k),
+        None => Faces::Find { detector: scrfd.as_mut().expect("loaded"), embedder: arcface.as_mut().expect("loaded") },
+    };
+    let bodies = job.bodies.then(|| BodyModels {
+        detector: persons.as_mut().expect("loaded"),
+        reid: person_reid.as_mut().expect("loaded"),
+        params: PeopleParams::default(),
+    });
     let index = FrameIndex::from_bytes(&job.index.0).map_err(|e| AnalysisError::Internal(e.to_string()))?;
     let shots: Vec<FrameRange> = job.shots.iter().map(|&(s, e)| FrameRange::new(s, e)).collect();
     let started = Instant::now();
     let id = job.id;
-    tracing::info!(id, path = %job.path.display(), resume = job.resume, device = ?detector.device(), "finding faces");
-    let mut found = 0usize;
+    let what = if job.known.is_some() { "people" } else { "faces" };
+    tracing::info!(id, path = %job.path.display(), resume = job.resume, people = job.bodies, ?device, "finding {what}");
+    let (mut found, mut people) = (0usize, 0usize);
     face_tracks(
         tools,
         Source { path: Path::new(&job.path), info: &job.info, index: &index },
-        detector,
-        embedder,
+        faces,
+        bodies,
         &shots,
         job.resume,
         job.chunk,
@@ -296,24 +352,28 @@ fn run_faces(
         |fraction| out.send(&Reply::Progress { id, fraction }),
         |c| {
             found += c.tracks.len();
+            people += c.bodies.len();
             let sprites = c
                 .sprites
                 .iter()
                 .map(|s| Sprite { shot: s.shot, end: s.end, cells: s.cells, jpeg: Blob(s.jpeg.clone()) })
                 .collect();
+            // Nothing when no one was looked for; a list (maybe empty) when they were.
+            let found_people = if job.bodies { bodies::encode(c.bodies) } else { Vec::new() };
             out.send(&Reply::FaceChunk {
                 id,
                 start: c.start,
                 end: c.end,
                 tracks: Blob(tracks::encode(c.tracks)),
                 sprites,
+                bodies: Blob(found_people),
             });
             Ok(())
         },
     )?;
     let frames = index.len().saturating_sub(job.resume);
     let secs = started.elapsed().as_secs_f64();
-    tracing::info!(id, frames, tracks = found, secs, fps = frames as f64 / secs.max(1e-3), "faces found");
+    tracing::info!(id, frames, tracks = found, people, secs, fps = frames as f64 / secs.max(1e-3), "{what} found");
     Ok(())
 }
 

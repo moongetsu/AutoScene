@@ -14,7 +14,7 @@ pub mod client;
 pub mod protocol;
 pub mod server;
 
-pub use client::{Engine, EngineError, FacesEvent, Launch, ShotsEvent};
+pub use client::{Engine, EngineError, FacesEvent, FacesInput, Launch, ShotsEvent};
 pub use server::{Config, serve};
 
 use std::ffi::OsString;

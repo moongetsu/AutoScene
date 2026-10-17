@@ -218,6 +218,56 @@ pub fn decode(blob: &[u8]) -> Option<Vec<FaceTrack>> {
     r.0.is_empty().then_some(out)
 }
 
+/// A face track found before, by its id: what a pass that only looks for
+/// people ties them to.
+#[derive(Clone, Debug, PartialEq)]
+pub struct KnownFace {
+    pub id: u32,
+    pub start: FrameIdx,
+    pub end: FrameIdx,
+    pub shot: FrameIdx,
+    pub dets: Vec<FaceDet>,
+}
+
+impl KnownFace {
+    /// As the linking takes a face track (no identity needed).
+    pub fn track(&self) -> FaceTrack {
+        let (start, end, shot, dets) = (self.start, self.end, self.shot, self.dets.clone());
+        FaceTrack { start, end, shot, dets, embedding: Vec::new(), quality: 0.0, thumb: Vec::new() }
+    }
+}
+
+const KNOWN_FORMAT: u8 = 2;
+
+/// Serialise known faces for the engine protocol.
+pub fn encode_known(faces: &[KnownFace]) -> Vec<u8> {
+    let mut w = Writer(vec![KNOWN_FORMAT]);
+    w.u32(faces.len() as u32);
+    for f in faces {
+        w.u32(f.id);
+        w.u32(f.start);
+        w.u32(f.end);
+        w.u32(f.shot);
+        w.bytes(&dets_to_bytes(&f.dets));
+    }
+    w.0
+}
+
+pub fn decode_known(blob: &[u8]) -> Option<Vec<KnownFace>> {
+    let (&format, body) = blob.split_first()?;
+    if format != KNOWN_FORMAT {
+        return None;
+    }
+    let mut r = Reader(body);
+    let n = r.u32()? as usize;
+    let mut out = Vec::with_capacity(n.min(1 << 16));
+    for _ in 0..n {
+        let (id, start, end, shot) = (r.u32()?, r.u32()?, r.u32()?, r.u32()?);
+        out.push(KnownFace { id, start, end, shot, dets: dets_from_bytes(r.bytes()?)? });
+    }
+    r.0.is_empty().then_some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,5 +310,11 @@ mod tests {
         assert!((t.face_height() - 0.32).abs() < 1e-6);
         assert!(decode(&encode(&[])).unwrap().is_empty());
         assert!(decode(b"\x01\x05").is_none());
+        // Faces found before, as a pass for people gets them.
+        let known = KnownFace { id: 77, start: 30, end: 99, shot: 12, dets: t.dets.clone() };
+        let back = decode_known(&encode_known(std::slice::from_ref(&known))).unwrap();
+        assert_eq!(back, std::slice::from_ref(&known));
+        assert_eq!((known.track().dets, known.track().shot), (t.dets, 12));
+        assert!(decode_known(&encode(&[])).is_none(), "the formats aren't mixed up");
     }
 }

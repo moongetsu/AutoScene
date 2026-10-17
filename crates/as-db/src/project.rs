@@ -219,6 +219,74 @@ const STEPS: &[M<'static>] = &[
     ),
     // 11: an export can join its clips into one file (MergedFile JSON).
     M::up("ALTER TABLE exports ADD COLUMN merged TEXT;"),
+    // 12: people followed by their bodies (an optional mode). Body tracks
+    // are stored per checkpoint chunk like faces (a body_chunks row says
+    // frames start..end are done), tied to the face tracks on them, with
+    // how they look and how they show. Who they are is derived after every
+    // clustering (character, how: face | clothes | conflict, similarity)
+    // and never shapes a character; faces named by their body carry
+    // via_body. The user's word on a body (pin, forbid, not a person) is
+    // kept like a face's and waits in body_edits while the media is
+    // analysed again.
+    M::up(
+        "ALTER TABLE media ADD COLUMN bodies TEXT NOT NULL DEFAULT 'pending';
+    ALTER TABLE media ADD COLUMN bodies_error TEXT;
+    ALTER TABLE tracks ADD COLUMN via_body INTEGER NOT NULL DEFAULT 0;
+
+    CREATE TABLE body_chunks (
+        media_id TEXT NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+        start    INTEGER NOT NULL,
+        end      INTEGER NOT NULL,
+        PRIMARY KEY (media_id, start)
+    ) STRICT;
+
+    CREATE TABLE bodies (
+        id           INTEGER PRIMARY KEY,
+        media_id     TEXT NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+        start        INTEGER NOT NULL,
+        end          INTEGER NOT NULL,
+        shot         INTEGER NOT NULL,  -- start frame of its shot
+        dets         BLOB NOT NULL,     -- as_analysis::bodies::dets_to_bytes
+        reid         BLOB,              -- 256 x f16: how they look
+        reid_away    BLOB,              -- ... while no face of theirs shows
+        height       REAL NOT NULL,     -- as_analysis::bodies::Showing
+        aspect       REAL NOT NULL,
+        top          REAL NOT NULL,
+        foreground   REAL NOT NULL,
+        score        REAL NOT NULL,
+        character_id TEXT REFERENCES characters(id) ON DELETE SET NULL,
+        source       TEXT NOT NULL DEFAULT 'none',  -- none | face | clothes | conflict | pinned
+        similarity   REAL NOT NULL DEFAULT 0,
+        not_person   INTEGER NOT NULL DEFAULT 0
+    ) STRICT;
+    CREATE INDEX bodies_by_media ON bodies(media_id, shot);
+    CREATE INDEX bodies_by_character ON bodies(character_id);
+
+    CREATE TABLE body_faces (
+        body_id  INTEGER NOT NULL REFERENCES bodies(id) ON DELETE CASCADE,
+        track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+        samples  INTEGER NOT NULL,
+        PRIMARY KEY (body_id, track_id)
+    ) STRICT;
+    CREATE INDEX body_faces_by_track ON body_faces(track_id);
+
+    CREATE TABLE body_forbids (
+        body_id      INTEGER NOT NULL REFERENCES bodies(id) ON DELETE CASCADE,
+        character_id TEXT NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+        PRIMARY KEY (body_id, character_id)
+    ) STRICT;
+
+    CREATE TABLE body_edits (
+        media_id     TEXT NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+        start        INTEGER NOT NULL,
+        end          INTEGER NOT NULL,
+        dets         BLOB NOT NULL,
+        kind         TEXT NOT NULL,     -- pin | forbid | not_person
+        character_id TEXT REFERENCES characters(id) ON DELETE CASCADE
+    ) STRICT;
+    CREATE INDEX body_edits_by_media ON body_edits(media_id);
+    CREATE INDEX body_edits_by_character ON body_edits(character_id);",
+    ),
 ];
 const MIGRATIONS: Migrations<'static> = Migrations::from_slice(STEPS);
 
@@ -277,7 +345,7 @@ const MEDIA_COLS: &str = "id, path, file_name, size_bytes, season, episode, stat
      CASE WHEN shots = 'ready' THEN (SELECT COUNT(*) FROM segments s WHERE s.media_id = media.id AND s.kind = 'shot') END, \
      faces, faces_error, \
      CASE WHEN faces = 'ready' THEN (SELECT COUNT(*) FROM tracks t WHERE t.media_id = media.id AND t.not_face = 0) END, \
-     poster_small";
+     poster_small, bodies, bodies_error";
 
 /// Episode order (same as `as_project::naming::episode_cmp`): numbered episodes by
 /// (season, episode), then the rest in the order they were added.
@@ -326,6 +394,8 @@ fn media_row(r: &Row, position: u32) -> DbResult<MediaItem> {
         faces: enum_from_sql(&r.get::<_, String>(22)?)?,
         faces_error: r.get(23)?,
         face_count: r.get(24)?,
+        bodies: enum_from_sql(&r.get::<_, String>(26)?)?,
+        bodies_error: r.get(27)?,
     })
 }
 
@@ -662,6 +732,10 @@ impl ProjectDb {
             )?;
             tx.execute(
                 "UPDATE media SET faces = 'pending', faces_error = NULL WHERE id = ?1 AND faces = 'failed'",
+                [&m],
+            )?;
+            tx.execute(
+                "UPDATE media SET bodies = 'pending', bodies_error = NULL WHERE id = ?1 AND bodies = 'failed'",
                 [&m],
             )?;
             Ok(())

@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use as_core::CancelToken;
-use as_engine::{Config, Engine, EngineError, FacesEvent, Launch, ShotsEvent};
+use as_engine::{Config, Engine, EngineError, FacesEvent, FacesInput, Launch, ShotsEvent};
 use as_media::{MediaInfo, Tools, build_frame_index, probe};
 use as_testkit::{fixtures_dir, load_truth, models_dir, models_required, ort_dir};
 
@@ -132,11 +132,13 @@ fn face_chunks_tile_the_media_even_across_a_kill() {
     let shots: Vec<(u32, u32)> = (0..m.frames).step_by(50).map(|s| (s, (s + 50).min(m.frames))).collect();
     let mut chunks: Vec<(u32, u32)> = Vec::new();
     let mut killed = false;
+    let job = faces_input(&m, shots, false, None);
     let r =
-        engine.faces(m.path.clone(), m.info.clone(), m.index.clone(), shots, 0, 100, &CancelToken::new(), |e| {
-            if let FacesEvent::Chunk { start, end, tracks, sprites } = e {
+        engine.faces(job, &CancelToken::new(), |e| {
+            if let FacesEvent::Chunk { start, end, tracks, sprites, bodies } = e {
                 // The synthetic fixture shows barcodes, not people.
                 assert!(as_analysis::tracks::decode(&tracks).expect("readable tracks").is_empty());
+                assert!(bodies.is_empty(), "nobody was looked for");
                 // Every shot of the chunk has its sprite.
                 let starts: Vec<u32> = (start..end).step_by(50).collect();
                 assert_eq!(sprites.iter().map(|s| s.shot).collect::<Vec<_>>(), starts);
@@ -160,4 +162,52 @@ fn face_chunks_tile_the_media_even_across_a_kill() {
         expect = e;
     }
     assert_eq!(expect, m.frames);
+}
+
+fn faces_input(m: &Media, shots: Vec<(u32, u32)>, bodies: bool, known: Option<Vec<u8>>) -> FacesInput {
+    FacesInput {
+        path: m.path.clone(),
+        info: m.info.clone(),
+        index: m.index.clone(),
+        shots,
+        resume: 0,
+        chunk: 100,
+        bodies,
+        known,
+    }
+}
+
+#[test]
+fn people_come_with_the_faces_or_alone() {
+    let Some((engine, m)) = setup(None) else { return };
+    let store = as_models::ModelStore::new(models_dir());
+    let needed = as_models::ids::FACES.iter().chain(&as_models::ids::BODIES);
+    if needed.into_iter().any(|id| store.installed(id).unwrap().is_none()) {
+        assert!(!models_required(), "face or people models missing (run `cargo xtask fetch-models`)");
+        eprintln!("face or people models missing; run `cargo xtask fetch-models` (skipping)");
+        return;
+    }
+    let shots: Vec<(u32, u32)> = (0..m.frames).step_by(50).map(|s| (s, (s + 50).min(m.frames))).collect();
+    // With the faces, and for faces found before (here: none), the same chunks.
+    let known = as_analysis::tracks::encode_known(&[]);
+    for job in [faces_input(&m, shots.clone(), true, None), faces_input(&m, shots.clone(), true, Some(known))] {
+        let alone = job.known.is_some();
+        let mut ends = Vec::new();
+        engine
+            .faces(job, &CancelToken::new(), |e| {
+                if let FacesEvent::Chunk { start, end, tracks, sprites, bodies } = e {
+                    // Barcodes: no faces; whatever the person detector makes of
+                    // the bars is in a list for every chunk, tied to no one.
+                    let people = as_analysis::bodies::decode(&bodies).expect("a list of people for every chunk");
+                    assert!(people.iter().all(|b| b.faces.is_empty() && start <= b.shot && b.end <= end));
+                    assert!(people.iter().all(|b| b.dets.iter().all(|d| d.frame % 6 == 0)), "every second sample");
+                    assert!(as_analysis::tracks::decode(&tracks).unwrap().is_empty());
+                    assert_eq!(sprites.is_empty(), alone, "sprites come with faces found now");
+                    ends.push(end);
+                }
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(ends.last(), Some(&m.frames));
+    }
 }

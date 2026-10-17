@@ -6,6 +6,7 @@
 //! runs the long operations (ingest, proxies, exports) on `as-jobs` workers.
 
 mod analysis;
+mod bodies;
 mod cast;
 mod error;
 mod library;
@@ -14,6 +15,7 @@ mod pack;
 mod project;
 
 pub use analysis::ShotsPlan;
+pub use bodies::BodiesPlan;
 pub use cast::{FACE_CHUNK, FacesPlan, PORTRAIT, Portrait};
 pub use error::{ProjectError, ProjectResult};
 pub use library::Library;

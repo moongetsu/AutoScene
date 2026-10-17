@@ -4,12 +4,16 @@
 //! clothes find a person again, and how much more of the cast is found.
 //! `cargo run --release -p as-analysis --example bodies_bench -- <cmd> <faces.tracks> <run.bodies> <bb_dir>
 //! <labels.tsv> [out_dir]` with `<cmd>`: `recall`, `tracks`, `score`, `reid`, `presence`, `sheets`.
+//! `<run.bodies>` may be a `.found` file instead (`faces_run` with `PEOPLE=`): the people as the
+//! app's face pass found them (`tracks`, `score`, `presence`).
 //! `bodies_bench audit <items.tsv> <verdicts.tsv>` scores the verdicts given on the sheets.
 //!
 //! Env: `BODY_STRIDE=3|6|12` uses every 1st/2nd/4th body sample; `HALF=first|second` keeps
 //! the queries of one half of the episode (`reid`); `WINDOW_S` (180), `REID_MIN` (0.65),
 //! `REID_MARGIN` (0.15), `RESCUE_UNSURE` (1), `RESCUE_BELOW` (0.45) set the propagation;
-//! `VETO`, `FAR_COS` the tracker; `DETAIL=1` lists cases.
+//! `VETO`, `FAR_COS` the tracker; `TRACK_REID=0` tracks without appearance (the
+//! embeddings join the tracks afterwards); `REID_TOP=n` keeps the appearance of a
+//! track's n clearest sightings only; `DETAIL=1` lists cases.
 
 #[path = "common/bodyfile.rs"]
 mod bodyfile;
@@ -93,12 +97,14 @@ fn read_shots(dir: &Path) -> Vec<FrameRange> {
 
 /// The propagation as the study recommends it, each value overridable.
 fn body_params() -> BodyParams {
+    let d = BodyParams::default();
     BodyParams {
         rescue_unsure: env("RESCUE_UNSURE", 1) != 0,
         rescue_below: env("RESCUE_BELOW", Params::default().core_quality),
-        window: (env("WINDOW_S", 180.0) * FPS) as u32,
-        reid_min: env("REID_MIN", 0.65),
-        reid_margin: env("REID_MARGIN", 0.15),
+        window_s: env("WINDOW_S", d.window_s),
+        reid_min: env("REID_MIN", d.reid_min),
+        reid_margin: env("REID_MARGIN", d.reid_margin),
+        min_score: env("MIN_DET", d.min_score),
     }
 }
 
@@ -113,6 +119,57 @@ fn build<'a>(tracks_path: &str, bodies_path: &str, dir: &Path, labels: &'a [Labe
     let main: HashSet<&str> =
         screen.iter().filter(|(n, f)| **n != "?" && **n != "x" && **f as f64 / FPS >= 30.0).map(|(n, _)| *n).collect();
     let shots = read_shots(dir);
+    if bodies_path.ends_with(".found") {
+        // The app's own: tracked, tied and embedded in the face pass.
+        let found = as_analysis::bodies::decode(&std::fs::read(bodies_path).unwrap()).expect("readable people");
+        let people = as_analysis::PeopleParams::default();
+        let bodies: Vec<BodyTrack> = found
+            .iter()
+            .map(|b| BodyTrack {
+                start: b.start,
+                end: b.end,
+                shot: b.shot,
+                dets: b.dets.clone(),
+                reids: vec![None; b.dets.len()],
+            })
+            .collect();
+        let faces_on: Vec<Vec<(usize, u32)>> =
+            found.iter().map(|b| b.faces.iter().map(|&(f, n)| (f as usize, n)).collect()).collect();
+        let body_in: Vec<BodyIn> = found
+            .iter()
+            .zip(&bodies)
+            .map(|(f, b)| BodyIn {
+                media: 0,
+                fps: FPS as f32,
+                spans: b.spans(people.stride, people.span_gap()),
+                faces: f.faces.iter().map(|&(track, samples)| FaceOn { track: track as usize, samples }).collect(),
+                reid: f.reid.clone(),
+                reid_away: f.reid_away.clone(),
+                score: f.showing.score,
+                pin: None,
+                forbid: vec![],
+            })
+            .collect();
+        let params = body_params();
+        let res = propagate(&input, &outcome, &body_in, &params);
+        return World {
+            tracks,
+            input,
+            outcome,
+            got,
+            truth,
+            char_name,
+            main,
+            shots,
+            samples: Vec::new(),
+            body_stride: people.stride,
+            bodies,
+            faces_on,
+            body_in,
+            res,
+            params,
+        };
+    }
     let body_stride: u32 = env("BODY_STRIDE", 3);
     assert!(body_stride.is_multiple_of(STRIDE));
     let file = bodyfile::read(Path::new(bodies_path));
@@ -123,6 +180,8 @@ fn build<'a>(tracks_path: &str, bodies_path: &str, dir: &Path, labels: &'a [Labe
     tp.veto_cos = env("VETO", tp.veto_cos);
     tp.far_cos = env("FAR_COS", tp.far_cos);
     tp.max_gap = tp.max_gap.max(2 * body_stride);
+    let track_reid = env("TRACK_REID", 1) != 0;
+    let reid_top: usize = env("REID_TOP", usize::MAX);
     let lp = LinkParams { max_interp: 24.max(2 * body_stride), ..LinkParams::default() };
     let gap = (24 / body_stride).max(1);
     let (mut bodies, mut faces_on) = (Vec::new(), Vec::new());
@@ -133,10 +192,11 @@ fn build<'a>(tracks_path: &str, bodies_path: &str, dir: &Path, labels: &'a [Labe
         }
         let mut here = Vec::new();
         while s < samples.len() && samples[s].frame < shot.end {
-            let obs = samples[s]
-                .people
+            let people = &samples[s].people;
+            let obs = people
                 .iter()
-                .map(|p| BodyObs {
+                .enumerate()
+                .map(|(i, p)| BodyObs {
                     det: BodyDet {
                         frame: samples[s].frame,
                         bbox: p.bbox,
@@ -144,14 +204,44 @@ fn build<'a>(tracks_path: &str, bodies_path: &str, dir: &Path, labels: &'a [Labe
                         score: p.score,
                         sharpness: p.sharpness,
                         luma: p.luma,
+                        rival: people
+                            .iter()
+                            .enumerate()
+                            .filter(|&(j, _)| j != i)
+                            .map(|(_, o)| o.sharpness)
+                            .fold(0.0, f32::max),
                     },
-                    reid: p.reid.clone(),
+                    reid: p.reid.clone().filter(|_| track_reid),
                 })
                 .collect();
             here.push((samples[s].frame, obs));
             s += 1;
         }
-        let found = track_bodies(*shot, here, &tp);
+        let mut found = track_bodies(*shot, here, &tp);
+        for b in &mut found {
+            if !track_reid {
+                // The sightings' embeddings, on the tracks made without them.
+                for (d, e) in b.dets.iter().zip(b.reids.iter_mut()) {
+                    let at = samples.binary_search_by_key(&d.frame, |x| x.frame).expect("a sample");
+                    *e = samples[at].people.iter().find(|p| p.visible == d.visible).and_then(|p| p.reid.clone());
+                }
+            }
+            if reid_top < b.dets.len() {
+                // Only the clearest sightings are embedded: the biggest, surest, sharpest.
+                let weight = |d: &BodyDet| d.score * (d.height() / 0.3).min(1.0);
+                let mut order: Vec<usize> = (0..b.dets.len())
+                    .filter(|&i| b.reids[i].is_some() && b.dets[i].luma >= as_analysis::bodies::MIN_LUMA)
+                    .collect();
+                order.sort_by(|&i, &j| {
+                    weight(&b.dets[j])
+                        .total_cmp(&weight(&b.dets[i]))
+                        .then(b.dets[j].sharpness.total_cmp(&b.dets[i].sharpness))
+                });
+                for &i in order.iter().skip(reid_top) {
+                    b.reids[i] = None;
+                }
+            }
+        }
         let face_ids: Vec<usize> = (0..tracks.len()).filter(|&i| tracks[i].shot == shot.start).collect();
         let fs: Vec<&FaceTrack> = face_ids.iter().map(|&i| &tracks[i]).collect();
         let bs: Vec<&BodyTrack> = found.iter().collect();
@@ -171,10 +261,14 @@ fn build<'a>(tracks_path: &str, bodies_path: &str, dir: &Path, labels: &'a [Labe
             let has_face = |d: &BodyDet| face_spans.iter().any(|&(a, e)| a <= d.frame && d.frame < e);
             BodyIn {
                 media: 0,
+                fps: FPS as f32,
                 spans: b.spans(body_stride, gap),
                 faces: fo.iter().map(|&(track, samples)| FaceOn { track, samples }).collect(),
                 reid: b.appearance(|_| true),
                 reid_away: b.appearance(|d| !has_face(d)),
+                score: b.dets.iter().map(|d| d.score).fold(0.0, f32::max),
+                pin: None,
+                forbid: vec![],
             }
         })
         .collect();
@@ -212,10 +306,7 @@ impl World<'_> {
     }
 
     fn character_of(&self, b: usize) -> Option<usize> {
-        match self.res.bodies[b] {
-            BodyAssign::Face(c) | BodyAssign::Reid { character: c, .. } => Some(c),
-            BodyAssign::None | BodyAssign::Conflict => None,
-        }
+        self.res.bodies[b].character()
     }
 
     fn name(&self, c: usize) -> &str {
@@ -362,6 +453,49 @@ fn tracks_cmd(w: &World) {
         w.body_stride,
         dets as f64 / n as f64,
         pct(linked, n)
+    );
+    // What the ReID costs: the sightings big enough to embed, all of them or
+    // a track's clearest few (embedded as they come, a clearer one replacing
+    // the weakest).
+    let embeddable: Vec<Vec<f32>> = w
+        .bodies
+        .iter()
+        .map(|b| {
+            b.dets
+                .iter()
+                .zip(&b.reids)
+                .filter(|(d, e)| e.is_some() && d.luma >= as_analysis::bodies::MIN_LUMA)
+                .map(|(d, _)| d.score * (d.height() / 0.3).min(1.0))
+                .collect()
+        })
+        .collect();
+    let all: usize = embeddable.iter().map(Vec::len).sum();
+    let online = |cap: usize| -> usize {
+        embeddable
+            .iter()
+            .map(|ws| {
+                let mut kept: Vec<f32> = Vec::new();
+                let mut made = 0;
+                for &x in ws {
+                    if kept.len() < cap {
+                        kept.push(x);
+                        made += 1;
+                    } else if let Some((i, _)) =
+                        kept.iter().enumerate().min_by(|a, b| a.1.total_cmp(b.1)).filter(|(_, m)| x > **m)
+                    {
+                        kept[i] = x;
+                        made += 1;
+                    }
+                }
+                made
+            })
+            .sum()
+    };
+    println!(
+        "  embeddable sightings: {all}; embedded with a cap of 8 / 16 / 32 per track: {} / {} / {}",
+        online(8),
+        online(16),
+        online(32)
     );
     println!(
         "  with a named face: {one}; with 2+ named faces: {two}, of them mixed: {impure} ({}); faces on the wrong body: {wrong} of {links} ({})",
@@ -621,7 +755,9 @@ fn presence(w: &World, out: Option<&Path>) {
             w.tracks.iter().zip(&w.truth).filter(|(_, t)| **t == Some(*n)).map(|(t, _)| t.end - t.start).sum::<u32>(),
         )
     });
-    let mut tsv = String::from("name\tsource\tshot\tstart\tend\theight\tforeground\tdark\tscore\n");
+    let mut tsv = String::from(
+        "name\tsource\tshot\tstart\tend\theight\tforeground\tdark\tscore\tmid_frame\tmid_box\tbest_det\tmedian_det\tmedian_aspect\tmedian_luma\n",
+    );
     println!(
         "{:10} {:>9} {:>6} | {:>8} {:>8} {:>8} | {:>9} {:>9} | (c) new shots by visible height >=50/30/15/<15 %, foreground, dark",
         "", "face s", "shots", "+(a) s", "+(b) s", "+(c) s", "+(c) shots", "of them"
@@ -660,8 +796,9 @@ fn presence(w: &World, out: Option<&Path>) {
             }
         }
         let mut hb = [0usize; 4];
-        let (mut fg, mut dark) = (0, 0);
+        let (mut fg, mut dark, mut clips) = (0, 0, 0);
         for bs in new_shots.values() {
+            clips += usize::from(bs.iter().any(|&b| w.bodies[b].showing(16.0 / 9.0).prominent()));
             let best =
                 bs.iter().copied().max_by(|&x, &y| w.bodies[x].height().total_cmp(&w.bodies[y].height())).unwrap();
             let h = w.bodies[best].height();
@@ -682,21 +819,41 @@ fn presence(w: &World, out: Option<&Path>) {
             let (f, d) = flags(w, b);
             let BodyAssign::Reid { score, .. } = w.res.bodies[b] else { unreachable!() };
             let body = &w.bodies[b];
+            let median = |mut v: Vec<f32>| {
+                v.sort_by(f32::total_cmp);
+                v[v.len() / 2]
+            };
+            let mid = body.dets[body.dets.len() / 2];
+            let v = mid.visible;
             let _ = writeln!(
                 tsv,
-                "{n}\tc\t{}\t{}\t{}\t{:.3}\t{}\t{}\t{score:.3}",
+                "{n}\tc\t{}\t{}\t{}\t{:.3}\t{}\t{}\t{score:.3}\t{}\t{:.4},{:.4},{:.4},{:.4}\t{:.2}\t{:.2}\t{:.2}\t{:.0}",
                 body.shot,
                 body.start,
                 body.end,
                 body.height(),
                 u8::from(f),
-                u8::from(d)
+                u8::from(d),
+                mid.frame,
+                v[0],
+                v[1],
+                v[2],
+                v[3],
+                body.dets.iter().map(|d| d.score).fold(0.0, f32::max),
+                median(body.dets.iter().map(|d| d.score).collect()),
+                median(
+                    body.dets
+                        .iter()
+                        .map(|d| (d.visible[2] - d.visible[0]) * 16.0 / ((d.visible[3] - d.visible[1]) * 9.0))
+                        .collect()
+                ),
+                median(body.dets.iter().map(|d| d.luma).collect()),
             );
         }
         tot_face += face_shots.len();
         tot_new += new_shots.len();
         println!(
-            "{n:10} {:9.1} {:6} | {:8.1} {:8.1} {:8.1} | {:9} {:>9} | {:?} fg {fg} dark {dark}",
+            "{n:10} {:9.1} {:6} | {:8.1} {:8.1} {:8.1} | {:9} {:>9} | {:?} fg {fg} dark {dark} clips {clips}",
             base as f64 / FPS,
             face_shots.len(),
             (with_a - base) as f64 / FPS,
@@ -722,18 +879,7 @@ fn presence(w: &World, out: Option<&Path>) {
 /// A body that is a blurred shoulder in the foreground, and one that is dark.
 fn flags(w: &World, b: usize) -> (bool, bool) {
     let body = &w.bodies[b];
-    let mut fg = 0;
-    for d in &body.dets {
-        let v = d.visible;
-        let edge = v[3] >= 0.98 && (v[0] <= 0.02 || v[2] >= 0.98);
-        // Blurred next to the sharpest other person in the frame (crops of one size).
-        let sample = w.samples.binary_search_by_key(&d.frame, |s| s.frame).ok().map(|i| &w.samples[i]);
-        let sharpest = sample.map_or(0.0, |s| {
-            s.people.iter().filter(|p| p.visible != d.visible).map(|p| p.sharpness).fold(0.0, f32::max)
-        });
-        let blurred = d.sharpness < 0.5 * sharpest;
-        fg += usize::from(edge && d.height() >= 0.45 && blurred);
-    }
+    let fg = body.dets.iter().filter(|d| d.blurred_foreground()).count();
     let mut lumas: Vec<f32> = body.dets.iter().map(|d| d.luma).collect();
     lumas.sort_by(f32::total_cmp);
     (2 * fg > body.dets.len(), lumas[lumas.len() / 2] < 35.0)

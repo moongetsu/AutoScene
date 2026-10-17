@@ -18,6 +18,7 @@ import {
   characterLabel,
   characterShots,
   mediaPresence,
+  setMockBodies,
   seedCast,
 } from "./cast"
 import { fileProblem, packFileName, packGet, packNames, packOverride, packPlan, packPreview, packSave, templateProblem } from "./pack"
@@ -521,7 +522,11 @@ const handlers: Record<string, Handler> = {
   open_logs_dir: () => null,
   media_tools: () => ({ ready: true, version: "8.0.1-full_build-www.gyan.dev", path: String.raw`C:\ffmpeg\bin\ffmpeg.exe`, error: null }),
   settings_get: () => settings,
-  settings_update: ({ settings: s }) => (settings = s as AppSettings),
+  settings_update: ({ settings: s }) => {
+    settings = s as AppSettings
+    setMockBodies(settings.findBodies ?? false)
+    return settings
+  },
   projects_list: () => [...projects].sort((a, b) => b.updatedAt - a.updatedAt).map(summary),
   project_get: ({ projectId }) => summary(find(projectId)),
   project_create: ({ req }) => {

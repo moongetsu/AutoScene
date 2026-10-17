@@ -3,6 +3,7 @@ import { toast } from "sonner"
 import type { AppSettings } from "@/bindings"
 import { Button } from "@/components/ui/button"
 import { Select } from "@/components/ui/select"
+import { Switch } from "@/components/ui/switch"
 import { commands, errorMessage } from "@/lib/ipc"
 import { PREFERRED_AUDIO_LANGUAGES, pickFolder } from "@/lib/media"
 import { qk, queryClient, useAppInfo, usePresets, useSettings } from "@/lib/queries"
@@ -59,6 +60,20 @@ export function GeneralSection() {
           <Button size="sm" variant="ghost" disabled={!info} onClick={() => info && reveal(info.dataDir)}>
             <FolderOpen /> Reveal
           </Button>
+        </SettingRow>
+      </SettingsGroup>
+
+      <SettingsGroup title="Characters" description="How the analysis finds who is in a shot.">
+        <SettingRow
+          label="Find characters without a visible face"
+          description="Also follows people by their body and clothes, so shots where someone faces away or is too small for their face join their scenepack, marked “No face”. Analysis takes about a quarter longer; episodes analysed before are looked through again for their people."
+        >
+          <Switch
+            aria-label="Find characters without a visible face"
+            checked={settings?.findBodies ?? false}
+            disabled={!settings}
+            onCheckedChange={(on) => settings && void save({ ...settings, findBodies: on })}
+          />
         </SettingRow>
       </SettingsGroup>
 

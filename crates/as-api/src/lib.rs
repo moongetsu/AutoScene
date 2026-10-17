@@ -64,6 +64,11 @@ pub struct AppSettings {
     /// e.g. `eng`); empty = use each file's default track.
     #[serde(default)]
     pub audio_language: String,
+    /// Also follow people by their bodies and clothes, so shots where a
+    /// character's face doesn't show (turned away, too small) join their
+    /// scenepack. Analysis takes longer; off by default.
+    #[serde(default)]
+    pub find_bodies: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -205,6 +210,15 @@ pub struct MediaItem {
     pub faces_error: Option<String>,
     /// Face tracks once found.
     pub face_count: Option<u32>,
+    /// People followed by their bodies (when the setting is on).
+    #[serde(default = "pending")]
+    pub bodies: StageState,
+    #[serde(default)]
+    pub bodies_error: Option<String>,
+}
+
+fn pending() -> StageState {
+    StageState::Pending
 }
 
 /// A stage of a media's analysis, to run again from scratch.
@@ -318,7 +332,7 @@ pub struct Character {
     pub shots: u32,
     /// Media (episodes) the character is seen in.
     pub media: u32,
-    /// Time the character's face is on screen.
+    /// Time the character is on screen: their face, or their body.
     pub screen_sec: f64,
     /// Portrait for big places (cards, heroes): 3:4 from the exact frame at
     /// full resolution once it is made, the face thumbnail until then
@@ -380,12 +394,22 @@ pub struct CharacterShot {
     /// path); `None` for media analysed before shots had sprites.
     pub sprite: Option<String>,
     pub cells: u32,
-    /// The character's clearest face in the shot.
+    /// The character's clearest face in the shot (0 in a shot without it).
     pub track_id: u32,
-    /// Its thumbnail (absolute path).
+    /// Its thumbnail (absolute path); the character's own in a shot
+    /// without their face.
     pub face: String,
-    /// The biggest the character's face is in the shot, as a share of the frame height.
+    /// The biggest the character's face is in the shot, as a share of the
+    /// frame height (as big as their body suggests in a shot without it).
     pub face_height: f32,
+    /// Their face doesn't show in the shot: their body does (turned away,
+    /// too small), found by the face on it or by their clothes.
+    #[serde(default)]
+    pub faceless: bool,
+    /// Their bodies there, in a shot without their face — every one, so
+    /// the user's word on the shot is on all of them.
+    #[serde(default)]
+    pub bodies: Vec<u32>,
 }
 
 /// Which tracks of the cast to list.
@@ -446,6 +470,20 @@ pub enum CastEdit {
         character_id: CharacterId,
         track: u32,
     },
+    /// These bodies (people seen without their face) are this character.
+    BodyAssign {
+        bodies: Vec<u32>,
+        character_id: CharacterId,
+    },
+    /// These bodies are not this character.
+    BodyNotThem {
+        bodies: Vec<u32>,
+        character_id: CharacterId,
+    },
+    /// These bodies aren't people (a coat on a chair, a shadow).
+    NotAPerson {
+        bodies: Vec<u32>,
+    },
 }
 
 impl CastEdit {
@@ -458,7 +496,10 @@ impl CastEdit {
             | Self::NotThem { .. }
             | Self::NotAFace { .. }
             | Self::Confirm { .. }
-            | Self::Merge { .. } => true,
+            | Self::Merge { .. }
+            | Self::BodyAssign { .. }
+            | Self::BodyNotThem { .. }
+            | Self::NotAPerson { .. } => true,
             Self::Rename { .. } | Self::SetHidden { .. } | Self::SetCover { .. } => false,
         }
     }
@@ -495,9 +536,13 @@ pub struct RelinkSummary {
 #[serde(rename_all = "camelCase")]
 pub struct Presence {
     pub character_id: CharacterId,
+    /// The face track — or, with `body`, the body track.
     pub track_id: u32,
     pub start: FrameIdx,
     pub end: FrameIdx,
+    /// On screen without their face showing: their body is.
+    #[serde(default)]
+    pub body: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -666,6 +711,10 @@ pub struct PackSpec {
     pub solo: bool,
     /// Leave out flash cuts (shots under 3 frames).
     pub skip_tiny: bool,
+    /// Leave out shots where the character's face doesn't show (found by
+    /// their body).
+    #[serde(default)]
+    pub skip_faceless: bool,
     /// Only these episodes (empty: all).
     pub media: Vec<MediaId>,
     pub order: PackOrder,
@@ -683,6 +732,7 @@ impl Default for PackSpec {
             sizes: Vec::new(),
             solo: false,
             skip_tiny: true,
+            skip_faceless: false,
             media: Vec::new(),
             order: PackOrder::Episodes,
             limit: None,
@@ -703,6 +753,8 @@ pub enum PackReason {
     Long,
     Size,
     NotSolo,
+    /// The character's face doesn't show in it.
+    Faceless,
     /// Past the limit.
     Limit,
     /// Dropped by hand.

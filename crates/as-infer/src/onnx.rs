@@ -8,6 +8,10 @@
 //! dropped (the runtime infers them again), and the input can get the exact
 //! shape it will be fed: with every dimension known, DirectML plans the
 //! whole graph once instead of operator by operator.
+//!
+//! Older PyTorch exports also pin the batch inside the graph: their Reshape
+//! targets are constants starting with 1 (OpenVINO's person ReID has 27).
+//! [`free_reshape_batch`] makes them copy the batch (0) instead, in place.
 
 /// Wire types of the protobuf encoding.
 const VARINT: u8 = 0;
@@ -17,9 +21,24 @@ const I32: u8 = 5;
 
 // Field numbers (onnx.proto3).
 const MODEL_GRAPH: u64 = 7;
+const GRAPH_NODE: u64 = 1;
+const GRAPH_INITIALIZER: u64 = 5;
 const GRAPH_INPUT: u64 = 11;
 const GRAPH_OUTPUT: u64 = 12;
 const GRAPH_VALUE_INFO: u64 = 13;
+const NODE_INPUT: u64 = 1;
+const NODE_OUTPUT: u64 = 2;
+const NODE_OP_TYPE: u64 = 4;
+const NODE_ATTRIBUTE: u64 = 5;
+const ATTRIBUTE_NAME: u64 = 1;
+const ATTRIBUTE_I: u64 = 3;
+const ATTRIBUTE_T: u64 = 5;
+const TENSOR_DATA_TYPE: u64 = 2;
+const TENSOR_INT64_DATA: u64 = 7;
+const TENSOR_NAME: u64 = 8;
+const TENSOR_RAW_DATA: u64 = 9;
+/// `TensorProto.DataType.INT64`.
+const INT64: u64 = 7;
 const VALUE_INFO_TYPE: u64 = 2;
 const TYPE_TENSOR: u64 = 1;
 const TENSOR_SHAPE: u64 = 2;
@@ -237,6 +256,119 @@ fn put_len_field(out: &mut Vec<u8>, number: u64, payload: &[u8]) {
     out.extend_from_slice(payload);
 }
 
+/// Where `part` (a slice of `whole`) starts in it.
+fn offset_in(whole: &[u8], part: &[u8]) -> usize {
+    part.as_ptr() as usize - whole.as_ptr() as usize
+}
+
+fn varint_value(f: &Field) -> Option<u64> {
+    if f.wire != VARINT {
+        return None;
+    }
+    let mut p = 0;
+    varint(f.raw, &mut p)?;
+    varint(f.raw, &mut p)
+}
+
+/// Where in `model` the first value of an INT64 `TensorProto` (`tensor`, a
+/// slice of `model`) is stored, if that value is exactly 1: the byte that
+/// turns it into 0 (raw data is little-endian; varints of 0 and 1 are one byte).
+fn first_one(model: &[u8], tensor: &[u8]) -> Option<Option<usize>> {
+    let fs = fields(tensor)?;
+    if !fs.iter().any(|f| f.number == TENSOR_DATA_TYPE && varint_value(f) == Some(INT64)) {
+        return Some(None);
+    }
+    for f in &fs {
+        match (f.number, f.wire) {
+            (TENSOR_RAW_DATA, LEN) => {
+                let v = f.payload.get(..8).map(|b| i64::from_le_bytes(b.try_into().expect("8 bytes")));
+                return Some((v == Some(1)).then(|| offset_in(model, f.payload)));
+            }
+            // Packed: the payload is the varints.
+            (TENSOR_INT64_DATA, LEN) => {
+                return Some((f.payload.first() == Some(&1)).then(|| offset_in(model, f.payload)));
+            }
+            // Unpacked: a field per value; a value of 1 is the field's last byte.
+            (TENSOR_INT64_DATA, VARINT) => {
+                let last = &f.raw[f.raw.len() - 1..];
+                return Some((varint_value(f) == Some(1)).then(|| offset_in(model, last)));
+            }
+            _ => {}
+        }
+    }
+    Some(None)
+}
+
+/// The model with every constant Reshape target that pins the batch at 1
+/// copying it (0) instead — what `tools/model-prep/inspect_onnx.py
+/// free-batch` writes to a file, done in memory: only those bytes change.
+/// Returns it and how many targets changed; `None` if the bytes aren't a
+/// readable ONNX model, or a Reshape takes 0 literally (`allowzero`).
+pub fn free_reshape_batch(model: &[u8]) -> Option<(Vec<u8>, usize)> {
+    let graph = fields(model)?.into_iter().find(|f| f.number == MODEL_GRAPH && f.wire == LEN)?.payload;
+    let strings = |fs: &[Field], n: u64| -> Vec<Vec<u8>> {
+        fs.iter().filter(|f| f.number == n && f.wire == LEN).map(|f| f.payload.to_vec()).collect()
+    };
+    // Tensors by name: initializers, and the values of Constant nodes.
+    let mut tensors: std::collections::HashMap<Vec<u8>, &[u8]> = std::collections::HashMap::new();
+    let mut targets: Vec<Vec<u8>> = Vec::new();
+    for f in fields(graph)? {
+        match (f.number, f.wire) {
+            (GRAPH_INITIALIZER, LEN) => {
+                if let Some(name) = strings(&fields(f.payload)?, TENSOR_NAME).pop() {
+                    tensors.insert(name, f.payload);
+                }
+            }
+            (GRAPH_NODE, LEN) => {
+                let node = fields(f.payload)?;
+                let op = strings(&node, NODE_OP_TYPE).pop().unwrap_or_default();
+                let attributes: Vec<Vec<Field>> = node
+                    .iter()
+                    .filter(|a| a.number == NODE_ATTRIBUTE && a.wire == LEN)
+                    .map(|a| fields(a.payload))
+                    .collect::<Option<_>>()?;
+                let named = |name: &[u8]| {
+                    attributes.iter().find(|a| strings(a, ATTRIBUTE_NAME).first().map(Vec::as_slice) == Some(name))
+                };
+                match op.as_slice() {
+                    b"Reshape" => {
+                        let allowzero = named(b"allowzero")
+                            .and_then(|a| a.iter().find(|x| x.number == ATTRIBUTE_I).and_then(varint_value));
+                        if allowzero == Some(1) {
+                            return None;
+                        }
+                        targets.extend(strings(&node, NODE_INPUT).into_iter().nth(1));
+                    }
+                    b"Constant" => {
+                        let value =
+                            named(b"value").and_then(|a| a.iter().find(|x| x.number == ATTRIBUTE_T && x.wire == LEN));
+                        if let (Some(out), Some(t)) = (strings(&node, NODE_OUTPUT).pop(), value) {
+                            tensors.insert(out, t.payload);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+    targets.sort();
+    targets.dedup();
+    let mut at: Vec<usize> = Vec::new();
+    for t in &targets {
+        if let Some(tensor) = tensors.get(t)
+            && let Some(byte) = first_one(model, tensor)?
+        {
+            at.push(byte);
+        }
+    }
+    let mut out = model.to_vec();
+    for &byte in &at {
+        out[byte] = 0;
+    }
+    Some((out, at.len()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -344,5 +476,92 @@ mod tests {
     #[test]
     fn garbage_is_refused() {
         assert!(reshaped(&[0x3A, 0xFF, 0xFF], InputShape::Declared).is_none());
+        assert!(free_reshape_batch(&[0x3A, 0xFF, 0xFF]).is_none());
+    }
+
+    /// An INT64 TensorProto named `name` holding `values` as raw data,
+    /// packed varints or one varint field each.
+    fn int64s(name: &str, values: &[i64], how: u8) -> Vec<u8> {
+        let mut t = Vec::new();
+        varint_field(&mut t, 1, values.len() as u64);
+        varint_field(&mut t, TENSOR_DATA_TYPE, INT64);
+        len_field(&mut t, TENSOR_NAME, name.as_bytes());
+        match how {
+            b'r' => {
+                len_field(&mut t, TENSOR_RAW_DATA, &values.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>())
+            }
+            b'p' => {
+                let mut packed = Vec::new();
+                values.iter().for_each(|&v| put_varint(&mut packed, v as u64));
+                len_field(&mut t, TENSOR_INT64_DATA, &packed);
+            }
+            _ => values.iter().for_each(|&v| varint_field(&mut t, TENSOR_INT64_DATA, v as u64)),
+        }
+        t
+    }
+
+    fn reshape(input: &str, shape: &str, allowzero: Option<u64>) -> (u64, Vec<u8>) {
+        let mut n = Vec::new();
+        len_field(&mut n, NODE_INPUT, input.as_bytes());
+        len_field(&mut n, NODE_INPUT, shape.as_bytes());
+        len_field(&mut n, NODE_OUTPUT, format!("{input}_r").as_bytes());
+        len_field(&mut n, NODE_OP_TYPE, b"Reshape");
+        if let Some(z) = allowzero {
+            let mut a = Vec::new();
+            len_field(&mut a, ATTRIBUTE_NAME, b"allowzero");
+            varint_field(&mut a, ATTRIBUTE_I, z);
+            len_field(&mut n, NODE_ATTRIBUTE, &a);
+        }
+        (GRAPH_NODE, n)
+    }
+
+    fn constant(output: &str, tensor: Vec<u8>) -> (u64, Vec<u8>) {
+        let mut n = Vec::new();
+        len_field(&mut n, NODE_OUTPUT, output.as_bytes());
+        len_field(&mut n, NODE_OP_TYPE, b"Constant");
+        let mut a = Vec::new();
+        len_field(&mut a, ATTRIBUTE_NAME, b"value");
+        len_field(&mut a, ATTRIBUTE_T, &tensor);
+        len_field(&mut n, NODE_ATTRIBUTE, &a);
+        (GRAPH_NODE, n)
+    }
+
+    #[test]
+    fn reshapes_that_pin_the_batch_copy_it_instead() {
+        // A float weight starting like a 1 must stay as it is.
+        let mut weight = Vec::new();
+        varint_field(&mut weight, TENSOR_DATA_TYPE, 1);
+        len_field(&mut weight, TENSOR_NAME, b"w");
+        len_field(&mut weight, TENSOR_RAW_DATA, &[1, 0, 0, 0, 0, 0, 0, 0]);
+        let graph = |third: (u64, Vec<u8>)| {
+            model(&[
+                (GRAPH_INITIALIZER, int64s("raw", &[1, -1], b'r')),
+                (GRAPH_INITIALIZER, int64s("packed", &[1, 256, 8, 16], b'p')),
+                (GRAPH_INITIALIZER, int64s("batched", &[4, -1], b'r')),
+                (GRAPH_INITIALIZER, int64s("big", &[129, 2], b'u')),
+                (GRAPH_INITIALIZER, weight.clone()),
+                constant("constant", int64s("", &[1, 64], b'u')),
+                reshape("a", "raw", None),
+                reshape("b", "packed", Some(0)),
+                reshape("c", "constant", None),
+                reshape("d", "batched", None),
+                reshape("e", "big", None),
+                reshape("f", "raw", None),
+                reshape("g", "w", None),
+                third,
+            ])
+        };
+        // A target computed in the graph (no constant of that name) is left alone.
+        let m = graph(reshape("x", "computed", None));
+        let (free, n) = free_reshape_batch(&m).unwrap();
+        assert_eq!(n, 3, "raw, packed and the constant; a batch of 4, 129 and a float stay");
+        assert_eq!(free.len(), m.len());
+        let changed: Vec<usize> = (0..m.len()).filter(|&i| m[i] != free[i]).collect();
+        assert_eq!(changed.len(), 3);
+        assert!(changed.iter().all(|&i| m[i] == 1 && free[i] == 0));
+        // Done once, there is nothing left to do.
+        assert_eq!(free_reshape_batch(&free).unwrap().1, 0);
+        // A Reshape that takes 0 literally can't be freed this way.
+        assert!(free_reshape_batch(&graph(reshape("h", "raw", Some(1)))).is_none());
     }
 }

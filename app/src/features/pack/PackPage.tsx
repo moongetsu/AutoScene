@@ -1,7 +1,8 @@
 import { type ReactNode, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { Link, useNavigate, useParams } from "@tanstack/react-router"
+import { toast } from "sonner"
 import { ArrowLeft, User, Users } from "@/components/icons"
-import type { Character, MediaItem, PackClip } from "@/bindings"
+import type { CastEdit, Character, MediaItem, PackClip } from "@/bindings"
 import { Artwork } from "@/components/ui/artwork"
 import { Button } from "@/components/ui/button"
 import { EmptyState } from "@/components/ui/empty-state"
@@ -10,11 +11,11 @@ import { Page } from "@/components/ui/page"
 import { Segmented } from "@/components/ui/segmented"
 import { TopBar } from "@/components/ui/topbar"
 import { VirtualGrid } from "@/components/ui/virtual-grid"
-import { plural } from "@/features/cast/cast"
+import { castEdit, plural } from "@/features/cast/cast"
 import { ProjectLoadError } from "@/features/project/ProjectLoadError"
 import { firstFailure, useCast, useMediaList, useSettings } from "@/lib/queries"
 import { PACK_SHORTCUTS, useShortcuts } from "@/lib/shortcuts"
-import { PackCard } from "./PackCard"
+import { type BodyVerdict, PackCard } from "./PackCard"
 import { PackExportDialog } from "./PackExportDialog"
 import { PackFilters } from "./PackFilters"
 import { PackFooter } from "./PackFooter"
@@ -136,13 +137,28 @@ function Builder({
     },
     [navigate, pid],
   )
+  // Bodies that aren't them (or aren't anyone) leave the pack, and stay out after a new analysis.
+  const characterId = character?.id
+  const label = character?.label
+  const onBody = useCallback(
+    (bodies: number[], verdict: BodyVerdict) => {
+      if (!characterId) return
+      const edit: CastEdit =
+        verdict === "not_them" ? { op: "body_not_them", bodies, characterId } : { op: "not_a_person", bodies }
+      void castEdit(pid, edit).then((r) => {
+        if (r !== undefined) toast(verdict === "not_them" ? `Not ${label ?? "them"}: out of the pack` : "Not a person: out of the pack")
+      })
+    },
+    [pid, characterId, label],
+  )
+  const faceless = useMemo(() => clips.some((c) => c.shot.faceless), [clips])
 
   return (
     <div className="relative h-full">
       <Page topbar={toolbar}>
         <Header character={character} shots={clips.length} />
         {pack.state ? (
-          <PackFilters spec={pack.state.spec} media={media} onChange={pack.setSpec} />
+          <PackFilters spec={pack.state.spec} media={media} faceless={faceless} onChange={pack.setSpec} />
         ) : (
           <div className="h-[57px] border-b border-hairline" />
         )}
@@ -189,7 +205,15 @@ function Builder({
               itemHeight={(w) => (w * 9) / 16}
               getKey={keyOf}
               renderItem={(c, i) => (
-                <PackCard clip={c} index={i} media={mediaById.get(c.shot.mediaId)} onToggle={toggle} onOpen={open} />
+                <PackCard
+                  clip={c}
+                  index={i}
+                  media={mediaById.get(c.shot.mediaId)}
+                  name={character?.label}
+                  onToggle={toggle}
+                  onOpen={open}
+                  onBody={onBody}
+                />
               )}
             />
           )}

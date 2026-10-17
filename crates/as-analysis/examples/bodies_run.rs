@@ -6,7 +6,7 @@
 //! bb.index/bb.info.json/bb.path/bb.segments.tsv> <out.bodies>`
 //! `DETECTOR=pp_det_med:640x640:squeeze` (default), `pp_det_med:640x384:pad` or
 //! `scrfd_person` (on half-size frames, batch 4); `REID=<file in persons_dir>`
-//! (default `reid_0265_b.onnx`, batch 32); `MIN_SCORE` (0.3) keeps weaker
+//! (default `reid_0265.onnx`, batch 32); `MIN_SCORE` (0.3) keeps weaker
 //! people for the tracker; `REID_MIN_H` (0.08: share of the frame height)
 //! is the smallest person embedded; `NOOP=1` only decodes; `CPU=1`.
 
@@ -45,7 +45,7 @@ fn main() {
     let (ort, dir_p, ffmpeg, dir, out) =
         (Path::new(&a[0]), Path::new(&a[1]), &a[2], Path::new(&a[3]), Path::new(&a[4]));
     let detector = std::env::var("DETECTOR").unwrap_or_else(|_| "pp_det_med:640x640:squeeze".into());
-    let reid_file = std::env::var("REID").unwrap_or_else(|_| "reid_0265_b.onnx".into());
+    let reid_file = std::env::var("REID").unwrap_or_else(|_| "reid_0265.onnx".into());
     let min_score: f32 = env("MIN_SCORE", 0.3);
     let reid_min_h: f32 = env("REID_MIN_H", 0.08);
     let noop = std::env::var_os("NOOP").is_some();

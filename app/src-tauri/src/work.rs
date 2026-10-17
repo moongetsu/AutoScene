@@ -1,4 +1,5 @@
-//! Background work: ingest, playback proxies, analysis, exports and upkeep,
+//! Background work: ingest, playback proxies, analysis (shots, faces and —
+//! when the setting asks for it — people), exports and upkeep,
 //! queued on `as-jobs` workers. Each job reports through `job:*` events and announces
 //! what it changed (`media:changed`, `analysis:changed`, `library:changed`,
 //! `export:changed`, `cast:changed`, `portraits:changed`) so the UI refetches
@@ -9,7 +10,7 @@ use std::sync::Arc;
 
 use as_api::{AnalysisStage, CastEdit, ContentKind, ExportSummary, JobKind, MediaItem, ProxyState, StageState};
 use as_core::{MediaId, ProjectId};
-use as_engine::{EngineError, FacesEvent, ShotsEvent};
+use as_engine::{EngineError, FacesEvent, FacesInput, ShotsEvent};
 use as_jobs::{Class, JobCtx, JobError, JobSpec};
 use as_models::ModelError;
 use as_project::{Portrait, Project, ProjectError};
@@ -298,7 +299,14 @@ fn submit_analysis(app: &AppHandle, project: &Arc<Project>, media_id: MediaId) {
             let faces = run_faces(&app2, &state, &project, media_id, ctx);
             record_stage(&state, &faces, |s, e| project.set_faces_state(media_id, s, e));
             notify();
-            faces
+            faces?;
+            if !project.finds_bodies() {
+                return Ok(());
+            }
+            let bodies = run_bodies(&app2, &state, &project, media_id, ctx);
+            record_stage(&state, &bodies, |s, e| project.set_bodies_state(media_id, s, e));
+            notify();
+            bodies
         });
         // Asked to start over while this ran: now nothing writes any more.
         if let Some(stage) = running.finish() {
@@ -399,25 +407,54 @@ fn run_faces(
             }
         }
     }
+    // People are found in the same pass when their models are here; when
+    // they can't be downloaded now, the people pass finds them later.
+    let mut people = project.finds_bodies()
+        && match install_models(state, &as_models::ids::BODIES, ctx) {
+            Ok(()) => true,
+            Err(StageError::Cancelled) => return Err(StageError::Cancelled),
+            Err(_) => false,
+        };
     project.set_faces_state(media_id, StageState::Running, None).map_err(stage_error)?;
     media_changed(app, project, Some(media_id));
-    let plan = project.faces_plan(media_id, as_models::ids::ARCFACE).map_err(stage_error)?;
     const STAGE: &str = "Finding characters";
-    if plan.resume < plan.frames {
+    loop {
+        let plan = project.faces_plan(media_id, as_models::ids::ARCFACE).map_err(stage_error)?;
+        if plan.resume >= plan.frames {
+            break;
+        }
         ctx.progress(STAGE, plan.resume as f64 / plan.frames as f64);
-        state
-            .engine
-            .faces(plan.path, plan.info, plan.index, plan.shots, plan.resume, plan.chunk, &ctx.cancel, |e| match e {
-                FacesEvent::Progress(f) => {
-                    ctx.progress(STAGE, f);
-                    Ok(())
-                }
-                FacesEvent::Chunk { start, end, tracks, sprites } => project
-                    .store_face_chunk(media_id, start, end, &tracks, &sprites)
-                    .map(|_| ())
-                    .map_err(|e| e.detail()),
-            })
-            .map_err(engine_error)?;
+        let job = FacesInput {
+            path: plan.path,
+            info: plan.info,
+            index: plan.index,
+            shots: plan.shots,
+            resume: plan.resume,
+            chunk: plan.chunk,
+            bodies: people,
+            known: None,
+        };
+        let found = state.engine.faces(job, &ctx.cancel, |e| match e {
+            FacesEvent::Progress(f) => {
+                ctx.progress(STAGE, f);
+                Ok(())
+            }
+            FacesEvent::Chunk { start, end, tracks, sprites, bodies } => project
+                .store_face_chunk(media_id, start, end, &tracks, &sprites, &bodies)
+                .map(|_| ())
+                .map_err(|e| e.detail()),
+        });
+        match found {
+            Ok(()) => break,
+            // The optional people never cost the faces: the faces go on
+            // alone from the last checkpoint, the people pass finds the rest
+            // of the people after (or fails on its own).
+            Err(e @ (EngineError::Failed { .. } | EngineError::Crashed(_))) if people => {
+                log::warn!("finding people with the faces: {}; the faces go on alone", e.detail());
+                people = false;
+            }
+            Err(e) => return Err(engine_error(e)),
+        }
     }
     ctx.stage("Grouping characters");
     project.finish_faces(media_id).map_err(stage_error)?;
@@ -425,6 +462,109 @@ fn run_faces(
     log::info!("faces found; the cast has {characters} characters");
     cast_changed(app, project);
     Ok(())
+}
+
+/// Find a media's people for its faces (when the setting asks for it):
+/// whatever the face pass didn't find with them — all of them, for a media
+/// whose faces were found before — then the user's word on them is put
+/// back and every face placed again with them.
+fn run_bodies(
+    app: &AppHandle,
+    state: &AppState,
+    project: &Arc<Project>,
+    media_id: MediaId,
+    ctx: &JobCtx,
+) -> Result<(), StageError> {
+    let m = project.media(media_id).map_err(stage_error)?;
+    if m.bodies == StageState::Ready || m.faces != StageState::Ready {
+        return Ok(());
+    }
+    install_models(state, &as_models::ids::BODIES, ctx)?;
+    project.set_bodies_state(media_id, StageState::Running, None).map_err(stage_error)?;
+    media_changed(app, project, Some(media_id));
+    let plan = project.bodies_plan(media_id).map_err(stage_error)?;
+    const STAGE: &str = "Finding people";
+    if plan.resume < plan.frames {
+        ctx.progress(STAGE, plan.resume as f64 / plan.frames as f64);
+        let job = FacesInput {
+            path: plan.path,
+            info: plan.info,
+            index: plan.index,
+            shots: plan.shots,
+            resume: plan.resume,
+            chunk: plan.chunk,
+            bodies: true,
+            known: Some(plan.known),
+        };
+        state
+            .engine
+            .faces(job, &ctx.cancel, |e| match e {
+                FacesEvent::Progress(f) => {
+                    ctx.progress(STAGE, f);
+                    Ok(())
+                }
+                FacesEvent::Chunk { start, end, bodies, .. } => {
+                    project.store_body_chunk(media_id, start, end, &bodies).map(|_| ()).map_err(|e| e.detail())
+                }
+            })
+            .map_err(engine_error)?;
+    }
+    ctx.stage("Grouping characters");
+    project.finish_bodies(media_id).map_err(stage_error)?;
+    project.reassign().map_err(stage_error)?;
+    log::info!("people found");
+    cast_changed(app, project);
+    Ok(())
+}
+
+/// The setting to find people by their bodies changed: every project
+/// places its faces again with (or without) them — and when it is on, the
+/// media whose people aren't found yet are analysed for them.
+pub fn bodies_setting_changed(app: &AppHandle, on: bool) {
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let projects = match state.library.projects() {
+            Ok(p) => p,
+            Err(e) => {
+                log::warn!("listing projects: {}", e.detail());
+                return;
+            }
+        };
+        for summary in projects {
+            let project = match state.library.project(summary.id) {
+                Ok(p) => p,
+                Err(e) => {
+                    log::warn!("project '{}' unavailable: {}", summary.title, e.detail());
+                    continue;
+                }
+            };
+            if !finds_faces(&project) {
+                continue;
+            }
+            if let Err(e) = project.reassign() {
+                log::warn!("placing the faces of '{}' again: {}", summary.title, e.detail());
+            }
+            cast_changed(&app, &project);
+            if on {
+                match project.waiting_bodies() {
+                    Ok(ids) => {
+                        let ids: Vec<MediaId> = ids
+                            .into_iter()
+                            .filter(|&id| project.media(id).is_ok_and(|m| m.status != as_api::MediaStatus::Missing))
+                            .collect();
+                        if !ids.is_empty() {
+                            log::info!("'{}': {} media get their people found", summary.title, ids.len());
+                        }
+                        for id in ids {
+                            queue_analysis(&app, &project, id);
+                        }
+                    }
+                    Err(e) => log::warn!("media of '{}' without their people: {}", summary.title, e.detail()),
+                }
+            }
+        }
+    });
 }
 
 /// Download AI models on first use (verified; resumes an interrupted download).
@@ -773,6 +913,13 @@ pub fn recover_all(app: &AppHandle) {
                 for id in project.pending_faces()? {
                     if !ids.contains(&id) {
                         ids.push(id);
+                    }
+                }
+                if project.finds_bodies() {
+                    for id in project.pending_bodies()? {
+                        if !ids.contains(&id) {
+                            ids.push(id);
+                        }
                     }
                 }
             }

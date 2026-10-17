@@ -10,9 +10,10 @@
 //! outside what it saw, so its answer is a hint within a scene (one outfit),
 //! not an identity across an episode.
 //!
-//! The export pins its batch at 1 in every Reshape, so it runs one crop at a
-//! time; a copy whose Reshapes copy the batch instead
-//! (`tools/model-prep/inspect_onnx.py free-batch`) runs in batches.
+//! The export pins its batch at 1 in every Reshape; they are made to copy
+//! the batch when the model is loaded ([`Runtime::session_batched`], what
+//! `tools/model-prep/inspect_onnx.py free-batch` writes to a file), so it
+//! runs in batches while the file stays as downloaded.
 
 use std::path::Path;
 
@@ -44,7 +45,7 @@ impl PersonReid {
     /// `batch`: crops per inference call (the last call of a run is padded).
     pub fn load(rt: &Runtime, model: &Path, batch: usize, norm: Norm) -> InferResult<Self> {
         assert!(batch > 0);
-        let (session, device) = rt.session_shaped(model, InputShape::Fixed(&[batch, 3, HEIGHT, WIDTH]))?;
+        let (session, device) = rt.session_batched(model, InputShape::Fixed(&[batch, 3, HEIGHT, WIDTH]))?;
         let input = session
             .inputs()
             .first()

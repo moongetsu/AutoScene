@@ -141,3 +141,55 @@ in the first round).
 Running in the face pass (decoding shared), every 2nd sample: ≈ 75 s for the
 58-min episode, plus ≈ 15 s for ReID on ≤ 8 crops per body track — about
 +40 % on the 225 s face pass. As its own pass it also decodes (119 s).
+
+## In the app (2026-10-17)
+
+An optional mode, off by default: Settings → General → "Find characters
+without a visible face" (`AppSettings::find_bodies`). Turning it on places
+every project's faces again and looks through the episodes analysed before
+for their people. Turning it off drops everything bodies said and shows no
+body at all — the user's word on one too; a project that couldn't be placed
+again then catches up when it opens. The bodies stay stored, so turning it
+on again needs no new pass. If finding people fails in the face pass, the
+faces go on alone and the people pass tries the people on its own.
+
+- **Models**: `pp_det_med.onnx` and `reid_0265.onnx` are fetched as members
+  of `cheetah_l.zip` by HTTP range requests (central directory, then the one
+  member), resumable and SHA-pinned like every model (`as_models::zip`). The
+  ReID's 27 batch-pinned Reshapes are patched in memory when it loads
+  (`as_infer::onnx::free_reshape_batch`); the file stays byte-identical, so
+  `reid_0265_b.onnx` isn't needed.
+- **In the face pass** (`as_analysis::faces`, `PeopleParams`): the person
+  detector runs on every 2nd sample in its own thread, on the decoded frames
+  the faces use. Bodies are tracked per shot without ReID (as clean as with
+  it here, and cheaper), tied to faces at the end of each shot, and stored
+  with each checkpoint chunk. Episodes whose faces were found before get a
+  pass for their people alone, tied to their stored faces.
+- **ReID crops**: the ≤ 32 clearest sightings per body (by score × size,
+  not too dark), not ≤ 8: with ≤ 8, 4 of the 45 main-cast shots of (c) are
+  lost; ≤ 32 embeds 17,687 crops (18,500 without a cap).
+- **Who a body is** is derived after every clustering and never shapes a
+  character: faces named by their body carry `via_body`, bodies take
+  `face | clothes | conflict`. (c) also needs a best detection score ≥ 0.65.
+  The user's word (Not them, Not a person, pinned) is kept and put back
+  after a re-analysis like a face's.
+- **A clip for a pack** needs a body that shows: height ≥ 15 % of the frame,
+  height/width ≤ 1.6 (not a sliver or an arm), not a headless crop at the
+  top edge (unless ≥ 60 % of the frame), not a blurred shoulder in the
+  foreground. Such shots join the pack marked "No face", behind every shot
+  with a face (in "Best first" and in a limit); "Only with their face"
+  leaves them out.
+
+**Measured** (BB S01E01; the face pass with `faces_run`, the rest in the
+app on a scratch copy of the library):
+
+| | |
+|---|---|
+| face pass with people (new episode) | 276 s instead of 221 s (+25 %); face tracks, chunks and sprites byte-identical with and without |
+| pass for people alone (episode analysed before) | 187.5 s, 1682 bodies (758 by their face, 59 by clothes) |
+| model download in the app (two zip members, 38 MB unpacked) | ≈ 3 s |
+| Walter | 302 → 323 shots (+21 "No face"), 1559 → 1794 s on screen |
+| Jesse, Skyler, Hank, Krazy-8 | +8, +1, +2, +3 shots |
+| faces named by their body ((b)) | 9 (the bench run's 10 had 0 wrong: F 0.925 → 0.930) |
+| mode off again | all 1138 face tracks, the characters and every pack exactly as before |
+| app killed after 14 of 34 chunks, started again | resumes at the last chunk; bodies, links, identities and faces identical to an uninterrupted pass |

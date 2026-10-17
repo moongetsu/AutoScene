@@ -65,6 +65,13 @@ pub struct FacesJob {
     pub resume: u32,
     /// Frames per checkpoint chunk (chunks end at the next shot start).
     pub chunk: u32,
+    /// Look for people too, tied to the faces (`FaceChunk::bodies`).
+    #[serde(default)]
+    pub bodies: bool,
+    /// Faces found before (`as_analysis::tracks::encode_known`): only people
+    /// are looked for, and tied to these.
+    #[serde(default)]
+    pub known: Option<Blob>,
 }
 
 /// A shot's sprite (`as_analysis::ShotSprite`).
@@ -106,8 +113,9 @@ pub enum Reply {
         len: u32,
         signals: Blob,
     },
-    /// Face tracks of frames `start..end` (`as_analysis::tracks::encode`)
-    /// and the sprites of its shots.
+    /// Face tracks of frames `start..end` (`as_analysis::tracks::encode`),
+    /// the sprites of its shots, and the people found there
+    /// (`as_analysis::bodies::encode`; empty when none were looked for).
     FaceChunk {
         id: u64,
         start: u32,
@@ -115,6 +123,8 @@ pub enum Reply {
         tracks: Blob,
         #[serde(default)]
         sprites: Vec<Sprite>,
+        #[serde(default)]
+        bodies: Blob,
     },
     Done {
         id: u64,
@@ -147,5 +157,25 @@ mod tests {
         }
         let c: Request = serde_json::from_str(r#"{"op":"cancel","id":3}"#).unwrap();
         assert!(matches!(c, Request::Cancel { id: 3 }));
+    }
+
+    #[test]
+    fn people_are_optional_on_the_wire() {
+        // A chunk from an engine that looks for no one.
+        let chunk: Reply =
+            serde_json::from_str(r#"{"event":"face_chunk","id":1,"start":0,"end":9,"tracks":"AQ=="}"#).unwrap();
+        assert!(
+            matches!(chunk, Reply::FaceChunk { ref bodies, ref sprites, .. } if bodies.0.is_empty() && sprites.is_empty())
+        );
+        let r = Reply::FaceChunk {
+            id: 1,
+            start: 0,
+            end: 9,
+            tracks: Blob(vec![1]),
+            sprites: vec![],
+            bodies: Blob(vec![1, 0]),
+        };
+        let back: Reply = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
+        assert!(matches!(back, Reply::FaceChunk { bodies, .. } if bodies.0 == [1, 0]));
     }
 }

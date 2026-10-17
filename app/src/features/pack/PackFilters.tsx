@@ -22,10 +22,13 @@ import { DEFAULT_SPEC, HANDLES, LENGTHS, LIMITS, SIZES, isDefault, lengthOf } fr
 export function PackFilters({
   spec,
   media,
+  faceless,
   onChange,
 }: {
   spec: PackSpec
   media: MediaItem[]
+  /** The pack has shots where the character's face doesn't show. */
+  faceless: boolean
   onChange: (spec: PackSpec) => void
 }) {
   const set = (patch: Partial<PackSpec>) => onChange({ ...spec, ...patch })
@@ -136,6 +139,13 @@ export function PackFilters({
       <Chip pressed={spec.skipTiny} onClick={() => set({ skipTiny: !spec.skipTiny })}>
         Skip flash cuts
       </Chip>
+      {(faceless || spec.skipFaceless) && (
+        <Tooltip label="Leave out the shots where their face doesn't show (found by their body)">
+          <Chip pressed={spec.skipFaceless ?? false} onClick={() => set({ skipFaceless: !spec.skipFaceless })}>
+            Only with their face
+          </Chip>
+        </Tooltip>
+      )}
       {!isDefault(spec) && (
         <Button size="sm" variant="ghost" className="ml-auto" onClick={() => onChange(DEFAULT_SPEC)}>
           <ArrowCounterClockwise /> Reset filters

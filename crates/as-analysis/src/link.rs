@@ -204,7 +204,15 @@ mod tests {
             shot: 0,
             dets: frames
                 .iter()
-                .map(|&frame| BodyDet { frame, bbox: visible, visible, score: 0.9, sharpness: 100.0, luma: 120.0 })
+                .map(|&frame| BodyDet {
+                    frame,
+                    bbox: visible,
+                    visible,
+                    score: 0.9,
+                    sharpness: 100.0,
+                    luma: 120.0,
+                    rival: 0.0,
+                })
                 .collect(),
             reids: vec![None; frames.len()],
         }

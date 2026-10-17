@@ -39,3 +39,30 @@ sha256 = "4ab1d6435d639628a6f3e5008dd4f929edf4c4124b1a7169e1048f9fef534cdf"
 size = 260665334
 license = "InsightFace non-commercial research"
 source = "InsightFace antelopev2 glintr100 (ArcFace ResNet-100 on Glint360K), byte-identical mirror by Immich"
+
+# Characters who face away (an optional mode, see bench/bodies): people and
+# how they look. Both are files of InsightFace's cheetah_l package, a zip on
+# its model-zoo release that holds face models too: each is fetched alone by
+# the byte ranges the archive's directory gives, then checked by its own
+# SHA256 (the archive may be repacked; the files may not change).
+[[model]]
+id = "person-ppyoloe"
+file = "pp_det_med.onnx"
+purpose = "People (whole bodies), to follow characters while their face doesn't show"
+url = "https://github.com/deepinsight/insightface/releases/download/model-zoo/cheetah_l.zip"
+member = "pp_det_med.onnx"
+sha256 = "6e9842a1a0122a474765838780012a4e7553623578b460848e5d47e743e22801"
+size = 29836627
+license = "InsightFace non-commercial (cheetah_l-public-v1)"
+source = "InsightFace cheetah_l pp_det_med: PaddleDetection PP-YOLOE pedestrian detector"
+
+[[model]]
+id = "person-reid-0277"
+file = "reid_0265.onnx"
+purpose = "How a person looks (clothes, build), to find them again without a face"
+url = "https://github.com/deepinsight/insightface/releases/download/model-zoo/cheetah_l.zip"
+member = "reid_0265.onnx"
+sha256 = "c15084e7fa47e5ade8af236372e0c81d7d6a11d10d4f4db2d98b72ec6cefef0f"
+size = 8440242
+license = "InsightFace non-commercial (cheetah_l-public-v1)"
+source = "InsightFace cheetah_l reid_0265: OpenVINO person-reidentification-retail-0277 (OmniScaleNet)"

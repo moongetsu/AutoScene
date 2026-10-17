@@ -14,7 +14,9 @@ pub mod sprites;
 pub mod tracker;
 pub mod tracks;
 
-pub use faces::{DETECT_BATCH, FaceChunk, FaceParams, face_tracks, frame_sizes};
+pub use faces::{
+    BodyModels, DETECT_BATCH, FaceChunk, FaceParams, Faces, PERSON_INPUT, PeopleParams, face_tracks, frame_sizes,
+};
 pub use fusion::{FusionParams, Segment, SegmentKind, TransitionKind, fuse};
 pub use pipeline::{CHUNK, shot_signals};
 pub use portrait::portrait_region;

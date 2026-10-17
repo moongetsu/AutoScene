@@ -12,6 +12,7 @@ export const DEFAULT_SPEC: PackSpec = {
   sizes: [],
   solo: false,
   skipTiny: true,
+  skipFaceless: false,
   media: [],
   order: "episodes",
   limit: null,
@@ -36,6 +37,7 @@ export const REASONS: Record<PackReason, string> = {
   long: "Too long",
   size: "Other size",
   not_solo: "Not alone",
+  faceless: "No face",
   limit: "Past the limit",
   removed: "Taken out",
 }
@@ -74,6 +76,7 @@ export function isDefault(spec: PackSpec): boolean {
     spec.sizes.length === 0 &&
     spec.solo === DEFAULT_SPEC.solo &&
     spec.skipTiny === DEFAULT_SPEC.skipTiny &&
+    (spec.skipFaceless ?? false) === DEFAULT_SPEC.skipFaceless &&
     spec.media.length === 0 &&
     spec.order === DEFAULT_SPEC.order &&
     spec.limit === DEFAULT_SPEC.limit &&

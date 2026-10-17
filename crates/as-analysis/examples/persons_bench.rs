@@ -3,8 +3,7 @@
 //! `cargo run --release -p as-analysis --example persons_bench -- <ort_dir> <persons_dir> <ffmpeg_dir> <dir with
 //! bb.index/bb.info.json/bb.path> <from,from,...> <samples per start>`
 //! `<persons_dir>` holds InsightFace's `pp_det_med.onnx`, `pp_det_small_320.onnx`,
-//! `scrfd_person_2.5g.onnx`, `reid_0265.onnx` (batch 1) and `reid_0265_b.onnx`
-//! (its copy that batches: `tools/model-prep/inspect_onnx.py free-batch`).
+//! `scrfd_person_2.5g.onnx` and `reid_0265.onnx` (made to batch when it is loaded).
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -122,7 +121,7 @@ fn main() {
     let mut scrfd_batched =
         Scrfd::load_heads(&gpu, &scrfd, half_size, SCRFD_BATCH, Heads::PERSONS).unwrap().with_nms_iou(0.6);
     let mut reid1 = PersonReid::load(&gpu, &dir_p.join("reid_0265.onnx"), 1, Norm::IMAGENET).unwrap();
-    let mut reid32 = PersonReid::load(&gpu, &dir_p.join("reid_0265_b.onnx"), 32, Norm::IMAGENET).unwrap();
+    let mut reid32 = PersonReid::load(&gpu, &dir_p.join("reid_0265.onnx"), 32, Norm::IMAGENET).unwrap();
     let mut reid_cpu = PersonReid::load(&cpu, &dir_p.join("reid_0265.onnx"), 1, Norm::IMAGENET).unwrap();
     println!(
         "sessions {:.1?}; frames {w}x{h}, SCRFD on {half_size:?}; ReID on {:?}/{:?}",

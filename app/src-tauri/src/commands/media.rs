@@ -427,6 +427,8 @@ pub async fn media_analyze(
                     p.set_shots_state(media_id, as_api::StageState::Pending, None)?;
                 } else if m.faces != as_api::StageState::Ready {
                     p.set_faces_state(media_id, as_api::StageState::Pending, None)?;
+                } else if p.finds_bodies() && m.bodies != as_api::StageState::Ready {
+                    p.set_bodies_state(media_id, as_api::StageState::Pending, None)?;
                 }
                 Ok(())
             })

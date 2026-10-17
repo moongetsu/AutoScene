@@ -237,16 +237,56 @@ export function castEdit(projectId: string, edit: CastEdit): string | null {
       if (p) p.cover = edit.track
       break
     }
+    case "body_not_them":
+    case "not_a_person":
+      for (const b of edit.bodies) notThem.add(b)
+      break
+    case "body_assign":
+      for (const b of edit.bodies) notThem.delete(b)
+      break
   }
   tidy(c)
   return created
 }
 
+/** The setting to find characters by their bodies too, and bodies said not to be theirs. */
+let findBodies = false
+const notThem = new Set<number>()
+const bodyIds = new Map<string, number>()
+
+export function setMockBodies(on: boolean) {
+  findBodies = on
+}
+
+/** With bodies found too, about one shot in six shows a character only from behind. */
+function facelessIn(characterId: string, start: number): boolean {
+  if (!findBodies) return false
+  let h = start
+  for (const ch of characterId) h = (h * 31 + ch.charCodeAt(0)) >>> 0
+  return h % 6 === 5
+}
+
+function bodyId(mediaId: string, characterId: string, start: number): number {
+  const key = `${mediaId}:${characterId}:${start}`
+  let id = bodyIds.get(key)
+  if (id === undefined) bodyIds.set(key, (id = 100000 + bodyIds.size))
+  return id
+}
+
 export function mediaPresence(projectId: string, mediaId: string): Presence[] {
+  const seen = new Set<number>()
   return get(projectId)
     .tracks.filter((t) => assigned(t) && t.mediaId === mediaId && t.characterId)
     .sort((a, b) => a.start - b.start)
-    .map((t) => ({ characterId: t.characterId!, trackId: t.id, start: t.start, end: t.end }))
+    .flatMap((t): Presence[] => {
+      const characterId = t.characterId!
+      if (!facelessIn(characterId, t.start)) return [{ characterId, trackId: t.id, start: t.start, end: t.end }]
+      // Their faces in the shot stand in for one body.
+      const body = bodyId(mediaId, characterId, t.start)
+      if (notThem.has(body) || seen.has(body)) return []
+      seen.add(body)
+      return [{ characterId, trackId: body, start: t.start, end: t.end, body: true }]
+    })
 }
 
 export function characterShots(projectId: string, characterId: string, media: MediaItem[], segments: Segment[]): CharacterShot[] {
@@ -254,6 +294,7 @@ export function characterShots(projectId: string, characterId: string, media: Me
   const hue = ((c.people.findIndex((p) => p.id === characterId) * 57 + 20) % 360 + 360) % 360
   const mine = c.tracks.filter((t) => assigned(t) && t.characterId === characterId)
   const out: CharacterShot[] = []
+  let n = 0
   for (const m of media) {
     const here = mine.filter((t) => t.mediaId === m.id)
     for (const s of [...new Set(here.map((t) => t.start))].sort((a, b) => a - b)) {
@@ -261,16 +302,21 @@ export function characterShots(projectId: string, characterId: string, media: Me
       if (!seg) continue
       const faces = here.filter((t) => t.start === s).sort((a, b) => (b.quality ?? 0) - (a.quality ?? 0))
       // Like media analysed before shots had sprites: a few shots of the first episode.
-      const old = m === media[0] && out.length % 5 === 4
+      const old = m === media[0] && n++ % 5 === 4
+      const faceless = facelessIn(characterId, seg.start)
+      const body = faceless ? bodyId(m.id, characterId, seg.start) : null
+      if (body != null && notThem.has(body)) continue
       out.push({
         mediaId: m.id,
         start: seg.start,
         end: seg.end,
         sprite: old ? null : sprite(hue, s),
         cells: old ? 0 : 8,
-        trackId: faces[0].id,
+        trackId: faceless ? 0 : faces[0].id,
         face: faces[0].thumb,
-        faceHeight: Math.max(...faces.map((t) => t.faceHeight ?? 0)),
+        faceHeight: faceless ? 0.3 : Math.max(...faces.map((t) => t.faceHeight ?? 0)),
+        faceless,
+        bodies: body != null ? [body] : [],
       })
     }
   }

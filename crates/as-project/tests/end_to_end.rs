@@ -76,6 +76,7 @@ fn import_preview_and_export_three_episodes() {
         library_root: tmp.path().join("Library").display().to_string(),
         export_preset_id: "prores-hq".into(),
         audio_language: "eng".into(),
+        find_bodies: false,
     })
     .unwrap();
 
@@ -248,6 +249,7 @@ fn bad_ranges_and_missing_files_are_refused() {
         library_root: tmp.path().join("Library").display().to_string(),
         export_preset_id: "prores-hq".into(),
         audio_language: "eng".into(),
+        find_bodies: false,
     })
     .unwrap();
     // A copy we can delete to simulate a disconnected drive.
@@ -309,6 +311,7 @@ fn covers_get_portraits_from_the_exact_frame() {
         library_root: tmp.path().join("Library").display().to_string(),
         export_preset_id: "prores-hq".into(),
         audio_language: "eng".into(),
+        find_bodies: false,
     })
     .unwrap();
     // A copy we can delete to simulate a disconnected drive.
@@ -347,7 +350,7 @@ fn covers_get_portraits_from_the_exact_frame() {
         face(0, 191, vec![det(191, 0.5), det(200, 0.9), det(209, 0.6)]),
         face(1, frames + 10, vec![det(frames + 10, 0.9)]),
     ];
-    project.store_face_chunk(m.id, 0, frames, &tracks::encode(&faces), &[]).unwrap();
+    project.store_face_chunk(m.id, 0, frames, &tracks::encode(&faces), &[], &[]).unwrap();
     project.finish_faces(m.id).unwrap();
     let id_at = |start| {
         project.cast_tracks(TrackFilter::Unassigned).unwrap().into_iter().find(|t| t.start == start).unwrap().id
@@ -397,6 +400,7 @@ fn a_moved_episode_keeps_its_analysis() {
         library_root: tmp.path().join("Library").display().to_string(),
         export_preset_id: "prores-hq".into(),
         audio_language: "eng".into(),
+        find_bodies: false,
     })
     .unwrap();
     let file = tmp.path().join("Show - 01.mp4");
@@ -426,7 +430,7 @@ fn a_moved_episode_keeps_its_analysis() {
         quality: 0.8,
         thumb: vec![0xFF, 0xD8, 0xFF, 0xD9],
     };
-    project.store_face_chunk(id, 0, m.frames.unwrap(), &tracks::encode(&[face]), &[]).unwrap();
+    project.store_face_chunk(id, 0, m.frames.unwrap(), &tracks::encode(&[face]), &[], &[]).unwrap();
     project.finish_faces(id).unwrap();
     let track = project.cast_tracks(TrackFilter::Unassigned).unwrap()[0].id;
     let walter = project
@@ -524,6 +528,7 @@ fn a_merged_export_is_one_file_with_every_clip() {
         library_root: tmp.path().join("Library").display().to_string(),
         export_preset_id: "prores-hq".into(),
         audio_language: "eng".into(),
+        find_bodies: false,
     })
     .unwrap();
     // Copies, so one can go missing.

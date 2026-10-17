@@ -8,12 +8,14 @@
 //! Schemas only ever move forward through `rusqlite_migration` (`user_version`).
 //! A database written by a newer AutoScene is refused rather than damaged.
 
+mod bodies;
 mod cast;
 mod library;
 mod pack;
 mod project;
 
-pub use cast::{CharacterRow, CharacterShotRow, EditKind, IdentityTrack, NewTrack, TrackEdit, TrackRow};
+pub use bodies::{BodyEdit, BodyEditKind, BodyRow, BodySource, BodyUpdate, IdentityBody, NewBody, PackBodyRow};
+pub use cast::{CharacterRow, CharacterShotRow, EditKind, IdentityTrack, NewTrack, TrackEdit, TrackRow, TrackUpdate};
 pub use library::LibraryDb;
 pub use pack::PackRow;
 pub use project::{IngestRecord, NewExportItem, NewMedia, ProjectDb, ProjectStats, episode_label};

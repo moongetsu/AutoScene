@@ -44,6 +44,19 @@ pub struct IdentityTrack {
     /// Similarity behind the assignment; 1 for pins and clustered tracks.
     pub score: f32,
     pub forbids: Vec<CharacterId>,
+    /// Its character came from its body, not from the face itself.
+    pub via_body: bool,
+}
+
+/// What a clustering made of a track.
+#[derive(Clone, Copy, Debug)]
+pub struct TrackUpdate {
+    pub id: i64,
+    pub character: Option<CharacterId>,
+    pub assign: TrackAssign,
+    pub score: f32,
+    /// The character came from the track's body.
+    pub via_body: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -136,14 +149,14 @@ fn opt_id(s: Option<String>) -> DbResult<Option<CharacterId>> {
 
 /// A character's (`c`) cover track: the chosen one while it is still theirs,
 /// else their clearest big face.
-const COVER: &str = "COALESCE((SELECT x.id FROM tracks x WHERE x.id = c.cover AND x.character_id = c.id
+pub(crate) const COVER: &str = "COALESCE((SELECT x.id FROM tracks x WHERE x.id = c.cover AND x.character_id = c.id
                                  AND x.assign IN ('auto', 'pinned') AND x.not_face = 0),
                               (SELECT b.id FROM tracks b WHERE b.character_id = c.id AND b.assign IN ('auto', 'pinned')
                                            AND b.not_face = 0
                                          ORDER BY b.face_h >= 0.12 DESC, b.quality DESC, b.face_h DESC LIMIT 1))";
 
 /// `?, ?, ?` for an `IN (...)` list.
-fn marks(n: usize) -> String {
+pub(crate) fn marks(n: usize) -> String {
     vec!["?"; n].join(", ")
 }
 
@@ -172,7 +185,7 @@ fn forget_tracks(tx: &Transaction, id: MediaId) -> DbResult<()> {
            SELECT media_id, start, end, dets, 'not_face', NULL, emb FROM tracks WHERE media_id = ?1 AND not_face = 1
            UNION ALL
            SELECT media_id, start, end, dets, 'was', character_id, emb FROM tracks
-            WHERE media_id = ?1 AND assign = 'auto' AND character_id IS NOT NULL AND not_face = 0
+            WHERE media_id = ?1 AND assign = 'auto' AND character_id IS NOT NULL AND not_face = 0 AND via_body = 0
            UNION ALL
            SELECT t.media_id, t.start, t.end, t.dets, 'cover', c.id, t.emb FROM characters c JOIN tracks t ON t.id = c.cover
             WHERE t.media_id = ?1
@@ -181,6 +194,8 @@ fn forget_tracks(tx: &Transaction, id: MediaId) -> DbResult<()> {
     )?;
     // Track ids are handed out again: a cover must not point at someone else's face.
     tx.execute("UPDATE characters SET cover = NULL WHERE cover IN (SELECT id FROM tracks WHERE media_id = ?1)", [&m])?;
+    // Bodies are tied to the faces that go.
+    crate::bodies::forget_bodies(tx, id)?;
     tx.execute("DELETE FROM tracks WHERE media_id = ?1", [&m])?;
     tx.execute("DELETE FROM sprites WHERE media_id = ?1", [&m])?;
     tx.execute("DELETE FROM face_chunks WHERE media_id = ?1", [&m])?;
@@ -188,7 +203,7 @@ fn forget_tracks(tx: &Transaction, id: MediaId) -> DbResult<()> {
 }
 
 /// A decision (or a stored clustering) changed the cast.
-fn bump_rev(tx: &Transaction) -> DbResult<()> {
+pub(crate) fn bump_rev(tx: &Transaction) -> DbResult<()> {
     tx.execute(
         "INSERT INTO meta (key, value) VALUES ('cast_rev', '1')
          ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)",
@@ -247,8 +262,10 @@ fn drop_empty_characters(tx: &Transaction) -> DbResult<()> {
     tx.execute(
         "DELETE FROM characters WHERE name IS NULL AND hidden = 0
            AND NOT EXISTS (SELECT 1 FROM tracks t WHERE t.character_id = characters.id
-                             AND t.assign IN ('auto', 'pinned') AND t.not_face = 0)
-           AND NOT EXISTS (SELECT 1 FROM track_edits e WHERE e.character_id = characters.id)",
+                             AND t.assign IN ('auto', 'pinned') AND t.not_face = 0 AND t.via_body = 0)
+           AND NOT EXISTS (SELECT 1 FROM track_edits e WHERE e.character_id = characters.id)
+           AND NOT EXISTS (SELECT 1 FROM bodies b WHERE b.character_id = characters.id AND b.source = 'pinned')
+           AND NOT EXISTS (SELECT 1 FROM body_edits e WHERE e.character_id = characters.id AND e.kind = 'pin')",
         [],
     )?;
     tx.execute("UPDATE tracks SET assign = 'none', score = 0 WHERE character_id IS NULL AND assign <> 'none'", [])?;
@@ -256,7 +273,7 @@ fn drop_empty_characters(tx: &Transaction) -> DbResult<()> {
     Ok(())
 }
 
-fn ids_param(ids: &[i64]) -> Vec<rusqlite::types::Value> {
+pub(crate) fn ids_param(ids: &[i64]) -> Vec<rusqlite::types::Value> {
     ids.iter().map(|&i| rusqlite::types::Value::Integer(i)).collect()
 }
 
@@ -341,9 +358,11 @@ impl ProjectDb {
         })
     }
 
-    /// Drop chunks (and their tracks and sprites) from `start` on.
+    /// Drop chunks (and their tracks, sprites and the bodies tied to them)
+    /// from `start` on.
     pub fn drop_face_chunks_from(&self, id: MediaId, start: FrameIdx) -> DbResult<()> {
         self.0.write(|tx| {
+            crate::bodies::drop_bodies_from(tx, id, start)?;
             tx.execute("DELETE FROM tracks WHERE media_id = ?1 AND shot >= ?2", params![id.to_string(), start])?;
             tx.execute("DELETE FROM sprites WHERE media_id = ?1 AND shot >= ?2", params![id.to_string(), start])?;
             tx.execute("DELETE FROM face_chunks WHERE media_id = ?1 AND start >= ?2", params![id.to_string(), start])?;
@@ -387,6 +406,13 @@ impl ProjectDb {
             )?;
             tx.execute("DELETE FROM tracks WHERE media_id = ?1 AND shot >= ?2 AND shot < ?3", params![m, start, end])?;
             tx.execute("DELETE FROM sprites WHERE media_id = ?1 AND shot >= ?2 AND shot < ?3", params![m, start, end])?;
+            // People of the chunk were tied to the faces it replaces: they
+            // come again with it (or from the people pass).
+            tx.execute("DELETE FROM bodies WHERE media_id = ?1 AND shot >= ?2 AND shot < ?3", params![m, start, end])?;
+            tx.execute(
+                "DELETE FROM body_chunks WHERE media_id = ?1 AND start < ?3 AND end > ?2",
+                params![m, start, end],
+            )?;
             let mut st = tx.prepare("INSERT INTO sprites (media_id, shot, end, cells) VALUES (?1, ?2, ?3, ?4)")?;
             for &(shot, end, cells) in sprites {
                 st.execute(params![m, shot, end, cells])?;
@@ -590,7 +616,8 @@ impl ProjectDb {
                 }
             }
             let mut st = c.prepare(
-                "SELECT id, media_id, start, end, quality, length(dets) / 32, emb, character_id, assign, dets, score
+                "SELECT id, media_id, start, end, quality, length(dets) / 32, emb, character_id, assign, dets, score,
+                        via_body
                    FROM tracks WHERE not_face = 0 AND media_id IN (SELECT id FROM media WHERE faces = 'ready')
                   ORDER BY media_id, start, id",
             )?;
@@ -611,6 +638,7 @@ impl ProjectDb {
                     det_bytes: r.get(9)?,
                     score: r.get::<_, f64>(10)? as f32,
                     forbids: forbids.remove(&id).unwrap_or_default(),
+                    via_body: r.get(11)?,
                 });
             }
             Ok(out)
@@ -619,13 +647,15 @@ impl ProjectDb {
 
     /// Store a clustering of the cast at revision `rev`: new characters,
     /// then every track's assignment (pinned tracks and faces that aren't
-    /// keep theirs). Characters left empty go. Stores nothing and returns
-    /// `false` when the cast changed since `rev`.
+    /// keep theirs), and who every body is (what was derived before goes;
+    /// the user's pins stay). Characters left empty go. Stores nothing and
+    /// returns `false` when the cast changed since `rev`.
     pub fn apply_identity(
         &self,
         rev: i64,
         new_characters: &[CharacterId],
-        tracks: &[(i64, Option<CharacterId>, TrackAssign, f32)],
+        tracks: &[TrackUpdate],
+        bodies: &[crate::BodyUpdate],
     ) -> DbResult<bool> {
         self.0.write(|tx| {
             if rev_of(tx)? != rev {
@@ -635,13 +665,21 @@ impl ProjectDb {
                 insert_character(tx, c, None)?;
             }
             let mut st = tx.prepare(
-                "UPDATE tracks SET character_id = ?2, assign = ?3, score = ?4
+                "UPDATE tracks SET character_id = ?2, assign = ?3, score = ?4, via_body = ?5
                   WHERE id = ?1 AND assign <> 'pinned' AND not_face = 0",
             )?;
-            for &(id, c, a, score) in tracks {
-                st.execute(params![id, c.map(|c| c.to_string()), enum_to_sql(a), score as f64])?;
+            for t in tracks {
+                let via_body = t.via_body && t.assign == TrackAssign::Auto;
+                st.execute(params![
+                    t.id,
+                    t.character.map(|c| c.to_string()),
+                    enum_to_sql(t.assign),
+                    t.score as f64,
+                    via_body
+                ])?;
             }
             drop(st);
+            crate::bodies::apply_bodies(tx, bodies)?;
             drop_empty_characters(tx)?;
             bump_rev(tx)?;
             Ok(true)
@@ -835,7 +873,7 @@ impl ProjectDb {
                 insert_character(tx, c, name)?;
             }
             let mut st = tx.prepare(
-                "UPDATE tracks SET character_id = ?2, assign = 'pinned', score = 1, not_face = 0 WHERE id = ?1",
+                "UPDATE tracks SET character_id = ?2, assign = 'pinned', score = 1, not_face = 0, via_body = 0 WHERE id = ?1",
             )?;
             let mut unforbid = tx.prepare("DELETE FROM track_forbids WHERE track_id = ?1 AND character_id = ?2")?;
             for &id in ids {
@@ -884,8 +922,8 @@ impl ProjectDb {
         self.0.write(|tx| {
             tx.execute(
                 &format!(
-                    "UPDATE tracks SET assign = 'pinned' WHERE character_id IS NOT NULL AND assign IN ('unsure', 'auto')
-                       AND not_face = 0 AND id IN ({})",
+                    "UPDATE tracks SET assign = 'pinned', via_body = 0
+                      WHERE character_id IS NOT NULL AND assign IN ('unsure', 'auto') AND not_face = 0 AND id IN ({})",
                     marks(ids.len())
                 ),
                 params_from_iter(ids_param(ids)),
@@ -925,8 +963,9 @@ impl ProjectDb {
 
     /// Everyone of `from` is `into`: its tracks are pinned there, its
     /// suggestions, forbids and waiting decisions move along, `from` goes.
-    /// A face the user said isn't `into` doesn't follow. `into` takes
-    /// `from`'s name if it has none.
+    /// A face the user said isn't `into` doesn't follow; a face only its
+    /// body named follows as it is (never a pin). `into` takes `from`'s name
+    /// if it has none.
     pub fn merge_characters(&self, from: CharacterId, into: CharacterId) -> DbResult<()> {
         if from == into {
             return Ok(());
@@ -940,12 +979,21 @@ impl ProjectDb {
             )?;
             tx.execute(
                 "UPDATE tracks SET character_id = ?2, assign = 'pinned', score = 1
-                  WHERE character_id = ?1 AND assign IN ('auto', 'pinned')",
+                  WHERE character_id = ?1 AND (assign = 'pinned' OR (assign = 'auto' AND via_body = 0))",
                 [&f, &i],
             )?;
             tx.execute("UPDATE tracks SET character_id = ?2 WHERE character_id = ?1", [&f, &i])?;
             tx.execute("UPDATE OR IGNORE track_forbids SET character_id = ?2 WHERE character_id = ?1", [&f, &i])?;
             tx.execute("UPDATE track_edits SET character_id = ?2 WHERE character_id = ?1", [&f, &i])?;
+            // Their bodies: those the user said aren't `into` are no one.
+            tx.execute(
+                "UPDATE bodies SET character_id = NULL, source = 'none', similarity = 0
+                  WHERE character_id = ?1 AND id IN (SELECT body_id FROM body_forbids WHERE character_id = ?2)",
+                [&f, &i],
+            )?;
+            tx.execute("UPDATE bodies SET character_id = ?2 WHERE character_id = ?1", [&f, &i])?;
+            tx.execute("UPDATE OR IGNORE body_forbids SET character_id = ?2 WHERE character_id = ?1", [&f, &i])?;
+            tx.execute("UPDATE body_edits SET character_id = ?2 WHERE character_id = ?1", [&f, &i])?;
             tx.execute(
                 "UPDATE characters SET name = (SELECT name FROM characters WHERE id = ?1) WHERE id = ?2 AND name IS NULL",
                 [&f, &i],
@@ -964,11 +1012,12 @@ impl ProjectDb {
     }
 }
 
-/// Pin a character's best `anchors` automatic tracks.
+/// Pin a character's best `anchors` automatic tracks (its own faces: one
+/// its body named never shapes it).
 fn pin_anchors(tx: &Transaction, c: CharacterId, anchors: usize) -> DbResult<()> {
     tx.execute(
         "UPDATE tracks SET assign = 'pinned' WHERE id IN
-           (SELECT id FROM tracks WHERE character_id = ?1 AND assign = 'auto' AND not_face = 0
+           (SELECT id FROM tracks WHERE character_id = ?1 AND assign = 'auto' AND not_face = 0 AND via_body = 0
              ORDER BY quality DESC LIMIT ?2)",
         params![c.to_string(), anchors as i64],
     )?;
@@ -982,6 +1031,20 @@ pub(crate) mod tests {
     use crate::{IngestRecord, ProjectDb};
     use as_api::ProxyState;
     use as_core::Rational;
+
+    /// A clustering stored as the cast stores one, without bodies.
+    pub(crate) fn apply(
+        db: &ProjectDb,
+        rev: i64,
+        new: &[CharacterId],
+        tracks: &[(i64, Option<CharacterId>, TrackAssign, f32)],
+    ) -> DbResult<bool> {
+        let t: Vec<TrackUpdate> = tracks
+            .iter()
+            .map(|&(id, character, assign, score)| TrackUpdate { id, character, assign, score, via_body: false })
+            .collect();
+        db.apply_identity(rev, new, &t, &[])
+    }
 
     pub(crate) fn ready_media(db: &ProjectDb, name: &str) -> MediaId {
         let id = db.add_media(&[new_media(name, Some(1), Some(1))]).unwrap()[0];
@@ -1073,7 +1136,8 @@ pub(crate) mod tests {
         db.set_faces_state(m, StageState::Ready, None).unwrap();
         // Clustering made one character of all three, then the user named it.
         let (a, b) = (CharacterId::new(), CharacterId::new());
-        db.apply_identity(
+        apply(
+            &db,
             db.cast_rev().unwrap(),
             &[a],
             &ids.iter().map(|&t| (t, Some(a), TrackAssign::Auto, 0.9)).collect::<Vec<_>>(),
@@ -1084,7 +1148,8 @@ pub(crate) mod tests {
         assert_eq!((rows.len(), rows[0].name.as_deref(), rows[0].tracks, rows[0].number), (1, Some("Walter"), 3, 1));
         assert_eq!(rows[0].cover.map(|c| c.0), Some(ids[0]));
         // The best track became an anchor; a recluster can't move it.
-        db.apply_identity(
+        apply(
+            &db,
             db.cast_rev().unwrap(),
             &[],
             &ids.iter().map(|&t| (t, None, TrackAssign::None, 0.0)).collect::<Vec<_>>(),
@@ -1138,7 +1203,8 @@ pub(crate) mod tests {
             .put_face_chunk(m, 0, 1000, &[track(10, 0.9), track(100, 0.8), track(200, 0.2)], &[], |_| Ok(()))
             .unwrap();
         let (a, b) = (CharacterId::new(), CharacterId::new());
-        db.apply_identity(
+        apply(
+            &db,
             db.cast_rev().unwrap(),
             &[a, b],
             &[
@@ -1165,22 +1231,63 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn faces_named_by_their_body_are_never_pinned_but_by_the_user() {
+        let db = ProjectDb::memory();
+        let m = ready_media(&db, "/v/a.mkv");
+        let ids = db
+            .put_face_chunk(
+                m,
+                0,
+                1000,
+                &[track(10, 0.5), track(100, 0.9), track(200, 0.6), track(300, 0.4)],
+                &[],
+                |_| Ok(()),
+            )
+            .unwrap();
+        db.set_faces_state(m, StageState::Ready, None).unwrap();
+        let (k, j) = (CharacterId::new(), CharacterId::new());
+        let t =
+            |id, c, via_body| TrackUpdate { id, character: Some(c), assign: TrackAssign::Auto, score: 0.9, via_body };
+        let updates = [t(ids[0], k, false), t(ids[1], k, true), t(ids[2], j, false), t(ids[3], j, true)];
+        assert!(db.apply_identity(db.cast_rev().unwrap(), &[k, j], &updates, &[]).unwrap());
+        let state = |id: i64| {
+            let r = db.identity_tracks().unwrap().into_iter().find(|r| r.id == id).unwrap();
+            (r.character_id, r.assign, r.via_body)
+        };
+        // Naming (or hiding) a character pins its best faces: its own, not
+        // the clearer one its body named.
+        db.rename_character(k, Some("Skyler"), 5).unwrap();
+        assert_eq!(state(ids[0]), (Some(k), TrackAssign::Pinned, false));
+        assert_eq!(state(ids[1]), (Some(k), TrackAssign::Auto, true));
+        db.set_character_hidden(j, true, 5).unwrap();
+        assert_eq!(state(ids[3]), (Some(j), TrackAssign::Auto, true));
+        db.set_character_hidden(j, false, 0).unwrap();
+        // A merge pins the character's own faces; the others follow as they were.
+        db.merge_characters(j, k).unwrap();
+        assert_eq!(state(ids[2]), (Some(k), TrackAssign::Pinned, false));
+        assert_eq!(state(ids[3]), (Some(k), TrackAssign::Auto, true));
+        // The user's word makes a face theirs.
+        db.confirm_tracks(&[ids[1]]).unwrap();
+        assert_eq!(state(ids[1]), (Some(k), TrackAssign::Pinned, false));
+    }
+
+    #[test]
     fn a_clustering_older_than_a_decision_is_not_stored() {
         let db = ProjectDb::memory();
         let m = ready_media(&db, "/v/a.mkv");
         let ids = db.put_face_chunk(m, 0, 1000, &[track(10, 0.9), track(100, 0.8)], &[], |_| Ok(())).unwrap();
         let a = CharacterId::new();
         let all = |c: Option<CharacterId>| ids.iter().map(|&t| (t, c, TrackAssign::Auto, 0.9)).collect::<Vec<_>>();
-        assert!(db.apply_identity(db.cast_rev().unwrap(), &[a], &all(Some(a))).unwrap());
+        assert!(apply(&db, db.cast_rev().unwrap(), &[a], &all(Some(a))).unwrap());
         db.rename_character(a, Some("A"), 0).unwrap();
         // Clustering reads the cast, the user says "not them" meanwhile.
         let rev = db.cast_rev().unwrap();
         db.forbid_tracks(&[ids[0]], a).unwrap();
         db.mark_not_face(&[ids[1]]).unwrap();
-        assert!(!db.apply_identity(rev, &[], &all(Some(a))).unwrap());
+        assert!(!apply(&db, rev, &[], &all(Some(a))).unwrap());
         assert!(db.tracks(TrackFilter::Character(a)).unwrap().is_empty());
         // Even a current one never puts a face that isn't one on anyone.
-        assert!(db.apply_identity(db.cast_rev().unwrap(), &[], &[(ids[1], Some(a), TrackAssign::Auto, 0.9)]).unwrap());
+        assert!(apply(&db, db.cast_rev().unwrap(), &[], &[(ids[1], Some(a), TrackAssign::Auto, 0.9)]).unwrap());
         assert!(db.tracks_by_id(&[ids[1]]).unwrap()[0].character_id.is_none());
     }
 
@@ -1192,11 +1299,11 @@ pub(crate) mod tests {
         // An unnamed character made by moving a face, and a hidden one.
         let (a, h) = (CharacterId::new(), CharacterId::new());
         db.pin_tracks(&[ids[0]], a, Some(None)).unwrap();
-        db.apply_identity(db.cast_rev().unwrap(), &[h], &[(ids[1], Some(h), TrackAssign::Auto, 0.9)]).unwrap();
+        apply(&db, db.cast_rev().unwrap(), &[h], &[(ids[1], Some(h), TrackAssign::Auto, 0.9)]).unwrap();
         db.set_character_hidden(h, true, 5).unwrap();
         // Analysed again: both are empty until the new tracks come.
         db.reset_faces(m).unwrap();
-        db.apply_identity(db.cast_rev().unwrap(), &[], &[]).unwrap();
+        apply(&db, db.cast_rev().unwrap(), &[], &[]).unwrap();
         assert!(db.character_exists(a).unwrap() && db.character_exists(h).unwrap());
         let mut waiting: Vec<_> = db.track_edits(m).unwrap().into_iter().map(|e| e.kind).collect();
         waiting.sort_by_key(|k| format!("{k:?}"));
@@ -1213,7 +1320,8 @@ pub(crate) mod tests {
         let m = ready_media(&db, "/v/a.mkv");
         let ids = db.put_face_chunk(m, 0, 1000, &[track(10, 0.9), track(100, 0.8)], &[], |_| Ok(())).unwrap();
         let a = CharacterId::new();
-        db.apply_identity(
+        apply(
+            &db,
             db.cast_rev().unwrap(),
             &[a],
             &ids.iter().map(|&t| (t, Some(a), TrackAssign::Auto, 0.9)).collect::<Vec<_>>(),
@@ -1221,7 +1329,7 @@ pub(crate) mod tests {
         .unwrap();
         // Analysed again; another media's clustering runs meanwhile.
         db.reset_faces(m).unwrap();
-        db.apply_identity(db.cast_rev().unwrap(), &[], &[]).unwrap();
+        apply(&db, db.cast_rev().unwrap(), &[], &[]).unwrap();
         assert!(db.character_exists(a).unwrap(), "kept while its faces are found again");
         assert_eq!((db.characters().unwrap()[0].tracks, db.characters().unwrap()[0].waiting), (0, 2));
         assert!(db.track_edits(m).unwrap().iter().all(|e| e.kind == EditKind::Was(a)));
@@ -1237,7 +1345,7 @@ pub(crate) mod tests {
         // Faces that didn't come back leave the character to the next clustering.
         db.reset_faces(m).unwrap();
         db.reanchor_edits(m, &[]).unwrap();
-        db.apply_identity(db.cast_rev().unwrap(), &[], &[]).unwrap();
+        apply(&db, db.cast_rev().unwrap(), &[], &[]).unwrap();
         assert!(!db.character_exists(a).unwrap());
     }
 
@@ -1251,7 +1359,8 @@ pub(crate) mod tests {
         let ids = db.put_face_chunk(m, 0, 1000, &[track(10, 0.9), track(100, 0.8)], &[], |_| Ok(())).unwrap();
         db.set_faces_state(m, StageState::Ready, None).unwrap();
         let a = CharacterId::new();
-        db.apply_identity(
+        apply(
+            &db,
             db.cast_rev().unwrap(),
             &[a],
             &ids.iter().map(|&t| (t, Some(a), TrackAssign::Auto, 0.9)).collect::<Vec<_>>(),
@@ -1277,7 +1386,8 @@ pub(crate) mod tests {
         let m = ready_media(&db, "/v/a.mkv");
         let ids = db.put_face_chunk(m, 0, 1000, &[track(10, 0.9), track(100, 0.8)], &[], |_| Ok(())).unwrap();
         let (a, b) = (CharacterId::new(), CharacterId::new());
-        db.apply_identity(
+        apply(
+            &db,
             db.cast_rev().unwrap(),
             &[a, b],
             &[(ids[0], Some(a), TrackAssign::Auto, 0.9), (ids[1], Some(b), TrackAssign::Auto, 0.9)],
@@ -1302,7 +1412,8 @@ pub(crate) mod tests {
             .unwrap();
         let (a, b) = (CharacterId::new(), CharacterId::new());
         // `a` is created first but `b` is on screen longer.
-        db.apply_identity(
+        apply(
+            &db,
             db.cast_rev().unwrap(),
             &[a, b],
             &[

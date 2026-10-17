@@ -5,6 +5,11 @@
 //! (ByteTrack's second round: a person half hidden for a moment stays the
 //! same person), and someone back later in the shot links by appearance
 //! alone when no one else there looks like them. Tracks never cross a cut.
+//!
+//! Appearance is optional: sightings without it link by place and size
+//! alone. That is how the face pass tracks (bench/bodies: as clean, with
+//! fewer tracks broken where someone turns), so it embeds only a track's
+//! clearest sightings, once it knows whose they are.
 
 use as_core::{FrameIdx, FrameRange};
 use as_vision::arcface::cosine;
@@ -132,9 +137,33 @@ impl Open {
 /// Link the people of one shot (`samples` in frame order) into tracks,
 /// ordered by start.
 pub fn track_bodies(shot: FrameRange, samples: Vec<(FrameIdx, Vec<BodyObs>)>, p: &BodyTrackerParams) -> Vec<BodyTrack> {
-    let mut open: Vec<Open> = Vec::new();
+    let mut tracker = BodyTracker::new(shot, *p);
     for (frame, obs) in samples {
-        debug_assert!(shot.contains(frame));
+        tracker.push(frame, obs);
+    }
+    tracker.finish().into_iter().map(|(_, t)| t).collect()
+}
+
+/// [`track_bodies`] a sample at a time: each sighting's track is known as
+/// soon as it is seen.
+pub struct BodyTracker {
+    shot: FrameRange,
+    p: BodyTrackerParams,
+    open: Vec<Open>,
+}
+
+impl BodyTracker {
+    pub fn new(shot: FrameRange, p: BodyTrackerParams) -> Self {
+        Self { shot, p, open: Vec::new() }
+    }
+
+    /// Link the people of the next sample (frames in order, within the
+    /// shot). Returns, per sighting, the track it joined or began — `(track,
+    /// its sighting there)`, numbered as [`BodyTracker::finish`] gives them
+    /// back — or `None` for an unsure sighting that begins nothing.
+    pub fn push(&mut self, frame: FrameIdx, obs: Vec<BodyObs>) -> Vec<Option<(usize, usize)>> {
+        let (p, open) = (&self.p, &mut self.open);
+        debug_assert!(self.shot.contains(frame));
         let mut target: Vec<Option<usize>> = vec![None; obs.len()];
         let mut taken = vec![false; open.len()];
         // Sure sightings first, then the unsure ones for the tracks left.
@@ -204,21 +233,36 @@ pub fn track_bodies(shot: FrameRange, samples: Vec<(FrameIdx, Vec<BodyObs>)>, p:
                 taken[ti] = true;
             }
         }
-        for (o, t) in obs.into_iter().zip(target) {
-            match t {
-                Some(ti) => open[ti].push(o),
-                None if o.det.score >= p.high => open.push(Open::new(o)),
-                None => {}
-            }
-        }
+        obs.into_iter()
+            .zip(target)
+            .map(|(o, t)| match t {
+                Some(ti) => {
+                    open[ti].push(o);
+                    Some((ti, open[ti].obs.len() - 1))
+                }
+                None if o.det.score >= p.high => {
+                    open.push(Open::new(o));
+                    Some((open.len() - 1, 0))
+                }
+                None => None,
+            })
+            .collect()
     }
-    let mut tracks: Vec<BodyTrack> = open
-        .into_iter()
-        .filter(|t| t.obs.len() >= p.min_hits || t.best >= p.sure)
-        .map(|t| t.finish(shot, p.stride))
-        .collect();
-    tracks.sort_by_key(|t| (t.start, t.end));
-    tracks
+
+    /// The shot's tracks, ordered by start, each with the number
+    /// [`BodyTracker::push`] gave it. Tracks of a single unsure glimpse go.
+    pub fn finish(self) -> Vec<(usize, BodyTrack)> {
+        let (p, shot) = (self.p, self.shot);
+        let mut tracks: Vec<(usize, BodyTrack)> = self
+            .open
+            .into_iter()
+            .enumerate()
+            .filter(|(_, t)| t.obs.len() >= p.min_hits || t.best >= p.sure)
+            .map(|(i, t)| (i, t.finish(shot, p.stride)))
+            .collect();
+        tracks.sort_by_key(|(_, t)| (t.start, t.end));
+        tracks
+    }
 }
 
 #[cfg(test)]
@@ -235,7 +279,7 @@ mod tests {
     fn obs(frame: FrameIdx, x: f32, who: usize, score: f32) -> BodyObs {
         let b = [x, 0.1, x + 0.2, 0.9];
         BodyObs {
-            det: BodyDet { frame, bbox: b, visible: b, score, sharpness: 100.0, luma: 120.0 },
+            det: BodyDet { frame, bbox: b, visible: b, score, sharpness: 100.0, luma: 120.0, rival: 0.0 },
             reid: Some(emb(who)),
         }
     }

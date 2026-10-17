@@ -141,6 +141,19 @@ impl Runtime {
         self.session_from(model, Some(&patched))
     }
 
+    /// Like [`Runtime::session_shaped`], for an export that pins its batch
+    /// at 1 inside the graph too: its constant Reshape targets copy the
+    /// batch instead ([`onnx::free_reshape_batch`]).
+    pub fn session_batched(&self, model: &Path, input: onnx::InputShape) -> InferResult<(Session, Device)> {
+        let bytes = std::fs::read(model).map_err(|e| InferError::Model(format!("{}: {e}", model.display())))?;
+        let unreadable = |what: &str| InferError::Model(format!("{}: {what}", model.display()));
+        let (free, targets) = onnx::free_reshape_batch(&bytes)
+            .ok_or_else(|| unreadable("not a readable ONNX model, or a Reshape that takes 0 literally"))?;
+        let patched = onnx::reshaped(&free, input).ok_or_else(|| unreadable(&format!("not shaped like {input:?}")))?;
+        tracing::debug!(model = %model.display(), targets, "Reshapes copy the batch");
+        self.session_from(model, Some(&patched))
+    }
+
     fn session_from(&self, model: &Path, bytes: Option<&[u8]>) -> InferResult<(Session, Device)> {
         let want = self.preferred_device();
         if want != Device::Cpu {

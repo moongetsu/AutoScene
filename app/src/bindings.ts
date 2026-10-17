@@ -212,6 +212,12 @@ export type AppSettings = {
 	 *  e.g. `eng`); empty = use each file's default track.
 	 */
 	audioLanguage?: string,
+	/**
+	 *  Also follow people by their bodies and clothes, so shots where a
+	 *  character's face doesn't show (turned away, too small) join their
+	 *  scenepack. Analysis takes longer; off by default.
+	 */
+	findBodies?: boolean,
 };
 
 export type AudioCodec = { codec: "none" } | 
@@ -266,7 +272,13 @@ export type CastEdit =
 /**  Accept the suggestions of these unsure tracks. */
 { op: "confirm"; tracks: number[] } | { op: "rename"; characterId: CharacterId; name: string | null } | { op: "set_hidden"; characterId: CharacterId; hidden: boolean } | 
 /**  Everyone of `from` is `into`. */
-{ op: "merge"; from: CharacterId; into: CharacterId } | { op: "set_cover"; characterId: CharacterId; track: number };
+{ op: "merge"; from: CharacterId; into: CharacterId } | { op: "set_cover"; characterId: CharacterId; track: number } | 
+/**  These bodies (people seen without their face) are this character. */
+{ op: "body_assign"; bodies: number[]; characterId: CharacterId } | 
+/**  These bodies are not this character. */
+{ op: "body_not_them"; bodies: number[]; characterId: CharacterId } | 
+/**  These bodies aren't people (a coat on a chair, a shadow). */
+{ op: "not_a_person"; bodies: number[] };
 
 /**  A person the analysis found across the project's media. */
 export type Character = {
@@ -285,7 +297,7 @@ export type Character = {
 	shots: number,
 	/**  Media (episodes) the character is seen in. */
 	media: number,
-	/**  Time the character's face is on screen. */
+	/**  Time the character is on screen: their face, or their body. */
 	screenSec: number | null,
 	/**
 	 *  Portrait for big places (cards, heroes): 3:4 from the exact frame at
@@ -317,12 +329,28 @@ export type CharacterShot = {
 	 */
 	sprite: string | null,
 	cells: number,
-	/**  The character's clearest face in the shot. */
+	/**  The character's clearest face in the shot (0 in a shot without it). */
 	trackId: number,
-	/**  Its thumbnail (absolute path). */
+	/**
+	 *  Its thumbnail (absolute path); the character's own in a shot
+	 *  without their face.
+	 */
 	face: string,
-	/**  The biggest the character's face is in the shot, as a share of the frame height. */
+	/**
+	 *  The biggest the character's face is in the shot, as a share of the
+	 *  frame height (as big as their body suggests in a shot without it).
+	 */
 	faceHeight: number | null,
+	/**
+	 *  Their face doesn't show in the shot: their body does (turned away,
+	 *  too small), found by the face on it or by their clothes.
+	 */
+	faceless?: boolean,
+	/**
+	 *  Their bodies there, in a shot without their face — every one, so
+	 *  the user's word on the shot is on all of them.
+	 */
+	bodies?: number[],
 };
 
 export type ClipRequest = {
@@ -636,6 +664,9 @@ export type MediaItem = {
 	facesError: string | null,
 	/**  Face tracks once found. */
 	faceCount: number | null,
+	/**  People followed by their bodies (when the setting is on). */
+	bodies?: StageState,
+	bodiesError?: string | null,
 };
 
 export type MediaStatus = 
@@ -770,6 +801,8 @@ export type PackPreview = {
 export type PackReason = 
 /**  The episode's file can't be found (or isn't indexed yet). */
 "missing" | "episode" | "tiny" | "short" | "long" | "size" | "not_solo" | 
+/**  The character's face doesn't show in it. */
+"faceless" | 
 /**  Past the limit. */
 "limit" | 
 /**  Dropped by hand. */
@@ -790,6 +823,11 @@ export type PackSpec = {
 	solo: boolean,
 	/**  Leave out flash cuts (shots under 3 frames). */
 	skipTiny: boolean,
+	/**
+	 *  Leave out shots where the character's face doesn't show (found by
+	 *  their body).
+	 */
+	skipFaceless?: boolean,
 	/**  Only these episodes (empty: all). */
 	media: MediaId[],
 	order: PackOrder,
@@ -824,9 +862,12 @@ export type PortraitsChanged = {
 /**  Where characters are on screen in one media. */
 export type Presence = {
 	characterId: CharacterId,
+	/**  The face track — or, with `body`, the body track. */
 	trackId: number,
 	start: number,
 	end: number,
+	/**  On screen without their face showing: their body is. */
+	body?: boolean,
 };
 
 export type PresetSize = {

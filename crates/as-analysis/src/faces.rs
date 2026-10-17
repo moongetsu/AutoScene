@@ -4,22 +4,34 @@
 //! hand finished tracks out in chunks — the checkpoints a later run resumes
 //! from. The same samples make each shot's sprite.
 //!
+//! It can look for people too ([`BodyModels`]): every second sample goes on
+//! from the face detector to a person detector on a thread of its own, which
+//! also cuts out everyone big enough to say how they look. Here they are
+//! followed through their shot by place, the clearest few sightings of each
+//! embedded (person ReID), and tied to the shot's face tracks once the shot
+//! is done ([`crate::link`]). A pass over faces found before
+//! ([`Faces::Known`]) looks for people alone.
+//!
 //! Chunks are made of whole shots (tracks never cross a cut), so a chunk
 //! boundary is the start of a shot and a resumed run produces the same
 //! tracks as an uninterrupted one. Samples sit on absolute multiples of the
 //! stride for the same reason.
 
+use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TryRecvError};
 
 use as_core::{CancelToken, FrameIdx, FrameRange};
 use as_media::{MediaInfo, Source, Tools};
 use as_vision::arcface::{self, ArcFace};
-use as_vision::{FaceBox, Scrfd, image};
+use as_vision::{FaceBox, PersonBox, PersonReid, PpDet, Scrfd, image, reid};
 
 use crate::AnalysisError;
+use crate::bodies::{self, BodyDet, BodyObs, BodyTrack, FoundBody};
+use crate::body_tracker::{BodyTracker, BodyTrackerParams};
+use crate::link::{LinkParams, link_shot};
 use crate::sprites::{ShotSprite, SpriteCanvas};
 use crate::tracker::{Observation, TrackerParams, track_shot};
-use crate::tracks::{FaceDet, FaceTrack};
+use crate::tracks::{self, FaceDet, FaceTrack, KnownFace};
 
 #[derive(Clone, Copy, Debug)]
 pub struct FaceParams {
@@ -74,6 +86,61 @@ impl Default for FaceParams {
 /// frame at 4, 2.6 at 8, 3.2 at 1).
 pub const DETECT_BATCH: usize = 4;
 
+/// The person detector's input, width × height: the frame's shape kept and
+/// padded (bench/bodies: as many people found as stretched to 640×640, in
+/// two thirds of the time).
+pub const PERSON_INPUT: (usize, usize) = (640, 384);
+
+/// How the face pass looks for people (set on bench/bodies).
+#[derive(Clone, Copy, Debug)]
+pub struct PeopleParams {
+    /// Frames between the samples looked at, a multiple of the face pass's
+    /// stride: every second sample finds as much as every one.
+    pub stride: u32,
+    /// Sightings down to this detector score are kept; the unsure ones only
+    /// ever continue a track.
+    pub min_score: f32,
+    /// People at least this tall (share of the frame height) are cut out
+    /// for their appearance ...
+    pub embed_height: f32,
+    /// ... and the clearest this many sightings of each track embedded
+    /// (8 finds a tenth fewer people again, 32 as many as all of them).
+    pub embed_per_track: usize,
+}
+
+impl Default for PeopleParams {
+    fn default() -> Self {
+        Self { stride: 6, min_score: 0.3, embed_height: 0.08, embed_per_track: 32 }
+    }
+}
+
+impl PeopleParams {
+    /// Samples a body may go unseen and still count as on screen (as far
+    /// as its tracker links by place: 24 frames).
+    pub fn span_gap(&self) -> u32 {
+        (24 / self.stride.max(1)).max(1)
+    }
+}
+
+/// The models a pass finds people with.
+pub struct BodyModels<'a> {
+    /// Planned for the decoded frame size of [`frame_sizes`], with input
+    /// [`PERSON_INPUT`].
+    pub detector: &'a mut PpDet,
+    pub reid: &'a mut PersonReid,
+    pub params: PeopleParams,
+}
+
+/// Where a pass's faces come from.
+pub enum Faces<'a> {
+    /// Found by the pass: the detector takes frames of the detection size
+    /// of [`frame_sizes`].
+    Find { detector: &'a mut Scrfd, embedder: &'a mut ArcFace },
+    /// Found before: the pass only looks for people (with [`BodyModels`])
+    /// and ties them to these.
+    Known(&'a [KnownFace]),
+}
+
 /// The size a media's samples are decoded at, and the size faces are
 /// detected at (half of it for frames wider than 960) — the frame size the
 /// detector given to [`face_tracks`] must be loaded for.
@@ -100,79 +167,166 @@ struct Found {
     embedding: Option<Vec<f32>>,
 }
 
+/// A person found in a sample: where, and — when they are big enough to
+/// say how they look — their crop, how sharp and bright it is.
+struct Person {
+    found: PersonBox,
+    crop: Option<Vec<u8>>,
+    sharpness: f32,
+    luma: f32,
+    /// The sharpness of the sharpest other person there.
+    rival: f32,
+}
+
+/// The people of one shot, followed as they come.
+struct ShotPeople {
+    tracker: BodyTracker,
+    /// Per track (as the tracker numbers them), the sightings picked for its
+    /// appearance with their weight: the clearest few so far.
+    picks: Vec<Vec<(usize, f32)>>,
+    /// The appearance of each picked sighting embedded so far.
+    reids: HashMap<(usize, usize), Vec<f32>>,
+}
+
 /// Samples of one shot.
 struct ShotWork {
     range: FrameRange,
     samples: Vec<(FrameIdx, Vec<Found>)>,
     sprite: Option<SpriteCanvas>,
+    people: Option<ShotPeople>,
 }
 
 /// A finished checkpoint chunk of the face pass: frames `start..end` (whole
-/// shots), their tracks and the sprites of their shots.
+/// shots), their tracks, the sprites of their shots and the people found.
 #[derive(Clone, Copy, Debug)]
 pub struct FaceChunk<'a> {
     pub start: FrameIdx,
     pub end: FrameIdx,
+    /// Empty when the faces were known.
     pub tracks: &'a [FaceTrack],
     pub sprites: &'a [ShotSprite],
+    /// People found, tied to faces: [`FoundBody::faces`] names a face by
+    /// its place in `tracks` — or, when the faces were known, by its id.
+    pub bodies: &'a [FoundBody],
 }
 
-/// A sample in a shot, on its way through the detector.
+/// A sample in a shot, on its way through the detectors.
 struct Queued {
     frame: FrameIdx,
     rgb: Vec<u8>,
 }
 
-/// A batch back from the detector: its samples and the faces of each.
-type Detected = Result<(Vec<Queued>, Vec<Vec<FaceBox>>), AnalysisError>;
+/// A batch of samples on its way through the detectors, with the faces and
+/// the people found in each (`None`: no one was looked for there).
+#[derive(Default)]
+struct Batch {
+    samples: Vec<Queued>,
+    faces: Vec<Vec<FaceBox>>,
+    people: Vec<Option<Vec<Person>>>,
+}
 
-/// The detector thread: batches in, faces out, in order. `halve`: detect on
-/// half-size copies (boxes are scaled back). Stops after the first error; a
-/// panic becomes one, so the pass fails instead of the engine.
-fn detect_batches(
-    detector: &mut Scrfd,
-    size: (usize, usize),
-    halve: bool,
-    threshold: f32,
-    batches: Receiver<Vec<Queued>>,
-    out: Sender<Detected>,
+type Detected = Result<Batch, AnalysisError>;
+
+/// Where a detector thread hands its batches on: the next detector (which
+/// takes one at a time, so none runs ahead of another) or this thread.
+trait Next: Clone + Send {
+    fn put(&self, d: Detected) -> bool;
+}
+
+impl Next for Sender<Detected> {
+    fn put(&self, d: Detected) -> bool {
+        self.send(d).is_ok()
+    }
+}
+
+impl Next for SyncSender<Detected> {
+    fn put(&self, d: Detected) -> bool {
+        self.send(d).is_ok()
+    }
+}
+
+/// A detector thread: batches in, batches out, in order, `work` done to
+/// each. Stops after the first error, which goes on; a panic becomes one,
+/// so the pass fails instead of the engine.
+fn stage(
+    what: &str,
+    input: Receiver<Detected>,
+    out: impl Next,
+    mut work: impl FnMut(&mut Batch) -> Result<(), AnalysisError>,
 ) {
     let errors = out.clone();
-    let run = std::panic::AssertUnwindSafe(|| detect_each(detector, size, halve, threshold, batches, out));
+    let run = std::panic::AssertUnwindSafe(|| {
+        for batch in input {
+            let next = batch.and_then(|mut b| work(&mut b).map(|()| b));
+            let failed = next.is_err();
+            if !out.put(next) || failed {
+                return;
+            }
+        }
+    });
     if let Err(panic) = std::panic::catch_unwind(run) {
         let why = panic
             .downcast_ref::<&str>()
             .map(|s| s.to_string())
             .or_else(|| panic.downcast_ref::<String>().cloned())
             .unwrap_or_default();
-        let _ = errors.send(Err(AnalysisError::Internal(format!("the face detector failed: {why}"))));
+        errors.put(Err(AnalysisError::Internal(format!("the {what} failed: {why}"))));
     }
 }
 
-fn detect_each(
+/// The faces of a batch's samples. `halve`: detect on half-size copies
+/// (boxes are scaled back).
+fn find_faces(
     detector: &mut Scrfd,
     (w, h): (usize, usize),
     halve: bool,
     threshold: f32,
-    batches: Receiver<Vec<Queued>>,
-    out: Sender<Detected>,
-) {
-    for batch in batches {
-        let found = if halve {
-            let small: Vec<Vec<u8>> = batch.iter().map(|q| image::half(&q.rgb, w, h)).collect();
-            let frames: Vec<&[u8]> = small.iter().map(Vec::as_slice).collect();
-            detector.detect_many(&frames, threshold).map(|found| {
-                found.into_iter().map(|faces| faces.into_iter().map(|b| b.scaled(2.0)).collect()).collect()
-            })
-        } else {
-            let frames: Vec<&[u8]> = batch.iter().map(|q| q.rgb.as_slice()).collect();
-            detector.detect_many(&frames, threshold)
-        };
-        let failed = found.is_err();
-        if out.send(found.map(|f| (batch, f)).map_err(AnalysisError::from)).is_err() || failed {
-            return;
+    batch: &mut Batch,
+) -> Result<(), AnalysisError> {
+    batch.faces = if halve {
+        let small: Vec<Vec<u8>> = batch.samples.iter().map(|q| image::half(&q.rgb, w, h)).collect();
+        let frames: Vec<&[u8]> = small.iter().map(Vec::as_slice).collect();
+        let found = detector.detect_many(&frames, threshold)?;
+        found.into_iter().map(|faces| faces.into_iter().map(|b| b.scaled(2.0)).collect()).collect()
+    } else {
+        let frames: Vec<&[u8]> = batch.samples.iter().map(|q| q.rgb.as_slice()).collect();
+        detector.detect_many(&frames, threshold)?
+    };
+    Ok(())
+}
+
+/// The people of a batch's samples on the people grid.
+fn find_people(
+    detector: &mut PpDet,
+    (w, h): (usize, usize),
+    p: &PeopleParams,
+    batch: &mut Batch,
+) -> Result<(), AnalysisError> {
+    batch.people = Vec::with_capacity(batch.samples.len());
+    for q in &batch.samples {
+        if !q.frame.is_multiple_of(p.stride) {
+            batch.people.push(None);
+            continue;
         }
+        let mut people: Vec<Person> = detector
+            .detect(&q.rgb, p.min_score)?
+            .into_iter()
+            .map(|found| {
+                let crop = (found.height() >= p.embed_height * h as f32)
+                    .then(|| PersonReid::crop(&q.rgb, (w, h), found.visible));
+                let (sharpness, luma) = crop
+                    .as_deref()
+                    .map_or((0.0, 0.0), |c| (image::sharpness(c, reid::WIDTH, reid::HEIGHT), image::mean_luma(c)));
+                Person { found, crop, sharpness, luma, rival: 0.0 }
+            })
+            .collect();
+        for i in 0..people.len() {
+            people[i].rival =
+                people.iter().enumerate().filter(|&(j, _)| j != i).map(|(_, o)| o.sharpness).fold(0.0, f32::max);
+        }
+        batch.people.push(Some(people));
     }
+    Ok(())
 }
 
 /// Embed every face of `shots` still waiting (the last batch padded).
@@ -196,37 +350,164 @@ fn embed(shots: &mut [&mut ShotWork], embedder: &mut ArcFace, params: &FaceParam
     Ok(())
 }
 
-/// Track the faces of embedded shots.
-fn track(shots: Vec<ShotWork>, tracker: &TrackerParams) -> Vec<FaceTrack> {
-    shots
+/// Track the faces of an embedded shot.
+fn track(shot: &mut ShotWork, tracker: &TrackerParams) -> Vec<FaceTrack> {
+    let samples = std::mem::take(&mut shot.samples)
         .into_iter()
-        .flat_map(|s| {
-            let samples = s
-                .samples
+        .map(|(f, found)| {
+            let obs = found
                 .into_iter()
-                .map(|(f, found)| {
-                    let obs = found
-                        .into_iter()
-                        .map(|x| Observation {
-                            det: x.det,
-                            embedding: x.embedding.expect("embedded before tracking"),
-                            thumb: x.thumb,
-                        })
-                        .collect();
-                    (f, obs)
+                .map(|x| Observation {
+                    det: x.det,
+                    embedding: x.embedding.expect("embedded before tracking"),
+                    thumb: x.thumb,
                 })
                 .collect();
-            track_shot(s.range, samples, tracker)
+            (f, obs)
         })
-        .collect()
+        .collect();
+    track_shot(shot.range, samples, tracker)
 }
 
-/// One face pass in progress: samples in shots go to the detector thread in
-/// batches and come back — in frame order — into shots and chunks.
+/// A crop waiting for the person ReID, and whose sighting it is.
+struct Pending {
+    shot: FrameIdx,
+    track: usize,
+    det: usize,
+    crop: Vec<u8>,
+}
+
+/// The people part of a pass.
+struct PeoplePass<'a> {
+    reid: &'a mut PersonReid,
+    params: PeopleParams,
+    tracker: BodyTrackerParams,
+    link: LinkParams,
+    /// The face samples' stride and the gap of samples a face may be
+    /// missed and still be on screen (when a body's face shows).
+    face_stride: u32,
+    face_gap: u32,
+    /// Width ÷ height of the frame, in pixels.
+    aspect: f32,
+    pending: Vec<Pending>,
+}
+
+impl PeoplePass<'_> {
+    /// Follow the people of sample `f` of shot `cur` (boxes in pixels of a
+    /// `w`×`h` frame), and queue each track's clearest sightings for their
+    /// appearance — a clearer one taking the place of the weakest so far.
+    fn take(&mut self, cur: &mut ShotWork, f: FrameIdx, people: Vec<Person>, (w, h): (usize, usize)) {
+        let (shot, tp) = (cur.range, self.tracker);
+        let mine = cur.people.get_or_insert_with(|| ShotPeople {
+            tracker: BodyTracker::new(shot, tp),
+            picks: Vec::new(),
+            reids: HashMap::new(),
+        });
+        let frac = |b: [f32; 4]| [b[0] / w as f32, b[1] / h as f32, b[2] / w as f32, b[3] / h as f32];
+        let (dets, crops): (Vec<BodyDet>, Vec<Option<Vec<u8>>>) = people
+            .into_iter()
+            .map(|p| {
+                let det = BodyDet {
+                    frame: f,
+                    bbox: frac(p.found.bbox),
+                    visible: frac(p.found.visible),
+                    score: p.found.score,
+                    sharpness: p.sharpness,
+                    luma: p.luma,
+                    rival: p.rival,
+                };
+                (det, p.crop)
+            })
+            .unzip();
+        let placed = mine.tracker.push(f, dets.iter().map(|&det| BodyObs { det, reid: None }).collect());
+        for ((place, crop), d) in placed.into_iter().zip(crops).zip(&dets) {
+            let (Some((track, det)), Some(crop)) = (place, crop) else { continue };
+            if d.luma < bodies::MIN_LUMA {
+                continue;
+            }
+            if mine.picks.len() <= track {
+                mine.picks.resize_with(track + 1, Vec::new);
+            }
+            let (picks, weight) = (&mut mine.picks[track], d.weight());
+            if picks.len() >= self.params.embed_per_track {
+                let (i, &(weakest, least)) =
+                    picks.iter().enumerate().min_by(|a, b| a.1.1.total_cmp(&b.1.1)).expect("a full list");
+                if weight <= least {
+                    continue;
+                }
+                picks.swap_remove(i);
+                mine.reids.remove(&(track, weakest));
+                self.pending.retain(|p| (p.shot, p.track, p.det) != (shot.start, track, weakest));
+            }
+            picks.push((det, weight));
+            self.pending.push(Pending { shot: shot.start, track, det, crop });
+        }
+    }
+
+    /// The bodies of a finished shot (every crop embedded), tied to its
+    /// face tracks; `names` says what each face is called in the chunk. A
+    /// body tied to no face that has no appearance either says nothing
+    /// about anyone and stays out.
+    fn finish(&self, people: ShotPeople, faces: &[FaceTrack], names: &[u32]) -> Vec<FoundBody> {
+        let ShotPeople { tracker, mut reids, .. } = people;
+        let tracks: Vec<BodyTrack> = tracker
+            .finish()
+            .into_iter()
+            .map(|(n, mut t)| {
+                for (i, e) in t.reids.iter_mut().enumerate() {
+                    *e = reids.remove(&(n, i));
+                }
+                t
+            })
+            .collect();
+        let links = {
+            let fs: Vec<&FaceTrack> = faces.iter().collect();
+            let bs: Vec<&BodyTrack> = tracks.iter().collect();
+            link_shot(&fs, &bs, &self.link)
+        };
+        let mut tied: Vec<Vec<(u32, u32)>> = vec![Vec::new(); tracks.len()];
+        // When each body's faces show.
+        let mut shown: Vec<Vec<(FrameIdx, FrameIdx)>> = vec![Vec::new(); tracks.len()];
+        for l in &links {
+            let face = &faces[l.face];
+            tied[l.body].push((names[l.face], l.samples));
+            shown[l.body].extend(tracks::presence_spans(&face.dets, face.end, self.face_stride, self.face_gap));
+        }
+        tracks
+            .into_iter()
+            .zip(tied)
+            .zip(shown)
+            .filter_map(|((t, faces), shown)| {
+                let reid = t.appearance(|_| true);
+                if faces.is_empty() && reid.is_none() {
+                    return None;
+                }
+                let reid_away = t.appearance(|d| !shown.iter().any(|&(a, e)| a <= d.frame && d.frame < e));
+                Some(FoundBody {
+                    start: t.start,
+                    end: t.end,
+                    shot: t.shot,
+                    showing: t.showing(self.aspect),
+                    dets: t.dets,
+                    faces,
+                    reid,
+                    reid_away,
+                })
+            })
+            .collect()
+    }
+}
+
+/// One face pass in progress: samples in shots go to the detector threads
+/// in batches and come back — in frame order — into shots and chunks.
 struct Pass<'a, C> {
     params: &'a FaceParams,
     tracker: TrackerParams,
-    embedder: &'a mut ArcFace,
+    /// `None` when the faces are known.
+    embedder: Option<&'a mut ArcFace>,
+    /// Faces found before, by the shot they are in.
+    known: HashMap<FrameIdx, Vec<&'a KnownFace>>,
+    people: Option<PeoplePass<'a>>,
     /// Shots from the resume point on.
     shots: &'a [FrameRange],
     /// Decoded frame size.
@@ -235,7 +516,7 @@ struct Pass<'a, C> {
     batch: usize,
     queue: Vec<Queued>,
     /// `None` once every batch is sent.
-    to_detector: Option<SyncSender<Vec<Queued>>>,
+    to_detector: Option<SyncSender<Detected>>,
     from_detector: Receiver<Detected>,
     /// Batches sent and not yet taken back.
     in_flight: usize,
@@ -252,6 +533,7 @@ struct Pass<'a, C> {
     chunk_goal: FrameIdx,
     tracks_in_chunk: Vec<FaceTrack>,
     sprites_in_chunk: Vec<ShotSprite>,
+    bodies_in_chunk: Vec<FoundBody>,
     on_chunk: C,
 }
 
@@ -281,8 +563,9 @@ impl<C: FnMut(FaceChunk) -> Result<(), AnalysisError>> Pass<'_, C> {
         if self.queue.is_empty() {
             return Ok(());
         }
-        let batch = std::mem::replace(&mut self.queue, Vec::with_capacity(self.batch));
-        if self.to_detector.as_ref().is_some_and(|tx| tx.send(batch).is_ok()) {
+        let samples = std::mem::replace(&mut self.queue, Vec::with_capacity(self.batch));
+        let batch = Batch { samples, ..Batch::default() };
+        if self.to_detector.as_ref().is_some_and(|tx| tx.send(Ok(batch)).is_ok()) {
             self.in_flight += 1;
             return Ok(());
         }
@@ -307,19 +590,27 @@ impl<C: FnMut(FaceChunk) -> Result<(), AnalysisError>> Pass<'_, C> {
                 }
             };
             self.in_flight -= 1;
-            let (batch, found) = next?;
-            for (q, faces) in batch.iter().zip(found) {
-                self.take(q.frame, &q.rgb, faces)?;
+            let Batch { samples, faces, mut people } = next?;
+            let mut faces = faces.into_iter();
+            for (i, q) in samples.iter().enumerate() {
+                let found = people.get_mut(i).and_then(Option::take);
+                self.take(q.frame, &q.rgb, faces.next().unwrap_or_default(), found)?;
             }
-            self.spare.extend(batch.into_iter().map(|q| q.rgb));
+            self.spare.extend(samples.into_iter().map(|q| q.rgb));
         }
         Ok(())
     }
 
-    /// Take in the faces found in sample `f`: open and close shots and
-    /// chunks up to it, keep its faces' crops and thumbnails, and embed and
-    /// track as faces pile up.
-    fn take(&mut self, f: FrameIdx, rgb: &[u8], faces: Vec<FaceBox>) -> Result<(), AnalysisError> {
+    /// Take in the faces and people found in sample `f`: open and close
+    /// shots and chunks up to it, keep its faces' crops and thumbnails and
+    /// follow its people, and embed and track as they pile up.
+    fn take(
+        &mut self,
+        f: FrameIdx,
+        rgb: &[u8],
+        faces: Vec<FaceBox>,
+        people: Option<Vec<Person>>,
+    ) -> Result<(), AnalysisError> {
         // Shots that started up to this frame: close the current one when it ended.
         if self.current.as_ref().is_some_and(|c| f >= c.range.end) {
             self.done_shots.push(self.current.take().expect("checked"));
@@ -335,8 +626,13 @@ impl<C: FnMut(FaceChunk) -> Result<(), AnalysisError>> Pass<'_, C> {
             }
             if s.end > f {
                 let p = self.params;
-                let sprite = SpriteCanvas::new(s, p.stride, p.sprite_cells, self.size, p.sprite_width);
-                self.current = Some(ShotWork { range: s, samples: Vec::new(), sprite });
+                // Sprites come with faces found now (known ones have theirs).
+                let sprite = self
+                    .embedder
+                    .is_some()
+                    .then(|| SpriteCanvas::new(s, p.stride, p.sprite_cells, self.size, p.sprite_width))
+                    .flatten();
+                self.current = Some(ShotWork { range: s, samples: Vec::new(), sprite, people: None });
             }
             self.next_shot += 1;
         }
@@ -348,64 +644,122 @@ impl<C: FnMut(FaceChunk) -> Result<(), AnalysisError>> Pass<'_, C> {
         if let Some(sprite) = cur.sprite.as_mut() {
             sprite.paint(f, rgb, self.size);
         }
-        let mut found = Vec::new();
-        for b in faces {
-            let height = b.height() / h as f32;
-            if height < p.min_height {
-                continue;
+        if self.embedder.is_some() {
+            let mut found = Vec::new();
+            for b in faces {
+                let height = b.height() / h as f32;
+                if height < p.min_height {
+                    continue;
+                }
+                let thumb = image::face_thumb(rgb, w, h, b.bbox, p.thumb_context, p.thumb_size);
+                found.push(Found {
+                    det: FaceDet {
+                        frame: f,
+                        bbox: [b.bbox[0] / w as f32, b.bbox[1] / h as f32, b.bbox[2] / w as f32, b.bbox[3] / h as f32],
+                        score: b.score,
+                        norm: 0.0,
+                        quality: 0.0,
+                    },
+                    crop: arcface::align(rgb, w, h, &b.kps),
+                    thumb: image::jpeg(&thumb, p.thumb_size, p.thumb_size, 85),
+                    embedding: None,
+                });
             }
-            let thumb = image::face_thumb(rgb, w, h, b.bbox, p.thumb_context, p.thumb_size);
-            found.push(Found {
-                det: FaceDet {
-                    frame: f,
-                    bbox: [b.bbox[0] / w as f32, b.bbox[1] / h as f32, b.bbox[2] / w as f32, b.bbox[3] / h as f32],
-                    score: b.score,
-                    norm: 0.0,
-                    quality: 0.0,
-                },
-                crop: arcface::align(rgb, w, h, &b.kps),
-                thumb: image::jpeg(&thumb, p.thumb_size, p.thumb_size, 85),
-                embedding: None,
-            });
+            self.pending_crops += found.len();
+            cur.samples.push((f, found));
         }
-        self.pending_crops += found.len();
-        cur.samples.push((f, found));
+        if let (Some(pp), Some(people)) = (self.people.as_mut(), people) {
+            pp.take(cur, f, people, self.size);
+        }
         // Embed in full batches as faces pile up; track finished shots.
-        if self.pending_crops >= self.embedder.batch() * 4 {
-            let mut refs: Vec<&mut ShotWork> = self.done_shots.iter_mut().chain(self.current.iter_mut()).collect();
-            embed(&mut refs, self.embedder, p)?;
-            self.pending_crops = 0;
+        let faces_due = self.embedder.as_ref().is_some_and(|e| self.pending_crops >= e.batch() * 4);
+        let people_due = self.people.as_ref().is_some_and(|pp| pp.pending.len() >= pp.reid.batch() * 4);
+        if faces_due {
+            self.embed_faces(true)?;
+            self.embed_people()?;
             self.finish_shots();
+        } else if people_due {
+            self.embed_people()?;
+            // Finished shots without faces to wait for can go.
+            if self.embedder.is_none() {
+                self.finish_shots();
+            }
         }
         Ok(())
     }
 
-    /// Track the faces of the finished (embedded) shots; finish their sprites.
+    /// Embed the faces waiting in finished shots, and in the current one too
+    /// with `current`.
+    fn embed_faces(&mut self, current: bool) -> Result<(), AnalysisError> {
+        let Some(embedder) = self.embedder.as_deref_mut() else { return Ok(()) };
+        let mut refs: Vec<&mut ShotWork> =
+            self.done_shots.iter_mut().chain(self.current.iter_mut().filter(|_| current)).collect();
+        embed(&mut refs, embedder, self.params)?;
+        self.pending_crops = 0;
+        Ok(())
+    }
+
+    /// Embed every person crop waiting (the last batch padded).
+    fn embed_people(&mut self) -> Result<(), AnalysisError> {
+        let Some(pp) = self.people.as_mut() else { return Ok(()) };
+        if pp.pending.is_empty() {
+            return Ok(());
+        }
+        let pending = std::mem::take(&mut pp.pending);
+        let crops: Vec<&[u8]> = pending.iter().map(|x| x.crop.as_slice()).collect();
+        let embs = pp.reid.embed(&crops)?;
+        let mut shots: Vec<&mut ShotWork> = self.done_shots.iter_mut().chain(self.current.iter_mut()).collect();
+        for (x, e) in pending.iter().zip(embs) {
+            let at = shots.iter_mut().find(|s| s.range.start == x.shot).and_then(|s| s.people.as_mut());
+            if let Some(people) = at {
+                people.reids.insert((x.track, x.det), e.v);
+            }
+        }
+        Ok(())
+    }
+
+    /// Track the faces of the finished (embedded) shots, finish their
+    /// sprites, and tie their people to their faces.
     fn finish_shots(&mut self) {
-        let mut shots = std::mem::take(&mut self.done_shots);
-        for s in &mut shots {
+        for mut s in std::mem::take(&mut self.done_shots) {
             if let Some(sprite) = s.sprite.take() {
                 self.sprites_in_chunk.push(sprite.finish(self.params.sprite_quality));
             }
+            let people = s.people.take();
+            let (faces, names): (Vec<FaceTrack>, Vec<u32>) = if self.embedder.is_some() {
+                let found = track(&mut s, &self.tracker);
+                let first = self.tracks_in_chunk.len();
+                let names = (first..first + found.len()).map(|i| i as u32).collect();
+                (found, names)
+            } else {
+                let known = self.known.get(&s.range.start).map_or(&[][..], Vec::as_slice);
+                (known.iter().map(|k| k.track()).collect(), known.iter().map(|k| k.id).collect())
+            };
+            if let (Some(pp), Some(people)) = (self.people.as_ref(), people) {
+                self.bodies_in_chunk.extend(pp.finish(people, &faces, &names));
+            }
+            if self.embedder.is_some() {
+                self.tracks_in_chunk.extend(faces);
+            }
         }
-        self.tracks_in_chunk.extend(track(shots, &self.tracker));
     }
 
     /// Hand out the chunk that ends at `end` (a shot start, or the end):
     /// every shot before it is finished.
     fn close_chunk(&mut self, end: FrameIdx) -> Result<(), AnalysisError> {
-        let mut refs: Vec<&mut ShotWork> = self.done_shots.iter_mut().collect();
-        embed(&mut refs, self.embedder, self.params)?;
-        self.pending_crops = 0;
+        self.embed_faces(false)?;
+        self.embed_people()?;
         self.finish_shots();
         (self.on_chunk)(FaceChunk {
             start: self.chunk_start,
             end,
             tracks: &self.tracks_in_chunk,
             sprites: &self.sprites_in_chunk,
+            bodies: &self.bodies_in_chunk,
         })?;
         self.tracks_in_chunk.clear();
         self.sprites_in_chunk.clear();
+        self.bodies_in_chunk.clear();
         self.chunk_start = end;
         self.chunk_goal = end + self.chunk;
         Ok(())
@@ -426,16 +780,16 @@ impl<C: FnMut(FaceChunk) -> Result<(), AnalysisError>> Pass<'_, C> {
 
 /// Find, embed and track the faces of `src` in `shots` (sorted, disjoint)
 /// from frame `resume` on — which must be 0 or a chunk end handed out
-/// earlier. `detector` must take frames of the detection size of
-/// [`frame_sizes`]. Each finished chunk goes to `on_chunk`; chunks tile
-/// `resume..index.len()` and end at shot starts at least `chunk` frames
-/// after their own start (or at the end). `progress` gets 0..1.
+/// earlier — and with `bodies` the people tied to them; or, with known
+/// faces, the people alone. Each finished chunk goes to `on_chunk`; chunks
+/// tile `resume..index.len()` and end at shot starts at least `chunk`
+/// frames after their own start (or at the end). `progress` gets 0..1.
 #[allow(clippy::too_many_arguments)]
 pub fn face_tracks(
     tools: &Tools,
     src: Source,
-    detector: &mut Scrfd,
-    embedder: &mut ArcFace,
+    faces: Faces,
+    bodies: Option<BodyModels>,
     shots: &[FrameRange],
     resume: FrameIdx,
     chunk: u32,
@@ -449,32 +803,109 @@ pub fn face_tracks(
     if resume >= n {
         return Ok(());
     }
-    let stride = params.stride;
     let (size, det_size) = frame_sizes(src.info, params);
-    if detector.frame_size() != det_size {
+    if let Faces::Find { detector, .. } = &faces
+        && detector.frame_size() != det_size
+    {
         return Err(AnalysisError::Internal(format!(
             "face detector loaded for {:?} frames, this media needs {det_size:?}",
             detector.frame_size()
         )));
     }
+    if let Some(b) = &bodies {
+        if b.detector.frame_size() != size {
+            return Err(AnalysisError::Internal(format!(
+                "person detector loaded for {:?} frames, this media needs {size:?}",
+                b.detector.frame_size()
+            )));
+        }
+        if b.params.stride == 0 || !b.params.stride.is_multiple_of(params.stride) {
+            return Err(AnalysisError::Internal(format!(
+                "people every {} frames aren't on the face samples' grid of {}",
+                b.params.stride, params.stride
+            )));
+        }
+    }
+    let (embedder, known, face_detector) = match faces {
+        Faces::Find { detector, embedder } => (Some(embedder), &[][..], Some(detector)),
+        Faces::Known(k) if bodies.is_some() => (None, k, None),
+        // Nothing to look for.
+        Faces::Known(_) => return Ok(()),
+    };
+    // Faces found before only need the samples people are looked for in.
+    let stride = match (&face_detector, &bodies) {
+        (None, Some(b)) => b.params.stride,
+        _ => params.stride,
+    };
 
     // Shots from the resume point on; samples outside them are skipped.
     let shots = &shots[shots.partition_point(|s| s.end <= resume)..];
     debug_assert!(shots.first().is_none_or(|s| s.start >= resume), "resume points are shot starts");
-    let batch = detector.batch();
+    let batch = face_detector.as_ref().map_or(DETECT_BATCH, |d| d.batch());
     std::thread::scope(|scope| {
-        // One batch waits while the detector works on the next.
-        let (to_detector, batches) = mpsc::sync_channel(1);
-        let (detected, from_detector) = mpsc::channel();
+        // One batch waits while a detector works on the next. Faces first,
+        // then people, then back here.
+        let (to_detector, first) = mpsc::sync_channel::<Detected>(1);
+        let (detected, from_detector) = mpsc::channel::<Detected>();
         let (halve, threshold) = (det_size != size, params.det_threshold);
-        std::thread::Builder::new()
-            .name("face detector".into())
-            .spawn_scoped(scope, move || detect_batches(detector, size, halve, threshold, batches, detected))
-            .map_err(|e| AnalysisError::Internal(format!("starting the face detector: {e}")))?;
+        let starting = |what: &str, e: std::io::Error| AnalysisError::Internal(format!("starting the {what}: {e}"));
+        let (reid, people_detector, people_params) = match bodies {
+            Some(BodyModels { detector, reid, params }) => (Some(reid), Some(detector), params),
+            None => (None, None, PeopleParams::default()),
+        };
+        // What the person detector takes its batches from, when it runs.
+        let into_people: Option<Receiver<Detected>> = match face_detector {
+            Some(d) => {
+                let work = move |b: &mut Batch| find_faces(d, size, halve, threshold, b);
+                let thread = std::thread::Builder::new().name("face detector".into());
+                if people_detector.is_some() {
+                    let (out, rx) = mpsc::sync_channel::<Detected>(1);
+                    thread
+                        .spawn_scoped(scope, move || stage("face detector", first, out, work))
+                        .map_err(|e| starting("face detector", e))?;
+                    Some(rx)
+                } else {
+                    let out = detected.clone();
+                    thread
+                        .spawn_scoped(scope, move || stage("face detector", first, out, work))
+                        .map_err(|e| starting("face detector", e))?;
+                    None
+                }
+            }
+            None => Some(first),
+        };
+        if let (Some(d), Some(input)) = (people_detector, into_people) {
+            let out = detected.clone();
+            std::thread::Builder::new()
+                .name("person detector".into())
+                .spawn_scoped(scope, move || {
+                    stage("person detector", input, out, |b| find_people(d, size, &people_params, b))
+                })
+                .map_err(|e| starting("person detector", e))?;
+        }
+        drop(detected);
+        let mut by_shot: HashMap<FrameIdx, Vec<&KnownFace>> = HashMap::new();
+        for k in known {
+            by_shot.entry(k.shot).or_default().push(k);
+        }
+        let tracker =
+            TrackerParams { min_track_quality: params.min_track_quality, ..TrackerParams::new(params.stride) };
+        let people = reid.map(|reid| PeoplePass {
+            reid,
+            params: people_params,
+            tracker: BodyTrackerParams::new(people_params.stride),
+            link: LinkParams { stride: params.stride, ..LinkParams::default() },
+            face_stride: params.stride,
+            face_gap: tracker.max_gap,
+            aspect: size.0 as f32 / size.1 as f32,
+            pending: Vec::new(),
+        });
         let mut pass = Pass {
             params,
-            tracker: TrackerParams { min_track_quality: params.min_track_quality, ..TrackerParams::new(stride) },
+            tracker,
             embedder,
+            known: by_shot,
+            people,
             shots,
             size,
             batch,
@@ -492,6 +923,7 @@ pub fn face_tracks(
             chunk_goal: resume + chunk,
             tracks_in_chunk: Vec::new(),
             sprites_in_chunk: Vec::new(),
+            bodies_in_chunk: Vec::new(),
             on_chunk,
         };
         let mut failure: Option<AnalysisError> = None;
@@ -581,5 +1013,12 @@ mod tests {
         assert_eq!(p.quality(30.0, 0.3), 1.0);
         assert!((p.quality(18.0, 0.3) - 0.5).abs() < 1e-6);
         assert!((p.quality(30.0, 0.03) - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn people_are_looked_for_on_every_second_face_sample() {
+        let p = PeopleParams::default();
+        assert!(p.stride.is_multiple_of(FaceParams::default().stride));
+        assert_eq!(p.span_gap(), 4);
     }
 }

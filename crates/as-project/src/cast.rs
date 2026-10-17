@@ -11,11 +11,11 @@ use as_analysis::tracker::TrackerParams;
 use as_analysis::tracks::{self, FaceTrack};
 use as_analysis::{FaceDet, ShotSprite, portrait_region};
 use as_api::{
-    Cast, CastEdit, Character, CharacterShot, FaceTrackItem, MediaInfo, MediaStatus, Presence, SegmentKind, StageState,
-    TrackAssign, TrackFilter,
+    Cast, CastEdit, Character, FaceTrackItem, MediaInfo, MediaStatus, Presence, SegmentKind, StageState, TrackAssign,
+    TrackFilter,
 };
 use as_core::{CancelToken, CharacterId, FrameIdx, FrameRange, MediaId};
-use as_db::{EditKind, IdentityTrack, NewTrack, TrackRow};
+use as_db::{EditKind, IdentityTrack, NewTrack, TrackRow, TrackUpdate};
 use as_identity::{Assign, CharKey, Outcome, Params, TrackIn, identify};
 use as_media::poster::{StillSize, extract_frame_jpegs};
 use as_media::{Source, Tools};
@@ -191,7 +191,7 @@ fn resolve(mut found: Vec<(u32, i64, EditKind)>) -> Vec<(i64, EditKind)> {
     out
 }
 
-fn box_iou(a: &[f32; 4], b: &[f32; 4]) -> f32 {
+pub(crate) fn box_iou(a: &[f32; 4], b: &[f32; 4]) -> f32 {
     let iw = (a[2].min(b[2]) - a[0].max(b[0])).max(0.0);
     let ih = (a[3].min(b[3]) - a[1].max(b[1])).max(0.0);
     let inter = iw * ih;
@@ -200,13 +200,15 @@ fn box_iou(a: &[f32; 4], b: &[f32; 4]) -> f32 {
 }
 
 /// The project's tracks as the identity step takes them.
-struct IdentityInput {
-    tracks: Vec<TrackIn>,
+pub(crate) struct IdentityInput {
+    pub(crate) tracks: Vec<TrackIn>,
     /// Per input track, its row (rows without a readable embedding are left out).
-    rows: Vec<usize>,
+    pub(crate) rows: Vec<usize>,
     /// Existing characters; a character's key is its index here.
     existing: Vec<CharacterId>,
-    key: HashMap<CharacterId, CharKey>,
+    pub(crate) key: HashMap<CharacterId, CharKey>,
+    /// Each media's number in `tracks`.
+    pub(crate) media: HashMap<MediaId, u32>,
 }
 
 impl IdentityInput {
@@ -235,11 +237,14 @@ impl IdentityInput {
                 dets: r.dets,
                 pin: (r.assign == TrackAssign::Pinned).then_some(assigned).flatten(),
                 forbid: r.forbids.iter().filter_map(|c| key.get(c).copied()).collect(),
-                previous: matches!(r.assign, TrackAssign::Auto | TrackAssign::Pinned).then_some(assigned).flatten(),
+                // A face named by its body isn't who clustering saw in it.
+                previous: (matches!(r.assign, TrackAssign::Auto | TrackAssign::Pinned) && !r.via_body)
+                    .then_some(assigned)
+                    .flatten(),
             });
             kept.push(row);
         }
-        Self { tracks, rows: kept, existing, key }
+        Self { tracks, rows: kept, existing, key, media }
     }
 }
 
@@ -436,8 +441,10 @@ impl Project {
     }
 
     /// Store one chunk from the engine (tracks as `as_analysis::tracks::encode`,
-    /// and the sprites of its shots): tracks in the database, thumbnails and
-    /// sprites as files, atomically. Returns the number of tracks.
+    /// the sprites of its shots, and — when people were looked for — the
+    /// people found, `as_analysis::bodies::encode`; empty when they weren't):
+    /// tracks in the database, thumbnails and sprites as files, atomically,
+    /// then the people. Returns the number of tracks.
     pub fn store_face_chunk(
         &self,
         id: MediaId,
@@ -445,6 +452,7 @@ impl Project {
         end: FrameIdx,
         blob: &[u8],
         sprites: &[ShotSprite],
+        bodies: &[u8],
     ) -> ProjectResult<usize> {
         let found: Vec<FaceTrack> =
             tracks::decode(blob).ok_or_else(|| ProjectError::Invalid("unreadable face tracks".into()))?;
@@ -464,7 +472,7 @@ impl Project {
         let cells: Vec<(FrameIdx, FrameIdx, u32)> = sprites.iter().map(|s| (s.shot, s.end, s.cells)).collect();
         let shots_dir = self.media_faces_dir(id).join("shots");
         let replaced = self.db().chunk_tracks(id, start, end)?;
-        self.db().put_face_chunk(id, start, end, &rows, &cells, |ids| {
+        let ids = self.db().put_face_chunk(id, start, end, &rows, &cells, |ids| {
             std::fs::create_dir_all(&shots_dir).map_err(|e| format!("{}: {e}", shots_dir.display()))?;
             for (track, t) in ids.iter().zip(&found) {
                 let path = self.thumb_path(id, *track);
@@ -477,6 +485,11 @@ impl Project {
             Ok(())
         })?;
         self.remove_track_pictures(id, &replaced);
+        // The people come after: a chunk stored without them (a crash in
+        // between) is looked at again by the people pass.
+        if !bodies.is_empty() {
+            self.store_chunk_bodies(id, start, end, bodies, &ids)?;
+        }
         Ok(found.len())
     }
 
@@ -618,7 +631,8 @@ impl Project {
         let cast = IdentityInput::new(&rows, self.db().characters()?.into_iter().map(|c| c.id).collect());
         let started = std::time::Instant::now();
         let out = identify(&cast.tracks, &Params::default());
-        let Some(characters) = self.store_identity(rev, &rows, &cast, &out)? else { return Ok(None) };
+        let people = self.people_outcome(&rows, &cast, &out)?;
+        let Some(characters) = self.store_identity(rev, &rows, &cast, &out, people)? else { return Ok(None) };
         let ms = started.elapsed().as_millis() as u64;
         tracing::info!(tracks = cast.tracks.len(), characters, ms, "cast clustered");
         Ok(Some(characters))
@@ -648,15 +662,18 @@ impl Project {
             (0..cast.existing.len()).map(|k| (k as CharKey, Vec::new())).collect();
         for (i, &row) in cast.rows.iter().enumerate() {
             let r = &rows[row];
-            // A clustered track has a score of exactly 1, like a pin.
-            let member = r.assign == TrackAssign::Pinned || (r.assign == TrackAssign::Auto && r.score >= 1.0);
+            // A clustered track has a score of exactly 1, like a pin; a face
+            // named by its body is never one.
+            let member =
+                r.assign == TrackAssign::Pinned || (r.assign == TrackAssign::Auto && r.score >= 1.0 && !r.via_body);
             if let (true, Some(k)) = (member, r.character_id.and_then(|c| cast.key.get(&c))) {
                 members[*k as usize].1.push(i);
             }
         }
         let started = std::time::Instant::now();
         let out = as_identity::reassign(&cast.tracks, &members, &Params::default());
-        if self.store_identity(rev, &rows, &cast, &out)?.is_none() {
+        let people = self.people_outcome(&rows, &cast, &out)?;
+        if self.store_identity(rev, &rows, &cast, &out, people)?.is_none() {
             return Ok(false);
         }
         tracing::info!(tracks = cast.tracks.len(), ms = started.elapsed().as_millis() as u64, "faces placed again");
@@ -664,7 +681,8 @@ impl Project {
     }
 
     /// Store an identity outcome made at cast revision `rev`, new characters
-    /// included. The number of characters, or `None` when the cast changed
+    /// included, and with `people` who the bodies are (and the faces they
+    /// named). The number of characters, or `None` when the cast changed
     /// since (nothing is stored then).
     fn store_identity(
         &self,
@@ -672,26 +690,42 @@ impl Project {
         rows: &[IdentityTrack],
         cast: &IdentityInput,
         out: &Outcome,
+        people: Option<(Vec<as_db::IdentityBody>, as_identity::bodies::BodyOutcome)>,
     ) -> ProjectResult<Option<usize>> {
         let ids: Vec<CharacterId> =
             out.characters.iter().map(|c| c.key.map_or_else(CharacterId::new, |k| cast.existing[k as usize])).collect();
         let new: Vec<CharacterId> =
             out.characters.iter().zip(&ids).filter(|(c, _)| c.key.is_none()).map(|(_, id)| *id).collect();
-        let updates: Vec<(i64, Option<CharacterId>, TrackAssign, f32)> = cast
+        let named: HashMap<usize, usize> =
+            people.as_ref().map(|(_, o)| o.promoted.iter().copied().collect()).unwrap_or_default();
+        let updates: Vec<TrackUpdate> = cast
             .rows
             .iter()
             .zip(&out.tracks)
-            .map(|(&row, &(a, score))| {
-                let t = rows[row].id;
-                match a {
-                    Assign::Auto(c) => (t, Some(ids[c]), TrackAssign::Auto, score),
-                    Assign::Pinned(c) => (t, Some(ids[c]), TrackAssign::Pinned, score),
-                    Assign::Unsure(c) => (t, Some(ids[c]), TrackAssign::Unsure, score),
-                    Assign::None => (t, None, TrackAssign::None, score),
+            .enumerate()
+            .map(|(i, (&row, &(a, score)))| {
+                let id = rows[row].id;
+                let (character, assign) = match a {
+                    Assign::Auto(c) => (Some(ids[c]), TrackAssign::Auto),
+                    Assign::Pinned(c) => (Some(ids[c]), TrackAssign::Pinned),
+                    Assign::Unsure(c) => (Some(ids[c]), TrackAssign::Unsure),
+                    Assign::None => (None, TrackAssign::None),
+                };
+                match named.get(&i) {
+                    // Named by its body: never a member that shapes the character.
+                    Some(&c) => TrackUpdate {
+                        id,
+                        character: Some(ids[c]),
+                        assign: TrackAssign::Auto,
+                        score: score.min(0.99),
+                        via_body: true,
+                    },
+                    None => TrackUpdate { id, character, assign, score, via_body: false },
                 }
             })
             .collect();
-        if !self.db().apply_identity(rev, &new, &updates)? {
+        let bodies = people.as_ref().map(|(b, o)| crate::bodies::body_updates(b, o, &ids)).unwrap_or_default();
+        if !self.db().apply_identity(rev, &new, &updates, &bodies)? {
             return Ok(None);
         }
         if !new.is_empty() {
@@ -707,7 +741,19 @@ impl Project {
     }
 
     pub fn cast(&self) -> ProjectResult<Cast> {
-        let rows = self.db().characters()?;
+        let mut rows = self.db().characters()?;
+        let extra = self.body_extras()?;
+        if !extra.is_empty() {
+            for c in &mut rows {
+                if let Some(x) = extra.get(&c.id) {
+                    c.screen_sec += x.seconds;
+                    c.shots += x.shots;
+                    c.media += x.media.len() as u32;
+                }
+            }
+            // Most on screen first, as before.
+            rows.sort_by(|a, b| b.screen_sec.total_cmp(&a.screen_sec).then(a.number.cmp(&b.number)));
+        }
         let covers: Vec<i64> = rows.iter().filter_map(|c| c.cover.map(|(t, _)| t)).collect();
         let portraits: HashMap<i64, PathBuf> =
             self.portrait_plans(&covers)?.into_iter().filter(|p| p.path.is_file()).map(|p| (p.track, p.path)).collect();
@@ -794,43 +840,106 @@ impl Project {
             CastEdit::SetCover { character_id, track } => {
                 self.db().set_character_cover(*character_id, *track as i64)?
             }
+            CastEdit::BodyAssign { bodies, character_id } => {
+                known(*character_id)?;
+                self.db().pin_bodies(&ids(bodies), *character_id)?;
+            }
+            CastEdit::BodyNotThem { bodies, character_id } => self.db().forbid_bodies(&ids(bodies), *character_id)?,
+            CastEdit::NotAPerson { bodies } => self.db().mark_not_person(&ids(bodies))?,
         }
         Ok(None)
     }
 
-    /// Where characters are on screen in `id`.
+    /// Where characters are on screen in `id`: their faces, and where only
+    /// their bodies show.
     pub fn presence(&self, id: MediaId) -> ProjectResult<Vec<Presence>> {
-        Ok(self
-            .db()
-            .presence(id)?
-            .into_iter()
-            .map(|(character_id, t, start, end)| Presence { character_id, track_id: track_id(t), start, end })
-            .collect())
+        let faces = self.db().presence(id)?;
+        let mut out: Vec<Presence> = faces
+            .iter()
+            .map(|&(character_id, t, start, end)| Presence {
+                character_id,
+                track_id: track_id(t),
+                start,
+                end,
+                body: false,
+            })
+            .collect();
+        let bodies = self.shown_bodies(|db| db.media_bodies(id))?;
+        if !bodies.is_empty() {
+            let mut face_of: HashMap<CharacterId, Vec<(FrameIdx, FrameIdx)>> = HashMap::new();
+            for &(c, _, start, end) in &faces {
+                face_of.entry(c).or_default().push((start, end));
+            }
+            face_of.values_mut().for_each(|v| v.sort_unstable());
+            for b in &bodies {
+                let spans = crate::bodies::spans_of(&b.dets, b.end);
+                let theirs = face_of.get(&b.character_id).map_or(&[][..], Vec::as_slice);
+                out.extend(crate::bodies::outside(&spans, theirs).into_iter().map(|(start, end)| Presence {
+                    character_id: b.character_id,
+                    track_id: track_id(b.id),
+                    start,
+                    end,
+                    body: true,
+                }));
+            }
+            out.sort_by_key(|p| (p.start, p.end));
+        }
+        Ok(out)
     }
 
-    /// Every shot a character is seen in, in episode order.
-    pub fn character_shots(&self, c: CharacterId) -> ProjectResult<Vec<CharacterShot>> {
-        let mut by_media: HashMap<MediaId, Vec<as_db::CharacterShotRow>> = HashMap::new();
-        for r in self.db().character_shots(c)? {
-            by_media.entry(r.media_id).or_default().push(r);
+    /// What the bodies of the cast add to each character: the time they
+    /// are on screen without their face, the shots without it that make a
+    /// clip (see `pack::shots_of`), the episodes only those are in.
+    fn body_extras(&self) -> ProjectResult<HashMap<CharacterId, BodyExtra>> {
+        let bodies = self.shown_bodies(|db| db.assigned_bodies())?;
+        if bodies.is_empty() {
+            return Ok(HashMap::new());
         }
-        let mut shots = Vec::new();
-        for m in self.media_list()? {
-            for r in by_media.remove(&m.id).unwrap_or_default() {
-                shots.push(CharacterShot {
-                    media_id: r.media_id,
-                    start: r.start,
-                    end: r.end,
-                    sprite: r.sprite.map(|(end, _)| Self::path_string(&self.sprite_path(r.media_id, r.start, end))),
-                    cells: r.sprite.map_or(0, |s| s.1),
-                    track_id: track_id(r.track),
-                    face: Self::path_string(&self.thumb_path(r.media_id, r.track)),
-                    face_height: r.face_h,
-                });
+        let mut faces: HashMap<(CharacterId, MediaId, FrameIdx), Vec<(FrameIdx, FrameIdx)>> = HashMap::new();
+        let mut seen_in: HashSet<(CharacterId, MediaId)> = HashSet::new();
+        for (c, m, shot, start, end) in self.db().face_ranges()? {
+            faces.entry((c, m, shot)).or_default().push((start, end));
+            seen_in.insert((c, m));
+        }
+        let frame_sec: HashMap<MediaId, f64> = self
+            .media_list()?
+            .into_iter()
+            .filter_map(|m| Some((m.id, m.fps.filter(|f| f.num > 0).map(|f| f.den as f64 / f.num as f64)?)))
+            .collect();
+        // Per character and shot: when their bodies are there, and whether one makes a clip.
+        type Spans = (Vec<(FrameIdx, FrameIdx)>, bool);
+        let mut by_shot: HashMap<(CharacterId, MediaId, FrameIdx), Spans> = HashMap::new();
+        for b in &bodies {
+            let e = by_shot.entry((b.character_id, b.media_id, b.shot)).or_default();
+            e.0.extend(crate::bodies::spans_of(&b.dets, b.end));
+            e.1 |= crate::bodies::showing_of(b).prominent();
+        }
+        let mut out: HashMap<CharacterId, BodyExtra> = HashMap::new();
+        for ((c, m, shot), (mut spans, clip)) in by_shot {
+            spans.sort_unstable();
+            let face = faces.get(&(c, m, shot));
+            let mut face_spans = face.cloned().unwrap_or_default();
+            face_spans.sort_unstable();
+            let alone = crate::bodies::covered(crate::bodies::outside(&spans, &face_spans));
+            let x = out.entry(c).or_default();
+            x.seconds += f64::from(alone) * frame_sec.get(&m).copied().unwrap_or(0.0);
+            if face.is_none() && clip {
+                x.shots += 1;
+                if !seen_in.contains(&(c, m)) {
+                    x.media.insert(m);
+                }
             }
         }
-        Ok(shots)
+        Ok(out)
     }
+}
+
+/// What a character's bodies add to what their faces say.
+#[derive(Default)]
+struct BodyExtra {
+    seconds: f64,
+    shots: u32,
+    media: HashSet<MediaId>,
 }
 
 #[cfg(test)]
@@ -906,7 +1015,7 @@ pub(crate) mod tests {
         // Seen at 100, 115, 130, …: clearest at 130, the moment of its thumbnail.
         let mut t = seen(1, 100, 100, 190, 0.1);
         t.dets[2].quality = 0.95;
-        project.store_face_chunk(id, 0, frames, &tracks::encode(&[t]), &[]).unwrap();
+        project.store_face_chunk(id, 0, frames, &tracks::encode(&[t]), &[], &[]).unwrap();
         project.finish_faces(id).unwrap();
         let track = project.cast_tracks(TrackFilter::Unassigned).unwrap()[0].id;
         project.cast_edit(&CastEdit::NewCharacter { tracks: vec![track], name: Some("Walter".into()) }).unwrap();
@@ -992,7 +1101,7 @@ pub(crate) mod tests {
             moving(2, 100, 100, 190, 0.0, 0.007),
             seen(3, 200, 200, 260, 0.3),
         ];
-        project.store_face_chunk(id, 0, frames, &tracks::encode(&first), &[]).unwrap();
+        project.store_face_chunk(id, 0, frames, &tracks::encode(&first), &[], &[]).unwrap();
         project.finish_faces(id).unwrap();
         let ids = |f: TrackFilter| -> Vec<u32> { project.cast_tracks(f).unwrap().iter().map(|t| t.id).collect() };
         let all = ids(TrackFilter::Unassigned);
@@ -1019,7 +1128,7 @@ pub(crate) mod tests {
             moving(2, 100, 145, 190, 0.0, 0.007),
             seen(3, 200, 200, 290, 0.3),
         ];
-        project.store_face_chunk(id, 0, frames, &tracks::encode(&again), &[]).unwrap();
+        project.store_face_chunk(id, 0, frames, &tracks::encode(&again), &[], &[]).unwrap();
         project.finish_faces(id).unwrap();
         let spans = |c| -> Vec<(FrameIdx, FrameIdx)> {
             let mut v: Vec<_> =
@@ -1044,7 +1153,7 @@ pub(crate) mod tests {
         project.db().store_segments(id, &[whole]).unwrap();
         let pass = |who: usize| {
             project.faces_plan(id, MODEL).unwrap();
-            project.store_face_chunk(id, 0, frames, &tracks::encode(&[seen(who, 0, 100, 190, 0.1)]), &[]).unwrap();
+            project.store_face_chunk(id, 0, frames, &tracks::encode(&[seen(who, 0, 100, 190, 0.1)]), &[], &[]).unwrap();
             project.finish_faces(id).unwrap();
         };
         pass(1);
@@ -1091,7 +1200,7 @@ pub(crate) mod tests {
         // first four shots: not a character of their own.
         let mut found: Vec<FaceTrack> = (0..20).map(|k| face(1 + k % 2, k as u32 * 100, 0.1, 0.9)).collect();
         found.extend((0..4).map(|k| face(3, k * 100, 0.6, 0.2)));
-        project.store_face_chunk(id, 0, frames, &tracks::encode(&found), &[]).unwrap();
+        project.store_face_chunk(id, 0, frames, &tracks::encode(&found), &[], &[]).unwrap();
         project.finish_faces(id).unwrap();
         assert_eq!(project.recluster().unwrap(), 2);
         let blurry = project.cast_tracks(TrackFilter::Unassigned).unwrap();
@@ -1147,9 +1256,12 @@ pub(crate) mod tests {
         let (a, b): (Vec<_>, Vec<_>) = first.iter().cloned().partition(|t| t.start < 1000);
         let sprite = |shot| ShotSprite { shot, end: shot + 100, cells: 8, jpeg: vec![0xFF, 0xD8, 1] };
         // A sprite outside the chunk is not this chunk's.
-        assert_eq!(project.store_face_chunk(id, 0, 1000, &tracks::encode(&a), &[sprite(0), sprite(1000)]).unwrap(), 11);
+        assert_eq!(
+            project.store_face_chunk(id, 0, 1000, &tracks::encode(&a), &[sprite(0), sprite(1000)], &[]).unwrap(),
+            11
+        );
         assert_eq!(project.faces_plan(id, MODEL).unwrap().resume, 1000);
-        project.store_face_chunk(id, 1000, frames, &tracks::encode(&b), &[]).unwrap();
+        project.store_face_chunk(id, 1000, frames, &tracks::encode(&b), &[], &[]).unwrap();
         project.finish_faces(id).unwrap();
         assert!(project.pending_faces().unwrap().is_empty());
         assert_eq!(project.recluster().unwrap(), 2);
@@ -1189,14 +1301,14 @@ pub(crate) mod tests {
         assert!(project.cast().unwrap().characters.iter().any(|c| c.name.as_deref() == Some("Walter")));
         let again = all(0.02);
         let (a, b): (Vec<_>, Vec<_>) = again.into_iter().partition(|t| t.start < 1000);
-        project.store_face_chunk(id, 0, 1000, &tracks::encode(&a), &[]).unwrap();
+        project.store_face_chunk(id, 0, 1000, &tracks::encode(&a), &[], &[]).unwrap();
         // Another media's restart reclusters while this pass is half done:
         // its new faces must not become new characters meanwhile.
         project.recluster().unwrap();
         let mid: Vec<CharacterId> = project.cast().unwrap().characters.iter().map(|c| c.id).collect();
         assert_eq!(mid.len(), 2);
         assert!(mid.contains(&walter.id) && mid.contains(&other.id));
-        project.store_face_chunk(id, 1000, frames, &tracks::encode(&b), &[]).unwrap();
+        project.store_face_chunk(id, 1000, frames, &tracks::encode(&b), &[], &[]).unwrap();
         project.finish_faces(id).unwrap();
         project.recluster().unwrap();
         let cast = project.cast().unwrap();

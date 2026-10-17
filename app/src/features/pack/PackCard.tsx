@@ -1,5 +1,5 @@
 import { memo } from "react"
-import { Check, Copy, Play } from "@/components/icons"
+import { Check, Copy, Play, Prohibit, UserCircleDashed } from "@/components/icons"
 import { toast } from "sonner"
 import type { MediaItem, PackClip } from "@/bindings"
 import {
@@ -9,6 +9,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu"
+import { NoFaceBadge } from "@/features/shots/NoFaceBadge"
 import { ShotFrames } from "@/features/shots/ShotFrames"
 import { useScrub } from "@/features/shots/scrub"
 import { formatShotLength } from "@/features/shots/shots"
@@ -21,24 +22,33 @@ import { REASONS, SIZES, pickable } from "./spec"
 const SIZE_SHORT = new Map(SIZES.map((s) => [s.value, s.short]))
 const SIZE_LABEL = new Map(SIZES.map((s) => [s.value, s.label]))
 
+/** What can be said about the bodies a shot without the character's face shows. */
+export type BodyVerdict = "not_them" | "not_a_person"
+
 /**
  * A shot of the pack: bright with a gold tick when the pack takes it,
  * dimmed with the reason when it doesn't. A click (or Space) takes it in
  * or out, with Shift every shot from the last one clicked; Enter or the
- * corner button plays it.
+ * corner button plays it. A shot without the character's face says so;
+ * its menu can say the bodies there aren't them.
  */
 export const PackCard = memo(function PackCard({
   clip,
   index,
   media,
+  name,
   onToggle,
   onOpen,
+  onBody,
 }: {
   clip: PackClip
   index: number
   media?: MediaItem
+  /** Whose pack it is. */
+  name?: string
   onToggle: (index: number, range: boolean, byKey?: boolean) => void
   onOpen: (index: number) => void
+  onBody?: (bodies: number[], verdict: BodyVerdict) => void
 }) {
   const scrub = useScrub(clip.shot)
   const fps = media?.fps
@@ -50,6 +60,7 @@ export const PackCard = memo(function PackCard({
   const where = at && `${media?.label ? `${media.label} · ` : ""}${at}`
   const why = clip.included ? null : clip.reason ? REASONS[clip.reason] : "Left out"
   const canPick = pickable(clip)
+  const bodies = clip.shot.faceless ? (clip.shot.bodies ?? []) : []
 
   return (
     <ContextMenu>
@@ -73,7 +84,7 @@ export const PackCard = memo(function PackCard({
               }
             }}
             {...scrub.handlers}
-            aria-label={`Shot${where ? ` at ${where}` : ""}${length ? `, ${length}` : ""}${clip.included ? ", in the pack" : `, left out: ${why}`}`}
+            aria-label={`Shot${where ? ` at ${where}` : ""}${length ? `, ${length}` : ""}${clip.shot.faceless ? ", without their face" : ""}${clip.included ? ", in the pack" : `, left out: ${why}`}`}
             title={where || undefined}
             className={cn(
               "relative block size-full overflow-hidden rounded-xl bg-inset text-left outline-none picture-edge",
@@ -101,6 +112,7 @@ export const PackCard = memo(function PackCard({
               {clip.manual === true && (
                 <span className="rounded-full bg-black/55 px-2 text-[11px] leading-5 text-white/80 backdrop-blur-md">Added</span>
               )}
+              {clip.shot.faceless && clip.reason !== "faceless" && <NoFaceBadge />}
             </span>
             <span className="absolute right-2 bottom-2 flex items-center gap-1.5">
               <span
@@ -135,6 +147,17 @@ export const PackCard = memo(function PackCard({
           <ContextMenuItem onSelect={() => onToggle(index, false)} shortcut={["Space"]}>
             <Check /> {clip.included ? "Remove from pack" : "Add to pack"}
           </ContextMenuItem>
+        )}
+        {bodies.length > 0 && onBody && (
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuItem onSelect={() => onBody(bodies, "not_them")}>
+              <UserCircleDashed /> Not {name ?? "them"}
+            </ContextMenuItem>
+            <ContextMenuItem onSelect={() => onBody(bodies, "not_a_person")}>
+              <Prohibit /> Not a person
+            </ContextMenuItem>
+          </>
         )}
         {where && (
           <>

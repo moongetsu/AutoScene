@@ -67,14 +67,35 @@ pub enum ShotsEvent {
 /// What a faces job reports while it runs.
 pub enum FacesEvent {
     Progress(f64),
-    /// Face tracks of frames `start..end` (`as_analysis::tracks` format)
-    /// and the sprites of its shots.
+    /// Face tracks of frames `start..end` (`as_analysis::tracks` format),
+    /// the sprites of its shots and the people found there
+    /// (`as_analysis::bodies` format; empty when none were looked for).
     Chunk {
         start: u32,
         end: u32,
         tracks: Vec<u8>,
         sprites: Vec<as_analysis::ShotSprite>,
+        bodies: Vec<u8>,
     },
+}
+
+/// What a faces job looks at.
+#[derive(Clone, Debug)]
+pub struct FacesInput {
+    pub path: PathBuf,
+    pub info: MediaInfo,
+    /// `FrameIndex::to_bytes`.
+    pub index: Vec<u8>,
+    /// Shot ranges, sorted.
+    pub shots: Vec<(u32, u32)>,
+    /// First frame to look at: 0 or the end of a chunk stored before.
+    pub resume: u32,
+    pub chunk: u32,
+    /// Look for people too, tied to the faces.
+    pub bodies: bool,
+    /// Faces found before (`as_analysis::tracks::encode_known`): only
+    /// people are looked for.
+    pub known: Option<Vec<u8>>,
 }
 
 enum Msg {
@@ -191,36 +212,40 @@ impl Engine {
         )
     }
 
-    /// Find the face tracks of a media's `shots` from `resume` on. Blocks
-    /// until the job ends; chunks arrive through `on` in order.
-    #[allow(clippy::too_many_arguments)]
+    /// Find the face tracks of a media's shots (and the people tied to
+    /// them, or the people alone for faces found before) from `job.resume`
+    /// on. Blocks until the job ends; chunks arrive through `on` in order.
     pub fn faces(
         &self,
-        path: PathBuf,
-        info: MediaInfo,
-        index: Vec<u8>,
-        shots: Vec<(u32, u32)>,
-        resume: u32,
-        chunk: u32,
+        job: FacesInput,
         cancel: &CancelToken,
         mut on: impl FnMut(FacesEvent) -> Result<(), String>,
     ) -> Result<(), EngineError> {
-        let resume = Cell::new(resume);
-        let index = Blob(index);
+        let resume = Cell::new(job.resume);
+        let (index, known) = (Blob(job.index), job.known.map(Blob));
         self.with_retries(
             cancel,
             |id| {
-                let (path, info, index, shots) = (path.clone(), info.clone(), index.clone(), shots.clone());
-                Request::Faces(Box::new(FacesJob { id, path, info, index, shots, resume: resume.get(), chunk }))
+                Request::Faces(Box::new(FacesJob {
+                    id,
+                    path: job.path.clone(),
+                    info: job.info.clone(),
+                    index: index.clone(),
+                    shots: job.shots.clone(),
+                    resume: resume.get(),
+                    chunk: job.chunk,
+                    bodies: job.bodies,
+                    known: known.clone(),
+                }))
             },
             |reply| match reply {
                 Reply::Progress { fraction, .. } => on(FacesEvent::Progress(fraction)),
-                Reply::FaceChunk { start, end, tracks, sprites, .. } => {
+                Reply::FaceChunk { start, end, tracks, sprites, bodies, .. } => {
                     let sprites = sprites
                         .into_iter()
                         .map(|s| as_analysis::ShotSprite { shot: s.shot, end: s.end, cells: s.cells, jpeg: s.jpeg.0 })
                         .collect();
-                    on(FacesEvent::Chunk { start, end, tracks: tracks.0, sprites })?;
+                    on(FacesEvent::Chunk { start, end, tracks: tracks.0, sprites, bodies: bodies.0 })?;
                     resume.set(end);
                     Ok(())
                 }
