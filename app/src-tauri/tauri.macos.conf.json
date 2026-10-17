@@ -36,6 +36,8 @@
     "macOS": {
       "minimumSystemVersion": "13.0",
       "bundleVersion": "1.0.1",
+      "signingIdentity": "-",
+      "hardenedRuntime": false,
       "dmg": {
         "background": "macos/dmg-background.png",
         "windowSize": {
