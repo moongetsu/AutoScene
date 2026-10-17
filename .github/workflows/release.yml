@@ -103,6 +103,8 @@ jobs:
       - name: DMG window screenshots
         if: runner.os == 'macOS' && !startsWith(github.ref, 'refs/tags/')
         continue-on-error: true
+        # osascript can wait forever on an automation prompt nobody answers.
+        timeout-minutes: 5
         shell: bash
         run: |
           shots="$RUNNER_TEMP/dmg-shots"

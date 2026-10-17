@@ -18,8 +18,8 @@ uv reads the exact Pillow version from the script's header and runs it in a thro
 | `macos/dmg-background.png` | the DMG's Finder window | 1320×800 at 144 dpi = 660×400 pt |
 | `icons/macos/icon.icns` | the Mac app and the DMG volume | 16–1024 px, 824 px tile in 1024 px |
 
-The DMG art is laid out for the window size and icon places in `tauri.macos.conf.json` (128 pt icons, 16 pt
-labels, the bundler's defaults): change those and the picture together. The plates under the two labels are a
+The DMG art takes the window size and icon places from `tauri.macos.conf.json` (with the bundler's 128 pt icons
+and 16 pt labels): after changing them, render again. The plates under the two labels are a
 mid grey (`#787570`) because Finder sets the labels black in light mode and white in dark mode; both read on it
 at 4.6:1.
 

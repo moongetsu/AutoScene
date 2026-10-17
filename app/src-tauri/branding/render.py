@@ -12,9 +12,10 @@ Outputs (committed, so a build needs none of this):
   icons/macos/icon.icns     macOS app icon on Apple's grid (824 px tile in 1024 px)
 """
 
+import json
 from pathlib import Path
 
-from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 TAURI = Path(__file__).resolve().parent.parent
 FONT = TAURI.parent / "node_modules/@fontsource/instrument-serif/files/instrument-serif-latin-400-normal.woff"
@@ -79,7 +80,9 @@ def tile_silhouette(size: tuple[int, int], u: float, ox: float, oy: float) -> Im
 
 def glow(size, mask: Image.Image, colour, opacity: float, blur: float, dy: float = 0) -> Image.Image:
     """A soft coloured light from a mask: blurred, shifted down by dy."""
-    m = ImageChops.offset(mask, 0, round(dy)).filter(ImageFilter.GaussianBlur(blur))
+    shifted = Image.new("L", size, 0)
+    shifted.paste(mask, (0, round(dy)))  # shifts in empty space (ImageChops.offset wraps around)
+    m = shifted.filter(ImageFilter.GaussianBlur(blur))
     m = m.point(lambda v: round(v * opacity))
     layer = Image.new("RGBA", size, colour + (0,))
     layer.putalpha(m)
@@ -129,19 +132,24 @@ def header() -> Image.Image:
 
 
 def dmg_background() -> Image.Image:
-    # In points the window is 660x400; the bundler's defaults put the app's
-    # icon centre at (180, 170) and Applications' at (480, 170), 128 pt icons
-    # with 16 pt labels. Everything here is drawn at 2x.
-    size = (1320, 800)
+    # The window and the icon centres (in points) come from the DMG config;
+    # icons are 128 pt with 16 pt labels (the bundler's sizes). Everything
+    # here is drawn at 2x.
+    dmg = json.loads((TAURI / "tauri.macos.conf.json").read_text(encoding="utf-8"))["bundle"]["macOS"]["dmg"]
+    win_w, win_h = dmg["windowSize"]["width"], dmg["windowSize"]["height"]
+    app_x, icon_y = dmg["appPosition"]["x"], dmg["appPosition"]["y"]
+    apps_x = dmg["applicationFolderPosition"]["x"]
+    assert dmg["applicationFolderPosition"]["y"] == icon_y, "the arrow assumes both icons on one line"
+    size = (win_w * 2, win_h * 2)
     img = Image.new("RGBA", size, CANVAS + (255,))
-    img = Image.alpha_composite(img, radial(size, (660, 300), (520, 210), GOLD, 0.12))
+    img = Image.alpha_composite(img, radial(size, (win_w, icon_y * 2 - 40), (520, 210), GOLD, 0.12))
 
     # Plates behind the two labels.
     plates = Image.new("RGBA", (size[0] * 2, size[1] * 2), (0, 0, 0, 0))
     d = ImageDraw.Draw(plates)
-    for cx in (180, 480):
+    for cx in (app_x, apps_x):
         x0, x1 = (cx - 66) * 4, (cx + 66) * 4
-        y0, y1 = 235 * 4, 259 * 4
+        y0, y1 = (icon_y + 65) * 4, (icon_y + 89) * 4
         d.rounded_rectangle([x0, y0, x1, y1], radius=12 * 4, fill=LABEL_PLATE + (255,))
     img = Image.alpha_composite(img, plates.resize(size, Image.Resampling.LANCZOS))
 
@@ -149,8 +157,8 @@ def dmg_background() -> Image.Image:
     arrow = Image.new("RGBA", (size[0] * 4, size[1] * 4), (0, 0, 0, 0))
     d = ImageDraw.Draw(arrow)
     k = 8  # pt -> supersampled px
-    y = 170 * k
-    x0, x1 = 272 * k, 388 * k
+    y = icon_y * k
+    x0, x1 = (app_x + 92) * k, (apps_x - 92) * k
     w = round(2 * k)
     r = w / 2
     d.line([(x0, y), (x1, y)], fill=GOLD + (255,), width=w)
@@ -160,7 +168,7 @@ def dmg_background() -> Image.Image:
         d.ellipse([x - r, yy - r, x + r, yy + r], fill=GOLD + (255,))
     img = Image.alpha_composite(img, arrow.resize(size, Image.Resampling.LANCZOS))
 
-    text(img, (660, 668), "Drag AutoScene to Applications", 44, FG_2)
+    text(img, (win_w, win_h * 2 - 132), "Drag AutoScene to Applications", 44, FG_2)
     return img.convert("RGB")
 
 
@@ -176,8 +184,8 @@ def icon_1024() -> Image.Image:
     return img
 
 
-# Every PNG entry iconutil writes from a full .iconset (Pillow's own writer
-# leaves out the 16 and 32 px ones).
+# PNG entries for every size macOS reads: iconutil's set from a full .iconset
+# plus icp6 (64 px). Pillow's own writer leaves out the 16 and 32 px ones.
 ICNS_TYPES = [
     (b"icp4", 16), (b"icp5", 32), (b"icp6", 64), (b"ic07", 128), (b"ic08", 256),
     (b"ic09", 512), (b"ic10", 1024), (b"ic11", 32), (b"ic12", 64), (b"ic13", 256), (b"ic14", 512),
