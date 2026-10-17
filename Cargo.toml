@@ -5,7 +5,7 @@ default-members = ["crates/*", "app/src-tauri"]
 exclude = ["vendor"]
 
 [workspace.package]
-version = "1.0.0-BETA"
+version = "1.0.1-BETA"
 edition = "2024"
 rust-version = "1.95"
 license = "Proprietary"

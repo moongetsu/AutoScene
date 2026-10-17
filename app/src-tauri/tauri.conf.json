@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "AutoScene",
-  "version": "1.0.0-BETA",
+  "version": "1.0.1-BETA",
   "identifier": "com.autoscene.app",
   "build": {
     "frontendDist": "../dist",
