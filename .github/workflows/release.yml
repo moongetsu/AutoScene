@@ -84,6 +84,10 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # With CI=true the bundler skips the Finder script that lays out
+          # the DMG window (background, icon places); the runner has a
+          # Finder, so the DMG gets its layout here too.
+          TAURI_BUNDLER_DMG_IGNORE_CI: ${{ runner.os == 'macOS' && 'true' || '' }}
         run: |
           configs=(--config src-tauri/tauri.release.conf.json)
           # Without the updater key (a fork, a key not set up yet) there are
@@ -94,6 +98,50 @@ jobs:
             echo "::warning::TAURI_SIGNING_PRIVATE_KEY isn't set: built without update bundles"
           fi
           npx tauri build "${configs[@]}"
+      # What a Mac shows when the DMG opens, light and dark, for a look
+      # before a release (not on the release itself).
+      - name: DMG window screenshots
+        if: runner.os == 'macOS' && !startsWith(github.ref, 'refs/tags/')
+        continue-on-error: true
+        shell: bash
+        run: |
+          shots="$RUNNER_TEMP/dmg-shots"
+          mkdir -p "$shots"
+          dmg=$(ls target/release/bundle/dmg/*.dmg | head -n 1)
+          hdiutil attach "$dmg"
+          vol=/Volumes/AutoScene
+          for mode in light dark; do
+            dark=false; [ "$mode" = dark ] && dark=true
+            osascript -e "tell application \"System Events\" to tell appearance preferences to set dark mode to $dark" \
+              || echo "::warning::couldn't switch to $mode mode"
+            open "$vol"
+            sleep 5
+            screencapture -x "$shots/screen-$mode.png"
+            # The window itself, with room for its title bar.
+            if b=$(osascript -e 'tell application "Finder" to get bounds of front window'); then
+              IFS=', ' read -r x1 y1 x2 y2 <<< "$b"
+              screencapture -x -R "$((x1 - 20)),$((y1 - 40)),$((x2 - x1 + 40)),$((y2 - y1 + 60))" "$shots/window-$mode.png"
+            fi
+            osascript -e 'tell application "Finder" to close every window'
+          done
+          hdiutil detach "$vol"
+          ls -la "$shots"
+      - uses: actions/upload-artifact@v7
+        if: runner.os == 'macOS' && !startsWith(github.ref, 'refs/tags/')
+        continue-on-error: true
+        with:
+          name: dmg-window-screenshots
+          path: ${{ runner.temp }}/dmg-shots/*
+          retention-days: 14
+      # The deb carries the 512 px icon for app menus and docks.
+      - name: Linux icons
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          deb=$(ls target/release/bundle/deb/*.deb | head -n 1)
+          dpkg -c "$deb" | tee "$RUNNER_TEMP/deb-contents.txt" | grep usr/share/icons/hicolor
+          grep -q 'usr/share/icons/hicolor/512x512/apps/.*\.png$' "$RUNNER_TEMP/deb-contents.txt" \
+            || { echo "::error::no 512x512 icon in the deb"; exit 1; }
       - name: Collect
         shell: bash
         run: |

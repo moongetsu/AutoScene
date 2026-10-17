@@ -30,9 +30,27 @@
       "app",
       "dmg"
     ],
+    "icon": [
+      "icons/macos/icon.icns"
+    ],
     "macOS": {
       "minimumSystemVersion": "13.0",
-      "bundleVersion": "1.0.1"
+      "bundleVersion": "1.0.1",
+      "dmg": {
+        "background": "macos/dmg-background.png",
+        "windowSize": {
+          "width": 660,
+          "height": 400
+        },
+        "appPosition": {
+          "x": 180,
+          "y": 170
+        },
+        "applicationFolderPosition": {
+          "x": 480,
+          "y": 170
+        }
+      }
     }
   }
 }
