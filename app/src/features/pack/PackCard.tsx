@@ -1,19 +1,14 @@
 import { memo } from "react"
-import { Check, Copy, Play, Prohibit, UserCircleDashed } from "@/components/icons"
-import { toast } from "sonner"
+import { ArrowCounterClockwise, Check, Copy, Play, Prohibit, UserCircleDashed } from "@/components/icons"
 import type { MediaItem, PackClip } from "@/bindings"
-import {
-  ContextMenu,
-  ContextMenuContent,
-  ContextMenuItem,
-  ContextMenuSeparator,
-  ContextMenuTrigger,
-} from "@/components/ui/context-menu"
+import { ContextArea } from "@/components/ui/context-area"
+import { ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-menu"
+import { Tooltip } from "@/components/ui/tooltip"
 import { NoFaceBadge } from "@/features/shots/NoFaceBadge"
 import { ShotFrames } from "@/features/shots/ShotFrames"
 import { useScrub } from "@/features/shots/scrub"
-import { formatShotLength } from "@/features/shots/shots"
-import { commands, errorMessage } from "@/lib/ipc"
+import { type BodyVerdict, formatShotLength } from "@/features/shots/shots"
+import { copyText } from "@/lib/os"
 import { matchShortcut, PACK_SHORTCUTS } from "@/lib/shortcuts"
 import { timecode } from "@/lib/timecode"
 import { cn } from "@/lib/utils"
@@ -22,15 +17,14 @@ import { REASONS, SIZES, pickable } from "./spec"
 const SIZE_SHORT = new Map(SIZES.map((s) => [s.value, s.short]))
 const SIZE_LABEL = new Map(SIZES.map((s) => [s.value, s.label]))
 
-/** What can be said about the bodies a shot without the character's face shows. */
-export type BodyVerdict = "not_them" | "not_a_person"
-
 /**
  * A shot of the pack: bright with a gold tick when the pack takes it,
  * dimmed with the reason when it doesn't. A click (or Space) takes it in
  * or out, with Shift every shot from the last one clicked; Enter or the
  * corner button plays it. A shot without the character's face says so;
- * its menu can say the bodies there aren't them.
+ * its menu can say the bodies there aren't them. The menu acts on the clip
+ * itself (`onWatch`, `onPick`), never on its place in the grid, which may
+ * have moved by the time an entry is chosen.
  */
 export const PackCard = memo(function PackCard({
   clip,
@@ -39,6 +33,8 @@ export const PackCard = memo(function PackCard({
   name,
   onToggle,
   onOpen,
+  onWatch,
+  onPick,
   onBody,
 }: {
   clip: PackClip
@@ -48,6 +44,9 @@ export const PackCard = memo(function PackCard({
   name?: string
   onToggle: (index: number, range: boolean, byKey?: boolean) => void
   onOpen: (index: number) => void
+  onWatch?: (clip: PackClip) => void
+  /** Take the clip in (`true`), leave it out (`false`) or hand it back to the filters (`null`). */
+  onPick?: (clip: PackClip, include: boolean | null) => void
   onBody?: (bodies: number[], verdict: BodyVerdict) => void
 }) {
   const scrub = useScrub(clip.shot)
@@ -61,71 +60,113 @@ export const PackCard = memo(function PackCard({
   const why = clip.included ? null : clip.reason ? REASONS[clip.reason] : "Left out"
   const canPick = pickable(clip)
   const bodies = clip.shot.faceless ? (clip.shot.bodies ?? []) : []
+  // Everything the chips say in short, said in full.
+  const hint = [
+    SIZE_LABEL.get(clip.size),
+    clip.shot.faceless && "their face doesn't show",
+    canPick && `Click to ${clip.included ? "leave it out" : "take it in"}`,
+  ]
+    .filter(Boolean)
+    .join(" · ")
+
+  const menu = (
+    <>
+      {onWatch && (
+        <ContextMenuItem onSelect={() => onWatch(clip)} shortcut={["Enter"]}>
+          <Play /> Watch shot
+        </ContextMenuItem>
+      )}
+      {canPick && onPick && (
+        <ContextMenuItem onSelect={() => onPick(clip, !clip.included)} shortcut={["Space"]}>
+          <Check /> {clip.included ? "Remove from pack" : "Add to pack"}
+        </ContextMenuItem>
+      )}
+      {canPick && onPick && clip.manual != null && (
+        <ContextMenuItem onSelect={() => onPick(clip, null)}>
+          <ArrowCounterClockwise /> Hand back to the filters
+        </ContextMenuItem>
+      )}
+      <ContextMenuSeparator />
+      {bodies.length > 0 && onBody && (
+        <>
+          <ContextMenuItem onSelect={() => onBody(bodies, "not_them")}>
+            <UserCircleDashed /> Not {name ?? "them"}
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => onBody(bodies, "not_a_person")}>
+            <Prohibit /> Not a person
+          </ContextMenuItem>
+        </>
+      )}
+      <ContextMenuSeparator />
+      {at && (
+        <ContextMenuItem onSelect={() => void copyText(at, "timecode")}>
+          <Copy /> Copy timecode
+        </ContextMenuItem>
+      )}
+    </>
+  )
 
   return (
-    <ContextMenu>
-      <ContextMenuTrigger asChild>
+    <ContextArea menu={menu}>
         <div className="group relative aspect-video w-full">
-          <button
-            type="button"
-            aria-pressed={clip.included}
-            disabled={!canPick}
-            onClick={(e) => onToggle(index, e.shiftKey)}
-            data-pack-index={index}
-            onKeyDown={(e) => {
-              const id = matchShortcut(PACK_SHORTCUTS, e.nativeEvent)
-              if (id === "toggle") {
-                e.preventDefault()
-                // A held key would take the shot in and out again and again.
-                if (!e.repeat) onToggle(index, e.shiftKey, true)
-              } else if (id === "watch") {
-                e.preventDefault()
-                onOpen(index)
-              }
-            }}
-            {...scrub.handlers}
-            aria-label={`Shot${where ? ` at ${where}` : ""}${length ? `, ${length}` : ""}${clip.shot.faceless ? ", without their face" : ""}${clip.included ? ", in the pack" : `, left out: ${why}`}`}
-            title={where || undefined}
-            className={cn(
-              "relative block size-full overflow-hidden rounded-xl bg-inset text-left outline-none picture-edge",
-              "transition-[transform,box-shadow] duration-[var(--dur-med)] ease-out focus-visible:ring-2 focus-visible:ring-accent-line",
-              canPick && "hover:-translate-y-0.5 hover:shadow-lift",
-              clip.included && "ring-1 ring-accent-line/70",
-            )}
-          >
-            <span
+          <Tooltip label={where} hint={hint} side="top" delay={600} disabled={!where}>
+            <button
+              type="button"
+              aria-pressed={clip.included}
+              disabled={!canPick}
+              onClick={(e) => onToggle(index, e.shiftKey)}
+              data-pack-index={index}
+              onKeyDown={(e) => {
+                const id = matchShortcut(PACK_SHORTCUTS, e.nativeEvent)
+                if (id === "toggle") {
+                  e.preventDefault()
+                  // A held key would take the shot in and out again and again.
+                  if (!e.repeat) onToggle(index, e.shiftKey, true)
+                } else if (id === "watch") {
+                  e.preventDefault()
+                  onOpen(index)
+                }
+              }}
+              {...scrub.handlers}
+              aria-label={`Shot${where ? ` at ${where}` : ""}${length ? `, ${length}` : ""}${clip.shot.faceless ? ", without their face" : ""}${clip.included ? ", in the pack" : `, left out: ${why}`}`}
               className={cn(
-                "absolute inset-0 transition-[opacity,filter] duration-[var(--dur-med)]",
-                !clip.included && "opacity-40 grayscale-[70%] group-hover:opacity-70",
+                "relative block size-full overflow-hidden rounded-xl bg-inset text-left outline-none picture-edge",
+                "transition-[transform,box-shadow] duration-[var(--dur-med)] ease-out focus-visible:ring-2 focus-visible:ring-accent-line",
+                canPick && "hover:-translate-y-0.5 hover:shadow-lift",
+                clip.included && "ring-1 ring-accent-line/70",
               )}
             >
-              <ShotFrames shot={clip.shot} scrub={scrub} />
-            </span>
-            <span className="absolute top-2 left-2 flex items-center gap-1.5">
-              {clip.included ? (
-                <span className="flex size-5 items-center justify-center rounded-full bg-accent text-on-accent shadow-1">
-                  <Check weight="bold" className="size-3" />
-                </span>
-              ) : (
-                <span className="rounded-full bg-black/65 px-2 text-[11px] leading-5 text-white/90 backdrop-blur-md">{why}</span>
-              )}
-              {clip.manual === true && (
-                <span className="rounded-full bg-black/55 px-2 text-[11px] leading-5 text-white/80 backdrop-blur-md">Added</span>
-              )}
-              {clip.shot.faceless && clip.reason !== "faceless" && <NoFaceBadge />}
-            </span>
-            <span className="absolute right-2 bottom-2 flex items-center gap-1.5">
               <span
-                title={SIZE_LABEL.get(clip.size)}
-                className="rounded-full bg-black/50 px-2 text-[11px] leading-5 font-medium text-white/80 backdrop-blur-md"
+                className={cn(
+                  "absolute inset-0 transition-[opacity,filter] duration-[var(--dur-med)]",
+                  !clip.included && "opacity-40 grayscale-[70%] group-hover:opacity-70",
+                )}
               >
-                {SIZE_SHORT.get(clip.size)}
+                <ShotFrames shot={clip.shot} scrub={scrub} />
               </span>
-              {length && (
-                <span className="timecode rounded-full bg-black/50 px-2 text-[11px] leading-5 text-white backdrop-blur-md">{length}</span>
-              )}
-            </span>
-          </button>
+              <span className="absolute top-2 left-2 flex items-center gap-1.5">
+                {clip.included ? (
+                  <span className="flex size-5 items-center justify-center rounded-full bg-accent text-on-accent shadow-1">
+                    <Check weight="bold" className="size-3" />
+                  </span>
+                ) : (
+                  <span className="rounded-full bg-black/65 px-2 text-[11px] leading-5 text-white/90 backdrop-blur-md">{why}</span>
+                )}
+                {clip.manual === true && (
+                  <span className="rounded-full bg-black/55 px-2 text-[11px] leading-5 text-white/80 backdrop-blur-md">Added</span>
+                )}
+                {clip.shot.faceless && clip.reason !== "faceless" && <NoFaceBadge />}
+              </span>
+              <span className="absolute right-2 bottom-2 flex items-center gap-1.5">
+                <span className="rounded-full bg-black/50 px-2 text-[11px] leading-5 font-medium text-white/80 backdrop-blur-md">
+                  {SIZE_SHORT.get(clip.size)}
+                </span>
+                {length && (
+                  <span className="timecode rounded-full bg-black/50 px-2 text-[11px] leading-5 text-white backdrop-blur-md">{length}</span>
+                )}
+              </span>
+            </button>
+          </Tooltip>
           <button
             type="button"
             onClick={() => onOpen(index)}
@@ -138,43 +179,6 @@ export const PackCard = memo(function PackCard({
             <Play weight="fill" className="size-3.5" />
           </button>
         </div>
-      </ContextMenuTrigger>
-      <ContextMenuContent>
-        <ContextMenuItem onSelect={() => onOpen(index)} shortcut={["Enter"]}>
-          <Play /> Watch shot
-        </ContextMenuItem>
-        {canPick && (
-          <ContextMenuItem onSelect={() => onToggle(index, false)} shortcut={["Space"]}>
-            <Check /> {clip.included ? "Remove from pack" : "Add to pack"}
-          </ContextMenuItem>
-        )}
-        {bodies.length > 0 && onBody && (
-          <>
-            <ContextMenuSeparator />
-            <ContextMenuItem onSelect={() => onBody(bodies, "not_them")}>
-              <UserCircleDashed /> Not {name ?? "them"}
-            </ContextMenuItem>
-            <ContextMenuItem onSelect={() => onBody(bodies, "not_a_person")}>
-              <Prohibit /> Not a person
-            </ContextMenuItem>
-          </>
-        )}
-        {where && (
-          <>
-            <ContextMenuSeparator />
-            <ContextMenuItem
-              onSelect={() =>
-                commands
-                  .clipboardWrite(at)
-                  .then(() => toast("Copied timecode", { description: where }))
-                  .catch((e) => toast.error("Couldn't copy the timecode", { description: errorMessage(e) }))
-              }
-            >
-              <Copy /> Copy timecode
-            </ContextMenuItem>
-          </>
-        )}
-      </ContextMenuContent>
-    </ContextMenu>
+    </ContextArea>
   )
 })

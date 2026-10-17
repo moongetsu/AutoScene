@@ -60,6 +60,20 @@ pub fn clipboard_write(app: AppHandle, text: String) -> AppResult<()> {
     })
 }
 
+/// The text on the clipboard, for the text fields' Paste (the webview's own
+/// clipboard API would ask the user for permission first). `None` when the
+/// clipboard holds no text (a picture, files, nothing). Off the main thread:
+/// reading waits for the clipboard's owner, which on Linux can be this app.
+#[tauri::command]
+#[specta::specta]
+pub async fn clipboard_read(app: AppHandle) -> AppResult<Option<String>> {
+    blocking(move || {
+        use tauri_plugin_clipboard_manager::ClipboardExt;
+        Ok(app.clipboard().read_text().inspect_err(|e| log::debug!("clipboard has no text: {e}")).ok())
+    })
+    .await
+}
+
 /// Open the logs folder (Settings → About, Help menu on Windows).
 #[tauri::command]
 #[specta::specta]

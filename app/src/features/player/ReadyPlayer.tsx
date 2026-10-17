@@ -1,12 +1,30 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { toast } from "sonner"
+import { useNavigate } from "@tanstack/react-router"
+import {
+  ArrowLineLeft,
+  ArrowLineRight,
+  Clock,
+  Copy,
+  FilmStrip,
+  FolderOpen,
+  Pause,
+  Play,
+  Scissors,
+  SidebarSimple,
+  SpeakerHigh,
+  SpeakerSlash,
+  X,
+} from "@/components/icons"
 import type { FrameMap, MediaItem, Segment } from "@/bindings"
+import { ContextArea } from "@/components/ui/context-area"
+import { ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-menu"
 import { ExportDialog, type ExportClip } from "@/features/export/ExportDialog"
 import { COPY_TIMECODES_REQUEST, EXPORT_REQUEST, REVEAL_REQUEST } from "@/lib/actions"
 import { FrameClock } from "@/lib/frame-clock"
 import { formatDuration } from "@/lib/format"
-import { commands, errorMessage } from "@/lib/ipc"
 import { assetUrl } from "@/lib/media"
+import { copyText, reveal } from "@/lib/os"
+import { modKey } from "@/lib/platform"
 import { lanesOf, useCharacterMap } from "@/lib/presence"
 import { useCast, usePresence, useSegments } from "@/lib/queries"
 import { nextShotStart, prevShotStart, shotAt } from "@/lib/segments"
@@ -14,6 +32,7 @@ import { PLAYER_SHORTCUTS, useShortcuts } from "@/lib/shortcuts"
 import { frameAtCount, parseTimecode, timecode, timecodeCount } from "@/lib/timecode"
 import { NO_MARKS, useMarks } from "@/state/marks"
 import { usePlayback } from "@/state/playback"
+import { useUi } from "@/state/ui"
 import { Ambilight } from "./Ambilight"
 import { CharactersPanel } from "./panels/CharactersPanel"
 import { ClipCard } from "./panels/ClipCard"
@@ -48,6 +67,7 @@ export function ReadyPlayer({
   inspector: boolean
 }) {
   const clock = useMemo(() => new FrameClock(map), [map])
+  const navigate = useNavigate()
   const { videoRef, store, rate, seek, step, toggle, pause, shuttle } = usePlayer(clock)
   // Opened at a frame (a face in the cast, a shot of a pack): go there once.
   const opened = useRef<number | undefined>(undefined)
@@ -84,9 +104,11 @@ export function ReadyPlayer({
   const markIn = (f = store.get()) => setMarks(m.id, { in: f, ...(outFrame != null && outFrame < f ? { out: null } : {}) })
   const markOut = (f = store.get()) => setMarks(m.id, { out: f, ...(inFrame != null && inFrame > f ? { in: null } : {}) })
   const clear = () => setMarks(m.id, { in: null, out: null })
+  /** Frames `start`..`end` (the end not in it) become the clip. */
+  const markRange = (r: { start: number; end: number }) => setMarks(m.id, { in: r.start, out: r.end - 1 })
   /** The whole shot (its clean range, without transition frames) becomes the clip. */
   const markShot = (s: Segment | null = shotAt(shots, store.get())) => {
-    if (s) setMarks(m.id, { in: s.start, out: s.end - 1 })
+    if (s) markRange(s)
   }
   const goShot = (to: number | null) => {
     if (to != null) seek(to)
@@ -128,21 +150,18 @@ export function ReadyPlayer({
     return () => window.removeEventListener(EXPORT_REQUEST, onRequest)
   }, [canExport, pause])
 
+  /** The clip's in and out, or the frame on screen without marks. */
+  const copyTimecodes = () =>
+    void copyText(hasMarks ? `${tc(start)} - ${tc(end - 1)}` : tc(store.get()), hasMarks ? "timecodes" : "timecode")
+  const showFile = () => reveal(m.path)
+
   // macOS menu: File → Reveal, Edit → Copy Timecodes.
   useEffect(() => {
-    const reveal = () => void commands.revealPath(m.path).catch((e) => toast.error(errorMessage(e)))
-    const copy = () => {
-      const text = hasMarks ? `${tc(start)} - ${tc(end - 1)}` : tc(store.get())
-      commands
-        .clipboardWrite(text)
-        .then(() => toast("Copied timecode", { description: text }))
-        .catch((e) => toast.error("Couldn't copy the timecode", { description: errorMessage(e) }))
-    }
-    window.addEventListener(REVEAL_REQUEST, reveal)
-    window.addEventListener(COPY_TIMECODES_REQUEST, copy)
+    window.addEventListener(REVEAL_REQUEST, showFile)
+    window.addEventListener(COPY_TIMECODES_REQUEST, copyTimecodes)
     return () => {
-      window.removeEventListener(REVEAL_REQUEST, reveal)
-      window.removeEventListener(COPY_TIMECODES_REQUEST, copy)
+      window.removeEventListener(REVEAL_REQUEST, showFile)
+      window.removeEventListener(COPY_TIMECODES_REQUEST, copyTimecodes)
     }
   })
 
@@ -233,53 +252,113 @@ export function ReadyPlayer({
     { repeat: true },
   )
 
+  // The picture and the transport: what can be done to the episode where the
+  // playhead is. (The timeline has its own: what is under the pointer, the zoom.)
+  const playing = rate !== 0
+  const playerMenu = (
+    <>
+      <ContextMenuItem onSelect={toggle} shortcut={["Space"]}>
+        {playing ? <Pause /> : <Play />} {playing ? "Pause" : "Play"}
+      </ContextMenuItem>
+      <ContextMenuSeparator />
+      <ContextMenuItem onSelect={() => markIn()} shortcut={["I"]}>
+        <ArrowLineRight /> Mark in
+      </ContextMenuItem>
+      <ContextMenuItem onSelect={() => markOut()} shortcut={["O"]}>
+        <ArrowLineLeft /> Mark out
+      </ContextMenuItem>
+      {shots.length > 0 && (
+        <ContextMenuItem onSelect={() => markShot()} shortcut={["X"]}>
+          <FilmStrip /> Mark the shot as the clip
+        </ContextMenuItem>
+      )}
+      {hasMarks && (
+        <ContextMenuItem onSelect={clear} shortcut={["Alt", "X"]}>
+          <X /> Clear in and out
+        </ContextMenuItem>
+      )}
+      <ContextMenuSeparator />
+      <ContextMenuItem disabled={!canExport} onSelect={openExport} shortcut={[modKey, "E"]}>
+        <Scissors /> Export clip…
+      </ContextMenuItem>
+      <ContextMenuItem onSelect={copyTimecodes}>
+        <Copy /> {hasMarks ? "Copy in and out" : "Copy timecode"}
+      </ContextMenuItem>
+      <ContextMenuItem
+        onSelect={() => {
+          pause()
+          setGotoOpen(true)
+        }}
+        shortcut={[modKey, "G"]}
+      >
+        <Clock /> Go to a timecode…
+      </ContextMenuItem>
+      <ContextMenuSeparator />
+      <ContextMenuItem onSelect={toggleMute} shortcut={["M"]}>
+        {muted ? <SpeakerHigh /> : <SpeakerSlash />} {muted ? "Unmute" : "Mute"}
+      </ContextMenuItem>
+      <ContextMenuItem onSelect={() => useUi.getState().toggleInspector()}>
+        <SidebarSimple mirrored /> {inspector ? "Hide details" : "Show details"}
+      </ContextMenuItem>
+      <ContextMenuItem onSelect={showFile}>
+        <FolderOpen /> Show in folder
+      </ContextMenuItem>
+    </>
+  )
+
   return (
     <div className="flex min-h-0 flex-1">
       <div className="flex min-w-0 flex-1 flex-col">
-        <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden px-10 pt-8 pb-5" onClick={toggle}>
-          <Ambilight video={videoRef} store={store} />
-          {/* The glow fades out before the controls. */}
-          <div aria-hidden className="pointer-events-none absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t from-inset to-transparent" />
-          <video
-            ref={videoRef}
-            src={assetUrl(map.src)}
-            preload="auto"
-            // The asset protocol answers with CORS headers; keeps frames readable for canvas grabs.
-            crossOrigin="anonymous"
-            playsInline
-            disablePictureInPicture
-            className="relative max-h-full max-w-full rounded-2xl bg-black shadow-[0_50px_120px_-40px_rgb(0_0_0/1),0_0_0_1px_rgb(255_255_255/0.07)]"
-          />
-        </div>
+        <ContextArea menu={playerMenu}>
+          <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden px-10 pt-8 pb-5" onClick={toggle}>
+            <Ambilight video={videoRef} store={store} />
+            {/* The glow fades out before the controls. */}
+            <div aria-hidden className="pointer-events-none absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t from-inset to-transparent" />
+            <video
+              ref={videoRef}
+              src={assetUrl(map.src)}
+              preload="auto"
+              // The asset protocol answers with CORS headers; keeps frames readable for canvas grabs.
+              crossOrigin="anonymous"
+              playsInline
+              disablePictureInPicture
+              className="relative max-h-full max-w-full rounded-2xl bg-black shadow-[0_50px_120px_-40px_rgb(0_0_0/1),0_0_0_1px_rgb(255_255_255/0.07)]"
+            />
+          </div>
+        </ContextArea>
 
         {/* Secondary readouts fold away as the player column narrows. */}
         <div className="@container relative shrink-0 px-6 pb-5">
-          <Transport
-            store={store}
-            last={last}
-            rate={rate}
-            tc={tc}
-            parse={parse}
-            goto={gotoOpen}
-            onGoto={(open) => {
-              if (open) pause()
-              setGotoOpen(open)
-            }}
-            onSeek={seek}
-            onStep={step}
-            onToggle={toggle}
-            inFrame={inFrame}
-            outFrame={outFrame}
-            onMarkIn={() => markIn()}
-            onMarkOut={() => markOut()}
-            showExport={!inspector}
-            canExport={canExport}
-            onExport={openExport}
-            volume={volume}
-            muted={muted}
-            onVolume={setVolume}
-            onToggleMute={toggleMute}
-          />
+          <ContextArea menu={playerMenu}>
+            <div>
+              <Transport
+                store={store}
+                last={last}
+                rate={rate}
+                tc={tc}
+                parse={parse}
+                goto={gotoOpen}
+                onGoto={(open) => {
+                  if (open) pause()
+                  setGotoOpen(open)
+                }}
+                onSeek={seek}
+                onStep={step}
+                onToggle={toggle}
+                inFrame={inFrame}
+                outFrame={outFrame}
+                onMarkIn={() => markIn()}
+                onMarkOut={() => markOut()}
+                showExport={!inspector}
+                canExport={canExport}
+                onExport={openExport}
+                volume={volume}
+                muted={muted}
+                onVolume={setVolume}
+                onToggleMute={toggleMute}
+              />
+            </div>
+          </ContextArea>
           <Timeline
             clock={clock}
             fps={fps.num / fps.den}
@@ -293,7 +372,11 @@ export function ReadyPlayer({
             tc={tc}
             onSeek={seek}
             onScrub={pause}
-            onMarkShot={markShot}
+            onMarkRange={markRange}
+            onMarkIn={(f) => markIn(f)}
+            onMarkOut={(f) => markOut(f)}
+            onFocus={setFocus}
+            onOpenCharacter={(cid) => void navigate({ to: "/p/$pid/cast/$cid", params: { pid, cid } })}
           />
         </div>
       </div>
@@ -311,6 +394,7 @@ export function ReadyPlayer({
             onGo={seek}
             onClear={clear}
             onExport={openExport}
+            onCopy={copyTimecodes}
           />
           <ShotsPanel pid={pid} media={m} segments={shots} store={store} tc={tc} onMark={() => markShot()} onGo={seek} />
           <CharactersPanel

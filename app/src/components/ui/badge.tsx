@@ -23,6 +23,6 @@ export function Badge({
   className,
   tone,
   ...props
-}: React.ComponentProps<"span"> & VariantProps<typeof badgeVariants>) {
+}: Omit<React.ComponentProps<"span">, "title"> & VariantProps<typeof badgeVariants>) {
   return <span className={cn(badgeVariants({ tone }), className)} {...props} />
 }

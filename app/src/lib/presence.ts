@@ -22,6 +22,11 @@ export function charactersIn(lanes: Lane[], start: number, end: number): Lane[] 
   return lanes.filter((l) => l.spans.some((s) => s.start < end && start < s.end))
 }
 
+/** The next time `lane` is on screen after `frame` (wrapping around to the first). */
+export function nextAppearance(lane: Lane, frame: number): number | undefined {
+  return (lane.spans.find((s) => s.start > frame) ?? lane.spans[0])?.start
+}
+
 /** Memoised map of a cast by id. */
 export function useCharacterMap(characters: Character[] | undefined): Map<string, Character> {
   return useMemo(() => new Map((characters ?? []).map((c) => [c.id, c])), [characters])

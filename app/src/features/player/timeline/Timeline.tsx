@@ -1,11 +1,26 @@
 import type * as React from "react"
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
-import { ArrowsOutLineHorizontal, MagnifyingGlassMinus, MagnifyingGlassPlus } from "@/components/icons"
+import {
+  ArrowLineLeft,
+  ArrowLineRight,
+  ArrowsOutLineHorizontal,
+  Copy,
+  Crosshair,
+  FilmStrip,
+  MagnifyingGlassMinus,
+  MagnifyingGlassPlus,
+  SkipForward,
+  User,
+  UserFocus,
+} from "@/components/icons"
 import type { Presence, Segment } from "@/bindings"
+import { ContextArea } from "@/components/ui/context-area"
+import { ContextMenuItem, ContextMenuLabel, ContextMenuSeparator } from "@/components/ui/context-menu"
 import { Tooltip } from "@/components/ui/tooltip"
 import type { FrameClock } from "@/lib/frame-clock"
 import { assetUrl } from "@/lib/media"
-import type { Lane } from "@/lib/presence"
+import { copyText } from "@/lib/os"
+import { type Lane, nextAppearance } from "@/lib/presence"
 import { segmentIndexAt, shotNumbers } from "@/lib/segments"
 import { PLAYER_SHORTCUTS, useShortcuts } from "@/lib/shortcuts"
 import { cn } from "@/lib/utils"
@@ -51,7 +66,11 @@ export function Timeline({
   tc,
   onSeek,
   onScrub,
-  onMarkShot,
+  onMarkRange,
+  onMarkIn,
+  onMarkOut,
+  onFocus,
+  onOpenCharacter,
 }: {
   clock: FrameClock
   /** The nominal frame rate, which the timecode counts. */
@@ -68,7 +87,13 @@ export function Timeline({
   onSeek: (f: number) => void
   /** Scrubbing starts (playback pauses). */
   onScrub: () => void
-  onMarkShot: (s: Segment) => void
+  /** Frames `start`..`end` (the end not in it) become the clip. */
+  onMarkRange: (r: { start: number; end: number }) => void
+  onMarkIn: (f: number) => void
+  onMarkOut: (f: number) => void
+  /** Highlight a character's lane (null: none). */
+  onFocus: (characterId: string | null) => void
+  onOpenCharacter: (characterId: string) => void
 }) {
   const length = clock.rel(clock.frames)
   // Never closer than about a second of frames.
@@ -185,58 +210,86 @@ export function Timeline({
   )
 
   const zoomed = view.span < length - 1e-9
+  const zoomMenu = (
+    <>
+      <ContextMenuItem disabled={view.span <= minSpan + 1e-9} onSelect={() => zoom(ZOOM_STEP)} shortcut={["+"]}>
+        <MagnifyingGlassPlus /> Zoom in
+      </ContextMenuItem>
+      <ContextMenuItem disabled={!zoomed} onSelect={() => zoom(1 / ZOOM_STEP)} shortcut={["−"]}>
+        <MagnifyingGlassMinus /> Zoom out
+      </ContextMenuItem>
+      <ContextMenuItem disabled={!zoomed} onSelect={() => setView(fit(length))} shortcut={["Shift", "Z"]}>
+        <ArrowsOutLineHorizontal /> The whole episode
+      </ContextMenuItem>
+    </>
+  )
   return (
-    <div
-      ref={card}
-      className="flex flex-col gap-1.5 rounded-2xl border border-white/[0.07] bg-white/[0.03] px-4 pt-2 pb-3.5 [--lane-label-w:132px]"
-    >
-      <Row
-        label={
-          <span className="flex items-center gap-0.5">
-            <ZoomButton label="Zoom out" keys={["−"]} onClick={() => zoom(1 / ZOOM_STEP)} disabled={!zoomed}>
-              <MagnifyingGlassMinus />
-            </ZoomButton>
-            <ZoomButton label="Zoom in" keys={["+"]} onClick={() => zoom(ZOOM_STEP)} disabled={view.span <= minSpan + 1e-9}>
-              <MagnifyingGlassPlus />
-            </ZoomButton>
-            <ZoomButton label="The whole episode" keys={["Shift", "Z"]} onClick={() => setView(fit(length))} disabled={!zoomed}>
-              <ArrowsOutLineHorizontal />
-            </ZoomButton>
-          </span>
-        }
+    <ContextArea menu={zoomMenu}>
+      <div
+        ref={card}
+        className="flex flex-col gap-1.5 rounded-2xl border border-white/[0.07] bg-white/[0.03] px-4 pt-2 pb-3.5 [--lane-label-w:132px]"
       >
-        <div ref={track} className="relative h-6">
-          {zoomed ? (
-            <Overview axis={axis} length={length} store={store} inFrame={inFrame} outFrame={outFrame} onView={setView} />
-          ) : null}
-          <Ruler axis={axis} fps={fps} counting={counting} tc={tc} under={zoomed} />
-        </div>
-      </Row>
-      <Row label="Playhead">
-        <Scrub axis={axis} store={store} inFrame={inFrame} outFrame={outFrame} tc={tc} onSeek={onSeek} onScrub={onScrub} />
-      </Row>
-      {segments.length > 0 && (
-        <Row label="Shots">
-          <Shots axis={axis} store={store} segments={segments} tc={tc} onSeek={onSeek} onScrub={onScrub} onMarkShot={onMarkShot} />
+        <Row
+          label={
+            <span className="flex items-center gap-0.5">
+              <ZoomButton label="Zoom out" keys={["−"]} onClick={() => zoom(1 / ZOOM_STEP)} disabled={!zoomed}>
+                <MagnifyingGlassMinus />
+              </ZoomButton>
+              <ZoomButton label="Zoom in" keys={["+"]} onClick={() => zoom(ZOOM_STEP)} disabled={view.span <= minSpan + 1e-9}>
+                <MagnifyingGlassPlus />
+              </ZoomButton>
+              <ZoomButton label="The whole episode" keys={["Shift", "Z"]} onClick={() => setView(fit(length))} disabled={!zoomed}>
+                <ArrowsOutLineHorizontal />
+              </ZoomButton>
+            </span>
+          }
+        >
+          <div ref={track} className="relative h-6">
+            {zoomed ? (
+              <Overview axis={axis} length={length} store={store} inFrame={inFrame} outFrame={outFrame} onView={setView} />
+            ) : null}
+            <Ruler axis={axis} fps={fps} counting={counting} tc={tc} under={zoomed} />
+          </div>
         </Row>
-      )}
-      {lanes.length > 0 && (
-        <div className="mt-1 flex flex-col gap-1" role="group" aria-label="Characters on screen">
-          {lanes.slice(0, MAX_LANES).map((lane) => (
-            <LaneRow
-              key={lane.character.id}
-              axis={axis}
-              store={store}
-              lane={lane}
-              focused={focus === lane.character.id}
-              tc={tc}
-              onSeek={onSeek}
-              onScrub={onScrub}
-            />
-          ))}
-        </div>
-      )}
-    </div>
+        <Row label="Playhead">
+          <Scrub
+            axis={axis}
+            store={store}
+            inFrame={inFrame}
+            outFrame={outFrame}
+            tc={tc}
+            onSeek={onSeek}
+            onScrub={onScrub}
+            onMarkIn={onMarkIn}
+            onMarkOut={onMarkOut}
+          />
+        </Row>
+        {segments.length > 0 && (
+          <Row label="Shots">
+            <Shots axis={axis} store={store} segments={segments} tc={tc} onSeek={onSeek} onScrub={onScrub} onMarkShot={onMarkRange} />
+          </Row>
+        )}
+        {lanes.length > 0 && (
+          <div className="mt-1 flex flex-col gap-1" role="group" aria-label="Characters on screen">
+            {lanes.slice(0, MAX_LANES).map((lane) => (
+              <LaneRow
+                key={lane.character.id}
+                axis={axis}
+                store={store}
+                lane={lane}
+                focused={focus === lane.character.id}
+                tc={tc}
+                onSeek={onSeek}
+                onScrub={onScrub}
+                onMarkRange={onMarkRange}
+                onFocus={onFocus}
+                onOpen={onOpenCharacter}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    </ContextArea>
   )
 }
 
@@ -345,8 +398,10 @@ function Overview({
   const release = () => (drag.current = null)
   return (
     <div
-      className="absolute inset-x-0 top-0 h-2.5 cursor-pointer touch-none rounded-full bg-white/[0.06] select-none"
+      className="absolute inset-x-0 top-0 h-2.5 touch-none rounded-full bg-white/[0.06] select-none"
       onPointerDown={(e) => {
+        // Only the main button pans: a right-click opens the menu, nothing else.
+        if (e.button !== 0) return
         const r = e.currentTarget.getBoundingClientRect()
         const t = ((e.clientX - r.left) / r.width) * length
         if (t >= view.t0 && t <= view.t0 + view.span) {
@@ -416,6 +471,8 @@ function Scrub({
   tc,
   onSeek,
   onScrub,
+  onMarkIn,
+  onMarkOut,
 }: {
   axis: Axis
   store: FrameStore
@@ -424,10 +481,14 @@ function Scrub({
   tc: (f: number) => string
   onSeek: (f: number) => void
   onScrub: () => void
+  onMarkIn: (f: number) => void
+  onMarkOut: (f: number) => void
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const [hover, setHover] = useState<{ x: number; f: number } | null>(null)
   const [dragging, setDragging] = useState(false)
+  // The frame the menu is about: the one right-clicked (the playhead's, from the keyboard).
+  const [menuAt, setMenuAt] = useState<number | null>(null)
   const frame = useFrame(store)
   const { view, width } = axis
   const at = (clientX: number) => {
@@ -442,66 +503,92 @@ function Scrub({
   const from = x(inFrame ?? 0)
   const to = x((outFrame ?? last) + 1)
   const clip = (a: number) => Math.min(Math.max(a, 0), width)
+  const menu = menuAt != null && (
+    <>
+      <ContextMenuLabel className="timecode">{tc(menuAt)}</ContextMenuLabel>
+      <ContextMenuItem
+        onSelect={() => {
+          onScrub()
+          onSeek(menuAt)
+        }}
+      >
+        <Crosshair /> Go here
+      </ContextMenuItem>
+      <ContextMenuItem onSelect={() => onMarkIn(menuAt)}>
+        <ArrowLineRight /> Mark in here
+      </ContextMenuItem>
+      <ContextMenuItem onSelect={() => onMarkOut(menuAt)}>
+        <ArrowLineLeft /> Mark out here
+      </ContextMenuItem>
+      <ContextMenuItem onSelect={() => void copyText(tc(menuAt), "timecode")}>
+        <Copy /> Copy this timecode
+      </ContextMenuItem>
+    </>
+  )
   return (
-    <div
-      ref={ref}
-      role="slider"
-      tabIndex={0}
-      aria-label="Playhead"
-      aria-valuemin={0}
-      aria-valuemax={last}
-      aria-valuenow={frame}
-      aria-valuetext={tc(frame)}
-      className="group/scrub relative h-9 touch-none rounded-lg select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-subtle"
-      onPointerDown={(e) => {
-        e.currentTarget.setPointerCapture(e.pointerId)
-        setDragging(true)
-        onScrub()
-        onSeek(at(e.clientX).f)
-      }}
-      onPointerMove={(e) => {
-        const h = at(e.clientX)
-        setHover(h)
-        if (dragging) onSeek(h.f)
-      }}
-      onPointerUp={(e) => {
-        e.currentTarget.releasePointerCapture(e.pointerId)
-        setDragging(false)
-      }}
-      onPointerCancel={() => setDragging(false)}
-      onLostPointerCapture={() => setDragging(false)}
-      onPointerLeave={() => !dragging && setHover(null)}
-    >
-      <div className="absolute inset-x-0 top-1/2 h-1.5 -translate-y-1/2 overflow-hidden rounded-full bg-white/10 transition-[height] duration-[var(--dur-fast)] group-hover/scrub:h-2">
-        <div className="absolute inset-y-0 left-0 bg-white/35" style={{ width: clip(head) }} />
-        {range && to > 0 && from < width && (
+    <ContextArea menu={menu} onContextMenu={(e) => setMenuAt(e.button === 2 ? at(e.clientX).f : store.get())}>
+      <div
+        ref={ref}
+        role="slider"
+        tabIndex={0}
+        aria-label="Playhead"
+        aria-valuemin={0}
+        aria-valuemax={last}
+        aria-valuenow={frame}
+        aria-valuetext={tc(frame)}
+        className="group/scrub relative h-9 touch-none rounded-lg select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-subtle"
+        onPointerDown={(e) => {
+          // Only the main button seeks: a right-click opens the menu where it is.
+          if (e.button !== 0) return
+          e.currentTarget.setPointerCapture(e.pointerId)
+          setDragging(true)
+          onScrub()
+          onSeek(at(e.clientX).f)
+        }}
+        onPointerMove={(e) => {
+          const h = at(e.clientX)
+          setHover(h)
+          if (dragging) onSeek(h.f)
+        }}
+        onPointerUp={(e) => {
+          e.currentTarget.releasePointerCapture(e.pointerId)
+          setDragging(false)
+        }}
+        onPointerCancel={() => setDragging(false)}
+        onLostPointerCapture={() => setDragging(false)}
+        onPointerLeave={() => !dragging && setHover(null)}
+      >
+        <div className="absolute inset-x-0 top-1/2 h-1.5 -translate-y-1/2 overflow-hidden rounded-full bg-white/10 transition-[height] duration-[var(--dur-fast)] group-hover/scrub:h-2">
+          <div className="absolute inset-y-0 left-0 bg-white/35" style={{ width: clip(head) }} />
+          {range && to > 0 && from < width && (
+            <div
+              className="absolute inset-y-0 bg-accent/60 shadow-[0_0_10px_var(--accent)]"
+              style={{ left: clip(from), width: Math.max(2, clip(to) - clip(from)) }}
+            />
+          )}
+        </div>
+        {inFrame != null && from >= 0 && from <= width && (
+          <div className="absolute top-1.5 bottom-1.5 w-[4px] rounded-l-[3px] border-y-2 border-l-2 border-accent" style={{ left: from }} />
+        )}
+        {outFrame != null && to >= 0 && to <= width && (
           <div
-            className="absolute inset-y-0 bg-accent/60 shadow-[0_0_10px_var(--accent)]"
-            style={{ left: clip(from), width: Math.max(2, clip(to) - clip(from)) }}
+            className="absolute top-1.5 bottom-1.5 w-[4px] -translate-x-full rounded-r-[3px] border-y-2 border-r-2 border-accent"
+            style={{ left: to }}
           />
         )}
+        {head >= -8 && head <= width + 8 && (
+          <div className="pointer-events-none absolute top-0 bottom-0 -translate-x-1/2" style={{ left: head }}>
+            <div className="mx-auto h-full w-[2px] rounded-full bg-white shadow-[0_0_8px_rgb(255_255_255/0.6)]" />
+            <div className="absolute top-1/2 left-1/2 size-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow-[0_0_0_3px_rgb(0_0_0/0.35),0_0_12px_rgb(255_255_255/0.5)]" />
+          </div>
+        )}
+        {hover && (
+          <Tip x={hover.x}>
+            <span className="timecode text-fg-1">{tc(hover.f)}</span>
+          </Tip>
+        )}
       </div>
-      {inFrame != null && from >= 0 && from <= width && (
-        <div className="absolute top-1.5 bottom-1.5 w-[4px] rounded-l-[3px] border-y-2 border-l-2 border-accent" style={{ left: from }} />
-      )}
-      {outFrame != null && to >= 0 && to <= width && (
-        <div
-          className="absolute top-1.5 bottom-1.5 w-[4px] -translate-x-full rounded-r-[3px] border-y-2 border-r-2 border-accent"
-          style={{ left: to }}
-        />
-      )}
-      {head >= -8 && head <= width + 8 && (
-        <div className="pointer-events-none absolute top-0 bottom-0 -translate-x-1/2" style={{ left: head }}>
-          <div className="mx-auto h-full w-[2px] rounded-full bg-white shadow-[0_0_8px_rgb(255_255_255/0.6)]" />
-          <div className="absolute top-1/2 left-1/2 size-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow-[0_0_0_3px_rgb(0_0_0/0.35),0_0_12px_rgb(255_255_255/0.5)]" />
-        </div>
-      )}
-      {hover && (
-        <Tip x={hover.x}>
-          <span className="timecode text-fg-1">{tc(hover.f)}</span>
-        </Tip>
-      )}
-    </div>
+    </ContextArea>
   )
 }
 
@@ -559,6 +646,8 @@ function Shots({
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const [hover, setHover] = useState<{ x: number; i: number } | null>(null)
+  // The shot the menu is about: the one right-clicked.
+  const [menuShot, setMenuShot] = useState(-1)
   // The shot a click was on: the page may turn under the pointer before the
   // second click of a double-click (going to a shot that starts off view).
   const clicked = useRef(-1)
@@ -580,39 +669,66 @@ function Shots({
   const cur = current >= 0 ? segments[current] : null
   const hovered = hover && hover.i >= 0 ? segments[hover.i] : null
   const seconds = (s: Segment) => (axis.t(s.end) - axis.t(s.start)).toFixed(1)
-  return (
-    <div
-      ref={ref}
-      className="relative h-5 rounded-md select-none"
-      role="group"
-      aria-label="Shots"
-      onPointerMove={(e) => setHover(indexAt(e.clientX))}
-      onPointerLeave={() => setHover(null)}
-      onClick={(e) => {
-        const i = e.detail > 1 && clicked.current >= 0 ? clicked.current : indexAt(e.clientX).i
-        clicked.current = i
-        if (i < 0) return
-        onScrub()
-        onSeek(segments[i].start)
-      }}
-      onDoubleClick={(e) => {
-        const i = clicked.current >= 0 ? clicked.current : indexAt(e.clientX).i
-        if (segments[i]?.kind === "shot") onMarkShot(segments[i])
-      }}
-    >
-      <TrackCanvas axis={axis} height={20} draw={draw} />
-      {cur && <Outline left={xOf(view, axis.t(cur.start), width)} right={xOf(view, axis.t(cur.end), width)} width={width} />}
-      <HeadLine axis={axis} store={store} />
-      {hover && hovered && (
-        <Tip x={hover.x}>
-          <span className="text-fg-1">{hovered.kind === "shot" ? `Shot ${numbers[hover.i] + 1}` : SEGMENT_LABEL[hovered.kind]}</span>
-          <span className="timecode text-fg-3">
-            {" "}
-            · {tc(hovered.start)} · {seconds(hovered)} s{hovered.tiny ? " · tiny" : ""}
-          </span>
-        </Tip>
+  const name = (i: number) => (segments[i].kind === "shot" ? `Shot ${numbers[i] + 1}` : SEGMENT_LABEL[segments[i].kind])
+  const ms = menuShot >= 0 ? segments[menuShot] : undefined
+  const menu = ms && (
+    <>
+      <ContextMenuLabel>
+        {name(menuShot)} · <span className="timecode">{tc(ms.start)}</span>
+      </ContextMenuLabel>
+      <ContextMenuItem
+        onSelect={() => {
+          onScrub()
+          onSeek(ms.start)
+        }}
+      >
+        <Crosshair /> {ms.kind === "shot" ? "Go to the shot" : "Go there"}
+      </ContextMenuItem>
+      {ms.kind === "shot" && (
+        <ContextMenuItem onSelect={() => onMarkShot(ms)}>
+          <FilmStrip /> Mark it as the clip
+        </ContextMenuItem>
       )}
-    </div>
+      <ContextMenuItem onSelect={() => void copyText(`${tc(ms.start)} - ${tc(ms.end - 1)}`, "timecodes")}>
+        <Copy /> Copy its timecodes
+      </ContextMenuItem>
+    </>
+  )
+  return (
+    <ContextArea menu={menu} onContextMenu={(e) => setMenuShot(indexAt(e.clientX).i)}>
+      <div
+        ref={ref}
+        className="relative h-5 rounded-md select-none"
+        role="group"
+        aria-label="Shots"
+        onPointerMove={(e) => setHover(indexAt(e.clientX))}
+        onPointerLeave={() => setHover(null)}
+        onClick={(e) => {
+          const i = e.detail > 1 && clicked.current >= 0 ? clicked.current : indexAt(e.clientX).i
+          clicked.current = i
+          if (i < 0) return
+          onScrub()
+          onSeek(segments[i].start)
+        }}
+        onDoubleClick={(e) => {
+          const i = clicked.current >= 0 ? clicked.current : indexAt(e.clientX).i
+          if (segments[i]?.kind === "shot") onMarkShot(segments[i])
+        }}
+      >
+        <TrackCanvas axis={axis} height={20} draw={draw} />
+        {cur && <Outline left={xOf(view, axis.t(cur.start), width)} right={xOf(view, axis.t(cur.end), width)} width={width} />}
+        <HeadLine axis={axis} store={store} />
+        {hover && hovered && (
+          <Tip x={hover.x}>
+            <span className="text-fg-1">{name(hover.i)}</span>
+            <span className="timecode text-fg-3">
+              {" "}
+              · {tc(hovered.start)} · {seconds(hovered)} s{hovered.tiny ? " · tiny" : ""}
+            </span>
+          </Tip>
+        )}
+      </div>
+    </ContextArea>
   )
 }
 
@@ -629,7 +745,11 @@ function Outline({ left, right, width }: { left: number; right: number; width: n
   )
 }
 
-/** One main character's time on screen. Click a span to go there; the focused character is gold. */
+/**
+ * One main character's time on screen. Click a span to go there; the
+ * focused character is gold. The menu speaks of the appearance right-clicked
+ * and of the character.
+ */
 function LaneRow({
   axis,
   store,
@@ -638,6 +758,9 @@ function LaneRow({
   tc,
   onSeek,
   onScrub,
+  onMarkRange,
+  onFocus,
+  onOpen,
 }: {
   axis: Axis
   store: FrameStore
@@ -646,9 +769,13 @@ function LaneRow({
   tc: (f: number) => string
   onSeek: (f: number) => void
   onScrub: () => void
+  onMarkRange: (r: { start: number; end: number }) => void
+  onFocus: (characterId: string | null) => void
+  onOpen: (characterId: string) => void
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const [hover, setHover] = useState<{ x: number; span: Presence } | null>(null)
+  const [menuSpan, setMenuSpan] = useState<Presence | null>(null)
   const c = lane.character
   const { view } = axis
   const draw = useCallback(
@@ -672,44 +799,93 @@ function LaneRow({
     }
     return best ? { x, span: best } : null
   }
-  return (
-    <div className="group grid grid-cols-[var(--lane-label-w)_minmax(0,1fr)] items-center gap-3">
-      <span className="flex min-w-0 items-center gap-2">
-        {c.coverSmall && <img src={assetUrl(c.coverSmall)} alt="" className="size-5 shrink-0 rounded-full object-cover" />}
-        <span
-          className={cn(
-            "truncate text-xs font-medium",
-            focused ? "text-accent" : c.name ? "text-fg-2 group-hover:text-fg-1" : "text-fg-3 group-hover:text-fg-2",
-          )}
-        >
-          {c.label}
-        </span>
-      </span>
-      <div
-        ref={ref}
-        className="relative h-6 rounded-lg bg-white/[0.03]"
-        onPointerMove={(e) => setHover(spanAt(e.clientX))}
-        onPointerLeave={() => setHover(null)}
-        onClick={(e) => {
-          const h = spanAt(e.clientX)
-          if (!h) return
-          onScrub()
-          onSeek(h.span.start)
+  const go = (f: number) => {
+    onScrub()
+    onSeek(f)
+  }
+  const menu = (
+    <>
+      <ContextMenuLabel>
+        {c.label}
+        {menuSpan && (
+          <>
+            {" "}
+            · <span className="timecode">{tc(menuSpan.start)}</span>
+            {menuSpan.body ? " · no face" : ""}
+          </>
+        )}
+      </ContextMenuLabel>
+      {menuSpan && (
+        <>
+          <ContextMenuItem onSelect={() => go(menuSpan.start)}>
+            <Crosshair /> Go to this appearance
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => onMarkRange(menuSpan)}>
+            <FilmStrip /> Mark it as the clip
+          </ContextMenuItem>
+        </>
+      )}
+      <ContextMenuItem
+        onSelect={() => {
+          const f = nextAppearance(lane, store.get())
+          if (f != null) go(f)
         }}
       >
-        <TrackCanvas axis={axis} height={24} draw={draw} />
-        <HeadLine axis={axis} store={store} />
-        {hover && (
-          <Tip x={hover.x}>
-            <span className="text-fg-1">{c.label}</span>
-            <span className="timecode text-fg-3">
-              {" "}
-              · {tc(hover.span.start)}
-              {hover.span.body ? " · no face" : ""}
-            </span>
-          </Tip>
-        )}
+        <SkipForward /> Next appearance
+      </ContextMenuItem>
+      <ContextMenuSeparator />
+      <ContextMenuItem onSelect={() => onFocus(focused ? null : c.id)}>
+        <UserFocus /> {focused ? "Stop highlighting" : "Highlight"}
+      </ContextMenuItem>
+      <ContextMenuItem onSelect={() => onOpen(c.id)}>
+        <User /> Open in the cast
+      </ContextMenuItem>
+    </>
+  )
+  return (
+    <ContextArea
+      menu={menu}
+      // On the track the appearance under the pointer; on the name, none.
+      onContextMenu={(e) => setMenuSpan(ref.current?.contains(e.target as Node) ? (spanAt(e.clientX)?.span ?? null) : null)}
+    >
+      <div className="group grid grid-cols-[var(--lane-label-w)_minmax(0,1fr)] items-center gap-3">
+        <span className="flex min-w-0 items-center gap-2">
+          {c.coverSmall && <img src={assetUrl(c.coverSmall)} alt="" className="size-5 shrink-0 rounded-full object-cover" />}
+          <span
+            className={cn(
+              "truncate text-xs font-medium",
+              focused ? "text-accent" : c.name ? "text-fg-2 group-hover:text-fg-1" : "text-fg-3 group-hover:text-fg-2",
+            )}
+          >
+            {c.label}
+          </span>
+        </span>
+        <div
+          ref={ref}
+          className="relative h-6 rounded-lg bg-white/[0.03]"
+          onPointerMove={(e) => setHover(spanAt(e.clientX))}
+          onPointerLeave={() => setHover(null)}
+          onClick={(e) => {
+            const h = spanAt(e.clientX)
+            if (!h) return
+            onScrub()
+            onSeek(h.span.start)
+          }}
+        >
+          <TrackCanvas axis={axis} height={24} draw={draw} />
+          <HeadLine axis={axis} store={store} />
+          {hover && (
+            <Tip x={hover.x}>
+              <span className="text-fg-1">{c.label}</span>
+              <span className="timecode text-fg-3">
+                {" "}
+                · {tc(hover.span.start)}
+                {hover.span.body ? " · no face" : ""}
+              </span>
+            </Tip>
+          )}
+        </div>
       </div>
-    </div>
+    </ContextArea>
   )
 }

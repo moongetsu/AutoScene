@@ -1,4 +1,9 @@
 import type * as React from "react"
+import { Copy, FolderOpen } from "@/components/icons"
+import { ContextArea } from "@/components/ui/context-area"
+import { ContextMenuItem } from "@/components/ui/context-menu"
+import { TruncatedText } from "@/components/ui/tooltip"
+import { copyText, reveal } from "@/lib/os"
 import { cn } from "@/lib/utils"
 
 export function SettingsGroup({
@@ -45,11 +50,27 @@ export function SettingRow({
   )
 }
 
-/** A filesystem path shown as selectable mono text. */
+/**
+ * A filesystem path shown as selectable mono text (all of it in a tooltip
+ * when it is cut); a right-click shows or copies it.
+ */
 export function PathText({ path }: { path: string }) {
   return (
-    <span data-selectable className="block max-w-[440px] truncate font-mono text-sm text-fg-2" title={path}>
-      {path}
-    </span>
+    <ContextArea
+      menu={
+        <>
+          <ContextMenuItem onSelect={() => reveal(path)}>
+            <FolderOpen /> Show in folder
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => void copyText(path, "path")}>
+            <Copy /> Copy path
+          </ContextMenuItem>
+        </>
+      }
+    >
+      <TruncatedText data-selectable className="max-w-[440px] font-mono text-sm text-fg-2">
+        {path}
+      </TruncatedText>
+    </ContextArea>
   )
 }

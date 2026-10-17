@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router"
-import { Check, Checks, Play } from "@/components/icons"
+import { CaretRight, Check, Checks, Play, Prohibit, User, X } from "@/components/icons"
 import type { Character } from "@/bindings"
+import { Artwork } from "@/components/ui/artwork"
 import { Button } from "@/components/ui/button"
+import { ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-menu"
 import { EmptyState } from "@/components/ui/empty-state"
 import { Kbd } from "@/components/ui/kbd"
 import { Page } from "@/components/ui/page"
@@ -96,38 +98,80 @@ export function ReviewPage() {
     }
   }
 
-  // Answers on the keyboard (REVIEW_SHORTCUTS); a key that has nothing to
-  // answer here (no suggestion, an empty quick pick) passes through.
+  // The answers — on the keyboard (REVIEW_SHORTCUTS) and in the menu. One
+  // with nothing to answer here (no suggestion, an empty quick pick) says
+  // so (`false`), and its key passes through.
+  const decide = {
+    yes: () => {
+      if (!current || !suggestion) return false
+      if (!settled()) return
+      void answer(current.id, () => castEdit(pid, { op: "assign", tracks: [current.id], characterId: suggestion.id }))
+    },
+    no: () => {
+      if (!current || !suggestion) return false
+      if (!settled()) return
+      void answer(current.id, () => castEdit(pid, { op: "not_them", tracks: [current.id], characterId: suggestion.id }))
+    },
+    notFace: () => {
+      if (!current) return false
+      if (!settled()) return
+      void answer(current.id, () => castEdit(pid, { op: "not_a_face", tracks: [current.id] }))
+    },
+    skip: () => {
+      if (!current) return false
+      setSkipped((s) => new Set(s).add(current.id))
+    },
+    pick: (n: number) => {
+      const target = picks[n]
+      if (!current || !target) return false
+      if (!settled()) return
+      void answer(current.id, () => castEdit(pid, { op: "assign", tracks: [current.id], characterId: target.id }))
+    },
+    watch: () => {
+      if (!current) return false
+      void navigate({ to: "/p/$pid/timeline/$mid", params: { pid, mid: current.mediaId }, search: { f: current.start } })
+    },
+  }
   useShortcuts(
     REVIEW_SHORTCUTS,
-    {
-      yes: () => {
-        if (!current || !suggestion) return false
-        if (!settled()) return
-        void answer(current.id, () => castEdit(pid, { op: "assign", tracks: [current.id], characterId: suggestion.id }))
-      },
-      no: () => {
-        if (!current || !suggestion) return false
-        if (!settled()) return
-        void answer(current.id, () => castEdit(pid, { op: "not_them", tracks: [current.id], characterId: suggestion.id }))
-      },
-      notFace: () => {
-        if (!current) return false
-        if (!settled()) return
-        void answer(current.id, () => castEdit(pid, { op: "not_a_face", tracks: [current.id] }))
-      },
-      skip: () => {
-        if (!current) return false
-        setSkipped((s) => new Set(s).add(current.id))
-      },
-      pick: (e) => {
-        const target = picks[Number(digitOf(e)) - 1]
-        if (!current || !target) return false
-        if (!settled()) return
-        void answer(current.id, () => castEdit(pid, { op: "assign", tracks: [current.id], characterId: target.id }))
-      },
-    },
+    { ...decide, pick: (e) => decide.pick(Number(digitOf(e)) - 1) },
     { enabled: current !== undefined },
+  )
+
+  // The face is the page: anywhere on it, the answers come first.
+  const answers = current && (
+    <>
+      {suggestion && (
+        <ContextMenuItem onSelect={() => void decide.yes()} shortcut={["Y"]}>
+          <Check /> Yes, {suggestion.label}
+        </ContextMenuItem>
+      )}
+      {suggestion && (
+        <ContextMenuItem onSelect={() => void decide.no()} shortcut={["N"]}>
+          <X /> No, someone else
+        </ContextMenuItem>
+      )}
+      <ContextMenuItem onSelect={() => void decide.notFace()} shortcut={["X"]}>
+        <Prohibit /> Not a face
+      </ContextMenuItem>
+      <ContextMenuItem onSelect={() => void decide.skip()} shortcut={["→"]}>
+        <CaretRight /> Skip for now
+      </ContextMenuItem>
+      <ContextMenuSeparator />
+      {picks.map(
+        (p, i) =>
+          p &&
+          p.id !== suggestion?.id && (
+            <ContextMenuItem key={p.id} onSelect={() => void decide.pick(i)} shortcut={[String(i + 1)]}>
+              <User /> It's {p.label}
+            </ContextMenuItem>
+          ),
+      )}
+      <ContextMenuSeparator />
+      <ContextMenuItem onSelect={() => void decide.watch()}>
+        <Play /> Watch this moment
+      </ContextMenuItem>
+    </>
   )
 
   const toolbar = <TopBar back={{ label: "Cast", to: `/p/${pid}/cast` }} title="Review faces" />
@@ -173,7 +217,7 @@ export function ReviewPage() {
   }
 
   return (
-    <Page topbar={toolbar}>
+    <Page topbar={toolbar} menu={answers}>
       {/* The face being decided lights the room. */}
       {current && (
         <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-screen overflow-hidden opacity-40">
@@ -215,14 +259,19 @@ export function ReviewPage() {
 
             <div className="mt-[min(40px,4vh)] flex items-center justify-center gap-8">
               <figure className="flex flex-col items-center">
-                <div className="size-[min(300px,32vh)] overflow-hidden rounded-[32px] bg-inset shadow-[0_40px_80px_-30px_rgb(0_0_0/0.9),inset_0_0_0_1px_rgb(255_255_255/0.12)]">
-                  <img
-                    key={current.id}
-                    src={assetUrl(portrait.data ?? current.thumb)}
-                    alt="The face to decide on"
-                    className="size-full animate-fade-in object-cover object-[50%_30%]"
-                  />
-                </div>
+                {/* The app's picture: a failed one falls back quietly, never the browser's broken-image icon. */}
+                <Artwork
+                  key={current.id}
+                  path={portrait.data ?? current.thumb}
+                  alt="The face to decide on"
+                  className="size-[min(300px,32vh)] rounded-[32px] bg-inset shadow-[0_40px_80px_-30px_rgb(0_0_0/0.9),inset_0_0_0_1px_rgb(255_255_255/0.12)]"
+                  imgClassName="object-[50%_30%]"
+                  fallback={
+                    <div className="flex size-full items-center justify-center text-fg-disabled [&_svg]:size-12">
+                      <User />
+                    </div>
+                  }
+                />
                 <figcaption className="mt-3 flex items-center gap-2 text-sm text-fg-3">
                   <span className="timecode">
                     {m?.label && `${m.label} · `}

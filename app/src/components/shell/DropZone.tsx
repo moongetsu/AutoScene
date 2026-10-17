@@ -20,7 +20,9 @@ export function DropZone() {
   useEffect(() => {
     if (!isTauri) return
     const un = getCurrentWebview().onDragDropEvent(({ payload }) => {
-      if (payload.type === "enter" || payload.type === "over") setOver(true)
+      // Only files from outside: text or a link dragged inside the window
+      // (no paths) is no drop for a project. "over" keeps what "enter" said.
+      if (payload.type === "enter") setOver(payload.paths.length > 0)
       else if (payload.type === "leave") setOver(false)
       else if (payload.type === "drop") {
         setOver(false)

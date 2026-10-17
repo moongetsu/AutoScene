@@ -1,42 +1,36 @@
 import type * as React from "react"
 import { useState } from "react"
-import { Link, useNavigate, useRouterState } from "@tanstack/react-router"
+import { Link, useRouterState } from "@tanstack/react-router"
 import {
   ArrowCounterClockwise,
+  DownloadSimple,
   FilmStrip,
-  FolderOpen,
   GearSix,
   Info,
   Keyboard,
   MagnifyingGlass,
-  PencilSimple,
-  Play,
   Plus,
   Queue,
   SquaresFour,
   Television,
   Trash,
 } from "@/components/icons"
-import { toast } from "sonner"
 import type { ProjectSummary } from "@/bindings"
 import { AutoSceneMark } from "@/components/brand/AutoSceneMark"
 import { Artwork } from "@/components/ui/artwork"
-import {
-  ContextMenu,
-  ContextMenuContent,
-  ContextMenuItem,
-  ContextMenuSeparator,
-  ContextMenuTrigger,
-} from "@/components/ui/context-menu"
+import { ContextArea, type MenuContent } from "@/components/ui/context-area"
+import { ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-menu"
 import { ProgressRing } from "@/components/ui/progress"
 import { Tooltip } from "@/components/ui/tooltip"
+import { contextKit } from "@/components/ui/menu-actions"
 import { DeleteProjectDialog, RenameProjectDialog } from "@/features/library/ProjectDialogs"
+import { NewProjectItems, ProjectItems } from "@/features/library/project-actions"
 import { useAppActions } from "@/lib/actions"
-import { commands, errorMessage } from "@/lib/ipc"
+import { commands } from "@/lib/ipc"
 import { useProjects } from "@/lib/queries"
 import { shortcutKeys } from "@/lib/shortcuts"
 import { cn } from "@/lib/utils"
-import { useActiveCount, useActiveProgress, useProjectIndexing } from "@/state/activity"
+import { useActiveCount, useActiveProgress, useActivity, useProjectIndexing } from "@/state/activity"
 import { useNewProject } from "@/state/new-project"
 import { useUi } from "@/state/ui"
 
@@ -68,12 +62,21 @@ export function Rail() {
       {/* The window is dragged by the rail's top, around the mark. */}
       <div data-tauri-drag-region className="absolute inset-x-0 top-0 h-[var(--topbar-h)]" />
       <Tooltip label="Library" side="right">
-        <Link to="/" aria-label="AutoScene library" className="relative mb-4 rounded-xl">
-          <AutoSceneMark className="size-9 drop-shadow-[0_6px_16px_rgb(224_180_92/0.25)]" />
-        </Link>
+        <ContextArea tail={false} menu={<LibraryItems />}>
+          <Link to="/" aria-label="AutoScene library" className="relative mb-4 rounded-xl">
+            <AutoSceneMark className="size-9 drop-shadow-[0_6px_16px_rgb(224_180_92/0.25)]" />
+          </Link>
+        </ContextArea>
       </Tooltip>
 
-      <RailLink to="/" icon={<SquaresFour />} label="Library" active={path === "/"} shortcut={shortcutKeys("library")} />
+      <RailLink
+        to="/"
+        icon={<SquaresFour />}
+        label="Library"
+        active={path === "/"}
+        shortcut={shortcutKeys("library")}
+        menu={<LibraryItems />}
+      />
 
       <div className="my-3 h-px w-8 bg-white/10" />
 
@@ -88,52 +91,78 @@ export function Rail() {
           />
         ))}
         <Tooltip label="New project" shortcut={shortcutKeys("newProject")} side="right">
-          <button
-            onClick={() => useNewProject.getState().show()}
-            aria-label="New project"
-            className="flex size-11 shrink-0 items-center justify-center rounded-[14px] border border-dashed border-white/20 text-fg-3 transition-colors hover:border-white/40 hover:bg-white/[0.05] hover:text-fg-1 [&_svg]:size-[18px]"
-          >
-            <Plus />
-          </button>
+          <ContextArea tail={false} menu={<NewProjectItems kit={contextKit} />}>
+            <button
+              onClick={() => useNewProject.getState().show()}
+              aria-label="New project"
+              className="flex size-11 shrink-0 items-center justify-center rounded-[14px] border border-dashed border-white/20 text-fg-3 transition-colors hover:border-white/40 hover:bg-white/[0.05] hover:text-fg-1 [&_svg]:size-[18px]"
+            >
+              <Plus />
+            </button>
+          </ContextArea>
         </Tooltip>
       </div>
 
       <div className="flex flex-col items-center gap-1 pt-2">
-        <RailButton icon={<MagnifyingGlass />} label="Search" onClick={actions.openPalette} shortcut={shortcutKeys("palette")} />
+        <RailButton
+          icon={<MagnifyingGlass />}
+          label="Search"
+          onClick={actions.openPalette}
+          shortcut={shortcutKeys("palette")}
+          menu={
+            <ContextMenuItem onSelect={actions.openPalette} shortcut={shortcutKeys("palette")}>
+              <MagnifyingGlass /> Command palette…
+            </ContextMenuItem>
+          }
+        />
         <ActivityButton />
-        <ContextMenu>
-          <ContextMenuTrigger asChild>
-            <div>
-              <RailLink
-                to="/settings/general"
-                icon={<GearSix />}
-                label="Settings"
-                active={path.startsWith("/settings")}
-                shortcut={shortcutKeys("settings")}
-              />
-            </div>
-          </ContextMenuTrigger>
-          <ContextMenuContent onCloseAutoFocus={(e) => e.preventDefault()}>
-            <ContextMenuItem onSelect={() => actions.goSettings("general")}>
-              <GearSix /> General
-            </ContextMenuItem>
-            <ContextMenuItem onSelect={() => actions.goSettings("shortcuts")}>
-              <Keyboard /> Shortcuts
-            </ContextMenuItem>
-            <ContextMenuItem onSelect={() => actions.goSettings("updates")}>
-              <ArrowCounterClockwise /> Updates
-            </ContextMenuItem>
-            <ContextMenuSeparator />
-            <ContextMenuItem onSelect={() => actions.goSettings("about")}>
-              <Info /> About AutoScene
-            </ContextMenuItem>
-          </ContextMenuContent>
-        </ContextMenu>
+        <RailLink
+          to="/settings/general"
+          icon={<GearSix />}
+          label="Settings"
+          active={path.startsWith("/settings")}
+          shortcut={shortcutKeys("settings")}
+          menu={
+            <>
+              <ContextMenuItem onSelect={() => actions.goSettings("general")}>
+                <GearSix /> General
+              </ContextMenuItem>
+              <ContextMenuItem onSelect={() => actions.goSettings("shortcuts")}>
+                <Keyboard /> Shortcuts
+              </ContextMenuItem>
+              <ContextMenuItem onSelect={() => actions.goSettings("updates")}>
+                <ArrowCounterClockwise /> Updates
+              </ContextMenuItem>
+              <ContextMenuItem onSelect={actions.checkUpdates}>
+                <DownloadSimple /> Check for updates
+              </ContextMenuItem>
+              <ContextMenuSeparator />
+              <ContextMenuItem onSelect={() => actions.goSettings("about")}>
+                <Info /> About AutoScene
+              </ContextMenuItem>
+            </>
+          }
+        />
       </div>
 
       <RenameProjectDialog project={renaming} onOpenChange={(o) => !o && setRenaming(null)} />
       <DeleteProjectDialog project={deleting} onOpenChange={(o) => !o && setDeleting(null)} />
     </nav>
+  )
+}
+
+/** The library, and a new project: what the mark and the Library tile offer. */
+function LibraryItems() {
+  const actions = useAppActions()
+  return (
+    <>
+      <ContextMenuItem onSelect={actions.goLibrary} shortcut={shortcutKeys("library")}>
+        <SquaresFour /> Library
+      </ContextMenuItem>
+      <ContextMenuItem onSelect={actions.newProject} shortcut={shortcutKeys("newProject")}>
+        <Plus /> New project…
+      </ContextMenuItem>
+    </>
   )
 }
 
@@ -147,23 +176,28 @@ function RailLink({
   label,
   active,
   shortcut,
+  menu,
 }: {
   to: string
   icon: React.ReactElement<{ weight?: string }>
   label: string
   active: boolean
   shortcut?: string[]
+  /** What its right-click offers (only that: a rail tile has no app entries under it). */
+  menu?: MenuContent
 }) {
   return (
     <Tooltip label={label} shortcut={shortcut} side="right">
-      <Link to={to} aria-current={active ? "page" : undefined} className={itemClass}>
-        <span className={cn(pillClass, active ? "bg-white/[0.14] text-fg-1" : "text-fg-2 group-hover:bg-white/[0.07] group-hover:text-fg-1")}>
-          {active ? <IconWeight icon={icon} /> : icon}
-        </span>
-        <span className={cn("text-[10.5px] leading-3 font-medium", active ? "text-fg-1" : "text-fg-3 group-hover:text-fg-2")}>
-          {label}
-        </span>
-      </Link>
+      <ContextArea tail={false} menu={menu ?? null} disabled={!menu}>
+        <Link to={to} aria-current={active ? "page" : undefined} className={itemClass}>
+          <span className={cn(pillClass, active ? "bg-white/[0.14] text-fg-1" : "text-fg-2 group-hover:bg-white/[0.07] group-hover:text-fg-1")}>
+            {active ? <IconWeight icon={icon} /> : icon}
+          </span>
+          <span className={cn("text-[10.5px] leading-3 font-medium", active ? "text-fg-1" : "text-fg-3 group-hover:text-fg-2")}>
+            {label}
+          </span>
+        </Link>
+      </ContextArea>
     </Tooltip>
   )
 }
@@ -180,6 +214,7 @@ function RailButton({
   onClick,
   shortcut,
   pressed,
+  menu,
   children,
 }: {
   icon: React.ReactNode
@@ -187,25 +222,29 @@ function RailButton({
   onClick: () => void
   shortcut?: string[]
   pressed?: boolean
+  /** What its right-click offers (only that). */
+  menu?: MenuContent
   children?: React.ReactNode
 }) {
   return (
     <Tooltip label={label} shortcut={shortcut} side="right">
-      <button onClick={onClick} aria-pressed={pressed} className={itemClass}>
-        <span
-          className={cn(
-            pillClass,
-            "relative",
-            pressed ? "bg-white/[0.14] text-fg-1" : "text-fg-2 group-hover:bg-white/[0.07] group-hover:text-fg-1",
-          )}
-        >
-          {icon}
-          {children}
-        </span>
-        <span className={cn("text-[10.5px] leading-3 font-medium", pressed ? "text-fg-1" : "text-fg-3 group-hover:text-fg-2")}>
-          {label}
-        </span>
-      </button>
+      <ContextArea tail={false} menu={menu ?? null} disabled={!menu}>
+        <button onClick={onClick} aria-pressed={pressed} className={itemClass}>
+          <span
+            className={cn(
+              pillClass,
+              "relative",
+              pressed ? "bg-white/[0.14] text-fg-1" : "text-fg-2 group-hover:bg-white/[0.07] group-hover:text-fg-1",
+            )}
+          >
+            {icon}
+            {children}
+          </span>
+          <span className={cn("text-[10.5px] leading-3 font-medium", pressed ? "text-fg-1" : "text-fg-3 group-hover:text-fg-2")}>
+            {label}
+          </span>
+        </button>
+      </ContextArea>
     </Tooltip>
   )
 }
@@ -223,6 +262,21 @@ function ActivityButton() {
       onClick={actions.toggleActivity}
       shortcut={shortcutKeys("activity")}
       pressed={open}
+      menu={
+        <>
+          <ContextMenuItem onSelect={actions.toggleActivity} shortcut={shortcutKeys("activity")}>
+            <Queue /> {open ? "Hide activity" : "Show activity"}
+          </ContextMenuItem>
+          <ContextMenuItem
+            onSelect={() => {
+              void commands.jobsClearFinished()
+              useActivity.getState().clearFinished()
+            }}
+          >
+            <Trash /> Clear finished
+          </ContextMenuItem>
+        </>
+      }
     >
       {active > 0 && (
         <>
@@ -250,7 +304,6 @@ function ProjectTile({
   onRename: () => void
   onDelete: () => void
 }) {
-  const navigate = useNavigate()
   const indexing = useProjectIndexing(p.id)
   const initials = p.title
     .split(/\s+/)
@@ -259,8 +312,7 @@ function ProjectTile({
     .join("")
     .toUpperCase()
   return (
-    <ContextMenu>
-      <ContextMenuTrigger asChild>
+    <ContextArea tail={false} menu={<ProjectItems kit={contextKit} project={p} onRename={onRename} onDelete={onDelete} />}>
         <div>
           <Tooltip
             side="right"
@@ -308,22 +360,6 @@ function ProjectTile({
             </Link>
           </Tooltip>
         </div>
-      </ContextMenuTrigger>
-      <ContextMenuContent onCloseAutoFocus={(e) => e.preventDefault()}>
-        <ContextMenuItem onSelect={() => void navigate({ to: "/p/$pid", params: { pid: p.id } })}>
-          <Play /> Open project
-        </ContextMenuItem>
-        <ContextMenuItem onSelect={() => void commands.revealPath(p.dir).catch((e) => toast.error(errorMessage(e)))}>
-          <FolderOpen /> Show project folder
-        </ContextMenuItem>
-        <ContextMenuItem onSelect={onRename}>
-          <PencilSimple /> Rename…
-        </ContextMenuItem>
-        <ContextMenuSeparator />
-        <ContextMenuItem destructive onSelect={onDelete}>
-          <Trash /> Remove…
-        </ContextMenuItem>
-      </ContextMenuContent>
-    </ContextMenu>
+    </ContextArea>
   )
 }

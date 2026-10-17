@@ -4,6 +4,7 @@ import { CircleNotch, FilePlus, FilmSlate, FilmStrip, FolderPlus, Television, X 
 import { toast } from "sonner"
 import type { ContentKind, ImportCandidate, ProjectKind } from "@/bindings"
 import { Button } from "@/components/ui/button"
+import { Tooltip } from "@/components/ui/tooltip"
 import { Dialog, DialogContent, DialogFooter } from "@/components/ui/dialog"
 import { Field, Input } from "@/components/ui/input"
 import { Segmented } from "@/components/ui/segmented"
@@ -175,28 +176,30 @@ function NewProjectForm({ seed, onDone }: { seed: string[]; onDone: () => void }
                           </span>
                         </td>
                         <td className="max-w-0 py-2 group-hover:bg-white/[0.04]">
-                          <div className="truncate text-fg-2" title={c.path}>
-                            {c.fileName}
-                          </div>
+                          <Tooltip label={c.path} side="top" delay={600}>
+                            <div className="truncate text-fg-2">{c.fileName}</div>
+                          </Tooltip>
                         </td>
                         <td className="timecode w-24 py-2 pr-2 text-right text-sm text-fg-3 group-hover:bg-white/[0.04]">
                           {formatBytes(c.sizeBytes ?? 0)}
                         </td>
                         <td className="w-10 rounded-r-xl py-1 pr-1.5 group-hover:bg-white/[0.04]">
-                          <button
-                            aria-label={off ? `Include ${c.fileName}` : `Skip ${c.fileName}`}
-                            onClick={() =>
-                              setRemoved((r) => {
-                                const n = new Set(r)
-                                if (n.has(c.path)) n.delete(c.path)
-                                else n.add(c.path)
-                                return n
-                              })
-                            }
-                            className="flex size-7 items-center justify-center rounded-full text-fg-3 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-white/[0.1] hover:text-fg-1 focus-visible:opacity-100"
-                          >
-                            <X className="size-3.5" />
-                          </button>
+                          <Tooltip label={off ? "Include it" : "Skip it"} side="left">
+                            <button
+                              aria-label={off ? `Include ${c.fileName}` : `Skip ${c.fileName}`}
+                              onClick={() =>
+                                setRemoved((r) => {
+                                  const n = new Set(r)
+                                  if (n.has(c.path)) n.delete(c.path)
+                                  else n.add(c.path)
+                                  return n
+                                })
+                              }
+                              className="flex size-7 items-center justify-center rounded-full text-fg-3 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-white/[0.1] hover:text-fg-1 focus-visible:opacity-100"
+                            >
+                              <X className="size-3.5" />
+                            </button>
+                          </Tooltip>
                         </td>
                       </tr>
                     )

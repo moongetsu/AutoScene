@@ -17,6 +17,7 @@
         "transparent": true,
         "noRedirectionBitmap": true,
         "theme": "Dark",
+        "generalAutofillEnabled": false,
         "windowEffects": {
           "effects": [
             "mica"

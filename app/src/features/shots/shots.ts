@@ -1,5 +1,8 @@
 import type { CSSProperties } from "react"
 
+/** What can be said about the bodies a shot without the character's face shows. */
+export type BodyVerdict = "not_them" | "not_a_person"
+
 /** Shot cards are 16:9. */
 export const CARD_ASPECT = 16 / 9
 

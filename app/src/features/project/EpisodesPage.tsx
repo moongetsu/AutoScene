@@ -1,39 +1,25 @@
 import { useMemo, useState } from "react"
 import { useNavigate, useParams } from "@tanstack/react-router"
 import {
-  ArrowCounterClockwise,
   DotsThree,
   FilePlus,
   FolderOpen,
   FolderPlus,
-  MagnifyingGlass,
   Play,
-  Scissors,
-  Trash,
-  UserFocus,
 } from "@/components/icons"
 import { toast } from "sonner"
 import type { MediaItem } from "@/bindings"
 import { Artwork } from "@/components/ui/artwork"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import {
-  ContextMenu,
-  ContextMenuContent,
-  ContextMenuItem,
-  ContextMenuSeparator,
-  ContextMenuTrigger,
-} from "@/components/ui/context-menu"
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
+import { ContextArea } from "@/components/ui/context-area"
+import { ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-menu"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
+import { contextKit, dropdownKit } from "@/components/ui/menu-actions"
 import { EmptyState } from "@/components/ui/empty-state"
 import { Page } from "@/components/ui/page"
 import { Select } from "@/components/ui/select"
+import { Tooltip } from "@/components/ui/tooltip"
 import { TopBar } from "@/components/ui/topbar"
 import { formatBytes, formatDuration } from "@/lib/format"
 import { commands, errorMessage } from "@/lib/ipc"
@@ -48,14 +34,15 @@ import {
   pickVideoFiles,
   releaseTitle,
 } from "@/lib/media"
+import { reveal } from "@/lib/os"
 import { addToProject, projectFacts } from "@/lib/projects"
 import { firstFailure, useMediaList, useProject } from "@/lib/queries"
 import { formatFps } from "@/lib/timecode"
 import { cn } from "@/lib/utils"
+import { EpisodeItems } from "./episode-actions"
 import { MissingBanner } from "./MissingBanner"
 import { ProjectLoadError } from "./ProjectLoadError"
 import { ProjectNav } from "./ProjectNav"
-import { locateFile } from "./relink"
 import { RemoveMediaDialog } from "./RemoveMediaDialog"
 import { StatusCell } from "./StatusCell"
 
@@ -86,7 +73,23 @@ export function EpisodesPage() {
   }
 
   return (
-    <Page topbar={<TopBar title={project?.title} nav={<ProjectNav pid={pid} />} />}>
+    <Page
+      topbar={<TopBar title={project?.title} nav={<ProjectNav pid={pid} />} />}
+      menu={
+        <>
+          <ContextMenuItem onSelect={() => void pickFolder().then((p) => (p ? addToProject(pid, [p]) : undefined))}>
+            <FolderPlus /> Add folder…
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => void pickVideoFiles().then((p) => addToProject(pid, p))}>
+            <FilePlus /> Add files…
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem onSelect={() => project && reveal(project.dir)}>
+            <FolderOpen /> Show project folder
+          </ContextMenuItem>
+        </>
+      }
+    >
       <header className="flex flex-wrap items-end justify-between gap-6 px-10 pt-10 pb-8">
         <div>
           <h1 className="display text-5xl text-fg-1">{movie ? "Files" : "Episodes"}</h1>
@@ -160,10 +163,6 @@ function EpisodeRow({
   onOpen: () => void
   onRemove: () => void
 }) {
-  const redo = (stage: "shots" | "faces") =>
-    void commands
-      .mediaAnalyze(projectId, m.id, stage)
-      .catch((e) => toast.error("Couldn't start the analysis", { description: errorMessage(e) }))
   const v = m.info?.video
   const ready = m.status === "ready"
   const audio = m.info?.audio ?? []
@@ -175,9 +174,9 @@ function EpisodeRow({
       .catch((e) => toast.error("Couldn't change the audio track", { description: errorMessage(e) }))
   }
 
+  const items = { projectId, media: m, faces, onOpen, onRemove }
   return (
-    <ContextMenu>
-      <ContextMenuTrigger asChild>
+    <ContextArea menu={<EpisodeItems kit={contextKit} {...items} openShortcut={["Enter"]} />}>
         <li
           onClick={ready ? onOpen : undefined}
           tabIndex={ready ? 0 : undefined}
@@ -212,11 +211,11 @@ function EpisodeRow({
                   {m.label}
                 </Badge>
               )}
-              <span className="truncate text-lg font-medium text-fg-1" title={m.fileName}>
-                {releaseTitle(m.fileName)}
-              </span>
+              <Tooltip label={m.fileName} side="top" delay={600}>
+                <span className="truncate text-lg font-medium text-fg-1">{releaseTitle(m.fileName)}</span>
+              </Tooltip>
             </div>
-            <div className="mt-1.5 truncate text-sm text-fg-3" title={m.fileName}>
+            <div className="mt-1.5 truncate text-sm text-fg-3">
               {ambiguous && <>{fileStem(m.fileName)} · </>}
               {formatBytes(m.sizeBytes ?? 0)}
               {v && (
@@ -269,73 +268,11 @@ function EpisodeRow({
                 <DotsThree className="size-5" weight="bold" />
               </DropdownMenuTrigger>
               <DropdownMenuContent>
-                <DropdownMenuItem disabled={!ready} onSelect={onOpen}>
-                  <Play /> Open
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => void commands.revealPath(m.path).catch(() => toast.error("File not found"))}>
-                  <FolderOpen /> Show in folder
-                </DropdownMenuItem>
-                {m.status === "missing" && (
-                  <DropdownMenuItem onSelect={() => void locateFile(projectId, m)}>
-                    <MagnifyingGlass /> Locate file…
-                  </DropdownMenuItem>
-                )}
-                {m.status === "failed" && (
-                  <DropdownMenuItem onSelect={() => void commands.mediaRetry(projectId, m.id)}>
-                    <ArrowCounterClockwise /> Index again
-                  </DropdownMenuItem>
-                )}
-                {ready && (
-                  <DropdownMenuItem onSelect={() => redo("shots")}>
-                    <Scissors /> Find shots again
-                  </DropdownMenuItem>
-                )}
-                {ready && faces && m.shots === "ready" && (
-                  <DropdownMenuItem onSelect={() => redo("faces")}>
-                    <UserFocus /> Find characters again
-                  </DropdownMenuItem>
-                )}
-                <DropdownMenuSeparator />
-                <DropdownMenuItem destructive onSelect={onRemove}>
-                  <Trash /> Remove from project…
-                </DropdownMenuItem>
+                <EpisodeItems kit={dropdownKit} {...items} />
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
         </li>
-      </ContextMenuTrigger>
-      <ContextMenuContent>
-        <ContextMenuItem disabled={!ready} onSelect={onOpen} shortcut={["Enter"]}>
-          <Play /> Open
-        </ContextMenuItem>
-        <ContextMenuItem onSelect={() => void commands.revealPath(m.path).catch(() => toast.error("File not found"))}>
-          <FolderOpen /> Show in folder
-        </ContextMenuItem>
-        {m.status === "missing" && (
-          <ContextMenuItem onSelect={() => void locateFile(projectId, m)}>
-            <MagnifyingGlass /> Locate file…
-          </ContextMenuItem>
-        )}
-        {m.status === "failed" && (
-          <ContextMenuItem onSelect={() => void commands.mediaRetry(projectId, m.id)}>
-            <ArrowCounterClockwise /> Index again
-          </ContextMenuItem>
-        )}
-        {ready && (
-          <ContextMenuItem onSelect={() => redo("shots")}>
-            <Scissors /> Find shots again
-          </ContextMenuItem>
-        )}
-        {ready && faces && m.shots === "ready" && (
-          <ContextMenuItem onSelect={() => redo("faces")}>
-            <UserFocus /> Find characters again
-          </ContextMenuItem>
-        )}
-        <ContextMenuSeparator />
-        <ContextMenuItem destructive onSelect={onRemove}>
-          <Trash /> Remove from project…
-        </ContextMenuItem>
-      </ContextMenuContent>
-    </ContextMenu>
+    </ContextArea>
   )
 }

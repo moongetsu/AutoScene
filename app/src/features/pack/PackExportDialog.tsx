@@ -3,6 +3,7 @@ import { CircleNotch, FolderOpen } from "@/components/icons"
 import { toast } from "sonner"
 import type { Character } from "@/bindings"
 import { Button } from "@/components/ui/button"
+import { TruncatedText } from "@/components/ui/tooltip"
 import { Dialog, DialogContent, DialogFooter } from "@/components/ui/dialog"
 import { Field, Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
@@ -202,10 +203,9 @@ function ExportForm({ pid, character, pack, onDone }: { pid: string; character: 
           <div className="flex gap-2">
             <div
               data-selectable
-              title={outDir}
               className="flex h-10 min-w-0 flex-1 items-center rounded-lg border border-soft bg-white/[0.04] px-3 font-mono text-sm text-fg-2"
             >
-              <span className="truncate">{outDir || "…"}</span>
+              <TruncatedText>{outDir || "…"}</TruncatedText>
             </div>
             <Button size="md" className="h-10" onClick={() => void pickFolder("Export to").then((p) => p && setDir(p))}>
               <FolderOpen /> Change…

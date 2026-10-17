@@ -2,6 +2,8 @@ import type * as React from "react"
 import { DropdownMenu as M } from "radix-ui"
 import { Check } from "@/components/icons"
 import { cn } from "@/lib/utils"
+import { MenuShortcut } from "./context-menu"
+import { afterClose, menuItem, menuSurface } from "./menu-base"
 
 export const DropdownMenu = M.Root
 export const DropdownMenuTrigger = M.Trigger
@@ -11,6 +13,7 @@ export function DropdownMenuContent({
   className,
   align = "end",
   sideOffset = 6,
+  onCloseAutoFocus,
   ...props
 }: React.ComponentProps<typeof M.Content>) {
   return (
@@ -18,27 +21,31 @@ export function DropdownMenuContent({
       <M.Content
         align={align}
         sideOffset={sideOffset}
-        className={cn(
-          "glass-strong z-50 min-w-[200px] rounded-xl p-1.5 data-[state=open]:animate-pop-in focus:outline-none",
-          className,
-        )}
+        // Back to the ⋯ button only when the focus would be lost: an entry
+        // that opened a field or a dialog keeps it there.
+        onCloseAutoFocus={(e) => {
+          onCloseAutoFocus?.(e)
+          const active = document.activeElement
+          if (active !== null && active !== document.body) e.preventDefault()
+        }}
+        className={cn(menuSurface, "data-[state=open]:animate-pop-in", className)}
         {...props}
       />
     </M.Portal>
   )
 }
 
-const item = cn(
-  "flex h-9 cursor-default items-center gap-3 rounded-lg px-3 text-md text-fg-2 outline-none select-none",
-  "data-[highlighted]:bg-active data-[highlighted]:text-fg-1 data-[disabled]:opacity-40",
-  "[&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-fg-3 data-[highlighted]:[&_svg]:text-fg-2",
-)
+const item = menuItem
 
+/** `shortcut` as the keys read, e.g. ["Ctrl", "E"] — like the context menu's items. */
 export function DropdownMenuItem({
   className,
   destructive,
+  shortcut,
+  children,
+  onSelect,
   ...props
-}: React.ComponentProps<typeof M.Item> & { destructive?: boolean }) {
+}: React.ComponentProps<typeof M.Item> & { destructive?: boolean; shortcut?: string[] }) {
   return (
     <M.Item
       className={cn(
@@ -46,8 +53,12 @@ export function DropdownMenuItem({
         destructive && "text-danger data-[highlighted]:bg-danger-subtle data-[highlighted]:text-danger [&_svg]:text-danger",
         className,
       )}
+      onSelect={afterClose(onSelect)}
       {...props}
-    />
+    >
+      {children}
+      <MenuShortcut keys={shortcut} />
+    </M.Item>
   )
 }
 

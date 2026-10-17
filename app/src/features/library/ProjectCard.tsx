@@ -1,29 +1,17 @@
-import { Link, useNavigate } from "@tanstack/react-router"
-import { DotsThree, FilmStrip, FolderOpen, PencilSimple, Play, Television, Trash } from "@/components/icons"
-import { toast } from "sonner"
+import { Link } from "@tanstack/react-router"
+import { DotsThree, FilmStrip, Television } from "@/components/icons"
 import type { ProjectSummary } from "@/bindings"
 import { Artwork } from "@/components/ui/artwork"
 import { Badge } from "@/components/ui/badge"
-import {
-  ContextMenu,
-  ContextMenuContent,
-  ContextMenuItem,
-  ContextMenuSeparator,
-  ContextMenuTrigger,
-} from "@/components/ui/context-menu"
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
+import { ContextArea } from "@/components/ui/context-area"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
+import { contextKit, dropdownKit } from "@/components/ui/menu-actions"
 import { Progress } from "@/components/ui/progress"
 import { formatDuration } from "@/lib/format"
-import { commands, errorMessage } from "@/lib/ipc"
 import { cn } from "@/lib/utils"
 import { projectFacts } from "@/lib/projects"
 import { useProjectIndexing } from "@/state/activity"
+import { ProjectItems } from "./project-actions"
 
 /** A project as its picture: the title over the footage, facts beneath it. */
 export function ProjectCard({
@@ -35,11 +23,9 @@ export function ProjectCard({
   onRename: () => void
   onDelete: () => void
 }) {
-  const navigate = useNavigate()
   const indexing = useProjectIndexing(p.id)
   return (
-    <ContextMenu>
-      <ContextMenuTrigger asChild>
+    <ContextArea menu={<ProjectItems kit={contextKit} project={p} onRename={onRename} onDelete={onDelete} />}>
         <div className="group relative">
           <Link
             to="/p/$pid"
@@ -89,35 +75,10 @@ export function ProjectCard({
               <DotsThree className="size-5" weight="bold" />
             </DropdownMenuTrigger>
             <DropdownMenuContent>
-              <DropdownMenuItem onSelect={onRename}>
-                <PencilSimple /> Rename…
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => void commands.revealPath(p.dir).catch((e) => toast.error(errorMessage(e)))}>
-                <FolderOpen /> Show project folder
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem destructive onSelect={onDelete}>
-                <Trash /> Remove…
-              </DropdownMenuItem>
+              <ProjectItems kit={dropdownKit} project={p} onRename={onRename} onDelete={onDelete} />
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
-      </ContextMenuTrigger>
-      <ContextMenuContent>
-        <ContextMenuItem onSelect={() => void navigate({ to: "/p/$pid", params: { pid: p.id } })}>
-          <Play /> Open
-        </ContextMenuItem>
-        <ContextMenuItem onSelect={() => void commands.revealPath(p.dir).catch((e) => toast.error(errorMessage(e)))}>
-          <FolderOpen /> Show project folder
-        </ContextMenuItem>
-        <ContextMenuItem onSelect={onRename}>
-          <PencilSimple /> Rename…
-        </ContextMenuItem>
-        <ContextMenuSeparator />
-        <ContextMenuItem destructive onSelect={onDelete}>
-          <Trash /> Remove…
-        </ContextMenuItem>
-      </ContextMenuContent>
-    </ContextMenu>
+    </ContextArea>
   )
 }

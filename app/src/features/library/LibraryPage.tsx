@@ -5,8 +5,10 @@ import { FilmSlate, Plus, Scissors, UserFocus, Users } from "@/components/icons"
 import type { ProjectSummary } from "@/bindings"
 import { AutoSceneMark } from "@/components/brand/AutoSceneMark"
 import { Button } from "@/components/ui/button"
+import { ContextArea } from "@/components/ui/context-area"
 import { ErrorState } from "@/components/ui/error-state"
 import { Hero } from "@/components/ui/hero"
+import { contextKit } from "@/components/ui/menu-actions"
 import { Page } from "@/components/ui/page"
 import { Section } from "@/components/ui/shelf"
 import { TopBar } from "@/components/ui/topbar"
@@ -17,6 +19,7 @@ import { useProjects } from "@/lib/queries"
 import { useNewProject } from "@/state/new-project"
 import { ProjectCard } from "./ProjectCard"
 import { DeleteProjectDialog, RenameProjectDialog } from "./ProjectDialogs"
+import { NewProjectItems, ProjectItems } from "./project-actions"
 
 const STEPS: { icon: React.ReactNode; title: string; body: string }[] = [
   {
@@ -47,6 +50,7 @@ export function LibraryPage() {
 
   return (
     <Page
+      menu={<NewProjectItems kit={contextKit} page />}
       topbar={
         <TopBar title="Library" overlay>
           {!empty && (
@@ -63,7 +67,11 @@ export function LibraryPage() {
         <Welcome onCreate={() => newProject()} />
       ) : (
         <>
-          {latest ? <Featured project={latest} /> : <div className="h-[clamp(380px,56vh,600px)]" />}
+          {latest ? (
+            <Featured project={latest} onRename={() => setRenaming(latest)} onDelete={() => setDeleting(latest)} />
+          ) : (
+            <div className="h-[clamp(380px,56vh,600px)]" />
+          )}
           <Section title="All projects" count={projects?.length} className="-mt-2 pb-14">
             <div className="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-x-6 gap-y-8">
               {isPending
@@ -71,16 +79,18 @@ export function LibraryPage() {
                 : projects!.map((p) => (
                     <ProjectCard key={p.id} project={p} onRename={() => setRenaming(p)} onDelete={() => setDeleting(p)} />
                   ))}
-              <button
-                onClick={() => newProject()}
-                className="group flex aspect-video flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-white/15 text-fg-3 transition-colors hover:border-white/30 hover:bg-white/[0.03] hover:text-fg-1"
-              >
-                <span className="flex size-12 items-center justify-center rounded-full bg-white/[0.06] transition-colors group-hover:bg-white/[0.12] [&_svg]:size-5">
-                  <Plus weight="bold" />
-                </span>
-                <span className="text-md font-medium">New project</span>
-                <span className="text-xs text-fg-3">or drop a season folder anywhere</span>
-              </button>
+              <ContextArea menu={<NewProjectItems kit={contextKit} />}>
+                <button
+                  onClick={() => newProject()}
+                  className="group flex aspect-video flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-white/15 text-fg-3 transition-colors hover:border-white/30 hover:bg-white/[0.03] hover:text-fg-1"
+                >
+                  <span className="flex size-12 items-center justify-center rounded-full bg-white/[0.06] transition-colors group-hover:bg-white/[0.12] [&_svg]:size-5">
+                    <Plus weight="bold" />
+                  </span>
+                  <span className="text-md font-medium">New project</span>
+                  <span className="text-xs text-fg-3">or drop a season folder anywhere</span>
+                </button>
+              </ContextArea>
             </div>
           </Section>
         </>
@@ -92,34 +102,36 @@ export function LibraryPage() {
 }
 
 /** The project touched last, big: pick up where you left off. */
-function Featured({ project: p }: { project: ProjectSummary }) {
+function Featured({ project: p, onRename, onDelete }: { project: ProjectSummary; onRename: () => void; onDelete: () => void }) {
   // The colour of a picture is the same at any size: read it from the small one.
   const ambient = useAmbient(p.posterSmall ?? p.poster)
   return (
-    <Hero path={p.poster} ambient={ambient}>
-      <div className="max-w-2xl">
-        <p className="eyebrow text-white/70">Continue</p>
-        <h1 className="display mt-2 text-6xl text-white">{p.title}</h1>
-        <p className="mt-3 text-lg text-white/75">
-          {projectFacts(p)}
-          {p.durationSec ? ` · ${formatDuration(p.durationSec)}` : ""}
-        </p>
-        <div className="mt-7 flex items-center gap-3">
-          <Button size="lg" variant="primary" asChild>
-            <Link to="/p/$pid" params={{ pid: p.id }}>
-              Open project
-            </Link>
-          </Button>
-          {p.content !== "anime" && (
-            <Button size="lg" variant="glass" asChild>
-              <Link to="/p/$pid/cast" params={{ pid: p.id }}>
-                <UserFocus /> Cast
+    <ContextArea menu={<ProjectItems kit={contextKit} project={p} onRename={onRename} onDelete={onDelete} />}>
+      <Hero path={p.poster} ambient={ambient}>
+        <div className="max-w-2xl">
+          <p className="eyebrow text-white/70">Continue</p>
+          <h1 className="display mt-2 text-6xl text-white">{p.title}</h1>
+          <p className="mt-3 text-lg text-white/75">
+            {projectFacts(p)}
+            {p.durationSec ? ` · ${formatDuration(p.durationSec)}` : ""}
+          </p>
+          <div className="mt-7 flex items-center gap-3">
+            <Button size="lg" variant="primary" asChild>
+              <Link to="/p/$pid" params={{ pid: p.id }}>
+                Open project
               </Link>
             </Button>
-          )}
+            {p.content !== "anime" && (
+              <Button size="lg" variant="glass" asChild>
+                <Link to="/p/$pid/cast" params={{ pid: p.id }}>
+                  <UserFocus /> Cast
+                </Link>
+              </Button>
+            )}
+          </div>
         </div>
-      </div>
-    </Hero>
+      </Hero>
+    </ContextArea>
   )
 }
 

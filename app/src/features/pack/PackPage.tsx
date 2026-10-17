@@ -1,10 +1,17 @@
 import { type ReactNode, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { Link, useNavigate, useParams } from "@tanstack/react-router"
 import { toast } from "sonner"
-import { ArrowLeft, User, Users } from "@/components/icons"
+import { ArrowCounterClockwise, ArrowLeft, Package, User, Users } from "@/components/icons"
 import type { CastEdit, Character, MediaItem, PackClip } from "@/bindings"
 import { Artwork } from "@/components/ui/artwork"
 import { Button } from "@/components/ui/button"
+import {
+  ContextMenuItem,
+  ContextMenuLabel,
+  ContextMenuRadioGroup,
+  ContextMenuRadioItem,
+  ContextMenuSeparator,
+} from "@/components/ui/context-menu"
 import { EmptyState } from "@/components/ui/empty-state"
 import { ErrorState } from "@/components/ui/error-state"
 import { Page } from "@/components/ui/page"
@@ -14,8 +21,10 @@ import { VirtualGrid } from "@/components/ui/virtual-grid"
 import { castEdit, plural } from "@/features/cast/cast"
 import { ProjectLoadError } from "@/features/project/ProjectLoadError"
 import { firstFailure, useCast, useMediaList, useSettings } from "@/lib/queries"
+import { modKey } from "@/lib/platform"
 import { PACK_SHORTCUTS, useShortcuts } from "@/lib/shortcuts"
-import { type BodyVerdict, PackCard } from "./PackCard"
+import { type BodyVerdict } from "@/features/shots/shots"
+import { PackCard } from "./PackCard"
 import { PackExportDialog } from "./PackExportDialog"
 import { PackFilters } from "./PackFilters"
 import { PackFooter } from "./PackFooter"
@@ -152,10 +161,42 @@ function Builder({
     [pid, characterId, label],
   )
   const faceless = useMemo(() => clips.some((c) => c.shot.faceless), [clips])
+  // The menu's entries act on the clip itself (the grid may have moved).
+  const { setIncluded, clearPicks } = pack
+  const onPick = useCallback(
+    (clip: PackClip, include: boolean | null) => void (include == null ? clearPicks([clip]) : setIncluded([clip], include)),
+    [setIncluded, clearPicks],
+  )
+  const onWatch = useCallback(
+    (clip: PackClip) =>
+      void navigate({ to: "/p/$pid/timeline/$mid", params: { pid, mid: clip.shot.mediaId }, search: { f: clip.start } }),
+    [navigate, pid],
+  )
+
+  // The pack's empty space: export it, give the hand-picked shots back, choose what shows.
+  const pageMenu = (
+    <>
+      <ContextMenuItem disabled={!canExport} onSelect={() => setExportOpen(true)} shortcut={[modKey, "E"]}>
+        <Package /> Export the pack…
+      </ContextMenuItem>
+      {picks.length > 0 && (
+        <ContextMenuItem onSelect={() => void pack.clearPicks(picks)}>
+          <ArrowCounterClockwise /> Hand every shot back to the filters
+        </ContextMenuItem>
+      )}
+      <ContextMenuSeparator />
+      <ContextMenuLabel>Show</ContextMenuLabel>
+      <ContextMenuRadioGroup value={show} onValueChange={(v) => setShow(v as Show)}>
+        <ContextMenuRadioItem value="all">All shots</ContextMenuRadioItem>
+        <ContextMenuRadioItem value="in">In the pack</ContextMenuRadioItem>
+        <ContextMenuRadioItem value="out">Left out</ContextMenuRadioItem>
+      </ContextMenuRadioGroup>
+    </>
+  )
 
   return (
     <div className="relative h-full">
-      <Page topbar={toolbar}>
+      <Page topbar={toolbar} menu={pageMenu}>
         <Header character={character} shots={clips.length} />
         {pack.state ? (
           <PackFilters spec={pack.state.spec} media={media} faceless={faceless} onChange={pack.setSpec} />
@@ -212,6 +253,8 @@ function Builder({
                   name={character?.label}
                   onToggle={toggle}
                   onOpen={open}
+                  onWatch={onWatch}
+                  onPick={onPick}
                   onBody={onBody}
                 />
               )}

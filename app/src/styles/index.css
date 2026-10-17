@@ -198,7 +198,9 @@
     cursor: default;
   }
 
-  img {
+  /* Pictures and links don't drag out as the browser's ghost (a link would show its URL). */
+  img,
+  a {
     -webkit-user-drag: none;
   }
 
@@ -217,6 +219,30 @@
     color: var(--fg-1);
   }
 
+  input,
+  textarea {
+    caret-color: var(--accent);
+  }
+
+  /* Menu sections (an element's, the page's, the app's): a hairline between
+     sections with something in them; a separator at a section's edge, or
+     right after another, doesn't show — conditional entries need no care. */
+  [data-menu-section]:empty {
+    display: none;
+  }
+  [data-menu-section]:not(:empty) ~ [data-menu-section]:not(:empty)::before {
+    content: "";
+    display: block;
+    height: 1px;
+    margin: 6px 8px;
+    background: var(--line-hairline);
+  }
+  [data-menu-section] > [role="separator"]:first-child,
+  [data-menu-section] > [role="separator"]:last-child,
+  [data-menu-section] > [role="separator"] + [role="separator"] {
+    display: none;
+  }
+
   :focus-visible {
     outline: 2px solid var(--line-focus);
     outline-offset: 2px;
@@ -229,14 +255,24 @@
     font-weight: 600;
   }
 
-  /* Thin, quiet scrollbars. */
-  * {
-    scrollbar-width: thin;
-    scrollbar-color: rgb(255 255 255 / 0.16) transparent;
+  /* Thin, quiet scrollbars: a pill on a clear track. Chromium (121+) drops
+     every ::-webkit-scrollbar rule as soon as an element has scrollbar-width
+     or scrollbar-color, so those are only for engines without the pills. */
+  @supports not selector(::-webkit-scrollbar) {
+    * {
+      scrollbar-width: thin;
+      scrollbar-color: rgb(255 255 255 / 0.16) transparent;
+    }
   }
   ::-webkit-scrollbar {
     width: 10px;
     height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-button {
+    display: none;
   }
   ::-webkit-scrollbar-thumb {
     background: rgb(255 255 255 / 0.14);

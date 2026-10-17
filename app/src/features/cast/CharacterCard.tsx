@@ -1,25 +1,20 @@
-import { Link, useNavigate } from "@tanstack/react-router"
-import { FilmStrip, User, UserFocus } from "@/components/icons"
+import { Link } from "@tanstack/react-router"
+import { User, UserFocus } from "@/components/icons"
 import type { Character } from "@/bindings"
 import { Artwork } from "@/components/ui/artwork"
 import { Badge } from "@/components/ui/badge"
-import {
-  ContextMenu,
-  ContextMenuContent,
-  ContextMenuItem,
-  ContextMenuTrigger,
-} from "@/components/ui/context-menu"
+import { ContextArea } from "@/components/ui/context-area"
+import { contextKit } from "@/components/ui/menu-actions"
 import { cn } from "@/lib/utils"
 import { formatScreenTime, plural } from "./cast"
+import { CharacterItems } from "./character-actions"
 
 /** A character as a portrait: the face fills the card, the name sits on it. */
 export function CharacterCard({ pid, character: c, className }: { pid: string; character: Character; className?: string }) {
-  const navigate = useNavigate()
   // Their episode is being analysed again: the faces come back when it's done.
   const refinding = c.tracks === 0 && c.waiting > 0
   return (
-    <ContextMenu>
-      <ContextMenuTrigger asChild>
+    <ContextArea menu={<CharacterItems kit={contextKit} pid={pid} character={c} />}>
         <Link
           to="/p/$pid/cast/$cid"
           params={{ pid, cid: c.id }}
@@ -59,20 +54,6 @@ export function CharacterCard({ pid, character: c, className }: { pid: string; c
             </div>
           </Artwork>
         </Link>
-      </ContextMenuTrigger>
-      <ContextMenuContent>
-        <ContextMenuItem onSelect={() => void navigate({ to: "/p/$pid/cast/$cid", params: { pid, cid: c.id } })}>
-          <User /> Open character
-        </ContextMenuItem>
-        <ContextMenuItem onSelect={() => void navigate({ to: "/p/$pid/cast/$cid/pack", params: { pid, cid: c.id } })}>
-          <FilmStrip /> Build scenepack
-        </ContextMenuItem>
-        {c.unsure > 0 && (
-          <ContextMenuItem onSelect={() => void navigate({ to: "/p/$pid/cast/review", params: { pid }, search: { c: c.id } })}>
-            <UserFocus /> Review {c.unsure} faces
-          </ContextMenuItem>
-        )}
-      </ContextMenuContent>
-    </ContextMenu>
+    </ContextArea>
   )
 }

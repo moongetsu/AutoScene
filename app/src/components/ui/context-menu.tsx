@@ -1,33 +1,28 @@
 import type * as React from "react"
 import { ContextMenu as M } from "radix-ui"
+import { Check } from "@/components/icons"
 import { isMac } from "@/lib/platform"
 import { cn } from "@/lib/utils"
+import { afterClose, menuItem, menuSeparator, menuSurface } from "./menu-base"
 
-export const ContextMenu = M.Root
+// There is one context menu, the window's (`components/shell/AppMenu`): an
+// element says what its right-click offers with `ContextArea`, and these are
+// the pieces those offers are made of.
 
-/**
- * Right-clicks inside a dialog, a dropdown or another menu reach the trigger
- * through their portals (React bubbles along the component tree): those
- * aren't for it, so no second menu opens on top.
- */
-export function ContextMenuTrigger({ onContextMenu, ...props }: React.ComponentProps<typeof M.Trigger>) {
-  return (
-    <M.Trigger
-      onContextMenu={(e) => {
-        onContextMenu?.(e)
-        if (!e.currentTarget.contains(e.target as Node)) e.preventDefault()
-      }}
-      {...props}
-    />
-  )
+/** `keys` as the shortcut reads, e.g. ["Ctrl", "K"] → "Ctrl+K" (⌘K on macOS). */
+export function MenuShortcut({ keys }: { keys?: string[] }) {
+  if (!keys || keys.length === 0) return null
+  return <span className="timecode ml-auto pl-4 text-xs tracking-wider text-fg-3">{keys.join(isMac ? "" : "+")}</span>
 }
 
 export function ContextMenuContent({ className, ...props }: React.ComponentProps<typeof M.Content>) {
   return (
     <M.Portal>
       <M.Content
+        collisionPadding={8}
         className={cn(
-          "glass-strong z-50 min-w-[200px] rounded-xl border border-white/10 p-1.5 shadow-2xl data-[state=open]:animate-pop-in focus:outline-none",
+          menuSurface,
+          "max-h-[var(--radix-context-menu-content-available-height)] origin-[var(--radix-context-menu-content-transform-origin)] overflow-y-auto data-[state=open]:animate-pop-in",
           className,
         )}
         {...props}
@@ -36,37 +31,86 @@ export function ContextMenuContent({ className, ...props }: React.ComponentProps
   )
 }
 
-const item = cn(
-  "flex h-9 cursor-default items-center gap-3 rounded-lg px-3 text-md text-fg-2 outline-none select-none",
-  "data-[highlighted]:bg-active data-[highlighted]:text-fg-1 data-[disabled]:opacity-40",
-  "[&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-fg-3 data-[highlighted]:[&_svg]:text-fg-2",
-)
-
 /** `shortcut` as key caps, e.g. ["Ctrl", "K"] — shown as "Ctrl+K" (⌘K on macOS). */
 export function ContextMenuItem({
   className,
   destructive,
   shortcut,
   children,
+  onSelect,
   ...props
 }: React.ComponentProps<typeof M.Item> & { destructive?: boolean; shortcut?: string[] }) {
   return (
     <M.Item
       className={cn(
-        item,
+        menuItem,
         destructive && "text-danger data-[highlighted]:bg-danger-subtle data-[highlighted]:text-danger [&_svg]:text-danger",
         className,
       )}
+      onSelect={afterClose(onSelect)}
       {...props}
     >
       {children}
-      {shortcut && shortcut.length > 0 && (
-        <span className="timecode ml-auto pl-4 text-xs tracking-wider text-fg-3">{shortcut.join(isMac ? "" : "+")}</span>
-      )}
+      <MenuShortcut keys={shortcut} />
     </M.Item>
   )
 }
 
+/** A choice to tick. The menu stays open: one usually ticks more than one. */
+export function ContextMenuCheckboxItem({
+  className,
+  children,
+  onSelect,
+  ...props
+}: React.ComponentProps<typeof M.CheckboxItem>) {
+  return (
+    <M.CheckboxItem
+      className={cn(menuItem, "relative pl-9 data-[state=checked]:text-fg-1 data-[state=checked]:[&_svg]:text-accent", className)}
+      onSelect={(e) => {
+        e.preventDefault()
+        onSelect?.(e)
+      }}
+      {...props}
+    >
+      <M.ItemIndicator className="absolute left-3 flex items-center">
+        <Check weight="bold" />
+      </M.ItemIndicator>
+      {children}
+    </M.CheckboxItem>
+  )
+}
+
+export const ContextMenuRadioGroup = M.RadioGroup
+
+/** One choice of a `ContextMenuRadioGroup`. */
+export function ContextMenuRadioItem({ className, children, ...props }: React.ComponentProps<typeof M.RadioItem>) {
+  return (
+    <M.RadioItem
+      className={cn(menuItem, "relative pl-9 data-[state=checked]:text-fg-1 data-[state=checked]:[&_svg]:text-accent", className)}
+      {...props}
+    >
+      <M.ItemIndicator className="absolute left-3 flex items-center">
+        <Check weight="bold" />
+      </M.ItemIndicator>
+      {children}
+    </M.RadioItem>
+  )
+}
+
 export function ContextMenuSeparator() {
-  return <M.Separator className="mx-2 my-1.5 h-px bg-hairline" />
+  return <M.Separator className={menuSeparator} />
+}
+
+export function ContextMenuLabel({ className, ...props }: React.ComponentProps<typeof M.Label>) {
+  return <M.Label className={cn("eyebrow px-3 pt-2 pb-1", className)} {...props} />
+}
+
+/**
+ * One section of the menu (an element's, the page's, the app's). Sections
+ * are set apart by a hairline, drawn only between sections with something
+ * in them; separators at a section's edges, or twice in a row, don't show
+ * (`styles/index.css`) — conditional items need no bookkeeping.
+ */
+export function ContextMenuSection({ children }: { children: React.ReactNode }) {
+  return <M.Group data-menu-section="">{children}</M.Group>
 }

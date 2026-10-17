@@ -1,10 +1,18 @@
 import type * as React from "react"
 import { cn } from "@/lib/utils"
 
-export function Input({ className, ...props }: React.ComponentProps<"input">) {
+/**
+ * A text field. No browser autofill, autocorrect or spell-check underline,
+ * and no `title` (the app's tooltips only); right-click opens the app's edit
+ * menu (`TextMenu`).
+ */
+export function Input({ className, ...props }: Omit<React.ComponentProps<"input">, "title">) {
   return (
     <input
       spellCheck={false}
+      autoComplete="off"
+      autoCorrect="off"
+      autoCapitalize="off"
       className={cn(
         "h-10 w-full min-w-0 rounded-lg border border-soft bg-white/[0.05] px-3 text-md text-fg-1",
         "transition-[border-color,box-shadow,background-color] duration-[var(--dur-fast)] outline-none placeholder:text-fg-3",

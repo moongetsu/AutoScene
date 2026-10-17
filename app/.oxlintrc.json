@@ -1,23 +1,132 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "ignorePatterns": ["src/bindings.ts", "dist"],
+  "plugins": [
+    "react",
+    "typescript",
+    "oxc"
+  ],
+  "ignorePatterns": [
+    "src/bindings.ts",
+    "dist"
+  ],
   "rules": {
     "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }],
+    "react/only-export-components": [
+      "warn",
+      {
+        "allowConstantExport": true
+      }
+    ],
     "no-restricted-imports": [
       "error",
       {
         "paths": [
-          { "name": "lucide-react", "message": "Icons are Phosphor: import them from @/components/icons." },
-          { "name": "@phosphor-icons/react", "message": "Import icons from @/components/icons." }
+          {
+            "name": "lucide-react",
+            "message": "Icons are Phosphor: import them from @/components/icons."
+          },
+          {
+            "name": "@phosphor-icons/react",
+            "message": "Import icons from @/components/icons."
+          }
+        ]
+      }
+    ],
+    "react/forbid-dom-props": [
+      "error",
+      {
+        "forbid": [
+          {
+            "propName": "title",
+            "message": "The browser's tooltip isn't the app's: wrap the element in <Tooltip> or use <TruncatedText> (components/ui/tooltip)."
+          },
+          {
+            "propName": "type",
+            "disallowedFor": [
+              "input"
+            ],
+            "disallowedValues": [
+              "range",
+              "checkbox",
+              "radio",
+              "number",
+              "date",
+              "time",
+              "datetime-local",
+              "month",
+              "week",
+              "color",
+              "file"
+            ],
+            "message": "Browser controls aren't the app's: use <Slider>, <Switch>, <Segmented> or a Radix control."
+          }
+        ]
+      }
+    ],
+    "react/forbid-component-props": [
+      "error",
+      {
+        "forbid": [
+          {
+            "propName": "title",
+            "allowedFor": [
+              "AutoSceneMark",
+              "Card",
+              "DialogContent",
+              "SheetContent",
+              "EmptyState",
+              "ErrorState",
+              "Section",
+              "SettingsGroup",
+              "TopBar",
+              "Group",
+              "PickCharacter",
+              "Shelf",
+              "NotReady",
+              "Hero"
+            ],
+            "message": "Components named `title` render a heading; anything else would be the browser's tooltip — use <Tooltip>."
+          }
+        ]
+      }
+    ],
+    "react/forbid-elements": [
+      "error",
+      {
+        "forbid": [
+          {
+            "element": "select",
+            "message": "Use the app's <Select> (components/ui/select)."
+          },
+          {
+            "element": "progress",
+            "message": "Use the app's <Progress> (components/ui/progress)."
+          },
+          {
+            "element": "meter",
+            "message": "Use the app's <Progress> (components/ui/progress)."
+          },
+          {
+            "element": "dialog",
+            "message": "Use the app's <Dialog> (components/ui/dialog)."
+          },
+          {
+            "element": "datalist",
+            "message": "Browser suggestion lists aren't the app's: use <PickCharacter>-style lists."
+          },
+          {
+            "element": "details",
+            "message": "Use an app disclosure, not the browser's."
+          }
         ]
       }
     ]
   },
   "overrides": [
     {
-      "files": ["src/components/icons.ts"],
+      "files": [
+        "src/components/icons.ts"
+      ],
       "rules": {
         "no-restricted-imports": [
           "error",
@@ -25,7 +134,16 @@
             "paths": [
               {
                 "name": "@phosphor-icons/react",
-                "importNames": ["Sparkle", "Lightning", "LightningA", "MagicWand", "Robot", "Star", "StarFour", "ShootingStar"],
+                "importNames": [
+                  "Sparkle",
+                  "Lightning",
+                  "LightningA",
+                  "MagicWand",
+                  "Robot",
+                  "Star",
+                  "StarFour",
+                  "ShootingStar"
+                ],
                 "message": "No decorative \"AI\" clichés: pick an icon that says what the control does (docs/DESIGN.md)."
               }
             ]

@@ -96,6 +96,7 @@ const appInfo: AppInfo = {
   libraryRoot: ROOT,
 }
 
+let mockClipboard: string | null = null
 let settings: AppSettings = { libraryRoot: ROOT, exportPresetId: "prores-hq", audioLanguage: "eng" }
 
 const presets: ExportPreset[] = [
@@ -515,10 +516,14 @@ function scan(paths: string[], kind: ProjectKind): ImportCandidate[] {
 const handlers: Record<string, Handler> = {
   app_info: () => appInfo,
   reveal_path: () => null,
+  // The app's own clipboard while in the browser (reading the browser's asks
+  // for permission); copies also reach the system clipboard when it allows.
   clipboard_write: ({ text }) => {
-    void navigator.clipboard?.writeText(String(text)).catch(() => {})
+    mockClipboard = String(text)
+    void navigator.clipboard?.writeText(mockClipboard).catch(() => {})
     return null
   },
+  clipboard_read: () => mockClipboard,
   open_logs_dir: () => null,
   media_tools: () => ({ ready: true, version: "8.0.1-full_build-www.gyan.dev", path: String.raw`C:\ffmpeg\bin\ffmpeg.exe`, error: null }),
   settings_get: () => settings,

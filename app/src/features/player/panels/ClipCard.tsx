@@ -1,5 +1,6 @@
-import { Scissors, X } from "@/components/icons"
+import { ArrowLineLeft, ArrowLineRight, Copy, Crosshair, Scissors, X } from "@/components/icons"
 import { Button } from "@/components/ui/button"
+import { ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-menu"
 import { Kbd } from "@/components/ui/kbd"
 import { Tooltip } from "@/components/ui/tooltip"
 import { modKey } from "@/lib/platform"
@@ -18,6 +19,7 @@ export function ClipCard({
   onGo,
   onClear,
   onExport,
+  onCopy,
 }: {
   inFrame: number | null
   outFrame: number | null
@@ -30,11 +32,48 @@ export function ClipCard({
   onGo: (f: number) => void
   onClear: () => void
   onExport: () => void
+  /** Copy the clip's in and out. */
+  onCopy: () => void
 }) {
   const hasMarks = inFrame != null || outFrame != null
+  const menu = (
+    <>
+      <ContextMenuItem onSelect={onMarkIn} shortcut={["I"]}>
+        <ArrowLineRight /> Mark in
+      </ContextMenuItem>
+      <ContextMenuItem onSelect={onMarkOut} shortcut={["O"]}>
+        <ArrowLineLeft /> Mark out
+      </ContextMenuItem>
+      {inFrame != null && (
+        <ContextMenuItem onSelect={() => onGo(inFrame)} shortcut={["Shift", "I"]}>
+          <Crosshair /> Go to the in point
+        </ContextMenuItem>
+      )}
+      {outFrame != null && (
+        <ContextMenuItem onSelect={() => onGo(outFrame)} shortcut={["Shift", "O"]}>
+          <Crosshair /> Go to the out point
+        </ContextMenuItem>
+      )}
+      {hasMarks && (
+        <ContextMenuItem onSelect={onClear} shortcut={["Alt", "X"]}>
+          <X /> Clear in and out
+        </ContextMenuItem>
+      )}
+      <ContextMenuSeparator />
+      <ContextMenuItem disabled={!canExport} onSelect={onExport} shortcut={[modKey, "E"]}>
+        <Scissors /> Export clip…
+      </ContextMenuItem>
+      {hasMarks && (
+        <ContextMenuItem onSelect={onCopy}>
+          <Copy /> Copy in and out
+        </ContextMenuItem>
+      )}
+    </>
+  )
   return (
     <Card
       title="Clip"
+      menu={menu}
       action={
         hasMarks && (
           <Tooltip label="Clear in and out" shortcut={["Alt", "X"]}>
@@ -96,9 +135,11 @@ function MarkTile({
         <Kbd keys={[keyHint]} />
       </div>
       {value != null ? (
-        <button onClick={() => onGo(value)} className="timecode mt-1.5 text-left text-md text-fg-1 hover:text-accent" title="Go to this frame">
-          {tc(value)}
-        </button>
+        <Tooltip label="Go to this frame" side="left">
+          <button onClick={() => onGo(value)} className="timecode mt-1.5 text-left text-md text-fg-1 hover:text-accent">
+            {tc(value)}
+          </button>
+        </Tooltip>
       ) : (
         <button onClick={onMark} className="mt-1.5 text-left text-md text-fg-3 hover:text-fg-1">
           Mark {label.toLowerCase()}

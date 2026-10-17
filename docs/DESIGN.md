@@ -88,6 +88,35 @@ Rules:
 - The palette (`Ctrl/⌘ K`) finds projects, places and commands, and in a project its characters and episodes
   (by name, `S01E03`, `1x03` or file). Back and Forward return a page to where it was scrolled.
 
+## Menus & tooltips
+
+- Nothing shows the browser's own chrome: no native tooltips, context menus, form controls, autofill, find bar or
+  link drags. oxlint refuses `title` and native controls (`select`, `progress`, range and checkbox inputs…);
+  browser keys the app has no use for are swallowed (`lib/browser-guards.ts`).
+- **Tooltips** (`ui/tooltip.tsx`) are glass: the label, an optional second line in `--fg-3` (`hint`) and the key
+  that does the same (`shortcut`). Text cut by its box (`TruncatedText`) shows the rest only when it is cut.
+- **One context menu** for the window (`shell/AppMenu.tsx`). An element says what a right-click offers with
+  `ContextArea`. The menu lists the clicked element's own entries first, innermost first: a shot's before its
+  card's. The short tail follows: Command palette, Settings.
+  - On a page's empty space (`Page menu`) the menu shows the page's entries, then the full app list: Back, Command
+    palette, New project, Library, Activity, the rail, Keyboard shortcuts, Settings, Reload.
+  - Dialogs and the drawer show only what they offer, never the app's entries, and no menu when they offer
+    nothing.
+  - On Windows the top bar's empty parts and its title are the window's caption: Minimize, Maximize, Close.
+  - Selected text in a path or an error offers Copy first.
+  - An entry runs once its menu has closed, so a field or a dialog it opens keeps the focus.
+- Entries say what happens to the thing clicked ("Mark it as the clip", "Not Walter") and show the key that does
+  the same.
+  - An entry that can't apply to this thing is left out; one that can't apply yet is disabled.
+  - Where the pointer picks the subject (a frame, a shot, an appearance on the timeline), a label names it first:
+    "Shot 5 · 00:00:09:04".
+  - A ⋯ menu and the right-click list the same actions from one list (the kits in `ui/menu-actions.tsx`).
+- **Text fields** have their own menu (`shell/TextMenu.tsx`), in the same glass: Undo, Redo, Cut, Copy, Paste,
+  Delete, Select all.
+  - It never takes the focus from the field, and Escape closes only the menu.
+  - Paste reads the clipboard natively, so the webview never asks for permission.
+- While developing, Shift+right-click still opens the browser's menu (for Inspect).
+
 ## Views
 
 - **Library:** the project touched last as a hero ("Continue"), then every project as a 16:9 picture card.

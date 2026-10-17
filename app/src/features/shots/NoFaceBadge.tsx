@@ -5,7 +5,6 @@ import { cn } from "@/lib/utils"
 export function NoFaceBadge({ className }: { className?: string }) {
   return (
     <span
-      title="Their face doesn't show here: they were found by their body"
       className={cn(
         "inline-flex items-center gap-1 rounded-full bg-black/65 px-2 text-[11px] leading-5 font-medium text-white/90 backdrop-blur-md",
         className,

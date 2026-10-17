@@ -6,12 +6,9 @@ import { Select } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { commands, errorMessage } from "@/lib/ipc"
 import { PREFERRED_AUDIO_LANGUAGES, pickFolder } from "@/lib/media"
+import { reveal } from "@/lib/os"
 import { qk, queryClient, useAppInfo, usePresets, useSettings } from "@/lib/queries"
 import { PathText, SettingRow, SettingsGroup } from "../primitives"
-
-function reveal(path: string) {
-  commands.revealPath(path).catch((e) => toast.error("Couldn't open folder", { description: errorMessage(e) }))
-}
 
 async function save(next: AppSettings) {
   try {

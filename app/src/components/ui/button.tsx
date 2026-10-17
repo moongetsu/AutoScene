@@ -42,7 +42,8 @@ const buttonVariants = cva(
   },
 )
 
-export type ButtonProps = React.ComponentProps<"button"> &
+// No `title`: the browser's tooltip isn't the app's (wrap in `Tooltip`).
+export type ButtonProps = Omit<React.ComponentProps<"button">, "title"> &
   VariantProps<typeof buttonVariants> & { asChild?: boolean }
 
 export function Button({ className, variant, size, asChild, type = "button", ...props }: ButtonProps) {

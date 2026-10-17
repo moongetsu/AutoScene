@@ -13,6 +13,7 @@ export function Hero({
   blur,
   className,
   children,
+  ...props
 }: {
   path: string | null | undefined
   /** Colour the picture glows with (`useAmbient`). */
@@ -21,10 +22,10 @@ export function Hero({
   blur?: boolean
   className?: string
   children: React.ReactNode
-}) {
+} & Omit<React.HTMLAttributes<HTMLElement>, "title" | "children"> & { ref?: React.Ref<HTMLElement> }) {
   const url = path ? assetUrl(path) : null
   return (
-    <section className={cn("relative isolate flex min-h-[clamp(380px,56vh,600px)] flex-col justify-end", className)}>
+    <section className={cn("relative isolate flex min-h-[clamp(380px,56vh,600px)] flex-col justify-end", className)} {...props}>
       <div aria-hidden className="absolute inset-0 -z-10 overflow-hidden">
         {url ? (
           <img

@@ -2,6 +2,7 @@ import type * as React from "react"
 import { useState } from "react"
 import { useRouterState } from "@tanstack/react-router"
 import { cn } from "@/lib/utils"
+import { ContextArea, type MenuContent } from "./context-area"
 import { PageScrollElement, PageScrolled, useScrollMemory } from "./page-scroll"
 
 /**
@@ -12,10 +13,13 @@ import { PageScrollElement, PageScrolled, useScrollMemory } from "./page-scroll"
 export function Page({
   topbar,
   className,
+  menu,
   children,
 }: {
   topbar?: React.ReactNode
   className?: string
+  /** What a right-click on the view's empty space offers, above the app's own entries. */
+  menu?: MenuContent
   children: React.ReactNode
 }) {
   // The element, as state: lists that render only what is on screen follow its scrolling.
@@ -29,18 +33,20 @@ export function Page({
   useScrollMemory(scroller, entry)
   return (
     <PageScrolled.Provider value={scrolledAt === path}>
-      <div
-        ref={setScroller}
-        onScroll={(e) => setScrolledAt(e.currentTarget.scrollTop > 12 ? path : null)}
-        className={cn("relative h-full overflow-x-hidden overflow-y-auto", className)}
-      >
-        {topbar}
-        <PageScrollElement.Provider value={scroller}>
-          <div key={path} className="animate-rise-in">
-            {children}
-          </div>
-        </PageScrollElement.Provider>
-      </div>
+      <ContextArea kind="page" menu={menu ?? null}>
+        <div
+          ref={setScroller}
+          onScroll={(e) => setScrolledAt(e.currentTarget.scrollTop > 12 ? path : null)}
+          className={cn("relative h-full overflow-x-hidden overflow-y-auto", className)}
+        >
+          {topbar}
+          <PageScrollElement.Provider value={scroller}>
+            <div key={path} className="animate-rise-in">
+              {children}
+            </div>
+          </PageScrollElement.Provider>
+        </div>
+      </ContextArea>
     </PageScrolled.Provider>
   )
 }

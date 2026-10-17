@@ -1,14 +1,35 @@
 import type * as React from "react"
 import { useNavigate } from "@tanstack/react-router"
-import { Check, Eye, FilmStrip, Image, Prohibit, Queue, Scan, Scissors, UserFocus, Warning, X } from "@/components/icons"
+import {
+  Check,
+  Copy,
+  Eye,
+  FilmStrip,
+  Image,
+  Package,
+  Play,
+  Prohibit,
+  Queue,
+  Scan,
+  Scissors,
+  SquaresFour,
+  Trash,
+  UserFocus,
+  Users,
+  Warning,
+  X,
+} from "@/components/icons"
 import type { JobInfo } from "@/bindings"
 import { Button } from "@/components/ui/button"
+import { ContextArea } from "@/components/ui/context-area"
+import { ContextMenuItem } from "@/components/ui/context-menu"
 import { EmptyState } from "@/components/ui/empty-state"
 import { Progress } from "@/components/ui/progress"
 import { Sheet, SheetContent } from "@/components/ui/sheet"
-import { Tooltip } from "@/components/ui/tooltip"
+import { Tooltip, TruncatedText } from "@/components/ui/tooltip"
 import { formatEta, formatPercent } from "@/lib/format"
 import { commands } from "@/lib/ipc"
+import { copyText } from "@/lib/os"
 import { cn } from "@/lib/utils"
 import { isFinished, useActivity, useJobs } from "@/state/activity"
 import { useUi } from "@/state/ui"
@@ -55,10 +76,20 @@ export function ActivityDrawer() {
             className="h-full"
           />
         ) : (
-          <div className="flex flex-col">
-            {active.length > 0 && <Group title="In progress" jobs={active} />}
-            {finished.length > 0 && <Group title="Finished" jobs={finished} />}
-          </div>
+          <ContextArea
+            menu={
+              finished.length > 0 && (
+                <ContextMenuItem onSelect={clear}>
+                  <Trash /> Clear finished
+                </ContextMenuItem>
+              )
+            }
+          >
+            <div className="flex flex-col">
+              {active.length > 0 && <Group title="In progress" jobs={active} />}
+              {finished.length > 0 && <Group title="Finished" jobs={finished} />}
+            </div>
+          </ContextArea>
         )}
       </SheetContent>
     </Sheet>
@@ -87,66 +118,106 @@ function JobRow({ job: j }: { job: JobInfo }) {
     useUi.getState().setActivityOpen(false)
     void navigate({ to: "/p/$pid/exports", params: { pid: j.projectId! } })
   }
-  return (
-    <li
-      onClick={open}
-      tabIndex={canOpen ? 0 : undefined}
-      role={canOpen ? "link" : undefined}
-      onKeyDown={(e) => {
-        if (canOpen && e.key === "Enter" && e.target === e.currentTarget) open()
-      }}
-      className={cn(
-        "group flex gap-3 rounded-2xl border border-white/[0.06] bg-white/[0.03] p-3.5 transition-colors focus-visible:bg-white/[0.06] focus-visible:outline-none",
-        canOpen && "hover:bg-white/[0.06]",
+  const go = (to: () => Promise<void>) => {
+    useUi.getState().setActivityOpen(false)
+    void to()
+  }
+  const pid = j.projectId
+  const mid = j.mediaId
+  const menu = (
+    <>
+      {!done && (
+        <ContextMenuItem onSelect={() => void commands.jobCancel(j.id)}>
+          <X /> Cancel
+        </ContextMenuItem>
       )}
-    >
-      <span
+      {canOpen && (
+        <ContextMenuItem onSelect={open}>
+          <Package /> Show the exports
+        </ContextMenuItem>
+      )}
+      {pid && mid && j.kind !== "export" && (
+        <ContextMenuItem onSelect={() => go(() => navigate({ to: "/p/$pid/timeline/$mid", params: { pid, mid } }))}>
+          <Play /> Open in the player
+        </ContextMenuItem>
+      )}
+      {pid && j.kind === "portraits" && (
+        <ContextMenuItem onSelect={() => go(() => navigate({ to: "/p/$pid/cast", params: { pid } }))}>
+          <Users /> Open the cast
+        </ContextMenuItem>
+      )}
+      {pid && !mid && j.kind === "posters" && (
+        <ContextMenuItem onSelect={() => go(() => navigate({ to: "/p/$pid", params: { pid } }))}>
+          <SquaresFour /> Open the project
+        </ContextMenuItem>
+      )}
+      {j.state === "failed" && j.error && (
+        <ContextMenuItem onSelect={() => void copyText(j.error ?? "", "error")}>
+          <Copy /> Copy the error
+        </ContextMenuItem>
+      )}
+    </>
+  )
+  return (
+    <ContextArea menu={menu}>
+      <li
+        onClick={open}
+        tabIndex={canOpen ? 0 : undefined}
+        role={canOpen ? "link" : undefined}
+        onKeyDown={(e) => {
+          if (canOpen && e.key === "Enter" && e.target === e.currentTarget) open()
+        }}
         className={cn(
-          "flex size-9 shrink-0 items-center justify-center rounded-xl [&_svg]:size-[18px]",
-          j.state === "running" ? "bg-accent-subtle text-accent" : "bg-white/[0.06] text-fg-3",
+          "group flex gap-3 rounded-2xl border border-white/[0.06] bg-white/[0.03] p-3.5 transition-colors focus-visible:bg-white/[0.06] focus-visible:outline-none",
+          canOpen && "hover:bg-white/[0.06]",
         )}
       >
-        {KIND_ICON[j.kind]}
-      </span>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-start gap-2">
-          <div className="min-w-0 flex-1">
-            <div className="truncate text-md font-medium text-fg-1" title={j.title}>
-              {j.title}
-            </div>
-            {j.subtitle && <div className="truncate text-sm text-fg-3">{j.subtitle}</div>}
-          </div>
-          {!done ? (
-            <Tooltip label="Cancel">
-              <button
-                aria-label={`Cancel ${j.title}`}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  void commands.jobCancel(j.id)
-                }}
-                className="flex size-7 items-center justify-center rounded-full text-fg-3 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-white/[0.1] hover:text-fg-1 focus-visible:opacity-100"
-              >
-                <X className="size-3.5" />
-              </button>
-            </Tooltip>
-          ) : (
-            <StateIcon job={j} />
+        <span
+          className={cn(
+            "flex size-9 shrink-0 items-center justify-center rounded-xl [&_svg]:size-[18px]",
+            j.state === "running" ? "bg-accent-subtle text-accent" : "bg-white/[0.06] text-fg-3",
           )}
-        </div>
-        {!done && (
-          <div className="mt-3">
-            <Progress value={j.state === "running" ? j.progress : null} />
-            <div className="mt-1.5 flex justify-between gap-2 text-xs text-fg-3">
-              <span className="truncate">{j.state === "queued" ? "Waiting" : (j.stage ?? "Working")}</span>
-              <span className="timecode shrink-0">
-                {[formatEta(j.etaMs), formatPercent(j.progress)].filter(Boolean).join(" · ")}
-              </span>
+        >
+          {KIND_ICON[j.kind]}
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start gap-2">
+            <div className="min-w-0 flex-1">
+              <TruncatedText className="text-md font-medium text-fg-1">{j.title}</TruncatedText>
+              {j.subtitle && <div className="truncate text-sm text-fg-3">{j.subtitle}</div>}
             </div>
+            {!done ? (
+              <Tooltip label="Cancel">
+                <button
+                  aria-label={`Cancel ${j.title}`}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    void commands.jobCancel(j.id)
+                  }}
+                  className="flex size-7 items-center justify-center rounded-full text-fg-3 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-white/[0.1] hover:text-fg-1 focus-visible:opacity-100"
+                >
+                  <X className="size-3.5" />
+                </button>
+              </Tooltip>
+            ) : (
+              <StateIcon job={j} />
+            )}
           </div>
-        )}
-        {j.state === "failed" && j.error && <p className="mt-1.5 line-clamp-3 text-sm break-words text-danger">{j.error}</p>}
-      </div>
-    </li>
+          {!done && (
+            <div className="mt-3">
+              <Progress value={j.state === "running" ? j.progress : null} />
+              <div className="mt-1.5 flex justify-between gap-2 text-xs text-fg-3">
+                <span className="truncate">{j.state === "queued" ? "Waiting" : (j.stage ?? "Working")}</span>
+                <span className="timecode shrink-0">
+                  {[formatEta(j.etaMs), formatPercent(j.progress)].filter(Boolean).join(" · ")}
+                </span>
+              </div>
+            </div>
+          )}
+          {j.state === "failed" && j.error && <p className="mt-1.5 line-clamp-3 text-sm break-words text-danger">{j.error}</p>}
+        </div>
+      </li>
+    </ContextArea>
   )
 }
 

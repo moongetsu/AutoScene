@@ -14,6 +14,7 @@ import {
 } from "@/components/icons"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
+import { Slider } from "@/components/ui/slider"
 import { Tooltip } from "@/components/ui/tooltip"
 import { modKey } from "@/lib/platform"
 import { cn } from "@/lib/utils"
@@ -127,15 +128,15 @@ export function Transport({
               {muted || volume === 0 ? <SpeakerSlash /> : volume < 0.5 ? <SpeakerLow /> : <SpeakerHigh />}
             </button>
           </Tooltip>
-          <input
-            type="range"
+          <Slider
+            value={muted ? 0 : volume}
             min={0}
             max={1}
             step={0.05}
-            value={muted ? 0 : volume}
-            aria-label="Volume"
-            onChange={(e) => onVolume(Number(e.currentTarget.value))}
-            className="h-1 w-20 accent-[var(--fg-1)]"
+            label="Volume"
+            format={(v) => `${Math.round(v * 100)} %`}
+            onChange={onVolume}
+            className="w-20"
           />
         </div>
       </div>
@@ -178,6 +179,9 @@ function FrameReadout({
           aria-label="Go to timecode or frame"
           defaultValue={tc(frame)}
           spellCheck={false}
+          autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="off"
           className="timecode h-10 w-[150px] rounded-xl border border-accent-line bg-white/[0.06] px-3 text-lg text-fg-1 outline-none @3xl:w-[190px] @3xl:text-2xl"
           onBlur={() => onGoto(false)}
           onKeyDown={(e) => {

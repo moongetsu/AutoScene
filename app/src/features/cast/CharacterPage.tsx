@@ -5,46 +5,52 @@ import {
   ArrowsMerge,
   Check,
   DotsThree,
-  Eye,
-  EyeSlash,
+  FilmStrip,
   Image,
   Package,
   PencilSimple,
+  Play,
   Prohibit,
+  SelectionAll,
   User,
   UserFocus,
   UserPlus,
   Users,
   X,
 } from "@/components/icons"
+import { toast } from "sonner"
 import type { CastEdit, Character, CharacterShot, FaceTrackItem, MediaItem } from "@/bindings"
 import { Artwork } from "@/components/ui/artwork"
 import { Badge } from "@/components/ui/badge"
+import { ContextArea } from "@/components/ui/context-area"
 import { Button } from "@/components/ui/button"
 import {
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { EmptyState } from "@/components/ui/empty-state"
 import { ErrorState } from "@/components/ui/error-state"
 import { Hero } from "@/components/ui/hero"
 import { Input } from "@/components/ui/input"
+import { ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-menu"
+import { contextKit, dropdownKit } from "@/components/ui/menu-actions"
 import { Page } from "@/components/ui/page"
 import { Segmented } from "@/components/ui/segmented"
+import { Tooltip } from "@/components/ui/tooltip"
 import { TopBar } from "@/components/ui/topbar"
 import { VirtualGrid } from "@/components/ui/virtual-grid"
 import { ProjectLoadError } from "@/features/project/ProjectLoadError"
 import { ShotCard } from "@/features/shots/ShotCard"
-import { formatShotLength } from "@/features/shots/shots"
+import { type BodyVerdict, formatShotLength } from "@/features/shots/shots"
 import { useAmbient } from "@/lib/ambient"
 import { assetUrl } from "@/lib/media"
+import { modKey } from "@/lib/platform"
 import { firstFailure, useCast, useCastTracks, useCharacterShots, useMediaList } from "@/lib/queries"
 import { FACES_SHORTCUTS, useShortcuts } from "@/lib/shortcuts"
 import { cn } from "@/lib/utils"
 import { castEdit, formatScreenTime, plural } from "./cast"
+import { CharacterItems } from "./character-actions"
 import { FaceGrid } from "./FaceGrid"
 import { PickCharacter } from "./PickCharacter"
 
@@ -145,8 +151,65 @@ export function CharacterPage() {
     if ((await castEdit(pid, e)) !== undefined) setSelected(new Set())
   }
 
+  // What the faces selected can be told (the bar at the bottom says the same).
+  const selectionMenu = selected.size > 0 && (
+    <>
+      <ContextMenuItem onSelect={() => setMoveOpen(true)}>
+        <UserPlus /> Move {plural(selected.size, "face")} to…
+      </ContextMenuItem>
+      {character && (
+        <ContextMenuItem onSelect={() => void edit({ op: "not_them", tracks: ids, characterId: character.id })}>
+          <Prohibit /> Not {character.label}
+        </ContextMenuItem>
+      )}
+      <ContextMenuItem onSelect={() => void edit({ op: "not_a_face", tracks: ids })}>
+        <X /> Not a face
+      </ContextMenuItem>
+      {character && selected.size === 1 && (
+        <ContextMenuItem onSelect={() => void edit({ op: "set_cover", characterId: character.id, track: ids[0] })}>
+          <Image /> Use as picture
+        </ContextMenuItem>
+      )}
+      <ContextMenuSeparator />
+      <ContextMenuItem onSelect={() => setSelected(new Set(list.map((t) => t.id)))} shortcut={[modKey, "A"]}>
+        <SelectionAll /> Select all
+      </ContextMenuItem>
+      <ContextMenuItem onSelect={() => setSelected(new Set())} shortcut={["Esc"]}>
+        <X /> Clear selection
+      </ContextMenuItem>
+    </>
+  )
+  const pageMenu = (
+    <>
+      {character && (
+        <CharacterItems kit={contextKit} pid={pid} character={character} open={false} onMerge={() => setMergeOpen(true)} />
+      )}
+      <ContextMenuSeparator />
+      {!everyone && (
+        <ContextMenuItem onSelect={() => chooseView(view === "shots" ? "faces" : "shots")}>
+          {view === "shots" ? <UserFocus /> : <FilmStrip />} {view === "shots" ? "Show their faces" : "Show their shots"}
+        </ContextMenuItem>
+      )}
+      {view === "faces" && list.length > 0 && (
+        <ContextMenuItem onSelect={() => setSelected(new Set(list.map((t) => t.id)))} shortcut={[modKey, "A"]}>
+          <SelectionAll /> Select every face
+        </ContextMenuItem>
+      )}
+    </>
+  )
+  const onBody = (bodies: number[], verdict: BodyVerdict) => {
+    if (!character) return
+    const e: CastEdit =
+      verdict === "not_them"
+        ? { op: "body_not_them", bodies, characterId: character.id }
+        : { op: "not_a_person", bodies }
+    void castEdit(pid, e).then((r) => {
+      if (r !== undefined) toast(verdict === "not_them" ? `Not ${character.label}: out of their shots` : "Not a person: out of their shots")
+    })
+  }
+
   return (
-    <Page topbar={toolbar}>
+    <Page topbar={toolbar} menu={pageMenu}>
       <Header pid={pid} character={character} everyone={everyone} faces={list.length} onMerge={() => setMergeOpen(true)} />
 
       {!everyone && (maybe.data?.length ?? 0) > 0 && character && (
@@ -173,7 +236,7 @@ export function CharacterPage() {
           )}
         </div>
         {view === "shots" && character ? (
-          <Shots pid={pid} character={character} media={mediaById} onOpen={open} />
+          <Shots pid={pid} character={character} media={mediaById} onOpen={open} onBody={onBody} />
         ) : tracks.isPending ? (
           <div className="grid grid-cols-[repeat(auto-fill,minmax(104px,1fr))] gap-3">
             {Array.from({ length: 24 }, (_, i) => (
@@ -183,7 +246,11 @@ export function CharacterPage() {
         ) : list.length === 0 ? (
           <p className="text-md text-fg-3">No faces here.</p>
         ) : (
-          <FaceGrid tracks={list} media={mediaById} selected={selected} onSelect={setSelected} onOpen={open} />
+          <ContextArea menu={selectionMenu}>
+            <div>
+              <FaceGrid tracks={list} media={mediaById} selected={selected} onSelect={setSelected} onOpen={open} />
+            </div>
+          </ContextArea>
         )}
       </section>
 
@@ -258,11 +325,13 @@ function Shots({
   character,
   media,
   onOpen,
+  onBody,
 }: {
   pid: string
   character: Character
   media: Map<string, MediaItem>
   onOpen: (s: { mediaId: string; start: number }) => void
+  onBody: (bodies: number[], verdict: BodyVerdict) => void
 }) {
   const shots = useCharacterShots(pid, character.id)
   const list = shots.data ?? NO_SHOTS
@@ -303,7 +372,9 @@ function Shots({
         minItemWidth={240}
         itemHeight={(w) => (w * 9) / 16}
         getKey={(s) => `${s.mediaId}:${s.start}`}
-        renderItem={(s) => <ShotCard shot={s} media={media.get(s.mediaId)} onOpen={onOpen} />}
+        renderItem={(s) => (
+          <ShotCard shot={s} media={media.get(s.mediaId)} name={character.label} onOpen={onOpen} onBody={onBody} />
+        )}
       />
     </>
   )
@@ -327,96 +398,100 @@ function Header({
   const ambient = useAmbient(c?.coverSmall)
 
   return (
-    <Hero path={c?.coverSmall} ambient={ambient} blur className="min-h-[clamp(320px,44vh,460px)]">
-      <div className="flex flex-wrap items-end justify-between gap-8">
-        <div className="flex min-w-0 items-end gap-7">
-          <Artwork
-            key={c?.id}
-            path={c?.cover}
-            className="size-40 shrink-0 rounded-[28px] shadow-[0_30px_60px_-20px_rgb(0_0_0/0.8),inset_0_0_0_1px_rgb(255_255_255/0.12)]"
-            imgClassName="object-[50%_30%]"
-            fallback={
-              <div className="flex size-full items-center justify-center bg-white/[0.06] text-white/60 [&_svg]:size-14">
-                <User />
-              </div>
-            }
-          />
-          <div className="min-w-0 pb-1">
-            {everyone ? (
-              <h1 className="display text-6xl leading-none text-white">Everyone else</h1>
-            ) : editing && c ? (
-              <NameField character={c} pid={pid} onDone={() => setEditing(false)} />
-            ) : (
-              <button
-                onClick={() => setEditing(true)}
-                className="group -mx-2 flex max-w-full items-center gap-3 rounded-xl px-2 text-left transition-colors hover:bg-white/[0.06]"
-                title="Rename"
-              >
-                <h1 className={cn("display truncate text-6xl leading-[1.05] text-white", !c?.name && "text-white/75 italic")}>
-                  {c?.label ?? " "}
-                </h1>
-                <PencilSimple className="size-5 shrink-0 text-white/60 opacity-0 transition-opacity group-hover:opacity-100" />
-              </button>
-            )}
-            <div className="mt-4 flex flex-wrap items-center gap-2">
+    <ContextArea
+      disabled={!c}
+      menu={
+        c && <CharacterItems kit={contextKit} pid={pid} character={c} open={false} onRename={() => setEditing(true)} onMerge={onMerge} />
+      }
+    >
+      <Hero path={c?.coverSmall} ambient={ambient} blur className="min-h-[clamp(320px,44vh,460px)]">
+        <div className="flex flex-wrap items-end justify-between gap-8">
+          <div className="flex min-w-0 items-end gap-7">
+            <Artwork
+              key={c?.id}
+              path={c?.cover}
+              className="size-40 shrink-0 rounded-[28px] shadow-[0_30px_60px_-20px_rgb(0_0_0/0.8),inset_0_0_0_1px_rgb(255_255_255/0.12)]"
+              imgClassName="object-[50%_30%]"
+              fallback={
+                <div className="flex size-full items-center justify-center bg-white/[0.06] text-white/60 [&_svg]:size-14">
+                  <User />
+                </div>
+              }
+            />
+            <div className="min-w-0 pb-1">
               {everyone ? (
-                <>
-                  <Badge tone="media">{plural(faces, "face")}</Badge>
-                  <span className="text-sm text-white/70">Extras, background faces and anyone seen too briefly to tell</span>
-                </>
-              ) : c ? (
-                <>
-                  <Badge tone="media">{formatScreenTime(c.screenSec ?? 0)} on screen</Badge>
-                  <Badge tone="media">{plural(c.shots, "shot")}</Badge>
-                  <Badge tone="media">{plural(c.media, "episode")}</Badge>
-                  <Badge tone="media">{plural(c.tracks, "face")}</Badge>
-                  {!c.name && <span className="pl-1 text-sm text-white/60">Click the name to rename</span>}
-                </>
-              ) : null}
+                <h1 className="display text-6xl leading-none text-white">Everyone else</h1>
+              ) : editing && c ? (
+                <NameField character={c} pid={pid} onDone={() => setEditing(false)} />
+              ) : (
+                <Tooltip label="Rename" side="bottom">
+                  <button
+                    onClick={() => setEditing(true)}
+                    className="group -mx-2 flex max-w-full items-center gap-3 rounded-xl px-2 text-left transition-colors hover:bg-white/[0.06]"
+                  >
+                    <h1 className={cn("display truncate text-6xl leading-[1.05] text-white", !c?.name && "text-white/75 italic")}>
+                      {c?.label ?? " "}
+                    </h1>
+                    <PencilSimple className="size-5 shrink-0 text-white/60 opacity-0 transition-opacity group-hover:opacity-100" />
+                  </button>
+                </Tooltip>
+              )}
+              <div className="mt-4 flex flex-wrap items-center gap-2">
+                {everyone ? (
+                  <>
+                    <Badge tone="media">{plural(faces, "face")}</Badge>
+                    <span className="text-sm text-white/70">Extras, background faces and anyone seen too briefly to tell</span>
+                  </>
+                ) : c ? (
+                  <>
+                    <Badge tone="media">{formatScreenTime(c.screenSec ?? 0)} on screen</Badge>
+                    <Badge tone="media">{plural(c.shots, "shot")}</Badge>
+                    <Badge tone="media">{plural(c.media, "episode")}</Badge>
+                    <Badge tone="media">{plural(c.tracks, "face")}</Badge>
+                    {!c.name && <span className="pl-1 text-sm text-white/60">Click the name to rename</span>}
+                  </>
+                ) : null}
+              </div>
             </div>
           </div>
-        </div>
-        {c && (
-          <div className="flex shrink-0 items-center gap-2.5 pb-1">
-            {c.shots > 0 ? (
-              <Button size="lg" variant="primary" asChild>
-                <Link to="/p/$pid/cast/$cid/pack" params={{ pid, cid: c.id }}>
-                  <Package weight="bold" /> Build a scenepack
-                </Link>
-              </Button>
-            ) : (
-              <Button size="lg" variant="primary" disabled>
-                <Package weight="bold" /> Build a scenepack
-              </Button>
-            )}
-            <Button size="lg" variant="glass" onClick={onMerge}>
-              <ArrowsMerge /> Same person as…
-            </Button>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button size="icon-lg" variant="glass" aria-label={`${c.label} options`}>
-                  <DotsThree weight="bold" />
+          {c && (
+            <div className="flex shrink-0 items-center gap-2.5 pb-1">
+              {c.shots > 0 ? (
+                <Button size="lg" variant="primary" asChild>
+                  <Link to="/p/$pid/cast/$cid/pack" params={{ pid, cid: c.id }}>
+                    <Package weight="bold" /> Build a scenepack
+                  </Link>
                 </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem onSelect={() => setEditing(true)}>
-                  <PencilSimple /> Rename
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={onMerge}>
-                  <ArrowsMerge /> Same person as…
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  onSelect={() => void castEdit(pid, { op: "set_hidden", characterId: c.id, hidden: !c.hidden })}
-                >
-                  {c.hidden ? <Eye /> : <EyeSlash />} {c.hidden ? "Show in the cast" : "Hide from the cast"}
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-        )}
-      </div>
-    </Hero>
+              ) : (
+                <Button size="lg" variant="primary" disabled>
+                  <Package weight="bold" /> Build a scenepack
+                </Button>
+              )}
+              <Button size="lg" variant="glass" onClick={onMerge}>
+                <ArrowsMerge /> Same person as…
+              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button size="icon-lg" variant="glass" aria-label={`${c.label} options`}>
+                    <DotsThree weight="bold" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <CharacterItems
+                    kit={dropdownKit}
+                    pid={pid}
+                    character={c}
+                    open={false}
+                    onRename={() => setEditing(true)}
+                    onMerge={onMerge}
+                  />
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+          )}
+        </div>
+      </Hero>
+    </ContextArea>
   )
 }
 
@@ -463,65 +538,104 @@ function Maybe({
 }) {
   const [all, setAll] = useState(false)
   const shown = all ? tracks : tracks.slice(0, 12)
+  const navigate = useNavigate()
   return (
-    <section className="mx-10 mb-10 rounded-3xl border border-accent-line/60 bg-[linear-gradient(135deg,rgb(224_180_92/0.1),rgb(255_255_255/0.02)_60%)] p-6">
-      <div className="mb-5 flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <h2 className="display text-3xl text-fg-1">Maybe {c.label}?</h2>
-          <p className="mt-1 text-sm text-fg-2">
-            {plural(tracks.length, "face")} {tracks.length === 1 ? "looks" : "look"} like {c.label}, but not clearly enough to
-            decide alone.
-          </p>
-        </div>
-        <div className="flex shrink-0 gap-2">
-          <Button variant="secondary" asChild>
-            <Link to="/p/$pid/cast/review" params={{ pid }} search={{ c: c.id }}>
-              <UserFocus /> Review one by one
-            </Link>
-          </Button>
-          <Button
-            variant="accent"
-            onClick={() => void castEdit(pid, { op: "assign", tracks: tracks.map((t) => t.id), characterId: c.id })}
+    <ContextArea
+      menu={
+        <>
+          <ContextMenuItem onSelect={() => void navigate({ to: "/p/$pid/cast/review", params: { pid }, search: { c: c.id } })}>
+            <UserFocus /> Review one by one
+          </ContextMenuItem>
+          <ContextMenuItem
+            onSelect={() => void castEdit(pid, { op: "assign", tracks: tracks.map((t) => t.id), characterId: c.id })}
           >
-            <Check weight="bold" /> All are {c.label}
-          </Button>
-        </div>
-      </div>
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(104px,1fr))] gap-3">
-        {shown.map((t) => (
-          <div key={t.id} className="group relative aspect-square overflow-hidden rounded-xl bg-inset picture-edge">
-            <img
-              src={assetUrl(t.thumb)}
-              alt=""
-              loading="lazy"
-              className="size-full object-cover"
-              onDoubleClick={() => onOpen(t)}
-              title={media.get(t.mediaId)?.label}
-            />
-            <div className="absolute inset-x-1 bottom-1 flex justify-between gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-              <button
-                onClick={() => void castEdit(pid, { op: "assign", tracks: [t.id], characterId: c.id })}
-                aria-label={`Yes, ${c.label}`}
-                className="flex h-7 flex-1 items-center justify-center rounded-lg bg-black/60 text-white backdrop-blur-md hover:bg-accent hover:text-on-accent"
-              >
-                <Check className="size-3.5" />
-              </button>
-              <button
-                onClick={() => void castEdit(pid, { op: "not_them", tracks: [t.id], characterId: c.id })}
-                aria-label={`Not ${c.label}`}
-                className="flex h-7 flex-1 items-center justify-center rounded-lg bg-black/60 text-white backdrop-blur-md hover:bg-danger hover:text-white"
-              >
-                <X className="size-3.5" />
-              </button>
-            </div>
+            <Check /> All are {c.label}
+          </ContextMenuItem>
+        </>
+      }
+    >
+      <section className="mx-10 mb-10 rounded-3xl border border-accent-line/60 bg-[linear-gradient(135deg,rgb(224_180_92/0.1),rgb(255_255_255/0.02)_60%)] p-6">
+        <div className="mb-5 flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <h2 className="display text-3xl text-fg-1">Maybe {c.label}?</h2>
+            <p className="mt-1 text-sm text-fg-2">
+              {plural(tracks.length, "face")} {tracks.length === 1 ? "looks" : "look"} like {c.label}, but not clearly enough to
+              decide alone.
+            </p>
           </div>
-        ))}
-      </div>
-      {tracks.length > 12 && (
-        <button onClick={() => setAll((v) => !v)} className="mt-4 text-sm font-medium text-fg-2 hover:text-fg-1">
-          {all ? "Show fewer" : `Show ${plural(tracks.length - shown.length, "more face")}`}
-        </button>
-      )}
-    </section>
+          <div className="flex shrink-0 gap-2">
+            <Button variant="secondary" asChild>
+              <Link to="/p/$pid/cast/review" params={{ pid }} search={{ c: c.id }}>
+                <UserFocus /> Review one by one
+              </Link>
+            </Button>
+            <Button
+              variant="accent"
+              onClick={() => void castEdit(pid, { op: "assign", tracks: tracks.map((t) => t.id), characterId: c.id })}
+            >
+              <Check weight="bold" /> All are {c.label}
+            </Button>
+          </div>
+        </div>
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(104px,1fr))] gap-3">
+          {shown.map((t) => (
+            <ContextArea
+              key={t.id}
+              menu={
+                <>
+                  <ContextMenuItem onSelect={() => void castEdit(pid, { op: "assign", tracks: [t.id], characterId: c.id })}>
+                    <Check /> Yes, {c.label}
+                  </ContextMenuItem>
+                  <ContextMenuItem onSelect={() => void castEdit(pid, { op: "not_them", tracks: [t.id], characterId: c.id })}>
+                    <X /> Not {c.label}
+                  </ContextMenuItem>
+                  <ContextMenuSeparator />
+                  <ContextMenuItem onSelect={() => onOpen(t)}>
+                    <Play /> Watch this moment
+                  </ContextMenuItem>
+                </>
+              }
+            >
+              <div className="group relative aspect-square overflow-hidden rounded-xl bg-inset picture-edge">
+                <Tooltip label={media.get(t.mediaId)?.label ?? "This face"} hint="Double-click to watch" side="top" delay={600}>
+                  <img
+                    src={assetUrl(t.thumb)}
+                    alt=""
+                    loading="lazy"
+                    className="size-full object-cover"
+                    onDoubleClick={() => onOpen(t)}
+                  />
+                </Tooltip>
+                <div className="absolute inset-x-1 bottom-1 flex justify-between gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                  <Tooltip label={`Yes, ${c.label}`} side="top">
+                    <button
+                      onClick={() => void castEdit(pid, { op: "assign", tracks: [t.id], characterId: c.id })}
+                      aria-label={`Yes, ${c.label}`}
+                      className="flex h-7 flex-1 items-center justify-center rounded-lg bg-black/60 text-white backdrop-blur-md hover:bg-accent hover:text-on-accent"
+                    >
+                      <Check className="size-3.5" />
+                    </button>
+                  </Tooltip>
+                  <Tooltip label={`Not ${c.label}`} side="top">
+                    <button
+                      onClick={() => void castEdit(pid, { op: "not_them", tracks: [t.id], characterId: c.id })}
+                      aria-label={`Not ${c.label}`}
+                      className="flex h-7 flex-1 items-center justify-center rounded-lg bg-black/60 text-white backdrop-blur-md hover:bg-danger hover:text-white"
+                    >
+                      <X className="size-3.5" />
+                    </button>
+                  </Tooltip>
+                </div>
+              </div>
+            </ContextArea>
+          ))}
+        </div>
+        {tracks.length > 12 && (
+          <button onClick={() => setAll((v) => !v)} className="mt-4 text-sm font-medium text-fg-2 hover:text-fg-1">
+            {all ? "Show fewer" : `Show ${plural(tracks.length - shown.length, "more face")}`}
+          </button>
+        )}
+      </section>
+    </ContextArea>
   )
 }

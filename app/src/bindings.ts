@@ -15,6 +15,13 @@ export const commands = {
 	 *  menu, where the webview's clipboard API refuses (no user gesture).
 	 */
 	clipboardWrite: (text: string) => __TAURI_INVOKE<null>("clipboard_write", { text }),
+	/**
+	 *  The text on the clipboard, for the text fields' Paste (the webview's own
+	 *  clipboard API would ask the user for permission first). `None` when the
+	 *  clipboard holds no text (a picture, files, nothing). Off the main thread:
+	 *  reading waits for the clipboard's owner, which on Linux can be this app.
+	 */
+	clipboardRead: () => __TAURI_INVOKE<string | null>("clipboard_read"),
 	/**  Open the logs folder (Settings → About, Help menu on Windows). */
 	openLogsDir: () => __TAURI_INVOKE<null>("open_logs_dir"),
 	/**  The media engine (ffmpeg) found on this machine — Settings → About. */

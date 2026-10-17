@@ -2,8 +2,9 @@ import type * as React from "react"
 import { useState } from "react"
 import { Link, useNavigate, useParams } from "@tanstack/react-router"
 import { CaretRight, DotsThree, FilePlus, FolderOpen, FolderPlus, Package, PencilSimple, Plus } from "@/components/icons"
-import type { ProjectSummary } from "@/bindings"
+import type { MediaItem, ProjectSummary } from "@/bindings"
 import { Button } from "@/components/ui/button"
+import { ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-menu"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -21,7 +22,7 @@ import { PickCharacter } from "@/features/cast/PickCharacter"
 import { RenameProjectDialog } from "@/features/library/ProjectDialogs"
 import { useAmbient } from "@/lib/ambient"
 import { formatDuration } from "@/lib/format"
-import { commands } from "@/lib/ipc"
+import { reveal } from "@/lib/os"
 import { pickFolder, pickVideoFiles } from "@/lib/media"
 import { addToProject, projectFacts } from "@/lib/projects"
 import { firstFailure, useCast, useMediaList, useProject } from "@/lib/queries"
@@ -30,6 +31,7 @@ import { EpisodeCard } from "./EpisodeCard"
 import { MissingBanner } from "./MissingBanner"
 import { ProjectLoadError } from "./ProjectLoadError"
 import { ProjectNav } from "./ProjectNav"
+import { RemoveMediaDialog } from "./RemoveMediaDialog"
 
 /** A project's front page: its picture and title, its cast, its episodes. */
 export function OverviewPage() {
@@ -42,6 +44,7 @@ export function OverviewPage() {
   const { data: cast } = castQuery
   const [renaming, setRenaming] = useState<ProjectSummary | null>(null)
   const [choosing, setChoosing] = useState(false)
+  const [removing, setRemoving] = useState<MediaItem | null>(null)
   const navigate = useNavigate()
   const pictured = project?.poster ? project : media?.find((m) => m.poster)
   const backdrop = pictured?.poster ?? null
@@ -60,7 +63,33 @@ export function OverviewPage() {
   }
 
   return (
-    <Page topbar={<TopBar title={project?.title} overlay nav={<ProjectNav pid={pid} />} />}>
+    <Page
+      topbar={<TopBar title={project?.title} overlay nav={<ProjectNav pid={pid} />} />}
+      menu={
+        <>
+          {live && (
+            <ContextMenuItem
+              onSelect={() => (shown.length > 0 ? setChoosing(true) : void navigate({ to: "/p/$pid/cast", params: { pid } }))}
+            >
+              <Package /> Build a scenepack…
+            </ContextMenuItem>
+          )}
+          <ContextMenuItem onSelect={() => void pickFolder().then((p) => (p ? addToProject(pid, [p]) : undefined))}>
+            <FolderPlus /> Add {movie ? "a folder" : "episodes"}…
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => void pickVideoFiles().then((p) => addToProject(pid, p))}>
+            <FilePlus /> Add files…
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem onSelect={() => project && setRenaming(project)}>
+            <PencilSimple /> Rename…
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => project && reveal(project.dir)}>
+            <FolderOpen /> Show project folder
+          </ContextMenuItem>
+        </>
+      }
+    >
       <Hero path={backdrop} ambient={ambient}>
         <div className="max-w-3xl">
           <h1 className="display text-6xl leading-[0.95] text-white">{project?.title ?? " "}</h1>
@@ -101,7 +130,7 @@ export function OverviewPage() {
                   <PencilSimple /> Rename…
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem onSelect={() => project && void commands.revealPath(project.dir)}>
+                <DropdownMenuItem onSelect={() => project && reveal(project.dir)}>
                   <FolderOpen /> Show project folder
                 </DropdownMenuItem>
               </DropdownMenuContent>
@@ -147,7 +176,15 @@ export function OverviewPage() {
           {(media?.length ?? 0) > 0 ? (
             <Shelf>
               {media!.map((m) => (
-                <EpisodeCard key={m.id} pid={pid} media={m} className="w-[300px] shrink-0 snap-start" />
+                <EpisodeCard
+                  key={m.id}
+                  pid={pid}
+                  media={m}
+                  faces={live}
+                  onOpen={() => void navigate({ to: "/p/$pid/timeline/$mid", params: { pid, mid: m.id } })}
+                  onRemove={() => setRemoving(m)}
+                  className="w-[300px] shrink-0 snap-start"
+                />
               ))}
             </Shelf>
           ) : (
@@ -162,6 +199,7 @@ export function OverviewPage() {
         </Section>
       </div>
       <RenameProjectDialog project={renaming} onOpenChange={(o) => !o && setRenaming(null)} />
+      <RemoveMediaDialog projectId={pid} media={removing} onOpenChange={(o) => !o && setRemoving(null)} />
       <PickCharacter
         pid={pid}
         open={choosing}

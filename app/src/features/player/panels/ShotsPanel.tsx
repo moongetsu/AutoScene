@@ -1,13 +1,15 @@
 import { useCallback, useMemo } from "react"
-import { ArrowCounterClockwise, CaretLeft, CaretRight, Scissors } from "@/components/icons"
+import { ArrowCounterClockwise, CaretLeft, CaretRight, Copy, FilmStrip, Scissors } from "@/components/icons"
 import { toast } from "sonner"
 import type { MediaItem, Segment } from "@/bindings"
 import { Button } from "@/components/ui/button"
+import { ContextMenuItem } from "@/components/ui/context-menu"
 import { Kbd } from "@/components/ui/kbd"
 import { Progress } from "@/components/ui/progress"
 import { Tooltip } from "@/components/ui/tooltip"
 import { formatPercent } from "@/lib/format"
 import { commands, errorMessage } from "@/lib/ipc"
+import { copyText } from "@/lib/os"
 import { nextShotStart, prevShotStart, segmentIndexAt, shotNumbers } from "@/lib/segments"
 import { useMediaJob } from "@/state/activity"
 import { type FrameStore, useFrameSelector } from "../frame-store"
@@ -46,8 +48,34 @@ export function ShotsPanel({
       .mediaAnalyze(pid, m.id, null)
       .catch((e) => toast.error("Couldn't start the analysis", { description: errorMessage(e) }))
 
+  const menu =
+    m.shots === "ready" && seg ? (
+      <>
+        {seg.kind === "shot" && (
+          <ContextMenuItem onSelect={onMark} shortcut={["X"]}>
+            <FilmStrip /> Mark the shot as the clip
+          </ContextMenuItem>
+        )}
+        <ContextMenuItem onSelect={() => go(prevShotStart(segments, store.get()))} shortcut={["↑"]}>
+          <CaretLeft /> Previous shot
+        </ContextMenuItem>
+        <ContextMenuItem onSelect={() => go(nextShotStart(segments, store.get()))} shortcut={["↓"]}>
+          <CaretRight /> Next shot
+        </ContextMenuItem>
+        <ContextMenuItem onSelect={() => void copyText(`${tc(seg.start)} - ${tc(seg.end - 1)}`, "timecodes")}>
+          <Copy /> Copy its timecodes
+        </ContextMenuItem>
+      </>
+    ) : (
+      !job && (
+        <ContextMenuItem onSelect={analyze}>
+          {m.shots === "failed" ? <ArrowCounterClockwise /> : <Scissors />} {m.shots === "failed" ? "Find shots again" : "Find shots"}
+        </ContextMenuItem>
+      )
+    )
+
   return (
-    <Card title="Shot" action={m.shots === "ready" && <span className="timecode text-xs text-fg-3">{total} shots</span>}>
+    <Card title="Shot" menu={menu} action={m.shots === "ready" && <span className="timecode text-xs text-fg-3">{total} shots</span>}>
       {m.shots === "ready" && seg ? (
         <>
           <div className="flex items-baseline justify-between gap-2">

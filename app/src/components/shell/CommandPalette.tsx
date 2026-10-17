@@ -124,6 +124,8 @@ export function CommandPalette() {
               <MagnifyingGlass className="size-5 shrink-0 text-fg-2" weight="bold" />
               <Command.Input
                 autoFocus
+                autoComplete="off"
+                spellCheck={false}
                 value={query}
                 onValueChange={setQuery}
                 placeholder={current ? "Search characters, episodes, projects and commands" : "Search projects, places and commands"}
