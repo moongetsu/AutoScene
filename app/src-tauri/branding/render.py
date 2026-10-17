@@ -144,13 +144,14 @@ def dmg_background() -> Image.Image:
     img = Image.new("RGBA", size, CANVAS + (255,))
     img = Image.alpha_composite(img, radial(size, (win_w, icon_y * 2 - 40), (520, 210), GOLD, 0.12))
 
-    # Plates behind the two labels.
+    # Plates behind the two labels: Finder sets a 16 pt label's text at about
+    # 247-264 pt below a 128 pt icon centred at 170 (measured in the CI shot).
     plates = Image.new("RGBA", (size[0] * 2, size[1] * 2), (0, 0, 0, 0))
     d = ImageDraw.Draw(plates)
     for cx in (app_x, apps_x):
         x0, x1 = (cx - 66) * 4, (cx + 66) * 4
-        y0, y1 = (icon_y + 65) * 4, (icon_y + 89) * 4
-        d.rounded_rectangle([x0, y0, x1, y1], radius=12 * 4, fill=LABEL_PLATE + (255,))
+        y0, y1 = (icon_y + 71) * 4, (icon_y + 97) * 4
+        d.rounded_rectangle([x0, y0, x1, y1], radius=13 * 4, fill=LABEL_PLATE + (255,))
     img = Image.alpha_composite(img, plates.resize(size, Image.Resampling.LANCZOS))
 
     # A thin gold arrow from the app to Applications, in the mark's stroke style.
@@ -184,11 +185,12 @@ def icon_1024() -> Image.Image:
     return img
 
 
-# PNG entries for every size macOS reads: iconutil's set from a full .iconset
-# plus icp6 (64 px). Pillow's own writer leaves out the 16 and 32 px ones.
+# The PNG entries macOS reads as PNG. Not icp4/icp5 (16/32 px 1x): Finder
+# showed PNG data there as noise (the DMG window's title icon); it scales
+# ic11/ic12 down instead.
 ICNS_TYPES = [
-    (b"icp4", 16), (b"icp5", 32), (b"icp6", 64), (b"ic07", 128), (b"ic08", 256),
-    (b"ic09", 512), (b"ic10", 1024), (b"ic11", 32), (b"ic12", 64), (b"ic13", 256), (b"ic14", 512),
+    (b"ic07", 128), (b"ic08", 256), (b"ic09", 512), (b"ic10", 1024),
+    (b"ic11", 32), (b"ic12", 64), (b"ic13", 256), (b"ic14", 512),
 ]
 
 
