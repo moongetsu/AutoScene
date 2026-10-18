@@ -75,8 +75,8 @@ pub struct PortraitsChanged {
     pub project_id: ProjectId,
 }
 
-/// A character's pack settings or hand picks changed (the pack is made
-/// again from them).
+/// A character's pack settings changed: an export keeps the ones it was
+/// made with. (Picks by hand answer the grid that made them instead.)
 #[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
 #[tauri_specta(event_name = "pack:changed")]
 #[serde(rename_all = "camelCase")]

@@ -16,7 +16,7 @@ import { qk, queryClient } from "./queries"
  * | media:changed    | media(pid), frameMap(pid, mid), project(pid)       |
  * | analysis:changed | segments(pid, mid)                                 |
  * | cast:changed     | cast(pid) and everything under it (tracks, presence, packs) |
- * | pack:changed     | pack(pid, cid): its settings and hand picks         |
+ * | pack:changed     | pack(pid, cid): its settings (an export keeps them) |
  * | export:changed   | exports(pid)                                       |
  */
 export function startEventBridge(): () => void {

@@ -1529,7 +1529,7 @@ pub(crate) mod tests {
         // its pack, picked a shot of it, and took one of its faces off it
         // ("not this one"); `real` has a pack of its own already.
         assert!(db.set_pack_state(dup, "dup spec", None).unwrap());
-        assert!(db.set_pack_overrides(dup, &[(m, 100, 200)], Some(true)).unwrap());
+        assert!(db.set_pack_overrides(dup, &[(m, 100)], Some(true)).unwrap());
         assert!(db.set_pack_state(real, "own spec", None).unwrap());
         db.forbid_tracks(&[ids[3]], dup).unwrap();
         // A new grouping makes them one: every face is `real`'s.

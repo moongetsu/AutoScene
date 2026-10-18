@@ -806,6 +806,30 @@ pub struct PackPreview {
     /// Names exactly the clips it takes: an export of it is refused once the
     /// pack changed, so what is exported is what was shown.
     pub stamp: String,
+    /// Names its clips, in order, as they are apart from their [`PackChoice`]s.
+    pub shape: String,
+}
+
+/// Whether a shot is in its pack, and why: the part of a [`PackClip`] that
+/// picking shots changes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PackChoice {
+    pub included: bool,
+    pub by_rules: bool,
+    pub reason: Option<PackReason>,
+    pub manual: Option<bool>,
+}
+
+/// A pack after shots were picked: every clip's choice, in the pack's
+/// order — the rest of the pack is its preview's, when the `shape` is.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PackChoices {
+    pub choices: Vec<PackChoice>,
+    pub totals: PackTotals,
+    pub stamp: String,
+    pub shape: String,
 }
 
 /// How a pack's files are named and where they go.
@@ -848,6 +872,15 @@ pub struct PackState {
 pub struct PackKey {
     pub media_id: MediaId,
     pub shot: FrameIdx,
+}
+
+/// Shots of a pack picked (`include: true`), dropped (`false`) or handed
+/// back to the filters (`null`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PackPicks {
+    pub shots: Vec<PackKey>,
+    pub include: Option<bool>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]

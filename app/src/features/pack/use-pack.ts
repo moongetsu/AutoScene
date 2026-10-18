@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react"
-import { keepPreviousData, useQuery } from "@tanstack/react-query"
+import { type Query, hashKey, keepPreviousData, useQuery } from "@tanstack/react-query"
 import { toast } from "sonner"
-import type { CharacterId, MediaItem, PackClip, PackNaming, PackPreview, PackSpec, PackState, ProjectId } from "@/bindings"
+import type { CharacterId, MediaItem, PackChoices, PackClip, PackNaming, PackPreview, PackSpec, PackState, ProjectId } from "@/bindings"
 import { commands, errorMessage } from "@/lib/ipc"
 import { qk, queryClient } from "@/lib/queries"
-import { keyOf, pickable, picksFor, withPicks } from "./spec"
+import { fits, keyOf, pickable, picksFor, withChoices, withPicks } from "./spec"
 
 /** How long the filters rest before the pack is made again, and before they are kept. */
 const PREVIEW_MS = 150
@@ -23,6 +23,48 @@ function useSettled<T>(value: T, ms: number): T {
 }
 
 const NO_PICKS: ReadonlyMap<string, boolean> = new Map()
+
+const previews = (pid: ProjectId, cid: CharacterId) => [...qk.pack(pid, cid), "preview"] as const
+const plans = (pid: ProjectId, cid: CharacterId) => [...qk.pack(pid, cid), "plan"] as const
+
+/**
+ * Put the choices a click left (`answer`, for the pack `spec` makes) on the
+ * pack shown. It is fetched whole instead when it changed otherwise
+ * meanwhile (an analysis), when it isn't in yet (new filters), or when a
+ * fetch of it is on its way (an event asked for it). Packs of other filters
+ * don't know the click: one on screen (the filters changed meanwhile) is
+ * fetched again, and the ones not on screen, this one too by then, are
+ * dropped. A fetch on its way may have read the pack before the click: it
+ * starts over. Resolves once the grid has the pack as the backend has it.
+ */
+async function takeChoices(pid: ProjectId, cid: CharacterId, spec: PackSpec, answer: PackChoices): Promise<void> {
+  const all = previews(pid, cid)
+  const key = [...all, spec]
+  const others = (q: Query) => q.queryHash !== hashKey(key)
+  queryClient.removeQueries({ queryKey: all, type: "inactive" })
+  await queryClient.cancelQueries({ queryKey: all, predicate: others })
+  const again = queryClient.invalidateQueries({ queryKey: all, predicate: others })
+  const shown = queryClient.getQueryData<PackPreview>(key)
+  const fetching = queryClient.isFetching({ queryKey: key, exact: true }) > 0
+  if (shown && !fetching && fits(shown, answer)) {
+    queryClient.setQueryData(key, withChoices(shown, answer))
+    await again
+  } else {
+    await queryClient.cancelQueries({ queryKey: key, exact: true })
+    await Promise.all([again, queryClient.invalidateQueries({ queryKey: key, exact: true })])
+  }
+}
+
+/**
+ * Plans (names and sizes) once the clicks are in: the one on screen made
+ * again — from the start, as a fetch of it on its way may be older than the
+ * clicks — and the others dropped.
+ */
+async function refreshPlans(pid: ProjectId, cid: CharacterId): Promise<void> {
+  queryClient.removeQueries({ queryKey: plans(pid, cid), type: "inactive" })
+  await queryClient.cancelQueries({ queryKey: plans(pid, cid) })
+  await queryClient.invalidateQueries({ queryKey: plans(pid, cid) })
+}
 
 /**
  * A character's scenepack while it is being built: the filters (as last
@@ -77,14 +119,14 @@ export function usePack(pid: ProjectId, cid: CharacterId, media: Map<string, Med
 
   const settled = useSettled(state, PREVIEW_MS)
   const preview = useQuery({
-    queryKey: [...qk.pack(pid, cid), "preview", settled?.spec],
+    queryKey: [...previews(pid, cid), settled?.spec],
     queryFn: () => commands.packPreview(pid, cid, settled!.spec),
     enabled: settled != null,
     placeholderData: keepPreviousData,
     select,
   })
   const plan = useQuery({
-    queryKey: [...qk.pack(pid, cid), "plan", settled?.spec, settled?.naming],
+    queryKey: [...plans(pid, cid), settled?.spec, settled?.naming],
     queryFn: () => commands.packPlan(pid, cid, settled!.spec, settled!.naming),
     enabled: settled != null,
     placeholderData: keepPreviousData,
@@ -95,60 +137,69 @@ export function usePack(pid: ProjectId, cid: CharacterId, media: Map<string, Med
   // The grid shows the pack of the filters as they are: shots can be taken.
   const ready = state != null && settled === state && preview.data != null && !preview.isPlaceholderData
 
-  // One click after another, in order; the last one to finish brings the
-  // pack as the backend makes it now.
+  // Clicks go one after another, in order. Each answer is the pack's
+  // choices (picks change nothing else, so its shots aren't fetched
+  // again); the last one also brings the plan up to date.
   const queue = useRef<Promise<unknown>>(Promise.resolve())
   const clicks = useRef(0)
   const [sending, setSending] = useState(0)
 
-  /** Take shots in or out of the pack: at once on screen, then for good. */
-  const setIncluded = useCallback(
-    async (clips: PackClip[], included: boolean) => {
-      if (!ready) return
-      const { pick, unpick } = picksFor(clips, included)
-      if (pick.length + unpick.length === 0) return
+  /** Send a click's picks for the pack `spec` makes, showing `shown` at once. */
+  const send = useCallback(
+    async (spec: PackSpec, batches: [PackClip[], boolean | null][], shown: (readonly [string, boolean])[]) => {
       const click = ++clicks.current
-      const changed = clips.filter(pickable).map(keyOf)
-      setPicks((m) => new Map([...m, ...changed.map((k) => [k, included] as const)]))
+      setPicks((m) => new Map([...m, ...shown]))
       setSending((n) => n + 1)
-      const keys = (cs: PackClip[]) => cs.map((c) => ({ mediaId: c.shot.mediaId, shot: c.shot.start }))
-      const run = queue.current.then(async () => {
-        if (pick.length > 0) await commands.packOverride(pid, cid, keys(pick), included)
-        if (unpick.length > 0) await commands.packOverride(pid, cid, keys(unpick), null)
-      })
+      const picks = batches
+        .filter(([clips]) => clips.length > 0)
+        .map(([clips, include]) => ({ shots: clips.map((c) => ({ mediaId: c.shot.mediaId, shot: c.shot.start })), include }))
+      const run = queue.current.then(() => commands.packOverride(pid, cid, picks, spec))
       queue.current = run.catch(() => undefined)
       try {
-        await run
+        await takeChoices(pid, cid, spec, await run)
       } catch (e) {
         toast.error("Couldn't change the pack", { description: errorMessage(e) })
+        // Whatever reached it: the pack as the backend has it now.
+        await queryClient.invalidateQueries({ queryKey: previews(pid, cid) })
       }
       if (click === clicks.current) {
-        await queryClient.refetchQueries({ queryKey: qk.pack(pid, cid) })
         // A click made meanwhile keeps its picks on screen until it is in.
-        if (click === clicks.current) setPicks(NO_PICKS)
+        setPicks(NO_PICKS)
+        // The pack's names and size too, before it can be exported.
+        await refreshPlans(pid, cid)
       }
       setSending((n) => n - 1)
-    },
-    [pid, cid, ready],
-  )
-
-  /** Hand every shot back to the filters. */
-  const clearPicks = useCallback(
-    async (clips: PackClip[]) => {
-      const keys = clips.filter((c) => c.manual != null).map((c) => ({ mediaId: c.shot.mediaId, shot: c.shot.start }))
-      if (keys.length === 0) return
-      try {
-        await commands.packOverride(pid, cid, keys, null)
-      } catch (e) {
-        toast.error("Couldn't change the pack", { description: errorMessage(e) })
-      }
     },
     [pid, cid],
   )
 
+  /** Take shots in or out of the pack: at once on screen, then for good. */
+  const setIncluded = useCallback(
+    async (clips: PackClip[], included: boolean) => {
+      if (!ready || !settled) return
+      const { pick, unpick } = picksFor(clips, included)
+      if (pick.length + unpick.length === 0) return
+      const shown = clips.filter(pickable).map((c) => [keyOf(c), included] as const)
+      await send(settled.spec, [[pick, included], [unpick, null]], shown)
+    },
+    [ready, settled, send],
+  )
+
+  /** Hand shots back to the filters (what they say doesn't matter: also while they change). */
+  const clearPicks = useCallback(
+    async (clips: PackClip[]) => {
+      if (!settled) return
+      const picked = clips.filter((c) => c.manual != null)
+      if (picked.length === 0) return
+      const shown = picked.filter(pickable).map((c) => [keyOf(c), c.byRules] as const)
+      await send(settled.spec, [[picked, null]], shown)
+    },
+    [settled, send],
+  )
+
   // What is shown is what an export takes: only once the filters rest, the
   // pack made from them is in and every click has reached it (the
-  // preview's stamp names exactly those clips).
+  // preview's stamp names exactly those clips), its names and size too.
   const current = ready && sending === 0 && !preview.isFetching
 
   return { state, saved, setSpec, setNaming, preview, plan, setIncluded, clearPicks, ready, current, fpsOf }

@@ -1,4 +1,4 @@
-import type { PackClip, PackPreview, PackReason, PackSpec, ShotSize } from "@/bindings"
+import type { PackChoices, PackClip, PackPreview, PackReason, PackSpec, ShotSize } from "@/bindings"
 
 /**
  * The scenepack builder's filters and picks, as plain data. The backend
@@ -150,6 +150,26 @@ export function withPicks(
     return { ...c, included, manual, reason }
   })
   return changed ? { ...p, clips: next, totals: totalsOf(next, fpsOf) } : p
+}
+
+/** Whether choices after a pick are a preview's: the same clips in the same order (else the pack changed otherwise). */
+export const fits = (p: PackPreview, a: PackChoices) => p.shape === a.shape && p.clips.length === a.choices.length
+
+/**
+ * The preview as the backend has it after a pick: each clip's choice (in
+ * the preview's order — see [`fits`]), the totals and the stamp. Clips
+ * whose choice stays keep their identity, so only the cards that changed
+ * draw again.
+ */
+export function withChoices(p: PackPreview, a: PackChoices): PackPreview {
+  let changed = false
+  const clips = p.clips.map((c, i) => {
+    const { included, byRules, reason, manual } = a.choices[i]
+    if (c.included === included && c.byRules === byRules && c.reason === reason && c.manual === manual) return c
+    changed = true
+    return { ...c, included, byRules, reason, manual }
+  })
+  return { ...p, clips: changed ? clips : p.clips, totals: a.totals, stamp: a.stamp }
 }
 
 export function totalsOf(clips: PackClip[], fpsOf: (mediaId: string) => number | null): PackPreview["totals"] {

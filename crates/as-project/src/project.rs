@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -207,13 +208,14 @@ impl Project {
 
     /// All media in episode order. Files that disappeared show as `missing`.
     pub fn media_list(&self) -> ProjectResult<Vec<MediaItem>> {
-        let mut list = self.db.media_list()?;
-        for m in &mut list {
-            if !Path::new(&m.path).is_file() {
-                m.status = MediaStatus::Missing;
-            }
-        }
-        Ok(list)
+        Ok(found(self.db.media_list()?))
+    }
+
+    /// [`Self::media_list`] without each media's shots and faces counted
+    /// (`shot_count` and `face_count` are `None`): a pass over every track
+    /// that cutting from them doesn't need.
+    pub(crate) fn media_list_uncounted(&self) -> ProjectResult<Vec<MediaItem>> {
+        Ok(found(self.db.media_list_uncounted()?))
     }
 
     pub fn media(&self, id: MediaId) -> ProjectResult<MediaItem> {
@@ -760,9 +762,14 @@ impl Project {
         // The clips of one file only name its chapters: they only need to
         // differ from each other.
         let mut used: HashSet<String> = if merged.is_some() { HashSet::new() } else { promised.clone() };
+        // Each episode once, however many clips it gives.
+        let mut sources: HashMap<MediaId, (MediaItem, MediaInfo, Arc<FrameIndex>)> = HashMap::new();
         let mut items = Vec::with_capacity(req.clips.len());
         for c in &req.clips {
-            let (m, _, index) = self.ready_source(c.media_id)?;
+            if let std::collections::hash_map::Entry::Vacant(e) = sources.entry(c.media_id) {
+                e.insert(self.ready_source(c.media_id)?);
+            }
+            let (m, _, index) = &sources[&c.media_id];
             if c.start >= c.end || c.end > index.len() {
                 return Err(ProjectError::Invalid(format!(
                     "Frames {}–{} are outside {} (0–{}).",
@@ -774,7 +781,7 @@ impl Project {
             }
             let base = match c.name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
                 Some(n) => safe_component(n, " ", 120),
-                None => default_clip_name(&title, &m, &index, c.start),
+                None => default_clip_name(&title, m, index, c.start),
             };
             // Windows and macOS file names ignore case.
             let name = unique_name(&base, |n| match merged {
@@ -957,13 +964,21 @@ impl Project {
             return finish(MergedFile { error: Some(e.to_string()), ..file }, &[]);
         }
 
+        // Each episode once, however many clips it gives (one that can't be
+        // cut from is asked again for each of its clips, which all fail).
+        let mut episodes: HashMap<MediaId, Rc<(PathBuf, MediaInfo, Arc<FrameIndex>)>> = HashMap::new();
         let mut sources = Vec::with_capacity(ex.items.len());
         for item in &ex.items {
-            let source = self.ready_source(item.media_id).and_then(|(m, info, index)| {
-                Ok((PathBuf::from(&m.path), info, index, self.db.export_item_audio(item.id)?))
-            });
-            match source {
-                Ok(s) => sources.push((item, s)),
+            let episode = match episodes.get(&item.media_id) {
+                Some(e) => Ok(e.clone()),
+                None => self.ready_source(item.media_id).map(|(m, info, index)| {
+                    let e = Rc::new((PathBuf::from(&m.path), info, index));
+                    episodes.insert(item.media_id, e.clone());
+                    e
+                }),
+            };
+            match episode.and_then(|e| Ok((e, self.db.export_item_audio(item.id)?))) {
+                Ok((e, audio)) => sources.push((item, e, audio)),
                 Err(e) => fail(item, &e)?,
             }
         }
@@ -972,9 +987,9 @@ impl Project {
         }
         let merge_sources: Vec<MergeSource> = sources
             .iter()
-            .map(|(item, (_, info, index, audio))| MergeSource {
-                info,
-                index,
+            .map(|(item, episode, audio)| MergeSource {
+                info: &episode.1,
+                index: &episode.2,
                 range: FrameRange::new(item.start, item.end),
                 audio_ordinal: *audio,
             })
@@ -983,7 +998,7 @@ impl Project {
             Ok(plan) => plan,
             Err(e) => {
                 let e = ProjectError::from(e);
-                for (item, _) in &sources {
+                for (item, ..) in &sources {
                     fail(item, &e)?;
                 }
                 return finish(MergedFile { error: Some(e.to_string()), ..file }, &[]);
@@ -994,10 +1009,11 @@ impl Project {
         let mut parts = Vec::with_capacity(n);
         let mut in_file = Vec::with_capacity(n);
         let mut verified = true;
-        for (i, ((item, (path, info, index, audio)), timing)) in sources.iter().zip(&plan.parts).enumerate() {
+        for (i, ((item, episode, audio), timing)) in sources.iter().zip(&plan.parts).enumerate() {
             if cancel.is_cancelled() {
                 break;
             }
+            let (path, info, index) = &**episode;
             let stage = if n > 1 { format!("Clip {} of {n}", i + 1) } else { "Rendering".into() };
             self.db.update_export_part(item.id, ExportStatus::Running, None, None)?;
             changed();
@@ -1160,6 +1176,16 @@ fn stale_posters<'a>(before: [Option<&'a str>; 2], now: [Option<&str>; 2], thumb
 fn plays_direct(info: &MediaInfo, index: &FrameIndex, audio_ordinal: Option<u32>) -> bool {
     let default_audio = info.default_audio().map(|a| a.ordinal);
     proxy::playable_direct(info, index) && (audio_ordinal.is_none() || audio_ordinal == default_audio)
+}
+
+/// `list` with the media whose files disappeared as `missing`.
+fn found(mut list: Vec<MediaItem>) -> Vec<MediaItem> {
+    for m in &mut list {
+        if !Path::new(&m.path).is_file() {
+            m.status = MediaStatus::Missing;
+        }
+    }
+    list
 }
 
 /// `Title_S01E03_00-12-03-05`: project, episode (or file name), source timecode.

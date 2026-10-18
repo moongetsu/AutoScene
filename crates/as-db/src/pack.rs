@@ -128,14 +128,14 @@ impl ProjectDb {
     }
 
     /// Pick (`Some(true)`), drop (`Some(false)`) or hand back to the filters
-    /// (`None`) these shots of `c`'s pack, all at once, each as `(media,
-    /// start, end)`. A pick is kept on the shot's start frame; one made when
-    /// the shot started elsewhere (it was found again since) lies inside it
-    /// and is replaced too. Returns `false` when the character is gone.
+    /// (`None`) these shots of `c`'s pack, all at once, each by its media and
+    /// first frame. A pick is kept on the shot's first frame; one made when
+    /// the shot started elsewhere (it was found again since) lies inside the
+    /// shot and is replaced too. Returns `false` when the character is gone.
     pub fn set_pack_overrides(
         &self,
         c: CharacterId,
-        shots: &[(MediaId, FrameIdx, FrameIdx)],
+        shots: &[(MediaId, FrameIdx)],
         include: Option<bool>,
     ) -> DbResult<bool> {
         self.0.write(|tx| {
@@ -147,15 +147,19 @@ impl ProjectDb {
                 return Ok(false);
             }
             let now = now_ms();
+            // The shot starting there (only its first frame when none does any more).
             let mut clear = tx.prepare(
-                "DELETE FROM pack_overrides WHERE character_id = ?1 AND media_id = ?2 AND shot >= ?3 AND shot < ?4",
+                "DELETE FROM pack_overrides WHERE character_id = ?1 AND media_id = ?2 AND shot >= ?3
+                   AND shot < COALESCE((SELECT g.end FROM segments g
+                                         WHERE g.media_id = ?2 AND g.start = ?3 AND g.kind = ?4), ?3 + 1)",
             )?;
             let mut put = tx.prepare(
                 "INSERT INTO pack_overrides (character_id, media_id, shot, include, updated_at)
                  SELECT ?1, ?2, ?3, ?4, ?5 WHERE EXISTS (SELECT 1 FROM media WHERE id = ?2)",
             )?;
-            for &(m, start, end) in shots {
-                clear.execute(params![c.to_string(), m.to_string(), start, end.max(start + 1)])?;
+            let shot = enum_to_sql(SegmentKind::Shot);
+            for &(m, start) in shots {
+                clear.execute(params![c.to_string(), m.to_string(), start, shot])?;
                 if let Some(inc) = include {
                     put.execute(params![c.to_string(), m.to_string(), start, inc, now])?;
                 }
@@ -263,18 +267,18 @@ mod tests {
             Some((r#"{"solo":false}"#.into(), Some(r#"{"folder":true}"#.into())))
         );
 
-        assert!(db.set_pack_overrides(walter, &[(m, 0, 1), (m, 102, 103)], Some(false)).unwrap());
-        assert!(db.set_pack_overrides(walter, &[(m, 102, 103)], Some(true)).unwrap());
+        assert!(db.set_pack_overrides(walter, &[(m, 0), (m, 102)], Some(false)).unwrap());
+        assert!(db.set_pack_overrides(walter, &[(m, 102)], Some(true)).unwrap());
         let mut o = db.pack_overrides(walter).unwrap();
         o.sort_by_key(|x| x.1);
         assert_eq!(o, [(m, 0, false), (m, 102, true)]);
-        assert!(db.set_pack_overrides(walter, &[(m, 0, 1)], None).unwrap());
+        assert!(db.set_pack_overrides(walter, &[(m, 0)], None).unwrap());
         assert_eq!(db.pack_overrides(walter).unwrap(), [(m, 102, true)]);
 
         // A character that is gone keeps nothing.
         let gone = CharacterId::new();
         assert!(!db.set_pack_state(gone, "{}", None).unwrap());
-        assert!(!db.set_pack_overrides(gone, &[(m, 0, 1)], Some(true)).unwrap());
+        assert!(!db.set_pack_overrides(gone, &[(m, 0)], Some(true)).unwrap());
         // A media removed takes its hand picks along; the filters stay.
         db.remove_media(m).unwrap();
         assert!(db.pack_overrides(walter).unwrap().is_empty());
@@ -287,8 +291,8 @@ mod tests {
         let walter = character(&db, &[ids[0]], "Walter");
         let heisenberg = character(&db, &[ids[3]], "Heisenberg");
         db.set_pack_state(heisenberg, r#"{"solo":true}"#, None).unwrap();
-        db.set_pack_overrides(heisenberg, &[(m, 102, 200)], Some(true)).unwrap();
-        db.set_pack_overrides(walter, &[(m, 0, 100)], Some(false)).unwrap();
+        db.set_pack_overrides(heisenberg, &[(m, 102)], Some(true)).unwrap();
+        db.set_pack_overrides(walter, &[(m, 0)], Some(false)).unwrap();
         db.merge_characters(heisenberg, walter).unwrap();
         let mut o = db.pack_overrides(walter).unwrap();
         o.sort_by_key(|x| x.1);
@@ -306,8 +310,8 @@ mod tests {
         db.set_pack_state(walter, r#"{"limit":10}"#, None).unwrap();
         db.set_pack_state(heisenberg, r#"{"solo":true}"#, None).unwrap();
         // Both decided about the shot at 0, differently.
-        db.set_pack_overrides(walter, &[(m, 0, 100)], Some(true)).unwrap();
-        db.set_pack_overrides(heisenberg, &[(m, 0, 100)], Some(false)).unwrap();
+        db.set_pack_overrides(walter, &[(m, 0)], Some(true)).unwrap();
+        db.set_pack_overrides(heisenberg, &[(m, 0)], Some(false)).unwrap();
         db.merge_characters(heisenberg, walter).unwrap();
         assert_eq!(db.pack_overrides(walter).unwrap(), [(m, 0, true)]);
         assert_eq!(db.pack_state(walter).unwrap(), Some((r#"{"limit":10}"#.into(), None)));
@@ -318,12 +322,17 @@ mod tests {
     fn a_pick_replaces_one_made_when_the_shot_started_elsewhere() {
         let (db, m, ids) = setup();
         let walter = character(&db, &[ids[0]], "Walter");
-        // Made when the shot started at 290; it starts at 280 now.
-        db.set_pack_overrides(walter, &[(m, 290, 291)], Some(false)).unwrap();
-        db.set_pack_overrides(walter, &[(m, 280, 400)], None).unwrap();
+        // Made when a shot started at 290; found again, the shot starts at 280.
+        db.set_pack_overrides(walter, &[(m, 290)], Some(false)).unwrap();
+        db.store_segments(m, &[shot(0, 100), shot(100, 102), shot(102, 280), shot(280, 400)]).unwrap();
+        db.set_pack_overrides(walter, &[(m, 280)], None).unwrap();
         assert!(db.pack_overrides(walter).unwrap().is_empty());
-        db.set_pack_overrides(walter, &[(m, 290, 291)], Some(false)).unwrap();
-        db.set_pack_overrides(walter, &[(m, 280, 400)], Some(true)).unwrap();
+        db.set_pack_overrides(walter, &[(m, 290)], Some(false)).unwrap();
+        db.set_pack_overrides(walter, &[(m, 280)], Some(true)).unwrap();
         assert_eq!(db.pack_overrides(walter).unwrap(), [(m, 280, true)]);
+        // The shot before keeps its own.
+        db.set_pack_overrides(walter, &[(m, 102)], Some(false)).unwrap();
+        db.set_pack_overrides(walter, &[(m, 280)], None).unwrap();
+        assert_eq!(db.pack_overrides(walter).unwrap(), [(m, 102, false)]);
     }
 }

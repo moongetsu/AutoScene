@@ -6,17 +6,23 @@
 //! followed by their bodies — by a body of theirs big and clear enough to
 //! make a clip ([`as_analysis::bodies::Showing::prominent`]): a shot
 //! without their face, badged so, behind the shots with it.
+//!
+//! Picking shots changes only their [`PackChoice`]s, never which shots a
+//! pack has or their order: the grid takes the choices alone after a pick
+//! ([`Project::pack_choices`]), while the pack's `shape` is the one it shows.
 
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use as_analysis::bodies::{dets_from_bytes, face_height_of};
 use as_api::{
-    CharacterShot, ClipRequest, ExportPlan, ExportRequest, MediaItem, MediaStatus, PackClip, PackExportRequest,
-    PackKey, PackNaming, PackOrder, PackPreview, PackReason, PackSpec, PackState, PackTotals, PresetSize, ShotSize,
+    CharacterShot, ClipRequest, ExportPlan, ExportRequest, MediaItem, MediaStatus, PackChoice, PackChoices, PackClip,
+    PackExportRequest, PackKey, PackNaming, PackOrder, PackPreview, PackReason, PackSpec, PackState, PackTotals,
+    PresetSize, ShotSize,
 };
-use as_core::{CharacterId, FrameIdx, FrameIndex, MediaId};
+use as_core::{CharacterId, FrameIdx, FrameIndex, MediaId, Rational};
 use as_db::{PackBodyRow, PackRow};
 use as_export::{ExportPreset, estimate_bytes};
 
@@ -60,9 +66,7 @@ fn length_fit(seconds: f64) -> f32 {
 
 /// A pack, made from the analysis as it stands.
 struct Made {
-    clips: Vec<PackClip>,
-    totals: PackTotals,
-    stamp: String,
+    pack: PackPreview,
     /// The episodes it was made from.
     sources: HashMap<MediaId, Source>,
 }
@@ -92,20 +96,12 @@ impl Project {
     }
 
     /// Pick (`Some(true)`), drop (`Some(false)`) or hand back to the filters
-    /// (`None`) these shots of a character's pack.
+    /// (`None`) these shots of a character's pack. A pick is kept on the
+    /// frame its shot starts at; an older one inside the shot (made before it
+    /// was found again) goes.
     pub fn set_pack_overrides(&self, c: CharacterId, shots: &[PackKey], include: Option<bool>) -> ProjectResult<()> {
-        // A pick is kept on the frame its shot starts at. When the shot was
-        // found again since, an older pick lies inside it: it goes too.
-        let now = shots_of(c, &self.db().pack_rows(c)?, &self.shown_bodies(|db| db.pack_bodies(c))?);
-        let spans: Vec<(MediaId, FrameIdx, FrameIdx)> = shots
-            .iter()
-            .map(|k| {
-                now.iter()
-                    .find(|s| s.media == k.media_id && s.start == k.shot)
-                    .map_or((k.media_id, k.shot, k.shot + 1), |s| (s.media, s.start, s.end))
-            })
-            .collect();
-        if !self.db().set_pack_overrides(c, &spans, include)? {
+        let keys: Vec<(MediaId, FrameIdx)> = shots.iter().map(|k| (k.media_id, k.shot)).collect();
+        if !self.db().set_pack_overrides(c, &keys, include)? {
             return Err(gone());
         }
         Ok(())
@@ -114,8 +110,14 @@ impl Project {
     /// Every shot of the character, the ones `spec` (and the hand picks)
     /// take marked, in the pack's order.
     pub fn pack_preview(&self, c: CharacterId, spec: &PackSpec) -> ProjectResult<PackPreview> {
-        let Made { clips, totals, stamp, .. } = self.make_pack(c, spec)?;
-        Ok(PackPreview { clips, totals, stamp })
+        Ok(self.make_pack(c, spec)?.pack)
+    }
+
+    /// The pack `spec` makes as picks leave it: each clip's choice, in the
+    /// pack's order. The rest is its preview's while the `shape` is the same.
+    pub fn pack_choices(&self, c: CharacterId, spec: &PackSpec) -> ProjectResult<PackChoices> {
+        let PackPreview { clips, totals, stamp, shape } = self.make_pack(c, spec)?.pack;
+        Ok(PackChoices { choices: clips.iter().map(choice_of).collect(), totals, stamp, shape })
     }
 
     /// The first names the pack's files (or chapters) get, in its order; the
@@ -164,10 +166,10 @@ impl Project {
     ) -> ProjectResult<(ExportRequest, PathBuf)> {
         check_template(&req.naming.template).map_err(|e| ProjectError::Invalid(e.to_string()))?;
         let made = self.make_pack(c, &req.spec)?;
-        if made.stamp != req.stamp {
+        if made.pack.stamp != req.stamp {
             return Err(ProjectError::Invalid("The pack changed meanwhile. Check it and export again.".into()));
         }
-        if made.totals.clips == 0 {
+        if made.pack.totals.clips == 0 {
             return Err(ProjectError::Invalid("There's nothing in the pack to export.".into()));
         }
         let label = self.db().character_label(c)?.ok_or_else(gone)?;
@@ -206,7 +208,7 @@ impl Project {
         check_template(&naming.template).map_err(|e| ProjectError::Invalid(e.to_string()))?;
         let title = self.title()?;
         let label = self.db().character_label(c)?.ok_or_else(gone)?;
-        let taken: Vec<&PackClip> = made.clips.iter().filter(|c| c.included).collect();
+        let taken: Vec<&PackClip> = made.pack.clips.iter().filter(|c| c.included).collect();
         let mut used = std::collections::HashSet::new();
         let mut out = Vec::with_capacity(taken.len());
         for (i, clip) in taken.iter().enumerate() {
@@ -245,7 +247,7 @@ impl Project {
         // Every episode, in project order, with its frame grid when it can be cut from.
         let mut sources = HashMap::new();
         let mut order = HashMap::new();
-        for (i, media) in self.media_list()?.into_iter().enumerate() {
+        for (i, media) in self.media_list_uncounted()?.into_iter().enumerate() {
             let index = match media.status {
                 MediaStatus::Ready => self.frame_index(media.id).ok(),
                 _ => None,
@@ -254,9 +256,8 @@ impl Project {
             sources.insert(media.id, Source { media, index });
         }
         let shots = shots_of(c, &rows, &bodies);
-        let (clips, totals, stamp) =
-            make(spec, &shots, &sources, &order, &overrides, |s| self.character_shot(s, cover.as_deref()));
-        Ok(Made { clips, totals, stamp, sources })
+        let pack = make(spec, &shots, &sources, &order, &overrides, |s| self.character_shot(s, cover.as_deref()));
+        Ok(Made { pack, sources })
     }
 
     /// The small picture of a character's own face (for shots without it).
@@ -290,7 +291,8 @@ impl Project {
     /// theirs, or by a body of theirs that makes a clip.
     pub fn character_shots(&self, c: CharacterId) -> ProjectResult<Vec<CharacterShot>> {
         let shots = shots_of(c, &self.db().pack_rows(c)?, &self.shown_bodies(|db| db.pack_bodies(c))?);
-        let order: HashMap<MediaId, usize> = self.media_list()?.iter().enumerate().map(|(i, m)| (m.id, i)).collect();
+        let order: HashMap<MediaId, usize> =
+            self.media_list_uncounted()?.iter().enumerate().map(|(i, m)| (m.id, i)).collect();
         let cover = self.cover_thumb(c)?;
         let mut out: Vec<(usize, CharacterShot)> = shots
             .iter()
@@ -417,8 +419,23 @@ pub(crate) fn shots_of(c: CharacterId, rows: &[PackRow], bodies: &[PackBodyRow])
     out
 }
 
-/// The pack itself — its clips, totals and stamp: pure, so every rule is
-/// tested without a database. `shot` makes a card's shot.
+/// Tenths of a second `frames` take at `fps`, rounded: in whole numbers, so
+/// shots as long are as long whatever their frames' timestamps round to.
+fn tenths(frames: u32, fps: Rational) -> i64 {
+    if fps.num <= 0 || fps.den <= 0 {
+        return 0;
+    }
+    (i64::from(frames) * 10 * fps.den + fps.num / 2) / fps.num
+}
+
+/// A clip's choice: whether it is in, and why.
+fn choice_of(c: &PackClip) -> PackChoice {
+    PackChoice { included: c.included, by_rules: c.by_rules, reason: c.reason, manual: c.manual }
+}
+
+/// The pack itself — its clips, totals, stamp and shape: pure, so every rule
+/// is tested without a database. `shots` are in (media, start) order, as
+/// [`shots_of`] makes them; `shot` makes a card's shot.
 fn make(
     spec: &PackSpec,
     shots: &[Shot],
@@ -426,16 +443,15 @@ fn make(
     order: &HashMap<MediaId, usize>,
     overrides: &[(MediaId, FrameIdx, bool)],
     shot: impl Fn(&Shot) -> CharacterShot,
-) -> (Vec<PackClip>, PackTotals, String) {
+) -> PackPreview {
+    debug_assert!(shots.is_sorted_by_key(|s| (s.media, s.start)));
     // Picks by hand: on the shot that starts there, or — when shots were
-    // found again since — on the shot that now holds that frame.
+    // found again since — on the shot that now holds that frame (the last
+    // one starting at or before it).
     let mut manual: HashMap<(MediaId, FrameIdx), bool> = HashMap::new();
     for &(m, f, include) in overrides {
-        let at = shots
-            .iter()
-            .find(|s| s.media == m && s.start == f)
-            .or_else(|| shots.iter().find(|s| s.media == m && s.start <= f && f < s.end));
-        if let Some(s) = at {
+        let at = shots.partition_point(|s| (s.media, s.start) <= (m, f)).checked_sub(1).map(|i| &shots[i]);
+        if let Some(s) = at.filter(|s| s.media == m && f < s.end) {
             // An exact match wins over a moved one.
             if s.start == f || !manual.contains_key(&(m, s.start)) {
                 manual.insert((m, s.start), include);
@@ -447,6 +463,8 @@ fn make(
         clip: PackClip,
         rule: Option<PackReason>,
         seconds_with_handles: f64,
+        /// Tenths of a second the character is on screen in the shot.
+        on_screen: i64,
     }
     let mut cands: Vec<Cand> = Vec::with_capacity(shots.len());
     for s in shots {
@@ -498,33 +516,43 @@ fn make(
             reason: rule,
             manual: manual.get(&(s.media, s.start)).copied(),
         };
-        cands.push(Cand { clip, rule, seconds_with_handles });
+        let on_screen = index.map_or(0, |i| tenths(s.on_screen.min(s.end - s.start), i.nominal_fps));
+        cands.push(Cand { clip, rule, seconds_with_handles, on_screen });
     }
 
-    // Shots without the character's face come behind every shot with it.
-    let behind = |c: &PackClip| c.shot.faceless;
+    let episode =
+        |c: &PackClip| (order.get(&c.shot.media_id).copied().unwrap_or(usize::MAX), c.shot.media_id, c.shot.start);
+    // Which of two shots makes the better clip, for "best first" and the
+    // limit alike. Shots without the character's face come behind every
+    // shot with it; then the higher score. The best shots all score 1
+    // (clear, big, on screen all along, alone): of those, the one they are
+    // on screen longer in (to a tenth of a second), then the one their face
+    // is bigger in, then the earlier one.
+    let better = |a: &Cand, b: &Cand| -> Ordering {
+        a.clip
+            .shot
+            .faceless
+            .cmp(&b.clip.shot.faceless)
+            .then(b.clip.score.total_cmp(&a.clip.score))
+            .then(b.on_screen.cmp(&a.on_screen))
+            .then(b.clip.shot.face_height.total_cmp(&a.clip.shot.face_height))
+            .then_with(|| episode(&a.clip).cmp(&episode(&b.clip)))
+    };
     // The limit keeps the best of what the filters take; picks by hand
     // stay on top of it and don't take a place. A missing file can't be
     // picked back in: there is nothing to cut from.
     if let Some(limit) = spec.limit {
         let limit = limit as usize;
-        let ahead = |a: usize, b: usize| {
-            behind(&cands[a].clip)
-                .cmp(&behind(&cands[b].clip))
-                .then(cands[b].clip.score.total_cmp(&cands[a].clip.score))
-                .then(a.cmp(&b))
-        };
         let mut kept: Vec<usize> =
             (0..cands.len()).filter(|&i| cands[i].rule.is_none() && cands[i].clip.manual.is_none()).collect();
-        kept.sort_by(|&a, &b| ahead(a, b));
-        let past: Vec<usize> = kept.iter().skip(limit).copied().collect();
+        kept.sort_by(|&a, &b| better(&cands[a], &cands[b]));
         // A pick by hand takes no place; the filters alone would take it
         // if it made the limit without the pick.
         let picked_past: Vec<usize> = (0..cands.len())
             .filter(|&i| cands[i].rule.is_none() && cands[i].clip.manual.is_some())
-            .filter(|&i| kept.iter().filter(|&&k| ahead(k, i).is_lt()).count() >= limit)
+            .filter(|&i| kept.partition_point(|&k| better(&cands[k], &cands[i]).is_lt()) >= limit)
             .collect();
-        for i in past.into_iter().chain(picked_past) {
+        for i in kept.into_iter().skip(limit).chain(picked_past) {
             cands[i].clip.by_rules = false;
             cands[i].rule = Some(PackReason::Limit);
         }
@@ -541,31 +569,30 @@ fn make(
         };
     }
 
-    let episode = |c: &PackClip| (order.get(&c.shot.media_id).copied().unwrap_or(usize::MAX), c.shot.start);
     match spec.order {
         PackOrder::Episodes => cands.sort_by_key(|x| episode(&x.clip)),
-        PackOrder::Best => cands.sort_by(|a, b| {
-            behind(&a.clip)
-                .cmp(&behind(&b.clip))
-                .then(b.clip.score.total_cmp(&a.clip.score))
-                .then_with(|| episode(&a.clip).cmp(&episode(&b.clip)))
-        }),
+        PackOrder::Best => cands.sort_by(better),
     }
 
     let mut totals = PackTotals { clips: 0, frames: 0.0, seconds: 0.0 };
-    let mut stamp = Fnv::new();
-    for cand in cands.iter().filter(|x| x.clip.included) {
-        totals.clips += 1;
-        totals.frames += f64::from(cand.clip.end - cand.clip.start);
-        totals.seconds += cand.seconds_with_handles;
-        stamp.write(cand.clip.shot.media_id.to_string().as_bytes());
-        stamp.write(&cand.clip.start.to_le_bytes());
-        stamp.write(&cand.clip.end.to_le_bytes());
+    let (mut stamp, mut shape) = (Fnv::new(), Fnv::new());
+    for cand in &cands {
+        shape.clip(&cand.clip);
+        if cand.clip.included {
+            totals.clips += 1;
+            totals.frames += f64::from(cand.clip.end - cand.clip.start);
+            totals.seconds += cand.seconds_with_handles;
+            stamp.write(cand.clip.shot.media_id.to_string().as_bytes());
+            stamp.write(&cand.clip.start.to_le_bytes());
+            stamp.write(&cand.clip.end.to_le_bytes());
+        }
     }
-    (cands.into_iter().map(|x| x.clip).collect(), totals, format!("{:016x}", stamp.0))
+    let clips = cands.into_iter().map(|x| x.clip).collect();
+    PackPreview { clips, totals, stamp: stamp.hex(), shape: shape.hex() }
 }
 
-/// FNV-1a: a short fingerprint of what a pack takes.
+/// FNV-1a: a short fingerprint of what a pack takes (its stamp), or of its
+/// clips apart from their choices (its shape).
 struct Fnv(u64);
 
 impl Fnv {
@@ -578,7 +605,35 @@ impl Fnv {
             self.0 = self.0.wrapping_mul(0x0100_0000_01b3);
         }
     }
+    fn text(&mut self, s: &str) {
+        self.write(&(s.len() as u64).to_le_bytes());
+        self.write(s.as_bytes());
+    }
+    /// Everything a card shows of a clip but its [`PackChoice`].
+    fn clip(&mut self, c: &PackClip) {
+        let s = &c.shot;
+        self.text(&s.media_id.to_string());
+        for n in [s.start, s.end, s.cells, s.track_id, c.start, c.end, c.others, c.size as u32] {
+            self.write(&n.to_le_bytes());
+        }
+        for x in [s.face_height, c.quality, c.coverage, c.score] {
+            self.write(&x.to_bits().to_le_bytes());
+        }
+        self.write(&[u8::from(s.faceless), u8::from(s.sprite.is_some())]);
+        self.text(s.sprite.as_deref().unwrap_or_default());
+        self.text(&s.face);
+        self.write(&(s.bodies.len() as u64).to_le_bytes());
+        for b in &s.bodies {
+            self.write(&b.to_le_bytes());
+        }
+    }
+    fn hex(&self) -> String {
+        format!("{:016x}", self.0)
+    }
 }
+
+#[cfg(test)]
+mod bench;
 
 #[cfg(test)]
 mod tests {
@@ -826,6 +881,92 @@ mod tests {
         let mut bad = req(&spec, &v.stamp);
         bad.naming.template = "{series} {nme}".into();
         assert!(p.project.pack_export_request(p.walter, &bad, &out).is_err());
+
+        // Queued as asked: a clip each, so named.
+        let preset = as_export::builtin_presets().into_iter().find(|x| x.id == "h264-edit").unwrap();
+        let queued = p.project.create_export(&request, preset.clone(), &dir).unwrap();
+        let items: Vec<_> = queued.items.iter().map(|i| (i.start, i.end, Some(i.name.clone()))).collect();
+        assert_eq!(items, request.clips.iter().map(|c| (c.start, c.end, c.name.clone())).collect::<Vec<_>>());
+        // A clip past the episode's end is refused, wherever it is.
+        let mut past = request.clone();
+        past.clips[2].end = FRAMES + 1;
+        assert!(p.project.create_export(&past, preset, &dir).is_err());
+
+        // A pick since the pack was shown: refused too, until the grid has
+        // the pack as the pick left it.
+        p.project.set_pack_overrides(p.walter, &[PackKey { media_id: p.media, shot: 50 }], Some(false)).unwrap();
+        assert!(p.project.pack_export_request(p.walter, &req(&spec, &v.stamp), &out).is_err());
+        let now = p.project.pack_choices(p.walter, &spec).unwrap();
+        let (request, _) = p.project.pack_export_request(p.walter, &req(&spec, &now.stamp), &out).unwrap();
+        assert_eq!(request.clips.len(), 2);
+    }
+
+    #[test]
+    fn a_pick_changes_the_choices_alone() {
+        let p = pack();
+        // Under a limit of two: shots 50 and 0 are in, 290 is past it.
+        let spec = with(|s| s.limit = Some(2));
+        let before = preview(&p, &spec);
+        assert_eq!((starts(&before, true), clip(&before, 290).reason), (vec![0, 50], Some(PackReason::Limit)));
+        p.project.set_pack_overrides(p.walter, &[PackKey { media_id: p.media, shot: 50 }], Some(false)).unwrap();
+        let after = preview(&p, &spec);
+        let choices = p.project.pack_choices(p.walter, &spec).unwrap();
+        // The same shots in the same order: their choices are all that changed
+        // — the dropped shot's, and the next one's the limit lets in.
+        assert_eq!((after.shape.as_str(), choices.shape.as_str()), (before.shape.as_str(), before.shape.as_str()));
+        assert_eq!(choices.choices, after.clips.iter().map(choice_of).collect::<Vec<_>>());
+        assert_eq!((starts(&after, true), clip(&after, 50).reason), (vec![0, 290], Some(PackReason::Removed)));
+        assert_eq!((choices.stamp.as_str(), choices.totals.clips), (after.stamp.as_str(), 2));
+        assert_ne!(after.stamp, before.stamp);
+        // Best first under a limit: the shot the limit lets in now moves nowhere.
+        let best = with(|s| (s.limit, s.order) = (Some(1), PackOrder::Best));
+        p.project.set_pack_overrides(p.walter, &[PackKey { media_id: p.media, shot: 50 }], None).unwrap();
+        let ranked = preview(&p, &best);
+        assert_eq!((starts(&ranked, true), clip(&ranked, 0).reason), (vec![50], Some(PackReason::Limit)));
+        p.project.set_pack_overrides(p.walter, &[PackKey { media_id: p.media, shot: 50 }], Some(false)).unwrap();
+        let picked = preview(&p, &best);
+        assert_eq!((picked.shape.as_str(), starts(&picked, true)), (ranked.shape.as_str(), vec![0]));
+        let choices = p.project.pack_choices(p.walter, &best).unwrap().choices;
+        assert_eq!(choices, picked.clips.iter().map(choice_of).collect::<Vec<_>>());
+        // More than picks — other handles, someone hidden in the cast — is another shape.
+        assert_ne!(preview(&p, &with(|s| (s.limit, s.handles) = (Some(2), 2))).shape, before.shape);
+        p.project.cast_edit(&CastEdit::SetHidden { character_id: p.jesse, hidden: true }).unwrap();
+        assert_ne!(p.project.pack_choices(p.walter, &spec).unwrap().shape, before.shape);
+    }
+
+    /// One 24 fps episode where every shot of Walter scores 1 (a clear face
+    /// at least 0.45 tall, alone, on screen all along, 1–6 s long): 0–96
+    /// (4 s, face 0.5 tall), 97–193 (4 s, 0.7 — 3.999999999999999 s by its
+    /// frames' timestamps), 193–241 (2 s, 0.9) and 241–265 (1 s, 0.5).
+    fn perfect() -> (tempfile::TempDir, Arc<Project>, CharacterId) {
+        let (dir, project, media) = project_with_media(FRAMES);
+        let shots = [(0, 96, 0.5), (97, 193, 0.7), (193, 241, 0.9), (241, 265, 0.5)];
+        let segments: Vec<Segment> =
+            shots.iter().map(|&(start, end, _)| Segment { start, end, kind: SegmentKind::Shot, tiny: false }).collect();
+        project.db().store_segments(media, &segments).unwrap();
+        let faces: Vec<FaceTrack> = shots
+            .iter()
+            .map(|&(start, end, height)| FaceTrack { quality: 1.0, ..sized(seen(1, start, start, end, 0.1), height) })
+            .collect();
+        project.store_face_chunk(media, 0, FRAMES, &tracks::encode(&faces), &[], &[]).unwrap();
+        project.finish_faces(media).unwrap();
+        let tracks = project.cast_tracks(TrackFilter::Unassigned).unwrap().iter().map(|t| t.id).collect();
+        let edit = CastEdit::NewCharacter { tracks, name: Some("Walter".into()) };
+        let walter = project.cast_edit(&edit).unwrap().unwrap();
+        (dir, project, walter)
+    }
+
+    #[test]
+    fn of_shots_that_score_alike_the_longest_then_the_closest_is_best() {
+        let (_dir, project, walter) = perfect();
+        let v = project.pack_preview(walter, &with(|s| s.order = PackOrder::Best)).unwrap();
+        assert!(v.clips.iter().all(|c| c.score == v.clips[0].score), "every shot scores the same");
+        // On screen longest first; of two as long, the one the face is
+        // bigger in; the shortest last — not simply the earliest first.
+        assert_eq!(v.clips.iter().map(|c| c.shot.start).collect::<Vec<_>>(), [97, 0, 193, 241]);
+        // A limit keeps the same ones, in whatever order the grid shows them.
+        let v = project.pack_preview(walter, &with(|s| s.limit = Some(2))).unwrap();
+        assert_eq!((starts(&v, true), clip(&v, 193).reason), (vec![0, 97], Some(PackReason::Limit)));
     }
 
     #[test]

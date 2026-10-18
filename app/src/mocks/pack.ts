@@ -6,6 +6,7 @@
 import type {
   ExportPlan,
   MediaItem,
+  PackChoices,
   PackClip,
   PackKey,
   PackNaming,
@@ -71,7 +72,7 @@ const lengthFit = (sec: number) => (sec < 1 ? sec : sec > 6 ? 6 / sec : 1)
 export function packPreview(pid: string, cid: string, spec: PackSpec, media: MediaItem[], segments: Segment[]): PackPreview {
   const manual = picks.get(keyOf(pid, cid)) ?? new Map<string, boolean>()
   const order = new Map(media.map((m, i) => [m.id, i]))
-  type Cand = { clip: PackClip; rule: PackReason | null; seconds: number }
+  type Cand = { clip: PackClip; rule: PackReason | null; seconds: number; tenths: number }
   const cands: Cand[] = characterShots(pid, cid, media, segments).map((shot) => {
     const m = media.find((x) => x.id === shot.mediaId)!
     const fps = m.fps ? m.fps.num / m.fps.den : 24
@@ -108,14 +109,26 @@ export function packPreview(pid: string, cid: string, spec: PackSpec, media: Med
       clip: { shot, start, end, size, quality, coverage: 1, others, score, included: false, byRules: rule == null, reason: rule, manual: pick ?? null },
       rule,
       seconds: (end - start) / fps,
+      tenths: Math.round(seconds * 10),
     }
   })
+  const episode = (a: Cand, b: Cand) =>
+    (order.get(a.clip.shot.mediaId) ?? 1e9) - (order.get(b.clip.shot.mediaId) ?? 1e9) || a.clip.shot.start - b.clip.shot.start
+  // Shots without the character's face come behind the ones with it; then
+  // the higher score, longer on screen, the bigger face, the earlier shot.
+  const better = (a: Cand, b: Cand) =>
+    Number(a.clip.shot.faceless ?? false) - Number(b.clip.shot.faceless ?? false) ||
+    (b.clip.score ?? 0) - (a.clip.score ?? 0) ||
+    b.tenths - a.tenths ||
+    (b.clip.shot.faceHeight ?? 0) - (a.clip.shot.faceHeight ?? 0) ||
+    episode(a, b)
   if (spec.limit != null) {
-    // Shots without the character's face come behind the ones with it.
-    const kept = cands
-      .filter((c) => c.rule == null && c.clip.manual == null)
-      .sort((a, b) => Number(a.clip.shot.faceless ?? false) - Number(b.clip.shot.faceless ?? false) || (b.clip.score ?? 0) - (a.clip.score ?? 0))
-    for (const c of kept.slice(spec.limit)) {
+    const limit = spec.limit
+    const kept = cands.filter((c) => c.rule == null && c.clip.manual == null).sort(better)
+    // A pick by hand takes no place: the filters alone would leave it out
+    // if it didn't make the limit without the pick.
+    const pickedPast = cands.filter((c) => c.rule == null && c.clip.manual != null && kept.filter((k) => better(k, c) < 0).length >= limit)
+    for (const c of [...kept.slice(limit), ...pickedPast]) {
       c.rule = "limit"
       c.clip.byRules = false
     }
@@ -125,16 +138,7 @@ export function packPreview(pid: string, cid: string, spec: PackSpec, media: Med
     c.clip.included = !missing && (c.clip.manual ?? c.rule == null)
     c.clip.reason = c.clip.manual === false ? "removed" : c.clip.manual === true && !missing ? null : c.rule
   }
-  const episode = (c: PackClip) => [order.get(c.shot.mediaId) ?? 1e9, c.shot.start] as const
-  cands.sort((a, b) => {
-    const [sa0, sb0] = [a.clip.score ?? 0, b.clip.score ?? 0]
-    const [fa, fb] = [Number(a.clip.shot.faceless ?? false), Number(b.clip.shot.faceless ?? false)]
-    if (spec.order === "best" && fa !== fb) return fa - fb
-    if (spec.order === "best" && sb0 !== sa0) return sb0 - sa0
-    const [ea, sa] = episode(a.clip)
-    const [eb, sb] = episode(b.clip)
-    return ea - eb || sa - sb
-  })
+  cands.sort(spec.order === "best" ? better : episode)
   const taken = cands.filter((c) => c.clip.included)
   return {
     clips: cands.map((c) => c.clip),
@@ -144,6 +148,17 @@ export function packPreview(pid: string, cid: string, spec: PackSpec, media: Med
       seconds: taken.reduce((s, c) => s + c.seconds, 0),
     },
     stamp: taken.map((c) => `${c.clip.shot.mediaId}:${c.clip.start}-${c.clip.end}`).join("|"),
+    shape: cands.map(({ clip: c }) => `${c.shot.mediaId}:${c.shot.start}:${c.start}-${c.end}:${c.score}`).join("|"),
+  }
+}
+
+/** What a pick answers (the backend's `pack_choices`): the pack's choices, in its order. */
+export function packChoices(preview: PackPreview): PackChoices {
+  return {
+    choices: preview.clips.map(({ included, byRules, reason, manual }) => ({ included, byRules, reason, manual })),
+    totals: preview.totals,
+    stamp: preview.stamp,
+    shape: preview.shape,
   }
 }
 

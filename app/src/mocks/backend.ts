@@ -21,12 +21,23 @@ import {
   setMockBodies,
   seedCast,
 } from "./cast"
-import { fileProblem, packFileName, packGet, packNames, packOverride, packPlan, packPreview, packSave, templateProblem } from "./pack"
+import {
+  fileProblem,
+  packChoices,
+  packFileName,
+  packGet,
+  packNames,
+  packOverride,
+  packPlan,
+  packPreview,
+  packSave,
+  templateProblem,
+} from "./pack"
 import type {
   AppInfo,
   PackExportRequest,
-  PackKey,
   PackNaming,
+  PackPicks,
   PackSpec,
   PackState,
   AppSettings,
@@ -648,10 +659,10 @@ const handlers: Record<string, Handler> = {
   },
   pack_preview: ({ projectId, characterId, spec }) =>
     packPreview(find(projectId).id, String(characterId), spec as PackSpec, find(projectId).media, SEGMENTS),
-  pack_override: ({ projectId, characterId, shots, include }) => {
-    packOverride(find(projectId).id, String(characterId), shots as PackKey[], include as boolean | null)
-    void emit("pack:changed", { projectId, characterId })
-    return null
+  pack_override: ({ projectId, characterId, picks, spec }) => {
+    const p = find(projectId)
+    for (const { shots, include } of picks as PackPicks[]) packOverride(p.id, String(characterId), shots, include)
+    return packChoices(packPreview(p.id, String(characterId), spec as PackSpec, p.media, SEGMENTS))
   },
   pack_plan: ({ projectId, characterId, spec, naming }) => {
     const n = naming as PackNaming

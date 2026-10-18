@@ -121,8 +121,13 @@ export const commands = {
 	packSave: (projectId: ProjectId, characterId: CharacterId, pack: PackState) => __TAURI_INVOKE<null>("pack_save", { projectId, characterId, pack }),
 	/**  Every shot of the character, the ones the pack takes marked, in its order. */
 	packPreview: (projectId: ProjectId, characterId: CharacterId, spec: PackSpec) => __TAURI_INVOKE<PackPreview>("pack_preview", { projectId, characterId, spec }),
-	/**  Pick (`true`), drop (`false`) or hand back to the filters (`null`) shots of a pack. */
-	packOverride: (projectId: ProjectId, characterId: CharacterId, shots: PackKey[], include: boolean | null) => __TAURI_INVOKE<null>("pack_override", { projectId, characterId, shots, include }),
+	/**
+	 *  Pick, drop or hand back to the filters shots of a pack (a click's
+	 *  `picks`, in order), and say what that made of the pack `spec` makes: its
+	 *  choices alone, as picks change nothing else. No `pack:changed`: the grid
+	 *  that picked takes the answer.
+	 */
+	packOverride: (projectId: ProjectId, characterId: CharacterId, picks: PackPicks[], spec: PackSpec) => __TAURI_INVOKE<PackChoices>("pack_override", { projectId, characterId, picks, spec }),
 	/**  The names the pack's files would get and its size with each preset. */
 	packPlan: (projectId: ProjectId, characterId: CharacterId, spec: PackSpec, naming: PackNaming) => __TAURI_INVOKE<ExportPlan>("pack_plan", { projectId, characterId, spec, naming }),
 	/**
@@ -722,12 +727,34 @@ export type NewProject = {
 };
 
 /**
- *  A character's pack settings or hand picks changed (the pack is made
- *  again from them).
+ *  A character's pack settings changed: an export keeps the ones it was
+ *  made with. (Picks by hand answer the grid that made them instead.)
  */
 export type PackChanged = {
 	projectId: ProjectId,
 	characterId: CharacterId,
+};
+
+/**
+ *  Whether a shot is in its pack, and why: the part of a [`PackClip`] that
+ *  picking shots changes.
+ */
+export type PackChoice = {
+	included: boolean,
+	byRules: boolean,
+	reason: PackReason | null,
+	manual: boolean | null,
+};
+
+/**
+ *  A pack after shots were picked: every clip's choice, in the pack's
+ *  order — the rest of the pack is its preview's, when the `shape` is.
+ */
+export type PackChoices = {
+	choices: PackChoice[],
+	totals: PackTotals,
+	stamp: string,
+	shape: string,
 };
 
 /**  A shot of a pack, picked or not. */
@@ -796,6 +823,15 @@ export type PackOrder =
 "best";
 
 /**
+ *  Shots of a pack picked (`include: true`), dropped (`false`) or handed
+ *  back to the filters (`null`).
+ */
+export type PackPicks = {
+	shots: PackKey[],
+	include: boolean | null,
+};
+
+/**
  *  A pack as it stands: every shot of the character, the ones it takes
  *  marked, in the pack's order.
  */
@@ -807,6 +843,8 @@ export type PackPreview = {
 	 *  pack changed, so what is exported is what was shown.
 	 */
 	stamp: string,
+	/**  Names its clips, in order, as they are apart from their [`PackChoice`]s. */
+	shape: string,
 };
 
 /**  Why a shot is left out of a pack. */

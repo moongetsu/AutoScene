@@ -48,7 +48,7 @@ const REANCHOR_MIN_COS: f32 = 0.4;
 
 /// The `meta` key of the [`as_identity::VERSION`] the cast was last grouped
 /// with.
-const GROUPED_WITH: &str = "identity_version";
+pub(crate) const GROUPED_WITH: &str = "identity_version";
 
 /// Set (in `meta`) while a media's decisions wait for faces from another
 /// file than the one they were made on.

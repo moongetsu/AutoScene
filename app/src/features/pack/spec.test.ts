@@ -1,6 +1,19 @@
 import { describe, expect, it } from "vitest"
-import type { PackClip, PackPreview } from "@/bindings"
-import { DEFAULT_SPEC, between, isDefault, keyOf, lengthOf, picksFor, shown, totalsOf, withIncluded, withPicks } from "./spec"
+import type { PackChoices, PackClip, PackPreview } from "@/bindings"
+import {
+  DEFAULT_SPEC,
+  between,
+  fits,
+  isDefault,
+  keyOf,
+  lengthOf,
+  picksFor,
+  shown,
+  totalsOf,
+  withChoices,
+  withIncluded,
+  withPicks,
+} from "./spec"
 
 const clip = (start: number, more: Partial<PackClip> = {}): PackClip => {
   const byRules = more.byRules ?? true
@@ -23,7 +36,7 @@ const clip = (start: number, more: Partial<PackClip> = {}): PackClip => {
   }
 }
 
-const preview = (clips: PackClip[]): PackPreview => ({ clips, totals: totalsOf(clips, () => 24), stamp: "s" })
+const preview = (clips: PackClip[]): PackPreview => ({ clips, totals: totalsOf(clips, () => 24), stamp: "s", shape: "a" })
 
 describe("picks", () => {
   it("picks by hand only against the filters, and hands back where they agree", () => {
@@ -74,6 +87,29 @@ describe("picks", () => {
     const out = withPicks(p, new Map([[keyOf(p.clips[1]), false]]), () => 24)
     expect(out.clips[1]).toMatchObject({ included: false, manual: false, reason: "removed" })
     expect(out.totals.clips).toBe(1)
+  })
+
+  it("takes the choices a pick left onto the pack shown, leaving the other cards alone", () => {
+    const p = preview([clip(0), clip(100), clip(200, { byRules: false })])
+    const answer = (shape: string): PackChoices => ({
+      choices: [
+        { included: false, byRules: true, reason: "removed", manual: false },
+        { included: true, byRules: true, reason: null, manual: null },
+        { included: true, byRules: false, reason: null, manual: true },
+      ],
+      totals: { clips: 2, frames: 96, seconds: 4 },
+      stamp: "after",
+      shape,
+    })
+    expect(fits(p, answer("a"))).toBe(true)
+    const out = withChoices(p, answer("a"))
+    expect(out.clips[0]).toMatchObject({ included: false, manual: false, reason: "removed", start: 0 })
+    expect(out.clips[1]).toBe(p.clips[1])
+    expect(out.clips[2]).toMatchObject({ included: true, manual: true, byRules: false })
+    expect([out.totals.clips, out.stamp, out.shape]).toEqual([2, "after", "a"])
+    // Other shots (an analysis meanwhile), or other clips altogether: not this pack's.
+    expect(fits(p, answer("b"))).toBe(false)
+    expect(fits(preview([clip(0)]), answer("a"))).toBe(false)
   })
 
   it("splits the grid into what the pack takes and what it leaves", () => {

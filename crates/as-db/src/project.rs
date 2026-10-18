@@ -344,12 +344,22 @@ pub struct NewExportItem {
     pub audio_ordinal: Option<u32>,
 }
 
-const MEDIA_COLS: &str = "id, path, file_name, size_bytes, season, episode, status, error, info, frames, duration_sec, \
-     fps_num, fps_den, vfr, interlaced, audio_ordinal, proxy, poster, added_at, shots, shots_error, \
-     CASE WHEN shots = 'ready' THEN (SELECT COUNT(*) FROM segments s WHERE s.media_id = media.id AND s.kind = 'shot') END, \
-     faces, faces_error, \
-     CASE WHEN faces = 'ready' THEN (SELECT COUNT(*) FROM tracks t WHERE t.media_id = media.id AND t.not_face = 0) END, \
-     poster_small, bodies, bodies_error";
+/// The columns `media_row` reads. `counted`: with the media's shots and
+/// faces counted — a pass over every track of it (`NULL` without).
+fn media_cols(counted: bool) -> String {
+    let (shots, faces) = match counted {
+        true => (
+            "CASE WHEN shots = 'ready' THEN (SELECT COUNT(*) FROM segments s WHERE s.media_id = media.id AND s.kind = 'shot') END",
+            "CASE WHEN faces = 'ready' THEN (SELECT COUNT(*) FROM tracks t WHERE t.media_id = media.id AND t.not_face = 0) END",
+        ),
+        false => ("NULL", "NULL"),
+    };
+    format!(
+        "id, path, file_name, size_bytes, season, episode, status, error, info, frames, duration_sec, \
+         fps_num, fps_den, vfr, interlaced, audio_ordinal, proxy, poster, added_at, shots, shots_error, {shots}, \
+         faces, faces_error, {faces}, poster_small, bodies, bodies_error"
+    )
+}
 
 /// Episode order (same as `as_project::naming::episode_cmp`): numbered episodes by
 /// (season, episode), then the rest in the order they were added.
@@ -503,8 +513,19 @@ impl ProjectDb {
     }
 
     pub fn media_list(&self) -> DbResult<Vec<MediaItem>> {
+        self.media_rows(true)
+    }
+
+    /// [`Self::media_list`] without each media's shots and faces counted
+    /// (`shot_count` and `face_count` are `None`): counting takes a pass over
+    /// every track, and cutting from them needs none of it.
+    pub fn media_list_uncounted(&self) -> DbResult<Vec<MediaItem>> {
+        self.media_rows(false)
+    }
+
+    fn media_rows(&self, counted: bool) -> DbResult<Vec<MediaItem>> {
         self.0.read(|c| {
-            let mut st = c.prepare(&format!("SELECT {MEDIA_COLS} FROM media {MEDIA_ORDER}"))?;
+            let mut st = c.prepare(&format!("SELECT {} FROM media {MEDIA_ORDER}", media_cols(counted)))?;
             let mut rows = st.query([])?;
             let mut out = Vec::new();
             while let Some(r) = rows.next()? {
@@ -514,8 +535,25 @@ impl ProjectDb {
         })
     }
 
+    /// One media, as [`Self::media_list`] has it.
     pub fn media(&self, id: MediaId) -> DbResult<Option<MediaItem>> {
-        Ok(self.media_list()?.into_iter().find(|m| m.id == id))
+        self.0.read(|c| {
+            // Its place in episode order: from the ids, not every media's row.
+            let key = id.to_string();
+            let mut st = c.prepare(&format!("SELECT id FROM media {MEDIA_ORDER}"))?;
+            let mut rows = st.query([])?;
+            let mut position = 0;
+            loop {
+                match rows.next()? {
+                    Some(r) if r.get::<_, String>(0)? == key => break,
+                    Some(_) => position += 1,
+                    None => return Ok(None),
+                }
+            }
+            let mut st = c.prepare(&format!("SELECT {} FROM media WHERE id = ?1", media_cols(true)))?;
+            let mut rows = st.query([&key])?;
+            rows.next()?.map(|r| media_row(r, position)).transpose()
+        })
     }
 
     pub fn media_paths(&self) -> DbResult<HashSet<String>> {
@@ -1057,6 +1095,11 @@ pub(crate) mod tests {
         let order: Vec<_> = list.iter().map(|m| (m.id, m.label.as_str(), m.position)).collect();
         assert_eq!(order, vec![(e1.id, "E01", 0), (e2.id, "E02", 1), (extra.id, "", 2)]);
         assert!(list.iter().all(|m| m.status == MediaStatus::Queued && m.proxy == ProxyState::Unknown));
+        // One of them by its id: in its place too.
+        for m in &list {
+            assert_eq!(db.media(m.id).unwrap().unwrap().position, m.position);
+        }
+        assert!(db.media(MediaId::new()).unwrap().is_none());
 
         db.set_media_status(e1.id, MediaStatus::Indexing, None).unwrap();
         let rec = IngestRecord {
@@ -1156,6 +1199,9 @@ pub(crate) mod tests {
         assert_eq!(db.segments(m.id).unwrap(), segs);
         let item = db.media(m.id).unwrap().unwrap();
         assert_eq!((item.shots, item.shot_count), (StageState::Ready, Some(3)));
+        // Not counted: the same media, without its count.
+        let quick = db.media_list_uncounted().unwrap().remove(0);
+        assert_eq!((quick.id, quick.shots, quick.shot_count, quick.frames), (m.id, StageState::Ready, None, Some(240)));
 
         // Re-indexing starts the analysis over.
         db.record_ingest(m.id, &rec).unwrap();

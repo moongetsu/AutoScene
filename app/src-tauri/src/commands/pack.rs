@@ -2,7 +2,9 @@
 //! one go. The pack is made from the analysis each time (as_project::pack),
 //! so the grid, the plan and the export can't disagree.
 
-use as_api::{ExportPlan, ExportSummary, PackExportRequest, PackKey, PackNaming, PackPreview, PackSpec, PackState};
+use as_api::{
+    ExportPlan, ExportSummary, PackChoices, PackExportRequest, PackNaming, PackPicks, PackPreview, PackSpec, PackState,
+};
 use as_core::{CharacterId, ProjectId};
 use as_export::builtin_presets;
 use tauri::{AppHandle, State};
@@ -59,21 +61,28 @@ pub async fn pack_preview(
     Ok(preview)
 }
 
-/// Pick (`true`), drop (`false`) or hand back to the filters (`null`) shots of a pack.
+/// Pick, drop or hand back to the filters shots of a pack (a click's
+/// `picks`, in order), and say what that made of the pack `spec` makes: its
+/// choices alone, as picks change nothing else. No `pack:changed`: the grid
+/// that picked takes the answer.
 #[tauri::command]
 #[specta::specta]
 pub async fn pack_override(
-    app: AppHandle,
     state: State<'_, AppState>,
     project_id: ProjectId,
     character_id: CharacterId,
-    shots: Vec<PackKey>,
-    include: Option<bool>,
-) -> AppResult<()> {
+    picks: Vec<PackPicks>,
+    spec: PackSpec,
+) -> AppResult<PackChoices> {
     let lib = state.library.clone();
-    blocking(move || Ok(lib.project(project_id)?.set_pack_overrides(character_id, &shots, include)?)).await?;
-    let _ = PackChanged { project_id, character_id }.emit(&app);
-    Ok(())
+    blocking(move || {
+        let p = lib.project(project_id)?;
+        for pick in &picks {
+            p.set_pack_overrides(character_id, &pick.shots, pick.include)?;
+        }
+        Ok(p.pack_choices(character_id, &spec)?)
+    })
+    .await
 }
 
 /// The names the pack's files would get and its size with each preset.
