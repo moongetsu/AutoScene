@@ -159,6 +159,25 @@ pub(crate) const COVER: &str = "COALESCE((SELECT x.id FROM tracks x WHERE x.id =
                                          ORDER BY COALESCE(b.rival, 0) < 0.5 DESC, b.face_h >= 0.12 DESC,
                                                   b.quality DESC, b.face_h DESC LIMIT 1))";
 
+/// The cast as [`ProjectDb::characters`] lists it, most on screen first.
+fn characters_sql() -> String {
+    format!(
+        "SELECT c.id, c.number, c.name, c.hidden, {COVER},
+                COUNT(t.id),
+                COUNT(DISTINCT t.media_id || ':' || t.shot),
+                COUNT(DISTINCT t.media_id),
+                COALESCE(SUM((t.end - t.start) * 1.0 * m.fps_den / m.fps_num), 0),
+                (SELECT COUNT(*) FROM tracks u WHERE u.character_id = c.id AND u.assign = 'unsure' AND u.not_face = 0),
+                (SELECT COUNT(*) FROM track_edits e WHERE e.character_id = c.id AND e.kind IN ('pin', 'was')
+                    AND e.media_id IN (SELECT id FROM media WHERE faces IN ('pending', 'running')))
+           FROM characters c
+           LEFT JOIN tracks t ON t.character_id = c.id AND t.assign IN ('auto', 'pinned') AND t.not_face = 0
+           LEFT JOIN media m ON m.id = t.media_id
+          GROUP BY c.id
+          ORDER BY 9 DESC, c.number"
+    )
+}
+
 /// `?, ?, ?` for an `IN (...)` list.
 pub(crate) fn marks(n: usize) -> String {
     vec!["?"; n].join(", ")
@@ -728,9 +747,12 @@ impl ProjectDb {
             for &c in new_characters {
                 insert_character(tx, c, None)?;
             }
+            // A track that stays as it was isn't written again: that's most
+            // of them, and a write changes two of the tracks' indexes too.
             let mut st = tx.prepare(
                 "UPDATE tracks SET character_id = ?2, assign = ?3, score = ?4, via_body = ?5
-                  WHERE id = ?1 AND assign <> 'pinned' AND not_face = 0",
+                  WHERE id = ?1 AND assign <> 'pinned' AND not_face = 0
+                    AND (character_id IS NOT ?2 OR assign IS NOT ?3 OR score IS NOT ?4 OR via_body IS NOT ?5)",
             )?;
             for t in tracks {
                 let via_body = t.via_body && t.assign == TrackAssign::Auto;
@@ -765,21 +787,7 @@ impl ProjectDb {
 
     pub fn characters(&self) -> DbResult<Vec<CharacterRow>> {
         self.0.read(|c| {
-            let mut st = c.prepare(&format!(
-                "SELECT c.id, c.number, c.name, c.hidden, {COVER},
-                        COUNT(t.id),
-                        COUNT(DISTINCT t.media_id || ':' || t.shot),
-                        COUNT(DISTINCT t.media_id),
-                        COALESCE(SUM((t.end - t.start) * 1.0 * m.fps_den / m.fps_num), 0),
-                        (SELECT COUNT(*) FROM tracks u WHERE u.character_id = c.id AND u.assign = 'unsure' AND u.not_face = 0),
-                        (SELECT COUNT(*) FROM track_edits e WHERE e.character_id = c.id AND e.kind IN ('pin', 'was')
-                            AND e.media_id IN (SELECT id FROM media WHERE faces IN ('pending', 'running')))
-                   FROM characters c
-                   LEFT JOIN tracks t ON t.character_id = c.id AND t.assign IN ('auto', 'pinned') AND t.not_face = 0
-                   LEFT JOIN media m ON m.id = t.media_id
-                  GROUP BY c.id
-                  ORDER BY 9 DESC, c.number"
-            ))?;
+            let mut st = c.prepare(&characters_sql())?;
             let mut rows = st.query([])?;
             let mut out = Vec::new();
             while let Some(r) = rows.next()? {
@@ -1114,7 +1122,12 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn ready_media(db: &ProjectDb, name: &str) -> MediaId {
-        let id = db.add_media(&[new_media(name, Some(1), Some(1))]).unwrap()[0];
+        add_ready(db, new_media(name, Some(1), Some(1)))
+    }
+
+    /// `media` added and indexed (1000 frames at 24 fps), its shots found.
+    fn add_ready(db: &ProjectDb, media: crate::NewMedia) -> MediaId {
+        let id = db.add_media(&[media]).unwrap()[0];
         db.record_ingest(
             id,
             &IngestRecord {
@@ -1587,5 +1600,201 @@ pub(crate) mod tests {
         assert_eq!(db.media_without_rivals().unwrap(), [m]);
         db.set_rivals(&[(ids[0], 0.0)]).unwrap();
         assert!(db.media_without_rivals().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_clustering_writes_only_the_faces_it_changes() {
+        let db = ProjectDb::memory();
+        let m = ready_media(&db, "/v/a.mkv");
+        let chunk = [track(10, 0.9), track(100, 0.8), track(200, 0.7)];
+        let ids = db.put_face_chunk(m, 0, 1000, &chunk, &[], |_| Ok(())).unwrap();
+        let (a, b) = (CharacterId::new(), CharacterId::new());
+        let auto = |id, c| (id, Some(c), TrackAssign::Auto, 1.0);
+        apply(&db, db.cast_rev().unwrap(), &[a, b], &[auto(ids[0], a), auto(ids[1], a), auto(ids[2], b)]).unwrap();
+        db.0.write(|tx| {
+            tx.execute_batch(
+                "CREATE TEMP TABLE written (id INTEGER);
+                 CREATE TEMP TRIGGER on_write AFTER UPDATE ON tracks BEGIN INSERT INTO written VALUES (new.id); END;",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        // The faces written when a grouping is stored in which the middle
+        // one is `character`'s (`assign`, `score`, `via_body`).
+        let store = |character, assign, score, via_body| {
+            let face = |id, character, assign, score, via_body| TrackUpdate {
+                id,
+                character: Some(character),
+                assign,
+                score,
+                via_body,
+            };
+            let faces = [
+                face(ids[0], a, TrackAssign::Auto, 1.0, false),
+                face(ids[1], character, assign, score, via_body),
+                face(ids[2], b, TrackAssign::Auto, 1.0, false),
+            ];
+            assert!(db.apply_identity(db.cast_rev().unwrap(), &[], &faces, &[], &[]).unwrap());
+            db.0.write(|tx| {
+                let mut st = tx.prepare("SELECT id FROM written")?;
+                let written = st.query_map([], |r| r.get(0))?.collect::<Result<Vec<i64>, _>>()?;
+                drop(st);
+                tx.execute("DELETE FROM written", [])?;
+                Ok(written)
+            })
+            .unwrap()
+        };
+        // The same grouping again: nothing to write.
+        assert_eq!(store(a, TrackAssign::Auto, 1.0, false), Vec::<i64>::new());
+        // Whatever changes of a face, only that face is written.
+        assert_eq!(store(b, TrackAssign::Auto, 1.0, false), [ids[1]], "someone else's");
+        assert_eq!(store(b, TrackAssign::Auto, 0.8, false), [ids[1]], "another score");
+        assert_eq!(store(b, TrackAssign::Unsure, 0.8, false), [ids[1]], "unsure now");
+        assert_eq!(store(b, TrackAssign::Auto, 0.8, false), [ids[1]], "sure again");
+        assert_eq!(store(b, TrackAssign::Auto, 0.8, true), [ids[1]], "named by its body");
+        assert_eq!(store(b, TrackAssign::Auto, 0.8, true), Vec::<i64>::new());
+    }
+
+    /// The steps of `sql`'s plan that read rows of `tracks` (named `aliases`
+    /// there) from the table, past their detections and embeddings: those
+    /// that don't find all they need in an index of it (an automatic one is
+    /// made from the table).
+    fn past_the_blobs(db: &ProjectDb, sql: &str, params: impl rusqlite::Params, aliases: &[&str]) -> Vec<String> {
+        db.0.read(|c| {
+            let mut st = c.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))?;
+            let steps = st.query_map(params, |r| r.get::<_, String>(3))?.collect::<Result<Vec<_>, _>>()?;
+            Ok(steps
+                .into_iter()
+                .filter(|s| {
+                    let mut words = s.split_whitespace();
+                    let indexed = s.contains("COVERING INDEX") && !s.contains("AUTOMATIC");
+                    matches!(words.next(), Some("SCAN" | "SEARCH"))
+                        && words.next().is_some_and(|a| aliases.contains(&a))
+                        && !indexed
+                        && !s.contains("INTEGER PRIMARY KEY")
+                })
+                .collect())
+        })
+        .unwrap()
+    }
+
+    /// The schema before the faces' indexes carried what is read of them.
+    const BEFORE_FACE_INDEXES: usize = 13;
+
+    #[test]
+    fn a_characters_faces_are_read_from_the_indexes_alone() {
+        let db = ProjectDb::memory();
+        let cover = format!("SELECT {COVER} FROM characters c");
+        assert_eq!(past_the_blobs(&db, &cover, [], &["x", "b"]), Vec::<String>::new());
+        assert_eq!(past_the_blobs(&db, &characters_sql(), [], &["x", "b", "t", "u"]), Vec::<String>::new());
+        let pack = crate::pack::pack_rows_sql();
+        let args = params![CharacterId::new().to_string(), enum_to_sql(SegmentKind::Shot)];
+        assert_eq!(past_the_blobs(&db, &pack, args, &["tracks", "t"]), Vec::<String>::new());
+        // As they were before: each of a character's faces read in full.
+        let before = ProjectDb::memory_at(BEFORE_FACE_INDEXES);
+        assert_eq!(past_the_blobs(&before, &cover, [], &["x", "b"]).len(), 1);
+    }
+
+    #[test]
+    fn faces_read_from_the_indexes_come_out_as_before() {
+        let media = new_media("/v/a.mkv", Some(1), Some(1));
+        let (walter, jesse, skyler) = (CharacterId::new(), CharacterId::new(), CharacterId::new());
+        let shot = |start, end| as_api::Segment { start, end, kind: SegmentKind::Shot, tiny: false };
+        // Real faces are much alike: a quality of exactly 1, the same height.
+        let face = |shot, start, rival| NewTrack { start, end: start + 40, shot, rival, ..track(start, 1.0) };
+        // The same faces and cast in a database of each schema.
+        let fill = |db: &ProjectDb| {
+            let m = add_ready(db, media.clone());
+            db.store_segments(m, &[shot(0, 100), shot(100, 400)]).unwrap();
+            let faces = [
+                face(0, 20, 0.0),                                 // 0: Walter, pinned
+                face(0, 10, 0.3),                                 // 1: Walter, starts before 0
+                face(0, 10, 0.1),                                 // 2: Jesse, pinned, starts with 1
+                face(100, 150, 0.2),                              // 3: Walter
+                face(100, 120, 0.4),                              // 4: Jesse
+                face(100, 120, 0.05),                             // 5: Jesse, starts with 4
+                NewTrack { quality: 0.6, ..face(100, 200, 0.0) }, // 6: Skyler's chosen cover
+                face(100, 300, 0.9),                              // 7: maybe Skyler, not Jesse
+                face(100, 110, 0.0),                              // 8: nobody, not Jesse either
+                face(100, 380, 0.0),                              // 9: not a face
+                face(100, 330, 0.0),                              // 10: not a face, before 9
+            ];
+            let ids = db.put_face_chunk(m, 0, 1000, &faces, &[(100, 400, 8)], |_| Ok(())).unwrap();
+            db.set_faces_state(m, StageState::Ready, None).unwrap();
+            let auto = |i: usize, c| (ids[i], Some(c), TrackAssign::Auto, 1.0);
+            let unsure = (ids[7], Some(skyler), TrackAssign::Unsure, 0.6);
+            let grouped = [auto(1, walter), auto(3, walter), auto(4, jesse), auto(5, jesse), auto(6, skyler), unsure];
+            apply(db, db.cast_rev().unwrap(), &[walter, jesse, skyler], &grouped).unwrap();
+            db.pin_tracks(&[ids[0]], walter, None).unwrap();
+            db.pin_tracks(&[ids[2]], jesse, None).unwrap();
+            db.forbid_tracks(&[ids[7], ids[8]], jesse).unwrap();
+            db.mark_not_face(&[ids[9], ids[10]]).unwrap();
+            db.set_character_cover(skyler, ids[6]).unwrap();
+            (m, ids)
+        };
+        let answers = |db: &ProjectDb, m: MediaId| {
+            let mut out = vec![format!("{:?}", db.cover_tracks()), format!("{:?}", db.characters())];
+            for c in [walter, jesse, skyler] {
+                out.push(format!("{:?}", db.pack_rows(c)));
+                out.push(format!("{:?}", db.character_shots(c)));
+                out.push(format!("{:?}", db.character_cover(c)));
+            }
+            let filters =
+                [walter, jesse, skyler].into_iter().flat_map(|c| [TrackFilter::Character(c), TrackFilter::Unsure(c)]);
+            for f in filters.chain([TrackFilter::AllUnsure, TrackFilter::Unassigned]) {
+                out.push(format!("{:?}", db.tracks(f).unwrap().iter().map(|t| (t.id, t.assign)).collect::<Vec<_>>()));
+            }
+            out.push(format!("{:?}", db.presence(m)));
+            out.push(format!("{:?}", db.face_ranges()));
+            out.push(format!("{:?}", db.chunk_tracks(m, 0, 1000)));
+            out.push(format!("{:?}", db.cast_counts()));
+            out.push(format!("{:?}", db.media_list().unwrap().iter().map(|m| m.face_count).collect::<Vec<_>>()));
+            out.push(format!("{:?}", db.identity_tracks().unwrap().iter().map(|t| t.id).collect::<Vec<_>>()));
+            out
+        };
+        // A new project, and an older one opened again (its indexes built at once).
+        let (before, now, opened) =
+            (ProjectDb::memory_at(BEFORE_FACE_INDEXES), ProjectDb::memory(), ProjectDb::memory_at(BEFORE_FACE_INDEXES));
+        let (m, ids) = fill(&before);
+        assert_eq!(fill(&now), (m, ids.clone()));
+        assert_eq!(fill(&opened), (m, ids.clone()));
+        opened.migrate();
+        let index = |db: &ProjectDb| {
+            db.0.read(|c| {
+                Ok(c.query_row("SELECT sql FROM sqlite_schema WHERE name = 'tracks_by_shot'", [], |r| {
+                    r.get::<_, String>(0)
+                })?)
+            })
+            .unwrap()
+        };
+        assert_ne!(index(&before), index(&now));
+        assert_eq!(index(&opened), index(&now));
+        // One by one: a failure shows the first answer that differs.
+        let same = || {
+            for db in [&now, &opened] {
+                answers(db, m).into_iter().zip(answers(&before, m)).for_each(|(a, b)| assert_eq!(a, b));
+            }
+        };
+        same();
+        // Among faces alike, a cover is the first automatic one, else the first pinned.
+        assert_eq!(now.cover_tracks().unwrap(), [ids[1], ids[4], ids[6]]);
+
+        // The anchors a name pins: Jesse's best, of two alike.
+        for db in [&before, &now, &opened] {
+            db.rename_character(jesse, Some("Jesse"), 1).unwrap();
+        }
+        same();
+        let pinned = now.tracks(TrackFilter::Character(jesse)).unwrap();
+        assert_eq!(
+            pinned.iter().filter(|t| t.assign == TrackAssign::Pinned).map(|t| t.id).collect::<Vec<_>>(),
+            [ids[2], ids[4]]
+        );
+        // What a re-analysis keeps, in the order the face pass puts it back.
+        for db in [&before, &now, &opened] {
+            db.reset_faces(m).unwrap();
+        }
+        for db in [&now, &opened] {
+            assert_eq!(format!("{:?}", db.track_edits(m)), format!("{:?}", before.track_edits(m)));
+        }
     }
 }

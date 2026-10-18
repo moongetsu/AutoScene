@@ -66,7 +66,7 @@ impl LibraryDb {
 
     #[cfg(test)]
     pub(crate) fn memory() -> Self {
-        Self(Db::memory(&MIGRATIONS))
+        Self(Db::memory(&MIGRATIONS, None))
     }
 
     pub fn setting(&self, key: &str) -> DbResult<Option<String>> {

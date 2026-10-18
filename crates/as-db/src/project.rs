@@ -291,6 +291,22 @@ const STEPS: &[M<'static>] = &[
     // covers of it, as a multiple of the track's own face; NULL: not looked
     // at yet): a character's cover shows them, not the person in front.
     M::up("ALTER TABLE tracks ADD COLUMN rival REAL;"),
+    // 14: a character's faces (their cover, the cast's counts) and everyone
+    // in their shots (a scenepack) are read from these indexes alone (a
+    // chosen cover aside), not past the tracks' detections and embeddings.
+    // Each keeps its order — the track id right after its key — so faces
+    // that tie come out as before; the columns after it are the ones those
+    // queries read. Any wider, `tracks_by_shot` would lose a media's tracks
+    // to `tracks_by_media`, read in another order: what a re-analysis keeps
+    // would be put back differently (see the cast's tests).
+    M::up(
+        "DROP INDEX IF EXISTS tracks_by_character;
+    CREATE INDEX tracks_by_character ON tracks(character_id, assign, id, media_id, start, end, shot, quality,
+                                               face_h, score, not_face, via_body, rival);
+    DROP INDEX IF EXISTS tracks_by_shot;
+    CREATE INDEX tracks_by_shot ON tracks(media_id, shot, id, start, end, quality, face_h, character_id, assign,
+                                          not_face);",
+    ),
 ];
 const MIGRATIONS: Migrations<'static> = Migrations::from_slice(STEPS);
 
@@ -453,7 +469,19 @@ impl ProjectDb {
 
     #[cfg(test)]
     pub(crate) fn memory() -> Self {
-        Self(Db::memory(&MIGRATIONS))
+        Self(Db::memory(&MIGRATIONS, None))
+    }
+
+    /// An empty database at schema `version`, as an older AutoScene left it.
+    #[cfg(test)]
+    pub(crate) fn memory_at(version: usize) -> Self {
+        Self(Db::memory(&MIGRATIONS, Some(version)))
+    }
+
+    /// Bring a database of [`Self::memory_at`] up to date, as opening it does.
+    #[cfg(test)]
+    pub(crate) fn migrate(&self) {
+        MIGRATIONS.to_latest(&mut self.0.conn.lock()).unwrap();
     }
 
     pub fn meta(&self, key: &str) -> DbResult<Option<String>> {

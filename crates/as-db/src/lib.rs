@@ -107,11 +107,15 @@ impl Db {
         Ok(Self { conn: Mutex::new(conn) })
     }
 
+    /// In memory, at schema `version` (`None`: the latest).
     #[cfg(test)]
-    fn memory(migrations: &Migrations<'static>) -> Self {
+    fn memory(migrations: &Migrations<'static>, version: Option<usize>) -> Self {
         let mut conn = Connection::open_in_memory().unwrap();
         conn.pragma_update(None, "foreign_keys", "ON").unwrap();
-        migrations.to_latest(&mut conn).unwrap();
+        match version {
+            Some(v) => migrations.to_version(&mut conn, v).unwrap(),
+            None => migrations.to_latest(&mut conn).unwrap(),
+        }
         Self { conn: Mutex::new(conn) }
     }
 

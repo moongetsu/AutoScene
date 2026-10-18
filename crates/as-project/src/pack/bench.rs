@@ -277,6 +277,32 @@ fn measure(project: &Project, c: CharacterId) {
     row("stats (the library's card)", ms(21, || project.db().stats().unwrap()));
     row("recover (each start)", ms(21, || project.recover().unwrap()));
     row("missing_portraits", ms(21, || project.missing_portraits().unwrap()));
+    row("  cover_tracks", ms(21, || project.db().cover_tracks().unwrap()));
+    // The cast as the app lists it: each character with its cover and counts.
+    row("cast()", ms(21, || project.cast().unwrap()));
+    row("  characters", ms(21, || project.db().characters().unwrap()));
+    row("  cast_counts", ms(21, || project.db().cast_counts().unwrap()));
+}
+
+/// What `project.db` takes: all of it, and the tracks with each of their indexes.
+fn db_sizes(project: &Project) {
+    let db = rusqlite::Connection::open(project.dir.join("project.db")).unwrap();
+    let mb = |bytes: i64| bytes as f64 / (1024.0 * 1024.0);
+    let total: i64 = db
+        .query_row("SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()", [], |r| r.get(0))
+        .unwrap();
+    let mut st = db
+        .prepare(
+            "SELECT name, SUM(pgsize) FROM dbstat
+              WHERE name IN (SELECT name FROM sqlite_schema WHERE tbl_name = 'tracks') GROUP BY name ORDER BY name",
+        )
+        .unwrap();
+    let parts: Vec<String> = st
+        .query_map([], |r| Ok(format!("{} {:.2}", r.get::<_, String>(0)?, mb(r.get(1)?))))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    println!("project.db {:.2} MB; {} (MB)", mb(total), parts.join(", "));
 }
 
 #[test]
@@ -288,6 +314,7 @@ fn a_pack_of_6000_shots() {
     let t = Instant::now();
     let (project, walter) = series(&dir);
     println!("made {EPISODES} episodes in {:.1} s ({})", t.elapsed().as_secs_f64(), dir.display());
+    db_sizes(&project);
     // Measuring exports some: a library to open stays as it was made.
     if kept.is_none() {
         measure(&project, walter);
@@ -308,5 +335,6 @@ fn a_real_pack() {
         )
         .unwrap();
     let project = Project::open(ProjectId::new(), dir, Arc::new(AtomicBool::new(false))).unwrap();
+    db_sizes(&project);
     measure(&project, top.parse().unwrap());
 }

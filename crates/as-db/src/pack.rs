@@ -34,25 +34,30 @@ pub struct PackRow {
     pub quality: f32,
 }
 
+/// [`ProjectDb::pack_rows`] of the character `?1` (`?2`: the kind of a shot).
+pub(crate) fn pack_rows_sql() -> String {
+    format!(
+        "WITH mine AS ({})
+         SELECT t.media_id, t.shot, g.end, g.tiny, sp.end, sp.cells, t.id, t.character_id, ch.hidden,
+                t.start, t.end, t.face_h, t.quality
+           FROM mine
+           JOIN segments g ON g.media_id = mine.media_id AND g.start = mine.shot AND g.kind = ?2
+           JOIN tracks t ON t.media_id = mine.media_id AND t.shot = mine.shot
+                      AND t.assign IN ('auto', 'pinned') AND t.not_face = 0
+           JOIN characters ch ON ch.id = t.character_id
+           LEFT JOIN sprites sp ON sp.media_id = mine.media_id AND sp.shot = mine.shot
+          ORDER BY t.media_id, t.shot, t.character_id = ?1 DESC, t.face_h >= 0.12 DESC, t.quality DESC, t.id",
+        crate::bodies::MINE
+    )
+}
+
 impl ProjectDb {
     /// Every assigned face in the shots `c` is seen in (by a face, or by a
     /// body of theirs), by media and shot; within a shot `c`'s own faces
     /// come first, clearest first.
     pub fn pack_rows(&self, c: CharacterId) -> DbResult<Vec<PackRow>> {
         self.0.read(|conn| {
-            let mut st = conn.prepare(&format!(
-                "WITH mine AS ({})
-                 SELECT t.media_id, t.shot, g.end, g.tiny, sp.end, sp.cells, t.id, t.character_id, ch.hidden,
-                        t.start, t.end, t.face_h, t.quality
-                   FROM mine
-                   JOIN segments g ON g.media_id = mine.media_id AND g.start = mine.shot AND g.kind = ?2
-                   JOIN tracks t ON t.media_id = mine.media_id AND t.shot = mine.shot
-                              AND t.assign IN ('auto', 'pinned') AND t.not_face = 0
-                   JOIN characters ch ON ch.id = t.character_id
-                   LEFT JOIN sprites sp ON sp.media_id = mine.media_id AND sp.shot = mine.shot
-                  ORDER BY t.media_id, t.shot, t.character_id = ?1 DESC, t.face_h >= 0.12 DESC, t.quality DESC, t.id",
-                crate::bodies::MINE
-            ))?;
+            let mut st = conn.prepare(&pack_rows_sql())?;
             let mut rows = st.query(params![c.to_string(), enum_to_sql(SegmentKind::Shot)])?;
             let mut out = Vec::new();
             while let Some(r) = rows.next()? {
