@@ -102,7 +102,7 @@ dependencies = [
 
 [[package]]
 name = "as-analysis"
-version = "1.0.1-BETA"
+version = "1.0.2-BETA"
 dependencies = [
  "as-core",
  "as-identity",
@@ -123,7 +123,7 @@ dependencies = [
 
 [[package]]
 name = "as-api"
-version = "1.0.1-BETA"
+version = "1.0.2-BETA"
 dependencies = [
  "as-core",
  "as-export",
@@ -134,7 +134,7 @@ dependencies = [
 
 [[package]]
 name = "as-core"
-version = "1.0.1-BETA"
+version = "1.0.2-BETA"
 dependencies = [
  "dirs 7.0.0",
  "serde",
@@ -147,7 +147,7 @@ dependencies = [
 
 [[package]]
 name = "as-db"
-version = "1.0.1-BETA"
+version = "1.0.2-BETA"
 dependencies = [
  "as-api",
  "as-core",
@@ -164,7 +164,7 @@ dependencies = [
 
 [[package]]
 name = "as-engine"
-version = "1.0.1-BETA"
+version = "1.0.2-BETA"
 dependencies = [
  "as-analysis",
  "as-core",
@@ -185,7 +185,7 @@ dependencies = [
 
 [[package]]
 name = "as-export"
-version = "1.0.1-BETA"
+version = "1.0.2-BETA"
 dependencies = [
  "as-core",
  "as-media",
@@ -200,11 +200,11 @@ dependencies = [
 
 [[package]]
 name = "as-identity"
-version = "1.0.1-BETA"
+version = "1.0.2-BETA"
 
 [[package]]
 name = "as-infer"
-version = "1.0.1-BETA"
+version = "1.0.2-BETA"
 dependencies = [
  "ort",
  "thiserror 2.0.21",
@@ -214,7 +214,7 @@ dependencies = [
 
 [[package]]
 name = "as-jobs"
-version = "1.0.1-BETA"
+version = "1.0.2-BETA"
 dependencies = [
  "as-api",
  "as-core",
@@ -224,7 +224,7 @@ dependencies = [
 
 [[package]]
 name = "as-media"
-version = "1.0.1-BETA"
+version = "1.0.2-BETA"
 dependencies = [
  "as-core",
  "as-testkit",
@@ -239,7 +239,7 @@ dependencies = [
 
 [[package]]
 name = "as-models"
-version = "1.0.1-BETA"
+version = "1.0.2-BETA"
 dependencies = [
  "as-core",
  "flate2",
@@ -254,7 +254,7 @@ dependencies = [
 
 [[package]]
 name = "as-project"
-version = "1.0.1-BETA"
+version = "1.0.2-BETA"
 dependencies = [
  "as-analysis",
  "as-api",
@@ -276,7 +276,7 @@ dependencies = [
 
 [[package]]
 name = "as-testkit"
-version = "1.0.1-BETA"
+version = "1.0.2-BETA"
 dependencies = [
  "serde",
  "serde_json",
@@ -284,7 +284,7 @@ dependencies = [
 
 [[package]]
 name = "as-vision"
-version = "1.0.1-BETA"
+version = "1.0.2-BETA"
 dependencies = [
  "as-infer",
  "jpeg-encoder",
@@ -459,7 +459,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "autoscene-app"
-version = "1.0.1-BETA"
+version = "1.0.2-BETA"
 dependencies = [
  "as-api",
  "as-core",
@@ -6458,7 +6458,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "1.0.1-BETA"
+version = "1.0.2-BETA"
 dependencies = [
  "anyhow",
  "as-core",
