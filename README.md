@@ -15,18 +15,52 @@ Get the newest version from
 | macOS 13 or later on Apple Silicon | `AutoScene_<version>_aarch64.dmg` |
 | Linux (x64) | `.AppImage`, `.deb` or `.rpm` |
 
-The builds aren't signed by a publisher yet:
+The builds aren't signed by a publisher yet, so the first start needs your OK
+once:
 
 - **Windows:** SmartScreen may say it protected your PC. Choose **More info →
-  Run anyway**. The installer fetches WebView2 if it's missing.
-- **macOS:** the first launch is refused. Right-click the app and choose
-  **Open**, or run `xattr -dr com.apple.quarantine /Applications/AutoScene.app`.
+  Run anyway**. (With Smart App Control on, Windows 11 offers no such choice:
+  it blocks unsigned apps it doesn't know.) The installer fetches WebView2 if
+  it's missing.
+- **macOS:** drag AutoScene from the disk image to Applications and open it.
+  macOS says it can't verify the app: close the message. Then open **System
+  Settings → Privacy & Security**, scroll down to the note about AutoScene,
+  choose **Open Anyway** and confirm. (Since macOS 15, right-click → Open no
+  longer does this.) If macOS calls the app damaged (versions up to 1.0.1
+  aren't signed) or later refuses a part of it, such as
+  `libonnxruntime.dylib`, run
+  `xattr -dr com.apple.quarantine /Applications/AutoScene.app` once.
 - **Linux:** make the AppImage executable (`chmod +x AutoScene_*.AppImage`).
   WebKitGTK 4.1 is required for the `.deb` and `.rpm` packages.
 
 FFmpeg and ONNX Runtime ship with the app. The AI models (about 310 MB)
 download the first time an analysis needs them. Analysis runs on the GPU
 through DirectML on Windows and Core ML on macOS; on Linux it runs on the CPU.
+
+### Check a download
+
+Releases after 1.0.1 come with a signed record for every file (a build
+attestation): the workflow of this repository that built it, and the tag and
+commit it was built from. To check a file, use the
+[GitHub CLI](https://cli.github.com), signed in with any GitHub account
+(`gh auth login`):
+
+```bash
+gh attestation verify AutoScene_<version>_x64-setup.exe -R tcmmi/AutoScene
+```
+
+It shows the workflow and the tag. To insist on the release workflow, add
+`--signer-workflow tcmmi/AutoScene/.github/workflows/release.yml`.
+
+They also have a `SHA256SUMS` file with the SHA-256 of every other file. Put
+it next to your downloads and run
+`sha256sum --check --ignore-missing SHA256SUMS` (Linux) or
+`shasum -a 256 --check --ignore-missing SHA256SUMS` (macOS). In PowerShell
+on Windows, this prints `True` for an intact download:
+
+```powershell
+(Get-FileHash .\AutoScene_<version>_x64-setup.exe).Hash -eq (-split (Select-String -Path SHA256SUMS -Pattern x64-setup.exe -SimpleMatch).Line)[0]
+```
 
 ## What it does
 

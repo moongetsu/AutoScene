@@ -3,8 +3,10 @@ name: Release
 # A pushed tag `vX.Y.Z` (or `vX.Y.Z-BETA`) builds the installers on Windows,
 # macOS (Apple Silicon) and Linux and publishes them as the latest GitHub
 # release, with the `latest.json` the in-app updater reads: every tag is
-# what people download and update to. A pull request that changes how the
-# app is packaged, or a manual run, builds everything without publishing.
+# what people download and update to. Each published file is listed in
+# `SHA256SUMS` and has a signed build provenance (`gh attestation verify`).
+# A pull request that changes how the app is packaged, or a manual run,
+# builds everything without publishing.
 on:
   push:
     tags: ["v*"]
@@ -84,6 +86,10 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # With CI=true the bundler skips the Finder script that lays out
+          # the DMG window (background, icon places); the runner has a
+          # Finder, so the DMG gets its layout here too.
+          TAURI_BUNDLER_DMG_IGNORE_CI: ${{ runner.os == 'macOS' && 'true' || '' }}
         run: |
           configs=(--config src-tauri/tauri.release.conf.json)
           # Without the updater key (a fork, a key not set up yet) there are
@@ -94,6 +100,101 @@ jobs:
             echo "::warning::TAURI_SIGNING_PRIVATE_KEY isn't set: built without update bundles"
           fi
           npx tauri build "${configs[@]}"
+      # Gatekeeper calls a download with a missing or broken signature
+      # "damaged" and won't open it. Signed ad hoc (tauri.macos.conf.json),
+      # the app is from an unidentified developer instead, which people can
+      # open under System Settings → Privacy & Security. The hardened runtime
+      # stays off: its library validation would refuse ONNX Runtime, which
+      # Microsoft signed, in an app without a team. Checked as people get
+      # it: the app in the disk image and the one in the update bundle.
+      - name: Check the macOS signature
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          check() {
+            local app=$1 f info flags ents status=0
+            codesign --verify --deep --strict --verbose=2 "$app"
+            info=$(codesign --display --verbose=2 "$app" 2>&1)
+            echo "$info"
+            # A hardened runtime would need the app to be allowed libraries
+            # signed by someone else, or ONNX Runtime won't load.
+            [[ $info =~ flags=([^[:space:]]+) ]] && flags=${BASH_REMATCH[1]}
+            ents=$(codesign --display --entitlements - "$app" 2>/dev/null || true)
+            if [[ $flags == *runtime* && $ents != *disable-library-validation* ]]; then
+              echo "::error::$app has the hardened runtime on, so ONNX Runtime wouldn't load"
+              return 1
+            fi
+            # Every program and library inside has an intact signature of its
+            # own as well (FFmpeg and ONNX Runtime keep their makers' Developer ID).
+            while IFS= read -r -d '' f; do
+              case $(file -b "$f") in
+                Mach-O*) codesign --verify --strict --verbose=1 "$f" ;;
+              esac
+            done < <(find "$app/Contents" -type f -print0)
+            # It isn't notarized, so Gatekeeper still says no: exit code 3.
+            spctl --assess --type execute -vv "$app" || status=$?
+            case $status in
+              3) ;;
+              0) echo "::warning::Gatekeeper accepted $app: are assessments turned off on this runner?" ;;
+              *) echo "::error::Gatekeeper couldn't assess $app (spctl exit code $status)"; return 1 ;;
+            esac
+          }
+          b=target/release/bundle
+          mnt=$(mktemp -d)
+          hdiutil attach "$b"/dmg/*.dmg -readonly -nobrowse -noautoopen -mountpoint "$mnt" >/dev/null
+          check "$mnt/AutoScene.app"
+          hdiutil detach "$mnt" -quiet || hdiutil detach "$mnt" -force -quiet || true
+          if [ -f "$b/macos/AutoScene.app.tar.gz" ]; then
+            update=$(mktemp -d)
+            tar -xzf "$b/macos/AutoScene.app.tar.gz" -C "$update"
+            check "$update/AutoScene.app"
+          fi
+      # What a Mac shows when the DMG opens, light and dark, for a look
+      # before a release (not on the release itself).
+      - name: DMG window screenshots
+        if: runner.os == 'macOS' && !startsWith(github.ref, 'refs/tags/')
+        continue-on-error: true
+        # osascript can wait forever on an automation prompt nobody answers.
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          shots="$RUNNER_TEMP/dmg-shots"
+          mkdir -p "$shots"
+          dmg=$(ls target/release/bundle/dmg/*.dmg | head -n 1)
+          hdiutil attach "$dmg"
+          vol=/Volumes/AutoScene
+          for mode in light dark; do
+            dark=false; [ "$mode" = dark ] && dark=true
+            osascript -e "tell application \"System Events\" to tell appearance preferences to set dark mode to $dark" \
+              || echo "::warning::couldn't switch to $mode mode"
+            open "$vol"
+            sleep 5
+            screencapture -x "$shots/screen-$mode.png"
+            # The window itself, with room for its title bar.
+            if b=$(osascript -e 'tell application "Finder" to get bounds of front window'); then
+              IFS=', ' read -r x1 y1 x2 y2 <<< "$b"
+              screencapture -x -R "$((x1 - 20)),$((y1 - 40)),$((x2 - x1 + 40)),$((y2 - y1 + 60))" "$shots/window-$mode.png"
+            fi
+            osascript -e 'tell application "Finder" to close every window'
+          done
+          hdiutil detach "$vol"
+          ls -la "$shots"
+      - uses: actions/upload-artifact@v7
+        if: runner.os == 'macOS' && !startsWith(github.ref, 'refs/tags/')
+        continue-on-error: true
+        with:
+          name: dmg-window-screenshots
+          path: ${{ runner.temp }}/dmg-shots/*
+          retention-days: 14
+      # The deb carries the 512 px icon for app menus and docks.
+      - name: Linux icons
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          deb=$(ls target/release/bundle/deb/*.deb | head -n 1)
+          dpkg -c "$deb" | tee "$RUNNER_TEMP/deb-contents.txt" | grep usr/share/icons/hicolor
+          grep -q 'usr/share/icons/hicolor/512x512/apps/.*\.png$' "$RUNNER_TEMP/deb-contents.txt" \
+            || { echo "::error::no 512x512 icon in the deb"; exit 1; }
       - name: Collect
         shell: bash
         run: |
@@ -133,8 +234,20 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # The build provenance: signed with a short-lived Sigstore certificate
+      # issued to this workflow run, then kept with the repository's
+      # attestations, where `gh attestation verify` looks it up.
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v7
+      - name: Release notes
+        run: |
+          notes="docs/releases/$GITHUB_REF_NAME.md"
+          if [ ! -f "$notes" ]; then
+            echo "::error::$notes is missing (docs/releases/TEMPLATE.md is a start)"
+            exit 1
+          fi
       - uses: actions/download-artifact@v8
         with:
           path: out
@@ -144,18 +257,27 @@ jobs:
           node-version: 26
       - name: Update manifest
         run: node .github/scripts/latest-json.mjs out "$GITHUB_REF_NAME"
+      # The update signatures are inside latest.json, so the .sig files
+      # aren't published. SHA256SUMS lists every file that is.
+      - name: Checksums
+        working-directory: out
+        run: |
+          rm -f -- *.sig
+          sha256sum -- * > "$RUNNER_TEMP/SHA256SUMS"
+          mv "$RUNNER_TEMP/SHA256SUMS" SHA256SUMS
+          cat SHA256SUMS
+      # A signed SLSA build provenance for every file the release publishes,
+      # SHA256SUMS included: which repository, workflow, tag and commit made it.
+      - name: Attest
+        uses: actions/attest@v4.2.2
+        with:
+          subject-path: out/*
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="$GITHUB_REF_NAME"
           notes="docs/releases/$tag.md"
-          if [ ! -f "$notes" ]; then
-            echo "::error::$notes is missing"
-            exit 1
-          fi
-          # The update signatures are inside latest.json; the files themselves aren't needed.
-          rm -f out/*.sig
           ls -la out
           if gh release view "$tag" >/dev/null 2>&1; then
             # A run again after a publish that broke off: replace the files.
