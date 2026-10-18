@@ -213,8 +213,8 @@ impl Project {
 
     /// [`Self::media_list`] without each media's shots and faces counted
     /// (`shot_count` and `face_count` are `None`): a pass over every track
-    /// that cutting from them doesn't need.
-    pub(crate) fn media_list_uncounted(&self) -> ProjectResult<Vec<MediaItem>> {
+    /// that only what shows the counts needs.
+    pub fn media_list_uncounted(&self) -> ProjectResult<Vec<MediaItem>> {
         Ok(found(self.db.media_list_uncounted()?))
     }
 
@@ -239,7 +239,9 @@ impl Project {
         if same_path(&m.path, &new) && Path::new(&m.path).is_file() {
             return Ok(Relink::Same);
         }
-        if let Some(other) = self.db.media_list()?.into_iter().find(|x| x.id != id && same_path(&x.path, &new)) {
+        if let Some(other) =
+            self.db.media_list_uncounted()?.into_iter().find(|x| x.id != id && same_path(&x.path, &new))
+        {
             let name = if other.label.is_empty() { other.file_name } else { other.label };
             return Err(ProjectError::Invalid(format!("That file is already in the project, as {name}.")));
         }
@@ -317,7 +319,7 @@ impl Project {
     /// same video ([`Self::relink`]).
     pub fn relink_folder(&self, tools: &Tools, dir: &Path) -> ProjectResult<RelinkedFolder> {
         let missing: Vec<MediaItem> =
-            self.media_list()?.into_iter().filter(|m| m.status == MediaStatus::Missing).collect();
+            self.media_list_uncounted()?.into_iter().filter(|m| m.status == MediaStatus::Missing).collect();
         let known = self.db.media_paths()?;
         let found = crate::library::scan_paths(&[dir.display().to_string()], ProjectKind::Series, &known);
         let mut used: HashSet<String> = HashSet::new();
@@ -392,7 +394,7 @@ impl Project {
     pub fn recover(&self) -> ProjectResult<Recovery> {
         let ingest = self.db.requeue_interrupted()?;
         let proxies = self.db.pending_proxies()?;
-        let posters = self.media_list()?.iter().filter(|m| self.posters_outdated(m)).map(|m| m.id).collect();
+        let posters = self.media_list_uncounted()?.iter().filter(|m| self.posters_outdated(m)).map(|m| m.id).collect();
         Ok(Recovery { ingest, proxies, posters })
     }
 
@@ -638,7 +640,7 @@ impl Project {
     /// Remove proxy files nothing points at: half-written `.part` files and
     /// previews for an audio track that is no longer selected.
     fn clean_proxies(&self) {
-        let Ok(media) = self.db.media_list() else { return };
+        let Ok(media) = self.db.media_list_uncounted() else { return };
         let Ok(entries) = std::fs::read_dir(self.proxies_dir()) else { return };
         let mut current = HashSet::new();
         for m in &media {

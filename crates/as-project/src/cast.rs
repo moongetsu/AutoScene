@@ -332,7 +332,7 @@ impl Project {
     pub fn missing_portraits(&self) -> ProjectResult<Vec<i64>> {
         let covers = self.db().cover_tracks()?;
         let ready: HashSet<MediaId> =
-            self.media_list()?.into_iter().filter(|m| m.status == MediaStatus::Ready).map(|m| m.id).collect();
+            self.media_list_uncounted()?.into_iter().filter(|m| m.status == MediaStatus::Ready).map(|m| m.id).collect();
         let plans: HashMap<i64, PortraitPlan> =
             self.portrait_plans(&covers)?.into_iter().map(|p| (p.track, p)).collect();
         let failed = self.portraits.lock().failed.clone();
@@ -994,8 +994,10 @@ impl Project {
             faces.entry((c, m, shot)).or_default().push((start, end));
             seen_in.insert((c, m));
         }
+        // The media's frame rates only: not counted, nor looked for on disk.
         let frame_sec: HashMap<MediaId, f64> = self
-            .media_list()?
+            .db()
+            .media_list_uncounted()?
             .into_iter()
             .filter_map(|m| Some((m.id, m.fps.filter(|f| f.num > 0).map(|f| f.den as f64 / f.num as f64)?)))
             .collect();

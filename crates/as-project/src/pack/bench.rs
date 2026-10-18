@@ -272,6 +272,11 @@ fn measure(project: &Project, c: CharacterId) {
         println!("create_export ({} clips, {what}): {} ms, run after run", request.clips.len(), runs.join(" / "));
     }
     row("exports() with 6 exports in the list", ms(5, || project.exports().unwrap()));
+
+    // Elsewhere, what reads every media but none of their counts.
+    row("stats (the library's card)", ms(21, || project.db().stats().unwrap()));
+    row("recover (each start)", ms(21, || project.recover().unwrap()));
+    row("missing_portraits", ms(21, || project.missing_portraits().unwrap()));
 }
 
 #[test]

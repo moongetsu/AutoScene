@@ -518,7 +518,7 @@ impl ProjectDb {
 
     /// [`Self::media_list`] without each media's shots and faces counted
     /// (`shot_count` and `face_count` are `None`): counting takes a pass over
-    /// every track, and cutting from them needs none of it.
+    /// every track, and only what shows the counts needs it.
     pub fn media_list_uncounted(&self) -> DbResult<Vec<MediaItem>> {
         self.media_rows(false)
     }
@@ -789,7 +789,7 @@ impl ProjectDb {
     }
 
     pub fn stats(&self) -> DbResult<ProjectStats> {
-        let media = self.media_list()?;
+        let media = self.media_list_uncounted()?;
         let ready: Vec<_> = media.iter().filter(|m| m.status == MediaStatus::Ready).collect();
         let pictured = media.iter().find(|m| m.poster.is_some());
         Ok(ProjectStats {
@@ -1207,6 +1207,43 @@ pub(crate) mod tests {
         db.record_ingest(m.id, &rec).unwrap();
         assert!(db.shot_chunks(m.id).unwrap().is_empty() && db.segments(m.id).unwrap().is_empty());
         assert_eq!(db.media(m.id).unwrap().unwrap().shots, StageState::Pending);
+    }
+
+    #[test]
+    fn uncounted_media_lack_only_their_counts() {
+        use crate::cast::tests::{ready_media, track};
+        use as_api::SegmentKind;
+        let db = ProjectDb::memory();
+        let a = ready_media(&db, "/s/Show - 01.mkv");
+        ready_media(&db, "/s/Show - 02.mkv");
+        let shot = |start, end| Segment { start, end, kind: SegmentKind::Shot, tiny: false };
+        db.store_segments(a, &[shot(0, 500), shot(500, 1000)]).unwrap();
+        db.put_face_chunk(a, 0, 1000, &[track(10, 0.9), track(600, 0.5)], &[], |_| Ok(())).unwrap();
+        db.set_faces_state(a, StageState::Ready, None).unwrap();
+        assert!(db.set_posters(a, "/thumbs/a-720.jpg", "/thumbs/a-480x270.jpg").unwrap());
+
+        let counted = db.media_list().unwrap();
+        let counts: Vec<_> = counted.iter().map(|m| (m.id == a, m.shot_count, m.face_count)).collect();
+        assert_eq!(counts, [(true, Some(2), Some(2)), (false, Some(0), None)]);
+        // The same rows, in the same order, but for the counts.
+        let rows = |list: Vec<MediaItem>| -> Vec<serde_json::Value> {
+            let uncounted = |m| MediaItem { shot_count: None, face_count: None, ..m };
+            list.into_iter().map(|m| serde_json::to_value(uncounted(m)).unwrap()).collect()
+        };
+        let quick = db.media_list_uncounted().unwrap();
+        assert!(quick.iter().all(|m| m.shot_count.is_none() && m.face_count.is_none()));
+        assert_eq!(rows(quick), rows(counted));
+        // The library's card, from them.
+        assert_eq!(
+            db.stats().unwrap(),
+            ProjectStats {
+                media_count: 2,
+                ready_count: 2,
+                duration_sec: 83.4,
+                poster: Some("/thumbs/a-720.jpg".into()),
+                poster_small: Some("/thumbs/a-480x270.jpg".into()),
+            }
+        );
     }
 
     #[test]

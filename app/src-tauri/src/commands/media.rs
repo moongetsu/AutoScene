@@ -232,7 +232,11 @@ pub async fn media_relink_folder(
         let lib = state.library.clone();
         blocking(move || {
             let p = lib.project(project_id)?;
-            Ok(p.media_list()?.into_iter().filter(|m| m.status == MediaStatus::Missing).map(|m| m.id).collect())
+            Ok(p.media_list_uncounted()?
+                .into_iter()
+                .filter(|m| m.status == MediaStatus::Missing)
+                .map(|m| m.id)
+                .collect())
         })
         .await?
     };

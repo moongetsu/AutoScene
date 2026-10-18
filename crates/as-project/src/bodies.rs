@@ -259,8 +259,10 @@ impl Project {
         }
         let found = self.db().identity_bodies()?;
         let track_at: HashMap<i64, usize> = cast.rows.iter().enumerate().map(|(i, &row)| (rows[row].id, i)).collect();
+        // The media's frame rates only: not counted, nor looked for on disk.
         let fps: HashMap<MediaId, f32> = self
-            .media_list()?
+            .db()
+            .media_list_uncounted()?
             .into_iter()
             .filter_map(|m| Some((m.id, m.fps.map(|f| f.num as f32 / f.den.max(1) as f32)?)))
             .collect();
