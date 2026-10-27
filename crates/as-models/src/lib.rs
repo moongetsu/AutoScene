@@ -353,11 +353,7 @@ fn agent() -> ureq::Agent {
 /// the model body is big and is stall-polled by [`stream`], while these
 /// reads need one end-to-end cap instead.
 fn preamble_agent() -> ureq::Agent {
-    ureq::Agent::config_builder()
-        .timeout_global(Some(PREAMBLE_TIMEOUT))
-        .https_only(true)
-        .build()
-        .into()
+    ureq::Agent::config_builder().timeout_global(Some(PREAMBLE_TIMEOUT)).https_only(true).build().into()
 }
 
 /// Write the body of `resp` to `part` — after its first `have` bytes, which
