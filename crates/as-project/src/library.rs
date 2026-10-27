@@ -179,8 +179,11 @@ impl Library {
         self.db.delete_project(id)?;
         if delete_files {
             let dir = PathBuf::from(&summary.dir);
-            // Only ever delete what is recognisably a project folder.
-            if dir.join(PROJECT_DB).is_file() {
+            // Only ever delete what is recognisably a project folder — a
+            // direct child of the library; a forged `dir` must not reach
+            // outside it.
+            let ours = self.library_root().is_ok_and(|root| dir.parent() == Some(root.as_path()));
+            if ours && dir.join(PROJECT_DB).is_file() {
                 remove_dir_with_retry(&dir).map_err(|e| {
                     ProjectError::Io(std::io::Error::new(
                         e.kind(),

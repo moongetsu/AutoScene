@@ -16,9 +16,14 @@ use crate::work;
 #[specta::specta]
 pub async fn projects_list(app: AppHandle, state: State<'_, AppState>) -> AppResult<Vec<ProjectSummary>> {
     let lib = state.library.clone();
-    let projects = blocking(move || Ok(lib.projects()?)).await?;
+    let (projects, root) = blocking(move || Ok((lib.projects()?, lib.library_root()?))).await?;
     for p in &projects {
-        allow_asset_dir(&app, &Path::new(&p.dir).join("thumbs"));
+        let dir = Path::new(&p.dir);
+        // Thumbs live only in a project's own folder — a direct child of the
+        // library. A forged `dir` must not widen the webview's asset scope.
+        if dir.parent() == Some(root.as_path()) {
+            allow_asset_dir(&app, &dir.join("thumbs"));
+        }
     }
     Ok(projects)
 }

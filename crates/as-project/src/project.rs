@@ -898,7 +898,7 @@ impl Project {
                     range: FrameRange::new(item.start, item.end),
                     audio_ordinal: self.db.export_item_audio(item.id)?,
                     preset: &ex.preset,
-                    out_stem: out_dir.join(&item.name),
+                    out_stem: out_dir.join(safe_component(&item.name, " ", 120)),
                     title: Some(item.name.clone()),
                     part: None,
                 };
@@ -1059,7 +1059,7 @@ impl Project {
             parts: &parts,
             shape: &plan.shape,
             preset: &ex.preset,
-            out_stem: out_dir.join(&file.name),
+            out_stem: out_dir.join(safe_component(&file.name, " ", 120)),
             work_dir: &work.0,
             title: ex.label.clone(),
         };
@@ -1215,7 +1215,13 @@ fn unique_name(base: &str, taken: impl Fn(&str) -> bool) -> String {
 }
 
 /// Two paths name the same file (on Windows whatever the case and slashes).
+/// The filesystem decides where both exist — `\\?\`, `.`-segments and 8.3
+/// spellings all resolve to one path; strings are the fallback when a file
+/// can't be resolved.
 fn same_path(a: &str, b: &str) -> bool {
+    if let (Ok(x), Ok(y)) = (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        return x == y;
+    }
     let norm = |p: &str| {
         let p = p.replace('\\', "/");
         if cfg!(windows) { p.to_lowercase() } else { p }
