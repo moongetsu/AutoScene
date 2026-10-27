@@ -658,7 +658,7 @@ fn characters_found_to_be_one_say_so() {
     // Placing faces after a decision groups nothing either, whatever
     // characters lost their faces.
     let members = vec![(101, [l1.clone(), l2.clone()].concat()), (102, (20..26).collect())];
-    assert!(reassign(&tracks, &members, &Params::default()).absorbed.is_empty());
+    assert!(reassign(&tracks, &members, &Params::default(), None).absorbed.is_empty());
 }
 
 #[test]
@@ -820,7 +820,7 @@ fn reassigning_keeps_the_cast_and_places_everyone_else() {
         .collect();
     let o = identify(&tracks[..truth.len()], &Params::default());
     let members = members_of(&o);
-    let r = reassign(&tracks, &members, &Params::default());
+    let r = reassign(&tracks, &members, &Params::default(), None);
 
     assert_eq!(r.characters.len(), 4, "no character made");
     for (ci, (key, g)) in members.iter().enumerate() {
@@ -853,11 +853,11 @@ fn not_them_on_a_member_takes_its_look_alikes_along() {
         .collect();
     let members = vec![(7, (0..=wrong).collect::<Vec<_>>())];
     let p = Params::default();
-    let before = reassign(&tracks, &members, &p);
+    let before = reassign(&tracks, &members, &p, None);
     assert!(alikes.iter().all(|&i| before.tracks[i].0 == Assign::Auto(0)), "they follow the wrong face");
 
     tracks[wrong].forbid = vec![7];
-    let after = reassign(&tracks, &members, &p);
+    let after = reassign(&tracks, &members, &p, None);
     assert_eq!(after.tracks[wrong].0, Assign::None);
     assert!(alikes.iter().all(|&i| after.tracks[i].0.character().is_none()), "look-alikes leave with it");
     assert!((0..wrong).all(|i| after.tracks[i] == (Assign::Auto(0), 1.0)));
@@ -884,9 +884,323 @@ fn reassigning_never_moves_a_pin_or_breaks_a_forbid() {
             g.push(p0[0]);
         }
     }
-    let r = reassign(&tracks, &members, &Params::default());
+    let r = reassign(&tracks, &members, &Params::default(), None);
     let at = |k: CharKey| r.characters.iter().position(|c| c.key == Some(k)).unwrap();
     assert_eq!(r.tracks[p0[0]].0, Assign::Pinned(at(k1)));
     assert_ne!(r.tracks[p0[1]].0.character(), Some(at(k0)));
     assert!(!matches!(r.tracks[p0[1]].0, Assign::Unsure(c) if c == at(k0)));
+}
+
+/// `people` characters drawn in one style: every face is `style` alike to
+/// a look they all share, two of them on screen at once in every scene.
+fn drawn(rng: &mut Rng, people: usize, scenes: u32, style: f32) -> (Vec<TrackIn>, Vec<usize>) {
+    let shared = rng.unit();
+    let centers: Vec<Vec<f32>> = (0..people).map(|_| around(rng, &shared, style)).collect();
+    let mut tracks = Vec::new();
+    let mut truth = Vec::new();
+    for k in 0..scenes {
+        for p in [k as usize % people, (k as usize + 1) % people] {
+            tracks.push(track(0, k * 100, around(rng, &centers[p], 0.85), 0.8));
+            truth.push(p);
+        }
+    }
+    (tracks, truth)
+}
+
+#[test]
+fn characters_drawn_in_one_style_stay_apart() {
+    let mut rng = Rng(23);
+    // Two characters' faces 0.35 alike on average: actors' bars would
+    // merge them; the faces seen side by side tell how alike strangers look.
+    let (tracks, truth) = drawn(&mut rng, 6, 90, 0.7);
+    let alike = strangers(&tracks, &Params::default()).unwrap();
+    assert!((0.25..0.45).contains(&alike), "strangers {alike}");
+    let fixed = Params { calibrate_from: usize::MAX, ..Params::default() };
+    let before = bcubed(&chars(&identify(&tracks, &fixed)), &truth);
+    let o = identify(&tracks, &Params::default());
+    let f = bcubed(&chars(&o), &truth);
+    assert_eq!(o.characters.len(), 6);
+    assert!(f > 0.97 && before < 0.8, "fitted F {f}, actors' bars F {before}");
+    // A decision keeps to the same bars.
+    let members: Vec<(CharKey, Vec<usize>)> = (0..6)
+        .map(|c| (c as CharKey, (0..tracks.len()).filter(|&i| o.tracks[i].0 == Assign::Auto(c)).collect()))
+        .collect();
+    assert!(bcubed(&chars(&reassign(&tracks, &members, &Params::default(), None)), &truth) > 0.97);
+}
+
+#[test]
+fn actors_keep_the_bars_they_were_set_for() {
+    let mut rng = Rng(29);
+    // Random people: strangers about 0 alike.
+    let (tracks, _) = drawn(&mut rng, 6, 90, 0.0);
+    let p = Params::default();
+    assert!(strangers(&tracks, &p).unwrap().abs() < 0.05);
+    let f = p.fitted(&tracks);
+    assert_eq!(
+        (f.link, f.assign, f.unsure, f.margin, f.copy_link),
+        (p.link, p.assign, p.unsure, p.margin, p.copy_link)
+    );
+    // Too few faces seen at once to tell: as set.
+    let (few, _) = drawn(&mut rng, 6, 20, 0.7);
+    assert!(strangers(&few, &p).is_none());
+    assert_eq!(p.fitted(&few).link, p.link);
+}
+
+#[test]
+fn footage_said_to_be_animation_is_fitted_however_little_strangers_look_alike() {
+    let mut rng = Rng(31);
+    // A style whose strangers are ~0.1 alike: in the ramp, half moved.
+    let (tracks, _) = drawn(&mut rng, 6, 90, 0.45);
+    let p = Params::default();
+    let alike = strangers(&tracks, &p).unwrap();
+    assert!((0.06..0.14).contains(&alike), "strangers {alike}");
+    let auto = p.fitted(&tracks);
+    let said = Params { animated: true, ..p }.fitted(&tracks);
+    assert!(p.link < auto.link && auto.link < said.link, "{} {} {}", p.link, auto.link, said.link);
+    assert_eq!(said.link, p.for_strangers(alike).link);
+    // Too few faces seen at once to tell: as set, animation or not.
+    let (few, _) = drawn(&mut rng, 6, 20, 0.45);
+    assert_eq!(Params { animated: true, ..p }.fitted(&few).link, p.link);
+}
+
+// -- the face space fitted to the footage (adapt) ----------------------------
+
+/// A cartoon: `scenes` scenes of two of `people` characters drawn in one
+/// style (strangers about `style` alike), every face clear.
+fn cartoon(seed: u64, people: usize, scenes: u32, style: f32) -> (Vec<TrackIn>, Vec<usize>) {
+    drawn(&mut Rng(seed), people, scenes, style)
+}
+
+#[test]
+fn scatters_count_every_pair_of_faces() {
+    use faer::Mat;
+    let mut rng = Rng(41);
+    let (n, dim, groups) = (40, 6, 7);
+    let x = Mat::<f64>::from_fn(n, dim, |_, _| rng.gauss() as f64);
+    let group: Vec<usize> = (0..n).map(|i| (i * 5 + i / 3) % groups).collect();
+    // Seen together: each pair of groups once, both ways.
+    let mut adjacent = vec![Vec::new(); groups];
+    for (a, b) in [(0, 1), (0, 3), (2, 5), (4, 6), (1, 6)] {
+        adjacent[a].push(b);
+        adjacent[b].push(a);
+    }
+    let (cs, cd, same, other) = adapt::scatters(&x, &group, &adjacent);
+    let (mut bs, mut bd) = (vec![0f64; dim * dim], vec![0f64; dim * dim]);
+    let (mut ns, mut nd) = (0.0, 0.0);
+    for i in 0..n {
+        for j in i + 1..n {
+            let (into, count) = if group[i] == group[j] {
+                (&mut bs, &mut ns)
+            } else if adjacent[group[i]].contains(&group[j]) {
+                (&mut bd, &mut nd)
+            } else {
+                continue;
+            };
+            *count += 1.0;
+            for r in 0..dim {
+                for c in 0..dim {
+                    into[r * dim + c] += (x[(i, r)] - x[(j, r)]) * (x[(i, c)] - x[(j, c)]);
+                }
+            }
+        }
+    }
+    assert_eq!((same, other), (ns, nd));
+    for r in 0..dim {
+        for c in 0..dim {
+            assert!((cs[(r, c)] - bs[r * dim + c] / ns).abs() < 1e-10, "C_S {r} {c}");
+            assert!((cd[(r, c)] - bd[r * dim + c] / nd).abs() < 1e-10, "C_D {r} {c}");
+        }
+    }
+}
+
+#[test]
+fn quantiles_interpolate_like_numpy() {
+    let s = [0.1, 0.2, 0.4, 0.8];
+    assert!((adapt::quantile(&s, 0.95) - 0.74).abs() < 1e-12);
+    assert!((adapt::quantile(&s, 0.5) - 0.3).abs() < 1e-12);
+    assert_eq!(adapt::quantile(&[0.7], 0.95), 0.7);
+    assert!((adapt::quantile(&[0.2, 0.6], 0.25) - 0.3).abs() < 1e-12);
+}
+
+#[test]
+fn whitening_keeps_only_the_directions_the_faces_show() {
+    use faer::Mat;
+    let mut rng = Rng(43);
+    let dim = 10;
+    // A full-rank spread of one person; three directions in which people differ.
+    let a = Mat::<f64>::from_fn(dim, dim, |_, _| rng.gauss() as f64);
+    let b = Mat::<f64>::from_fn(dim, 3, |_, _| rng.gauss() as f64);
+    let cs = &a * a.transpose();
+    let cd = &b * b.transpose();
+    let p = adapt::whitening(cs.clone(), &cd).unwrap();
+    assert_eq!(p.ncols(), 3);
+    // Pᵀ (C_S + ridge) P = I, largest spread of different people first.
+    let trace: f64 = (0..dim).map(|i| cs[(i, i)]).sum();
+    let ridged =
+        Mat::<f64>::from_fn(dim, dim, |r, c| cs[(r, c)] + if r == c { 0.05 * trace / dim as f64 } else { 0.0 });
+    let id = p.transpose() * &ridged * &p;
+    let spread = p.transpose() * &cd * &p;
+    for r in 0..3 {
+        for c in 0..3 {
+            let want = if r == c { 1.0 } else { 0.0 };
+            assert!((id[(r, c)] - want).abs() < 1e-9, "{r} {c}: {}", id[(r, c)]);
+        }
+    }
+    assert!(spread[(0, 0)] >= spread[(1, 1)] && spread[(1, 1)] >= spread[(2, 2)]);
+}
+
+#[test]
+fn live_action_and_too_few_faces_seen_together_keep_arcfaces_space() {
+    let p = Params::default();
+    // Actors: strangers about 0 alike.
+    let (actors, _) = cartoon(47, 6, 250, 0.0);
+    assert!(fit(&actors, &p).is_none());
+    let o = identify(&actors, &p);
+    assert_eq!(o.space, Space::Faces);
+    let today = identify(&actors, &Params { adapt: false, ..p });
+    assert_eq!(o.tracks, today.tracks);
+    // A cartoon with fewer than 200 pairs of faces seen at once.
+    let (few, _) = cartoon(53, 6, MIN_STRANGERS as u32 - 1, 0.7);
+    assert!(fit(&few, &p).is_none());
+    assert_eq!(identify(&few, &p).space, Space::Faces);
+    // Enough of them.
+    let (film, truth) = cartoon(53, 6, 250, 0.7);
+    let (f, st) = fit(&film, &p).expect("a cartoon gets its own space");
+    assert_eq!((st.strangers, st.share), (250, 1.0));
+    assert!(f.k >= 1 && f.k <= 64 && (f.weight - 0.35).abs() < 1e-6);
+    let o = identify(&film, &p);
+    assert_eq!(o.space, Space::Fitted(f));
+    assert_eq!(o.characters.len(), 6);
+    assert!(bcubed(&chars(&o), &truth) > 0.97);
+}
+
+#[test]
+fn footage_said_to_be_animation_gets_its_space_however_little_alike() {
+    let p = Params::default();
+    // Strangers about 0.09 alike: in the ramp.
+    let (tracks, _) = cartoon(59, 6, 250, 0.35);
+    let (_, st) = fit(&tracks, &p).unwrap();
+    assert!(st.share > 0.0 && st.share < 1.0, "share {}", st.share);
+    let (f, st) = fit(&tracks, &Params { animated: true, ..p }).unwrap();
+    assert_eq!(st.share, 1.0);
+    assert!((f.weight - 0.35).abs() < 1e-6);
+}
+
+#[test]
+fn the_bars_follow_how_alike_strangers_still_look() {
+    let p = Params::default();
+    let (tracks, _) = cartoon(61, 6, 250, 0.7);
+    let (f, st) = fit(&tracks, &p).unwrap();
+    let o = (st.share * ((st.tail - p.link) / (1.0 - p.link)).max(0.0)).clamp(0.0, 0.5);
+    let oc = (2.5 * o).min(0.5);
+    assert!((f.link - (p.link + o * (1.0 - p.link))).abs() < 1e-6);
+    assert!((f.copy_link - (p.copy_link + oc * (1.0 - p.copy_link))).abs() < 1e-6);
+    assert!((f.copy_alike - (p.copy_alike + oc * (1.0 - p.copy_alike))).abs() < 1e-6);
+    // assign, margin and min_cohesion stay; unsure goes with link.
+    let q = f.params(&p);
+    assert_eq!((q.assign, q.margin, q.min_cohesion, q.unsure), (p.assign, p.margin, p.min_cohesion, f.link));
+}
+
+#[test]
+fn the_fit_is_the_same_in_any_order() {
+    let p = Params::default();
+    let (tracks, _) = cartoon(67, 6, 250, 0.7);
+    let (f, _) = fit(&tracks, &p).unwrap();
+    let mut order: Vec<usize> = (0..tracks.len()).collect();
+    let mut rng = Rng(71);
+    for i in (1..order.len()).rev() {
+        order.swap(i, (rng.next() * (i + 1) as f32) as usize % (i + 1));
+    }
+    let shuffled: Vec<TrackIn> = order.iter().map(|&i| tracks[i].clone()).collect();
+    let (g, _) = fit(&shuffled, &p).unwrap();
+    assert_eq!(f.k, g.k);
+    assert!((f.link - g.link).abs() < 1e-5 && (f.copy_link - g.copy_link).abs() < 1e-5);
+    let dot = |x: &[f32], y: &[f32]| x.iter().zip(y).map(|(p, q)| p * q).sum::<f32>();
+    for (a, b) in [(0, 1), (2, 40), (7, 300), (100, 499)] {
+        let (za, zb) = (f.embed(&tracks[a].embedding), f.embed(&tracks[b].embedding));
+        let (ya, yb) = (g.embed(&tracks[a].embedding), g.embed(&tracks[b].embedding));
+        assert!((dot(&za, &zb) - dot(&ya, &yb)).abs() < 1e-5, "{a} {b}");
+    }
+}
+
+#[test]
+fn an_unreadable_face_spoils_nothing() {
+    let p = Params::default();
+    let (mut tracks, _) = cartoon(73, 6, 250, 0.7);
+    let (f, _) = fit(&tracks, &p).unwrap();
+    let mut broken = tracks[3].clone();
+    broken.embedding[17] = f32::NAN;
+    tracks.push(broken);
+    let (g, _) = fit(&tracks, &p).unwrap();
+    assert_eq!(f, g);
+    let o = identify(&tracks, &p);
+    assert_eq!(o.tracks.last().unwrap().0, Assign::None);
+    assert!(o.characters.iter().all(|c| c.centroid.iter().all(|x| x.is_finite())));
+}
+
+#[test]
+fn the_users_decisions_dont_shape_the_space() {
+    let p = Params::default();
+    let (tracks, _) = cartoon(79, 6, 250, 0.7);
+    let (f, _) = fit(&tracks, &p).unwrap();
+    let mut decided = tracks.clone();
+    for (i, t) in decided.iter_mut().enumerate().take(60) {
+        match i % 3 {
+            0 => t.pin = Some(i as CharKey % 4),
+            1 => t.forbid = vec![2],
+            _ => t.quality = 0.5,
+        }
+        t.previous = Some(1);
+    }
+    let (g, _) = fit(&decided, &p).unwrap();
+    assert_eq!(f, g);
+}
+
+#[test]
+fn a_stored_space_comes_back_as_it_was() {
+    let (tracks, _) = cartoon(83, 6, 250, 0.7);
+    let (f, _) = fit(&tracks, &Params::default()).unwrap();
+    let s = Space::Fitted(f);
+    assert_eq!(Space::from_bytes(&s.to_bytes()), Some(s.clone()));
+    assert_eq!(Space::from_bytes(&Space::Faces.to_bytes()), Some(Space::Faces));
+    let b = s.to_bytes();
+    assert_eq!(Space::from_bytes(&b[..b.len() - 1]), None);
+    assert_eq!(Space::from_bytes(&[b.as_slice(), &[0]].concat()), None, "a byte too many");
+    assert_eq!(Space::from_bytes(b"something else"), None);
+    // A weight no fit makes (it would turn every face into NaN).
+    let mut w = b.clone();
+    w[16..20].copy_from_slice(&1.25f32.to_le_bytes());
+    assert_eq!(Space::from_bytes(&w), None);
+    // A size that doesn't fit in memory.
+    let mut huge = b[..16].to_vec();
+    huge[8..16].copy_from_slice(&[0xff; 8]);
+    assert_eq!(Space::from_bytes(&huge), None);
+}
+
+#[test]
+fn decisions_place_faces_in_the_space_the_cast_was_grouped_in() {
+    let p = Params::default();
+    let (mut tracks, truth) = cartoon(89, 6, 250, 0.7);
+    let o = identify(&tracks, &p);
+    let Space::Fitted(f) = o.space.clone() else { panic!("a cartoon gets its own space") };
+    // A face the user says is no face leaves; the others stay where they were.
+    let gone = (0..tracks.len()).find(|&i| matches!(o.tracks[i].0, Assign::Auto(_))).unwrap();
+    let mut members: Vec<(CharKey, Vec<usize>)> = (0..o.characters.len())
+        .map(|c| (c as CharKey, (0..tracks.len()).filter(|&i| i != gone && o.tracks[i].0 == Assign::Auto(c)).collect()))
+        .collect();
+    let pinned = members[0].1[0];
+    tracks[pinned].pin = Some(0);
+    tracks[gone].embedding = vec![f32::NAN; tracks[gone].embedding.len()];
+    let r = reassign(&tracks, &members, &p, Some(&o.space));
+    assert_eq!(r.space, Space::Fitted(f));
+    assert_eq!(r.tracks[pinned].0, Assign::Pinned(0));
+    let (before, after) = (chars(&o), chars(&r));
+    let moved = (0..tracks.len()).filter(|&i| i != gone && before[i] != after[i]).count();
+    assert!(moved <= 2, "{moved} faces moved");
+    assert!(bcubed(&after, &truth) > 0.97);
+    // A face the user said isn't character 1 never goes there, in this space too.
+    let target = members[1].1.remove(0);
+    tracks[target].forbid = vec![1];
+    let r = reassign(&tracks, &members, &p, Some(&o.space));
+    assert_ne!(r.tracks[target].0.character().and_then(|c| r.characters[c].key), Some(1));
 }

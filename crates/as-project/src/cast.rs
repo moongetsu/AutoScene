@@ -11,12 +11,12 @@ use as_analysis::tracker::TrackerParams;
 use as_analysis::tracks::{self, FaceTrack};
 use as_analysis::{FaceDet, ShotSprite, portrait_region};
 use as_api::{
-    Cast, CastEdit, Character, FaceTrackItem, MediaInfo, MediaStatus, Presence, SegmentKind, StageState, TrackAssign,
-    TrackFilter,
+    Cast, CastEdit, Character, ContentKind, FaceTrackItem, MediaInfo, MediaStatus, Presence, SegmentKind, StageState,
+    TrackAssign, TrackFilter,
 };
 use as_core::{CancelToken, CharacterId, FrameIdx, FrameRange, MediaId};
 use as_db::{EditKind, IdentityTrack, NewTrack, TrackRow, TrackUpdate};
-use as_identity::{Assign, CharKey, Outcome, Params, TrackIn, identify};
+use as_identity::{Assign, CharKey, Outcome, Params, Space, TrackIn, identify};
 use as_media::poster::{StillSize, extract_frame_jpegs};
 use as_media::{Source, Tools};
 use parking_lot::Mutex;
@@ -49,6 +49,9 @@ const REANCHOR_MIN_COS: f32 = 0.4;
 /// The `meta` key of the [`as_identity::VERSION`] the cast was last grouped
 /// with.
 pub(crate) const GROUPED_WITH: &str = "identity_version";
+/// The `meta` key of the face space the cast was last grouped in
+/// ([`as_identity::Space`], hex): decisions place faces in the same one.
+const GROUPED_IN: &str = "identity_space";
 
 /// Set (in `meta`) while a media's decisions wait for faces from another
 /// file than the one they were made on.
@@ -246,7 +249,11 @@ impl IdentityInput {
         let mut tracks = Vec::with_capacity(rows.len());
         let mut kept = Vec::with_capacity(rows.len());
         for (row, r) in rows.iter().enumerate() {
-            let Some(embedding) = tracks::embedding_from_bytes(&r.emb) else { continue };
+            // An unreadable face (or one with no number in it) groups with no one.
+            let Some(embedding) = tracks::embedding_from_bytes(&r.emb).filter(|e| e.iter().all(|x| x.is_finite()))
+            else {
+                continue;
+            };
             let m = media.len() as u32;
             let m = *media.entry(r.media_id).or_insert(m);
             let assigned = r.character_id.and_then(|c| key.get(&c).copied());
@@ -276,6 +283,18 @@ impl IdentityInput {
         }
         Self { tracks, rows: kept, existing, key, media }
     }
+}
+
+fn hex(b: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    b.iter().flat_map(|x| [DIGITS[(x >> 4) as usize] as char, DIGITS[(x & 15) as usize] as char]).collect()
+}
+
+fn unhex(s: &str) -> Option<Vec<u8>> {
+    if !s.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok()).collect()
 }
 
 pub(crate) fn track_id(id: i64) -> u32 {
@@ -707,10 +726,14 @@ impl Project {
         let rows: Vec<IdentityTrack> = self.db().identity_tracks()?;
         let cast = IdentityInput::new(&rows, self.db().characters()?.into_iter().map(|c| c.id).collect());
         let started = std::time::Instant::now();
-        let out = identify(&cast.tracks, &Params::default());
+        let out = identify(&cast.tracks, &self.identity_params()?);
         let people = self.people_outcome(&rows, &cast, &out)?;
-        let Some(characters) = self.store_identity(rev, &rows, &cast, &out, people)? else { return Ok(None) };
-        self.db().set_meta(GROUPED_WITH, &as_identity::VERSION.to_string())?;
+        // With it, what it was made with: decisions place faces in its space.
+        let (space, version) = (hex(&out.space.to_bytes()), as_identity::VERSION.to_string());
+        let made_with = [(GROUPED_IN, space.as_str()), (GROUPED_WITH, version.as_str())];
+        let Some(characters) = self.store_identity(rev, &rows, &cast, &out, people, &made_with)? else {
+            return Ok(None);
+        };
         let ms = started.elapsed().as_millis() as u64;
         tracing::info!(tracks = cast.tracks.len(), characters, ms, "cast clustered");
         Ok(Some(characters))
@@ -731,6 +754,11 @@ impl Project {
     /// next upkeep groups it again, also after a restart.
     pub(crate) fn cast_grouped_for_other_footage(&self) -> ProjectResult<()> {
         Ok(self.db().set_meta(GROUPED_WITH, "0")?)
+    }
+
+    /// The grouping's parameters for this project's footage.
+    fn identity_params(&self) -> ProjectResult<Params> {
+        Ok(Params { animated: self.content()? == ContentKind::Animation, ..Params::default() })
     }
 
     /// The cast after a decision: every character keeps its members (pins
@@ -766,9 +794,11 @@ impl Project {
             }
         }
         let started = std::time::Instant::now();
-        let out = as_identity::reassign(&cast.tracks, &members, &Params::default());
+        // In the space the cast was grouped in (unknown: fitted again).
+        let space = self.db().meta(GROUPED_IN)?.and_then(|h| unhex(&h)).and_then(|b| Space::from_bytes(&b));
+        let out = as_identity::reassign(&cast.tracks, &members, &self.identity_params()?, space.as_ref());
         let people = self.people_outcome(&rows, &cast, &out)?;
-        if self.store_identity(rev, &rows, &cast, &out, people)?.is_none() {
+        if self.store_identity(rev, &rows, &cast, &out, people, &[])?.is_none() {
             return Ok(false);
         }
         tracing::info!(tracks = cast.tracks.len(), ms = started.elapsed().as_millis() as u64, "faces placed again");
@@ -777,8 +807,8 @@ impl Project {
 
     /// Store an identity outcome made at cast revision `rev`, new characters
     /// included, and with `people` who the bodies are (and the faces they
-    /// named). The number of characters, or `None` when the cast changed
-    /// since (nothing is stored then).
+    /// named), and `meta` in the same write. The number of characters, or
+    /// `None` when the cast changed since (nothing is stored then).
     fn store_identity(
         &self,
         rev: i64,
@@ -786,6 +816,7 @@ impl Project {
         cast: &IdentityInput,
         out: &Outcome,
         people: Option<(Vec<as_db::IdentityBody>, as_identity::bodies::BodyOutcome)>,
+        meta: &[(&str, &str)],
     ) -> ProjectResult<Option<usize>> {
         let ids: Vec<CharacterId> =
             out.characters.iter().map(|c| c.key.map_or_else(CharacterId::new, |k| cast.existing[k as usize])).collect();
@@ -822,7 +853,7 @@ impl Project {
         let bodies = people.as_ref().map(|(b, o)| crate::bodies::body_updates(b, o, &ids)).unwrap_or_default();
         let joined: Vec<(CharacterId, CharacterId)> =
             out.absorbed.iter().map(|&(k, c)| (cast.existing[k as usize], ids[c])).collect();
-        if !self.db().apply_identity(rev, &new, &updates, &bodies, &joined)? {
+        if !self.db().apply_identity_noting(rev, &new, &updates, &bodies, &joined, meta)? {
             return Ok(None);
         }
         if !joined.is_empty() {
@@ -1154,6 +1185,30 @@ pub(crate) mod tests {
         assert_eq!(project.missing_portraits().unwrap(), [track]);
         project.portraits.lock().failed.insert(portrait);
         assert!(project.missing_portraits().unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_cast_keeps_the_space_it_was_grouped_in() {
+        let frames = 400;
+        let (_dir, project, id) = project_with_media(frames);
+        let faces = [seen(1, 0, 0, 90, 0.0), seen(2, 0, 0, 90, 0.6), seen(1, 100, 100, 190, 0.0)];
+        project.store_face_chunk(id, 0, frames, &tracks::encode(&faces), &[], &[]).unwrap();
+        project.finish_faces(id).unwrap();
+        project.recluster().unwrap();
+        let stored =
+            || project.db().meta(GROUPED_IN).unwrap().and_then(|h| unhex(&h)).and_then(|b| Space::from_bytes(&b));
+        // Live action: ArcFace's own space.
+        assert_eq!(stored(), Some(Space::Faces));
+        let bytes: Vec<u8> = (0..=255).collect();
+        assert_eq!(unhex(&hex(&bytes)), Some(bytes));
+        assert_eq!((unhex("abc"), unhex("zz")), (None, None));
+        // Damaged or missing, a decision still places the faces (fitted again).
+        project.db().set_meta(GROUPED_IN, "zz").unwrap();
+        project.reassign().unwrap();
+        project.db().delete_meta(GROUPED_IN).unwrap();
+        project.reassign().unwrap();
+        project.recluster().unwrap();
+        assert_eq!(stored(), Some(Space::Faces));
     }
 
     #[test]

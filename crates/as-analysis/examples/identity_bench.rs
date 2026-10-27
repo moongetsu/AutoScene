@@ -315,7 +315,7 @@ fn chars(tracks: &[FaceTrack], labels_path: &str) {
     let labels = read_labels(labels_path);
     let truth_name = names_of(tracks, &labels);
     let input = input(tracks);
-    let o = identify(&input, &Params::default());
+    let o = identify(&input, &env_params());
     let got = members(&o);
     let n = o.characters.len();
     let secs = |ids: &[usize]| ids.iter().map(|&i| (tracks[i].end - tracks[i].start) as f64).sum::<f64>() / FPS;
@@ -768,8 +768,20 @@ fn stress(tracks: &[FaceTrack], labels_path: &str) {
         total.2 += m;
         println!("{what:44} {:3} characters, {s} split, {m} merged {}", o.characters.len(), notes.join("; "));
     };
-    let p = Params::default();
+    let p = env_params();
     run("as found", &base, &names, &frames, &p);
+    // The person with the most clear faces (Walter in Breaking Bad).
+    let lead: &str = {
+        let mut by: HashMap<&str, usize> = HashMap::new();
+        for (i, n) in names.iter().enumerate() {
+            if let Some(n) = n.filter(|n| !matches!(*n, "?" | "x"))
+                && base[i].quality >= 0.6
+            {
+                *by.entry(n).or_default() += 1;
+            }
+        }
+        by.into_iter().max_by_key(|&(n, c)| (c, std::cmp::Reverse(n))).map_or("?", |(n, _)| n)
+    };
 
     // Mirror copies: a face shown twice at once (another place, cos 0.5–0.75).
     for seed in 1..=6u64 {
@@ -798,11 +810,8 @@ fn stress(tracks: &[FaceTrack], labels_path: &str) {
     for (seed, (own, glass)) in [(0.55f32, 0.6f32), (0.55, 0.75), (0.53, 0.75), (0.65, 0.5)].into_iter().enumerate() {
         let mut rng = Rng(77 + seed as u64);
         let (mut ins, mut nm, mut fr) = (base.clone(), names.clone(), frames.clone());
-        let theirs: Vec<usize> = (0..base.len())
-            .filter(|&i| names[i] == Some("walter") && base[i].quality >= 0.6)
-            .skip(10)
-            .take(8)
-            .collect();
+        let theirs: Vec<usize> =
+            (0..base.len()).filter(|&i| names[i] == Some(lead) && base[i].quality >= 0.6).skip(10).take(8).collect();
         let mirror: Vec<f32> = copy_of(&mut rng, &base[theirs[0]].embedding, 0.0);
         let rest = (1.0 - own * own - glass * glass).max(0.0).sqrt();
         let mut sims = Vec::new();
@@ -816,7 +825,7 @@ fn stress(tracks: &[FaceTrack], labels_path: &str) {
             let mut t = base[i].clone();
             t.embedding = e;
             ins.push(t);
-            nm.push(Some("walter"));
+            nm.push(Some(lead));
             fr.push(frames[i]);
         }
         let mean = sims.iter().sum::<f32>() / sims.len() as f32;
@@ -1055,6 +1064,41 @@ fn norms(reference: &[FaceTrack], other: &[FaceTrack], floor: f32, full: f32) {
     );
 }
 
+/// Default parameters, with experiments from the environment.
+fn env_params() -> Params {
+    let mut p = Params::default();
+    let var = |k: &str| std::env::var(k).ok().map(|v| v.parse::<f32>().unwrap());
+    if let Some(v) = var("CALIBRATE_FROM") {
+        p.calibrate_from = v as usize;
+    }
+    if let Some(v) = var("MIN_COH") {
+        p.min_cohesion = v;
+    }
+    if let Some(v) = var("LINK") {
+        p.link = v;
+    }
+    let knobs: [(&str, &mut f32); 7] = [
+        ("ASSIGN", &mut p.assign),
+        ("MARGIN", &mut p.margin),
+        ("UNSURE", &mut p.unsure),
+        ("COPY_LINK", &mut p.copy_link),
+        ("COPY_ALIKE", &mut p.copy_alike),
+        ("COPY_SHARE", &mut p.copy_share),
+        ("INHERIT", &mut p.inherit),
+    ];
+    for (k, f) in knobs {
+        if let Some(v) = var(k) {
+            *f = v;
+        }
+    }
+    p.animated = std::env::var_os("ANIMATED").is_some();
+    p.adapt = std::env::var_os("ADAPT").is_none_or(|v| v != "0");
+    if let Some(v) = var("CORE_QUALITY") {
+        p.core_quality = v;
+    }
+    p
+}
+
 fn main() {
     let a: Vec<String> = std::env::args().skip(1).collect();
     let tracks = read_tracks(&a[1]);
@@ -1085,7 +1129,7 @@ fn main() {
         "sheets" => sheets(&tracks, Path::new(&a[2])),
         "labels" => labels(&tracks, Path::new(&a[2]), &a[3], &a[4]),
         "score" => {
-            let mut p = Params::default();
+            let mut p = env_params();
             let num = |i: usize| a.get(i).map(|s| s.parse::<f32>().unwrap());
             if let Some(v) = num(3) {
                 p.link = v;
@@ -1098,6 +1142,47 @@ fn main() {
             }
             if let Some(v) = num(6) {
                 p.unsure = v;
+            }
+            let ins = input(&tracks);
+            let fitted = p.adapt.then(|| as_identity::fit(&ins, &p)).flatten();
+            // `ZOUT=<file>`: the faces in the fitted space, as an EMB_OVERRIDE file.
+            if let (Some(path), Some((f, _))) = (std::env::var_os("ZOUT"), &fitted) {
+                let z: Vec<Vec<f32>> = ins.iter().map(|t| f.embed(&t.embedding)).collect();
+                let mut b = Vec::new();
+                b.extend_from_slice(&(z.len() as u32).to_le_bytes());
+                b.extend_from_slice(&(z[0].len() as u32).to_le_bytes());
+                z.iter().flatten().for_each(|x| b.extend_from_slice(&x.to_le_bytes()));
+                std::fs::write(path, b).unwrap();
+            }
+            match fitted {
+                Some((f, st)) => println!(
+                    "fitted space: strangers {} alike {:.5} share {:.4} | seeds: bar {:.5} tracks {} groups {} | pairs same {} other {} | k {} weight {:.4} tail {:.5} → link = unsure {:.5} copy_link {:.5} copy_alike {:.5}",
+                    st.strangers,
+                    st.alike,
+                    st.share,
+                    st.seed_bar,
+                    st.seed_tracks,
+                    st.seed_groups,
+                    st.same_pairs,
+                    st.other_pairs,
+                    f.k,
+                    f.weight,
+                    st.tail,
+                    f.link,
+                    f.copy_link,
+                    f.copy_alike
+                ),
+                None => {
+                    let f = p.fitted(&ins);
+                    println!(
+                        "strangers alike {:?} → link {:.3} assign {:.3} unsure {:.3} cohesion {:.3}",
+                        as_identity::strangers(&ins, &p),
+                        f.link,
+                        f.assign,
+                        f.unsure,
+                        f.min_cohesion
+                    );
+                }
             }
             score(&tracks, &a[2], &p, std::env::var_os("DETAIL").is_some())
         }

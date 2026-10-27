@@ -740,6 +740,20 @@ impl ProjectDb {
         bodies: &[crate::BodyUpdate],
         joined: &[(CharacterId, CharacterId)],
     ) -> DbResult<bool> {
+        self.apply_identity_noting(rev, new_characters, tracks, bodies, joined, &[])
+    }
+
+    /// [`Self::apply_identity`], storing `meta` (what the clustering was made
+    /// with) with it: both or neither.
+    pub fn apply_identity_noting(
+        &self,
+        rev: i64,
+        new_characters: &[CharacterId],
+        tracks: &[TrackUpdate],
+        bodies: &[crate::BodyUpdate],
+        joined: &[(CharacterId, CharacterId)],
+        meta: &[(&str, &str)],
+    ) -> DbResult<bool> {
         self.0.write(|tx| {
             if rev_of(tx)? != rev {
                 return Ok(false);
@@ -771,6 +785,12 @@ impl ProjectDb {
             }
             drop_empty_characters(tx)?;
             bump_rev(tx)?;
+            for (key, value) in meta {
+                tx.execute(
+                    "INSERT INTO meta (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    [key, value],
+                )?;
+            }
             Ok(true)
         })
     }

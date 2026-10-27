@@ -13,6 +13,43 @@ pub const MAX_GAP: u32 = 8;
 pub const FPS: f64 = 24000.0 / 1001.0;
 
 pub fn input(tracks: &[FaceTrack]) -> Vec<TrackIn> {
+    let mut v = input_raw(tracks);
+    // Experiment: `CL_CAP=<cos>` drops the same-frame cannot-link of two
+    // tracks at least this alike (the frames they share leave the smaller).
+    if let Some(cap) = std::env::var("CL_CAP").ok().and_then(|s| s.parse::<f32>().ok()) {
+        let mut at: HashMap<u32, Vec<usize>> = HashMap::new();
+        for (i, t) in v.iter().enumerate() {
+            for &f in &t.seen {
+                at.entry(f).or_default().push(i);
+            }
+        }
+        let mut drop: HashMap<usize, Vec<u32>> = HashMap::new();
+        let mut pairs = std::collections::HashSet::new();
+        for (&f, ids) in &at {
+            for (k, &a) in ids.iter().enumerate() {
+                for &b in &ids[k + 1..] {
+                    let s: f32 = v[a].embedding.iter().zip(&v[b].embedding).map(|(x, y)| x * y).sum();
+                    if s >= cap {
+                        let small = if v[a].dets <= v[b].dets { a } else { b };
+                        drop.entry(small).or_default().push(f);
+                        pairs.insert((a.min(b), a.max(b)));
+                    }
+                }
+            }
+        }
+        for (i, fs) in drop {
+            // Never all of them: no frames means "unknown", and the spans
+            // would stand in (cannot-links with everyone on screen).
+            if v[i].seen.iter().any(|f| !fs.contains(f)) {
+                v[i].seen.retain(|f| !fs.contains(f));
+            }
+        }
+        eprintln!("CL_CAP {cap}: dropped {} same-frame pairs", pairs.len());
+    }
+    v
+}
+
+fn input_raw(tracks: &[FaceTrack]) -> Vec<TrackIn> {
     tracks
         .iter()
         .map(|t| TrackIn {
@@ -44,8 +81,25 @@ pub fn members(o: &as_identity::Outcome) -> Vec<Option<usize>> {
     o.tracks.iter().map(|(a, _)| a.character()).collect()
 }
 
+/// The tracks of a `.tracks` file. `EMB_OVERRIDE=<file>` swaps their
+/// embeddings for others (any length, made unit length): `u32 n, u32 dim`,
+/// then `n × dim` f32, little-endian, in the tracks' order — to try another
+/// embedder (or several fused) on the same tracks.
 pub fn read_tracks(path: &str) -> Vec<FaceTrack> {
-    tracks::decode(&std::fs::read(path).expect("tracks file")).expect("readable tracks")
+    let mut out = tracks::decode(&std::fs::read(path).expect("tracks file")).expect("readable tracks");
+    if let Some(over) = std::env::var_os("EMB_OVERRIDE") {
+        let b = std::fs::read(over).expect("embedding override");
+        let word = |i: usize| u32::from_le_bytes(b[4 * i..4 * i + 4].try_into().unwrap());
+        let (n, dim) = (word(0) as usize, word(1) as usize);
+        assert_eq!(n, out.len(), "one embedding per track");
+        for (k, t) in out.iter_mut().enumerate() {
+            let mut e: Vec<f32> = (0..dim).map(|j| f32::from_bits(word(2 + k * dim + j))).collect();
+            let len = e.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-9);
+            e.iter_mut().for_each(|x| *x /= len);
+            t.embedding = e;
+        }
+    }
+    out
 }
 
 pub struct Label {

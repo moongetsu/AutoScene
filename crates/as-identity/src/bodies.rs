@@ -330,6 +330,7 @@ mod tests {
             characters: (0..chars).map(|k| CharacterOut { key: Some(k as u32 + 10), centroid: vec![1.0] }).collect(),
             tracks: assign.iter().map(|&a| (a, 0.5)).collect(),
             absorbed: vec![],
+            space: crate::Space::Faces,
         }
     }
 

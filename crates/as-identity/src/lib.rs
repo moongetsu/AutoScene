@@ -21,8 +21,12 @@
 //! After a decision the cast needn't be grouped again: [`reassign`] keeps
 //! every character's members and runs step 3 for the other tracks.
 //!
+//! Animation: to ArcFace every character of one style looks alike, so the
+//! face space itself is fitted to the footage first (see `adapt`).
+//!
 //! Pure computation; the project layer loads tracks and stores the result.
 
+mod adapt;
 mod ahc;
 pub mod bodies;
 pub mod metrics;
@@ -30,6 +34,7 @@ mod proto;
 
 use std::collections::{HashMap, HashSet};
 
+pub use adapt::{Fit, FitStats, MIN_STRANGERS, Space, fit};
 pub use ahc::cluster;
 
 /// A character as the caller knows it (index into its own list).
@@ -38,8 +43,10 @@ pub type CharKey = u32;
 /// How faces are grouped into characters, as a number: raised when
 /// [`identify`] groups differently enough that a cast grouped before should
 /// be grouped again (the user's decisions stay). 2: one person seen twice
-/// at once (a mirror, a screen, a face found twice) is no longer two.
-pub const VERSION: u32 = 2;
+/// at once (a mirror, a screen, a face found twice) is no longer two. 3:
+/// the similarity bars fit how alike strangers look (animation). 4: in
+/// animation the face space itself is fitted to the footage.
+pub const VERSION: u32 = 4;
 
 #[derive(Clone, Debug)]
 pub struct TrackIn {
@@ -106,6 +113,17 @@ pub struct Params {
     /// screen) and no character of its own.
     pub copy_together: f32,
     pub copy_alike: f32,
+    /// With at least this many pairs of clear faces seen at once, the
+    /// similarity bars are fitted to how alike strangers look here (see
+    /// [`Params::fitted`]).
+    pub calibrate_from: usize,
+    /// The user said the footage is (3D) animation: the bars (and the face
+    /// space) are fitted to its strangers however little alike they look,
+    /// not only from 0.15 on.
+    pub animated: bool,
+    /// Fit the face space to footage that looks like animation (see
+    /// [`fit`]); off, only the bars are fitted ([`Params::fitted`]).
+    pub adapt: bool,
 }
 
 impl Default for Params {
@@ -135,6 +153,9 @@ impl Default for Params {
             copy_share: 0.15,
             copy_together: 0.8,
             copy_alike: 0.5,
+            calibrate_from: 50,
+            animated: false,
+            adapt: true,
         }
     }
 }
@@ -179,6 +200,9 @@ pub struct Outcome {
     /// grouped as one now. Only [`identify`] groups; the caller keeps the
     /// old one's scenepack for it.
     pub absorbed: Vec<(CharKey, usize)>,
+    /// How faces were compared (similarities and centroids are in it). The
+    /// caller keeps it for [`reassign`].
+    pub space: Space,
 }
 
 impl TrackIn {
@@ -343,8 +367,84 @@ fn cohesion(tracks: &[TrackIn], g: &[usize]) -> f32 {
     (s2 - w2) / (w * w - w2).max(1e-9)
 }
 
+/// How alike two different people's faces look in these tracks: the
+/// median similarity of clear faces found in the same frame (two faces at
+/// once are two people but for the odd reflection). About 0.02 – 0.04 for
+/// actors; ArcFace learned real faces, and to it the characters of one
+/// animated film (3D or drawn) are first of all faces in one style — 0.22
+/// on a Miraculous film, whose characters resemble each other more than
+/// many actors resemble themselves. `None` with fewer than
+/// `p.calibrate_from` such pairs.
+pub fn strangers(tracks: &[TrackIn], p: &Params) -> Option<f32> {
+    let clear = |t: &TrackIn| t.quality >= p.core_quality && t.dets >= p.core_dets;
+    let mut at: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+    for (i, t) in tracks.iter().enumerate().filter(|(_, t)| clear(t)) {
+        for &f in &t.seen {
+            at.entry((t.media, f)).or_default().push(i);
+        }
+    }
+    let mut pairs: HashSet<(usize, usize)> = HashSet::new();
+    for v in at.values() {
+        for (k, &a) in v.iter().enumerate() {
+            pairs.extend(v[k + 1..].iter().map(|&b| (a.min(b), a.max(b))));
+        }
+    }
+    if pairs.len() < p.calibrate_from.max(1) {
+        return None;
+    }
+    let dot = |a: &[f32], b: &[f32]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>();
+    let mut sims: Vec<f32> = pairs
+        .into_iter()
+        .map(|(a, b)| dot(&tracks[a].embedding, &tracks[b].embedding))
+        .filter(|s| s.is_finite())
+        .collect();
+    if sims.len() < p.calibrate_from.max(1) {
+        return None;
+    }
+    sims.sort_by(f32::total_cmp);
+    Some(sims[sims.len() / 2])
+}
+
+impl Params {
+    /// These parameters for faces whose strangers look `alike` (see
+    /// [`strangers`]): every similarity bar moves up as if `alike` were 0,
+    /// `s ↦ (s − alike) / (1 − alike)`. Parameters are set for actors, whose
+    /// strangers are near 0, so they change little there.
+    pub fn for_strangers(&self, alike: f32) -> Params {
+        let o = alike.clamp(0.0, 0.5);
+        let up = |t: f32| t + o * (1.0 - t);
+        Params {
+            link: up(self.link),
+            assign: up(self.assign),
+            margin: self.margin * (1.0 - o),
+            unsure: up(self.unsure),
+            copy_link: up(self.copy_link),
+            copy_alike: up(self.copy_alike),
+            ..*self
+        }
+    }
+
+    /// These parameters fitted to `tracks` (see [`Params::for_strangers`]):
+    /// as they are for strangers up to 0.05 alike (actors), fully moved from
+    /// 0.15 on (animation), in between in part; fully moved however alike
+    /// they are when the footage is known to be [`Params::animated`]. One
+    /// fit for the whole project: one mixing live action with animation
+    /// gets the bars of what most of its faces seen together are.
+    pub fn fitted(&self, tracks: &[TrackIn]) -> Params {
+        let share = |s: f32| if self.animated { 1.0 } else { ((s - 0.05) / 0.10).clamp(0.0, 1.0) };
+        strangers(tracks, self).map_or(*self, |s| self.for_strangers(s * share(s)))
+    }
+}
+
 /// Group `tracks` into characters.
 pub fn identify(tracks: &[TrackIn], p: &Params) -> Outcome {
+    match p.adapt.then(|| fit(tracks, p)).flatten() {
+        Some((f, _)) => Outcome { space: Space::Fitted(f.clone()), ..identify_in(&f.tracks(tracks), &f.params(p)) },
+        None => identify_in(tracks, &p.fitted(tracks)),
+    }
+}
+
+fn identify_in(tracks: &[TrackIn], p: &Params) -> Outcome {
     let n = tracks.len();
     // A track the user said "not them" about doesn't shape any group: it
     // would drag the rest of its person away from that character.
@@ -442,8 +542,22 @@ pub fn identify(tracks: &[TrackIn], p: &Params) -> Outcome {
 /// every other track joins the character it clearly resembles now. No
 /// character is made or merged, and a pin never moves. A member the user
 /// said isn't them stops shaping the character, so faces that only
-/// resembled that one leave with it.
-pub fn reassign(tracks: &[TrackIn], members: &[(CharKey, Vec<usize>)], p: &Params) -> Outcome {
+/// resembled that one leave with it. Faces are compared in the `space` the
+/// grouping used (`None`: unknown, fitted again as [`identify`] does).
+pub fn reassign(tracks: &[TrackIn], members: &[(CharKey, Vec<usize>)], p: &Params, space: Option<&Space>) -> Outcome {
+    let fitted = match space {
+        Some(s) => Some(s.clone()),
+        None => p.adapt.then(|| fit(tracks, p)).flatten().map(|(f, _)| Space::Fitted(f)),
+    };
+    match fitted {
+        Some(Space::Fitted(f)) => {
+            Outcome { space: Space::Fitted(f.clone()), ..reassign_in(&f.tracks(tracks), members, &f.params(p)) }
+        }
+        _ => reassign_in(tracks, members, &p.fitted(tracks)),
+    }
+}
+
+fn reassign_in(tracks: &[TrackIn], members: &[(CharKey, Vec<usize>)], p: &Params) -> Outcome {
     let n = tracks.len();
     let mut member = vec![false; n];
     let mut chars: Vec<(Vec<usize>, Option<CharKey>)> = Vec::with_capacity(members.len());
@@ -525,7 +639,7 @@ fn place(tracks: &[TrackIn], chars: &[(Vec<usize>, Option<CharKey>)], loose: Vec
             out[i] = (Assign::None, 0.0);
         }
     }
-    Outcome { characters, tracks: out, absorbed: Vec::new() }
+    Outcome { characters, tracks: out, absorbed: Vec::new(), space: Space::Faces }
 }
 
 /// How much each of `loose` resembles each character it may be (best
