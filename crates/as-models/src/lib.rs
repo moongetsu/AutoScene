@@ -111,6 +111,11 @@ pub mod ids {
 
 /// Name lookup, connecting and the response headers each get this long.
 const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// Cap on a small fixed-size read a zip-member fetch needs before the
+/// member body streams (tail, central directory, local header). A socket
+/// that goes quiet mid-body would otherwise hang an analysis for good:
+/// these few-megabyte reads never pass through [`stream`]'s stall polling.
+const PREAMBLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
 /// A download that receives nothing for this long fails (and resumes later).
 const STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
@@ -226,13 +231,17 @@ impl ModelStore {
         progress: &mut dyn FnMut(u64, u64),
     ) -> ModelResult<(PathBuf, String)> {
         let fail = |e: String| ModelError::Download(format!("{} in {}: {e}", m.id, m.url));
-        let total = remote_len(agent, &m.url)?;
+        if cancel.is_cancelled() {
+            return Err(ModelError::Cancelled);
+        }
+        let preamble = preamble_agent();
+        let total = remote_len(&preamble, &m.url)?;
         let tail_start = total - zip::TAIL.min(total);
-        let tail = get_range(agent, &m.url, tail_start, total - tail_start)?;
+        let tail = get_range(&preamble, &m.url, tail_start, total - tail_start)?;
         let (offset, size) = zip::directory(&tail).map_err(fail)?;
         let dir = match offset.checked_sub(tail_start) {
             Some(at) if offset + size <= total => tail[at as usize..(at + size) as usize].to_vec(),
-            _ => get_range(agent, &m.url, offset, size)?,
+            _ => get_range(&preamble, &m.url, offset, size)?,
         };
         let entry = zip::find(&dir, member).map_err(fail)?;
         if entry.size != m.size {
@@ -248,7 +257,7 @@ impl ModelStore {
                 m.id, m.url, entry.compressed, m.size
             )));
         }
-        let local = get_range(agent, &m.url, entry.header, zip::LOCAL_LEN)?;
+        let local = get_range(&preamble, &m.url, entry.header, zip::LOCAL_LEN)?;
         let data = entry.header + zip::data_offset(&local).map_err(fail)?;
 
         let mut have = fs::metadata(part).map(|md| md.len()).unwrap_or(0);
@@ -334,6 +343,19 @@ fn agent() -> ureq::Agent {
         .timeout_connect(Some(CONNECT_TIMEOUT))
         .timeout_send_request(Some(CONNECT_TIMEOUT))
         .timeout_recv_response(Some(CONNECT_TIMEOUT))
+        .https_only(true)
+        .build()
+        .into()
+}
+
+/// For small fixed-size reads (zip tail, central directory, local header):
+/// `agent()` bounds the connect and the response header but not the body —
+/// the model body is big and is stall-polled by [`stream`], while these
+/// reads need one end-to-end cap instead.
+fn preamble_agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(PREAMBLE_TIMEOUT))
+        .https_only(true)
         .build()
         .into()
 }
