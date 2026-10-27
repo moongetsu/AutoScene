@@ -4,7 +4,9 @@
 //! (≈ 800 fps for 1080p H.264 at 48×27 on 16 threads, faster than the GPU
 //! decoder plus download), it is exactly what exports decode, and it is
 //! bit-for-bit repeatable — a run resumed at frame K sees the same pixels a
-//! full run saw from K on.
+//! full run saw from K on. A pass that looks at few frames of heavy sources
+//! (4K HEVC) can have them decoded and scaled on an NVIDIA GPU instead
+//! ([`Decoder::Nvdec`]): the same decoder for a run and its resumption.
 
 use std::io::{BufReader, Read};
 use std::process::Stdio;
@@ -31,7 +33,7 @@ pub fn decode_rgb(
     on_frame: impl FnMut(FrameIdx, &[u8]) -> MediaResult<bool>,
 ) -> MediaResult<u32> {
     let chain = [format!("scale={w}:{h}:flags=bicubic"), "format=rgb24".into()];
-    decode_raw(tools, src, from, 1, &chain, (w * h * 3) as usize, cancel, on_frame).map(|(n, _)| n)
+    decode_raw(tools, src, from, 1, &[], &chain, (w * h * 3) as usize, cancel, on_frame).map(|(n, _)| n)
 }
 
 /// Size (even, square pixels, upright) at which [`decode_samples`] delivers
@@ -72,12 +74,81 @@ pub fn decode_samples(
     }
     chain.push(format!("scale={w}:{h}:flags=bilinear,setsar=1"));
     chain.push("format=rgb24".into());
-    decode_raw(tools, src, from, step, &chain, (w * h * 3) as usize, cancel, on_frame).map(|(n, _)| n)
+    decode_raw(tools, src, from, step, &[], &chain, (w * h * 3) as usize, cancel, on_frame).map(|(n, _)| n)
+}
+
+/// Where [`decode_samples_with`] decodes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Decoder {
+    /// In software, as [`decode_samples`] does.
+    #[default]
+    Cpu,
+    /// On an NVIDIA GPU (NVDEC), scaled there; only the samples come down.
+    /// Every 6th frame of a 4K HEVC film: 500 fps on an RTX 3060 Ti, 230 in
+    /// software on 16 threads (which a busy CPU slows down further). Sources
+    /// it doesn't suit (interlaced, HDR, rotated) are decoded in software.
+    Nvdec,
+}
+
+/// Whether NVDEC can decode `info` the way [`decode_samples`] would: its
+/// deinterlacing, tone mapping and rotation run in software.
+fn nvdec_suits(info: &MediaInfo) -> bool {
+    !info.is_interlaced() && info.video.hdr == HdrKind::None && info.video.rotation == 0
+}
+
+/// [`decode_samples`] with `decoder`. When NVDEC can't be used or fails
+/// part way (no NVIDIA GPU, a codec it doesn't take, a lost device), the
+/// samples from the first one not delivered on are decoded in software
+/// (trying costs a moment: the decoder fails as it starts). A run and its
+/// resumption see the same pixels as long as they decode the same way; one
+/// that fell back, or a resumption on a machine where the GPU decoder
+/// changed, may differ slightly in its later chunks.
+#[allow(clippy::too_many_arguments)]
+pub fn decode_samples_with(
+    tools: &Tools,
+    src: Source,
+    from: FrameIdx,
+    step: u32,
+    (w, h): (u32, u32),
+    decoder: Decoder,
+    cancel: &CancelToken,
+    mut on_frame: impl FnMut(FrameIdx, &[u8]) -> MediaResult<bool>,
+) -> MediaResult<u32> {
+    assert!(step > 0);
+    if decoder == Decoder::Cpu || !nvdec_suits(src.info) {
+        return decode_samples(tools, src, from, step, (w, h), cancel, on_frame);
+    }
+    let mut chain: Vec<String> = Vec::new();
+    if step > 1 {
+        chain.push(format!("select='not(mod(n,{step}))'"));
+    }
+    chain.push(format!("scale_cuda={w}:{h}:interp_algo=bilinear:format=yuv420p"));
+    chain.push("hwdownload,format=yuv420p,setsar=1,format=rgb24".into());
+    // A frame the GPU can't decode stops it (rather than being dropped,
+    // which would shift every later frame): software takes over from there.
+    let input = ["-xerror", "-hwaccel", "cuda", "-hwaccel_output_format", "cuda"];
+    let (mut delivered, mut refused) = (0u32, false);
+    let gpu = decode_raw(tools, src, from, step, &input, &chain, (w * h * 3) as usize, cancel, |f, rgb| {
+        let r = on_frame(f, rgb);
+        refused |= r.is_err();
+        delivered += 1;
+        r
+    });
+    match gpu {
+        Ok((n, _)) => Ok(n),
+        // A frame count that doesn't add up is no reason to try again.
+        Err(e) if refused || e.is_cancelled() || matches!(e, MediaError::Verify(_)) => Err(e),
+        Err(e) => {
+            tracing::warn!(error = %e.detail(), delivered, "decoding on the GPU failed; decoding in software from here");
+            let next = from + delivered * step;
+            Ok(delivered + decode_samples(tools, src, next, step, (w, h), cancel, on_frame)?)
+        }
+    }
 }
 
 /// Shared decoder: `-ss` pre-roll, deinterlacing (when the source needs it),
 /// `trim` to frame `from`, then `chain`; the k-th raw frame out is frame
-/// `from + k·step`. Deinterlacing runs before the trim so it sees the frames
+/// `from + k·step`. `input`: options for decoding the input (`-hwaccel`). Deinterlacing runs before the trim so it sees the frames
 /// before `from` too: a run that starts mid-way produces exactly the pixels
 /// of a run from the start. Returns (frames delivered, last frame).
 #[allow(clippy::too_many_arguments)]
@@ -86,6 +157,7 @@ fn decode_raw(
     src: Source,
     from: FrameIdx,
     step: u32,
+    input: &[&str],
     chain: &[String],
     size: usize,
     cancel: &CancelToken,
@@ -109,6 +181,7 @@ fn decode_raw(
         let seek = (index.t(from) - index.t0() - PREROLL).max(0.0);
         cmd.args(["-noaccurate_seek", "-ss", &format!("{seek:.6}")]);
     }
+    cmd.args(input);
     cmd.arg("-i").arg(path);
     cmd.args(["-map", &format!("0:{}", info.video.index), "-an", "-sn", "-dn"]);
     cmd.args(["-filter:v", &filters.join(","), "-fps_mode", "passthrough", "-f", "rawvideo", "-"]);

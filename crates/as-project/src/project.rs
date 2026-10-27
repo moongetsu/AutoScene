@@ -76,7 +76,13 @@ pub struct Project {
     pub(crate) portraits: Mutex<crate::cast::PortraitWork>,
     /// The library's setting: people are followed by their bodies too.
     find_bodies: Arc<AtomicBool>,
+    /// Its faces are found with Fast Scan (meta [`SCAN`]).
+    fast_scan: AtomicBool,
 }
+
+/// How a project's faces are found (`fast`: Fast Scan; unset: in full).
+const SCAN: &str = "scan";
+const FAST: &str = "fast";
 
 impl Project {
     pub(crate) fn create(s: &ProjectSummary, find_bodies: Arc<AtomicBool>) -> ProjectResult<Self> {
@@ -93,6 +99,9 @@ impl Project {
         ] {
             db.set_meta(k, &v)?;
         }
+        if s.fast_scan {
+            db.set_meta(SCAN, FAST)?;
+        }
         let p = Self {
             id: s.id,
             dir,
@@ -103,6 +112,7 @@ impl Project {
             posters: Mutex::default(),
             portraits: Mutex::default(),
             find_bodies,
+            fast_scan: AtomicBool::new(s.fast_scan),
         };
         p.ensure_dirs()?;
         Ok(p)
@@ -110,6 +120,7 @@ impl Project {
 
     pub(crate) fn open(id: ProjectId, dir: PathBuf, find_bodies: Arc<AtomicBool>) -> ProjectResult<Self> {
         let db = ProjectDb::open(&dir.join(PROJECT_DB))?;
+        let fast_scan = AtomicBool::new(db.meta(SCAN)?.as_deref() == Some(FAST));
         let p = Self {
             id,
             dir,
@@ -120,6 +131,7 @@ impl Project {
             posters: Mutex::default(),
             portraits: Mutex::default(),
             find_bodies,
+            fast_scan,
         };
         p.ensure_dirs()?;
         // Exports can't resume mid-way (M1): close them out. No export runs
@@ -158,9 +170,36 @@ impl Project {
 
     /// Whether characters are looked for by their bodies too (the library's
     /// setting): their bodies are found with their faces, and named after
-    /// every clustering.
+    /// every clustering. Never with Fast Scan, which looks for faces alone
+    /// (as the Scener app does).
     pub fn finds_bodies(&self) -> bool {
-        self.find_bodies.load(Ordering::Relaxed)
+        self.find_bodies.load(Ordering::Relaxed) && !self.fast_scan()
+    }
+
+    /// Whether this project's faces are found with Fast Scan (the way the
+    /// Scener app finds them; see `as_analysis::fast`).
+    pub fn fast_scan(&self) -> bool {
+        self.fast_scan.load(Ordering::Relaxed)
+    }
+
+    /// Say how this project's faces are found. Faces found the other way are
+    /// found again (see [`Project::faces_by_other_model`]), the user's
+    /// decisions on them kept. Returns whether it changed; then the cast is
+    /// grouped again by the next upkeep.
+    pub fn set_fast_scan(&self, on: bool) -> ProjectResult<bool> {
+        if self.fast_scan() == on {
+            return Ok(false);
+        }
+        // Not while the cast is being grouped (as for the footage).
+        let _one = self.clustering.lock();
+        if on {
+            self.db.set_meta(SCAN, FAST)?;
+        } else {
+            self.db.delete_meta(SCAN)?;
+        }
+        self.fast_scan.store(on, Ordering::Relaxed);
+        self.cast_grouped_for_other_footage()?;
+        Ok(true)
     }
 
     #[cfg(test)]

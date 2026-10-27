@@ -102,6 +102,11 @@ pub mod ids {
     pub const ARCFACE: &str = "arcface-glintr100";
     /// What the face pass needs.
     pub const FACES: [&str; 2] = [SCRFD, ARCFACE];
+    /// Fast Scan's detector and embedder (the Scener app's).
+    pub const YUNET: &str = "yunet-2023mar";
+    pub const SFACE: &str = "sface-2021dec";
+    /// What the Fast Scan face pass needs.
+    pub const FAST_FACES: [&str; 2] = [YUNET, SFACE];
     /// People (their whole bodies), and how they look (clothes, build).
     pub const PERSONS: &str = "person-ppyoloe";
     pub const PERSON_REID: &str = "person-reid-0277";

@@ -236,8 +236,11 @@ pub(crate) fn whitening(mut cs: Mat<f64>, cd: &Mat<f64>) -> Option<Mat<f64>> {
     if trace.is_nan() || trace <= 0.0 {
         return None;
     }
+    // Its share of the mean spread of the dimensions faces vary in (an
+    // embedder smaller than the tracks' format leaves the rest at zero).
+    let live = (0..dim).filter(|&i| cs[(i, i)] > 0.0).count().max(1);
     for i in 0..dim {
-        cs[(i, i)] += RIDGE * trace / dim as f64;
+        cs[(i, i)] += RIDGE * trace / live as f64;
     }
     let es = cs.self_adjoint_eigen(Side::Lower).ok()?;
     let (u, l) = (es.U(), es.S().column_vector());
@@ -333,7 +336,7 @@ pub fn fit(tracks: &[TrackIn], p: &Params) -> Option<(Fit, FitStats)> {
     let mut sorted = raw.clone();
     sorted.sort_by(f32::total_cmp);
     let alike = sorted[sorted.len() / 2];
-    let share = if p.animated { 1.0 } else { ((alike - 0.05) / 0.10).clamp(0.0, 1.0) };
+    let share = p.style_share(alike);
     stats.strangers = pairs.len();
     stats.alike = alike;
     stats.share = share;

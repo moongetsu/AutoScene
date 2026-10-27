@@ -13,14 +13,15 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use as_analysis::{
-    AnalysisError, BodyModels, DETECT_BATCH, FaceParams, Faces, Look, PERSON_INPUT, PeopleParams, Search, bodies,
-    detect_looks, face_tracks, frame_sizes, shot_signals, signals, tracks,
+    AnalysisError, BodyModels, DETECT_BATCH, FaceParams, Faces, FastModels, FastParams, Look, PERSON_INPUT,
+    PeopleParams, Search, bodies, detect_looks, face_tracks, fast, fast_face_tracks, frame_sizes, shot_signals,
+    signals, tracks,
 };
 use as_core::{CancelToken, FrameIndex, FrameRange};
 use as_infer::{Device, Runtime};
 use as_media::{Source, Tools};
 use as_models::ModelStore;
-use as_vision::{ArcFace, Fit, Norm, PersonReid, PpDet, Scrfd, TransNet};
+use as_vision::{ArcFace, Fit, Norm, PersonReid, PpDet, SFace, Scrfd, TransNet, YuNet};
 use parking_lot::Mutex;
 
 use crate::protocol::{Blob, FacesJob, Reply, Request, ShotsJob, Sprite};
@@ -29,6 +30,10 @@ use crate::protocol::{Blob, FacesJob, Reply, Request, ShotsJob, Sprite};
 const EMBED_BATCH: usize = 32;
 /// People per appearance (ReID) call.
 const REID_BATCH: usize = 32;
+/// Fast Scan: frames per YuNet call (it looks at one frame at a time, and
+/// decides from what it found where to look next) and faces per SFace call.
+const FAST_DETECT_BATCH: usize = 1;
+const FAST_EMBED_BATCH: usize = 16;
 
 /// How the engine finds its runtime, models and tools.
 #[derive(Clone, Debug)]
@@ -95,6 +100,8 @@ pub fn serve(cfg: Config, input: impl BufRead + Send + 'static, output: impl Wri
         arcface: None,
         persons: None,
         person_reid: None,
+        yunet: None,
+        sface: None,
     };
     loop {
         let next = match cfg.idle_exit {
@@ -207,6 +214,9 @@ struct Models {
     arcface: Option<ArcFace>,
     persons: Option<PpDet>,
     person_reid: Option<PersonReid>,
+    /// Fast Scan's detector, planned for the last media's frame size, and embedder.
+    yunet: Option<YuNet>,
+    sface: Option<SFace>,
 }
 
 impl Models {
@@ -214,6 +224,7 @@ impl Models {
         (self.transnet, self.arcface) = (None, None);
         self.scrfd.clear();
         (self.persons, self.person_reid) = (None, None);
+        (self.yunet, self.sface) = (None, None);
     }
 
     fn path(&self, id: &str) -> Result<PathBuf, AnalysisError> {
@@ -241,6 +252,19 @@ impl Models {
         }
         if self.arcface.is_none() {
             self.arcface = Some(ArcFace::load(rt, &self.path(as_models::ids::ARCFACE)?, EMBED_BATCH)?);
+        }
+        Ok(())
+    }
+
+    /// Load Fast Scan's models, the detector planned for `size` frames.
+    fn load_fast(&mut self, rt: &Runtime, size: (usize, usize)) -> Result<(), AnalysisError> {
+        if self.yunet.as_ref().is_none_or(|d| d.frame_size() != size) {
+            self.yunet = None;
+            let path = self.path(as_models::ids::YUNET)?;
+            self.yunet = Some(YuNet::load(rt, &path, size, FAST_DETECT_BATCH)?);
+        }
+        if self.sface.is_none() {
+            self.sface = Some(SFace::load(rt, &self.path(as_models::ids::SFACE)?, FAST_EMBED_BATCH)?);
         }
         Ok(())
     }
@@ -314,6 +338,9 @@ fn run_faces(
     cancel: &CancelToken,
     out: &Out,
 ) -> Result<(), AnalysisError> {
+    if job.fast {
+        return run_fast_faces(tools, rt, models, job, cancel, out);
+    }
     let params = match (job.animated, rt.preferred_device()) {
         (false, _) => FaceParams::default(),
         // Searching more sizes takes four times the detector's time: on the
@@ -403,6 +430,65 @@ fn run_faces(
     let frames = index.len().saturating_sub(job.resume);
     let secs = started.elapsed().as_secs_f64();
     tracing::info!(id, frames, tracks = found, people, secs, fps = frames as f64 / secs.max(1e-3), "{what} found");
+    Ok(())
+}
+
+/// A faces job with Fast Scan: faces only, found as `as_analysis::fast` does.
+fn run_fast_faces(
+    tools: &Tools,
+    rt: &Runtime,
+    models: &mut Models,
+    job: FacesJob,
+    cancel: &CancelToken,
+    out: &Out,
+) -> Result<(), AnalysisError> {
+    if job.known.is_some() || job.bodies {
+        return Err(AnalysisError::Internal("Fast Scan looks for faces alone".into()));
+    }
+    let params = FastParams::default();
+    models.load_fast(rt, fast::frame_size(&job.info, &params))?;
+    let (detector, embedder) = (models.yunet.as_mut().expect("loaded"), models.sface.as_mut().expect("loaded"));
+    let device = detector.device();
+    if embedder.device() != device {
+        tracing::warn!(detector = ?device, embedder = ?embedder.device(), "Fast Scan's models run on different devices");
+    }
+    let index = FrameIndex::from_bytes(&job.index.0).map_err(|e| AnalysisError::Internal(e.to_string()))?;
+    let shots: Vec<FrameRange> = job.shots.iter().map(|&(s, e)| FrameRange::new(s, e)).collect();
+    let started = Instant::now();
+    let id = job.id;
+    tracing::info!(id, path = %job.path.display(), resume = job.resume, ?device, "finding faces (Fast Scan)");
+    let mut found = 0usize;
+    fast_face_tracks(
+        tools,
+        Source { path: Path::new(&job.path), info: &job.info, index: &index },
+        FastModels { detector, embedder },
+        &shots,
+        job.resume,
+        job.chunk,
+        &params,
+        cancel,
+        |fraction| out.send(&Reply::Progress { id, fraction }),
+        |c| {
+            found += c.tracks.len();
+            let sprites = c
+                .sprites
+                .iter()
+                .map(|s| Sprite { shot: s.shot, end: s.end, cells: s.cells, jpeg: Blob(s.jpeg.clone()) })
+                .collect();
+            out.send(&Reply::FaceChunk {
+                id,
+                start: c.start,
+                end: c.end,
+                tracks: Blob(tracks::encode(c.tracks)),
+                sprites,
+                bodies: Blob(Vec::new()),
+            });
+            Ok(())
+        },
+    )?;
+    let frames = index.len().saturating_sub(job.resume);
+    let secs = started.elapsed().as_secs_f64();
+    tracing::info!(id, frames, tracks = found, secs, fps = frames as f64 / secs.max(1e-3), "faces found (Fast Scan)");
     Ok(())
 }
 

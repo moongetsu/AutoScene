@@ -38,6 +38,12 @@ export const commands = {
 	 */
 	projectSetContent: (projectId: ProjectId, content: ContentKind) => __TAURI_INVOKE<ProjectSummary>("project_set_content", { projectId, content }),
 	/**
+	 *  Say whether a project's faces are found with Fast Scan (the way the
+	 *  Scener app finds them). Faces found the other way are found again, the
+	 *  user's decisions on them kept, and the cast is grouped again.
+	 */
+	projectSetFastScan: (projectId: ProjectId, fastScan: boolean) => __TAURI_INVOKE<ProjectSummary>("project_set_fast_scan", { projectId, fastScan }),
+	/**
 	 *  Remove a project. `delete_files` also deletes its `.autoscene` folder
 	 *  (never the source videos or exported clips).
 	 */
@@ -236,6 +242,13 @@ export type AppSettings = {
 	 *  scenepack. Analysis takes longer; off by default.
 	 */
 	findBodies?: boolean,
+	/**
+	 *  Projects created while this is on find their faces the way the
+	 *  Scener app does (smaller models, a few frames per shot): much
+	 *  faster, less sure who is who. Each project keeps what it was created
+	 *  with (see [`ProjectSummary::fast_scan`]); off by default.
+	 */
+	fastScan?: boolean,
 };
 
 export type AudioCodec = { codec: "none" } | 
@@ -960,6 +973,8 @@ export type ProjectSummary = {
 	poster: string | null,
 	/**  The same picture small (covers 480×270), for rail tiles and lists. */
 	posterSmall: string | null,
+	/**  Its faces are found with Fast Scan (see [`AppSettings::fast_scan`]). */
+	fastScan?: boolean,
 };
 
 /**

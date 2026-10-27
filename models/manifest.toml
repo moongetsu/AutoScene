@@ -40,6 +40,29 @@ size = 260665334
 license = "InsightFace non-commercial research"
 source = "InsightFace antelopev2 glintr100 (ArcFace ResNet-100 on Glint360K), byte-identical mirror by Immich"
 
+# Fast Scan (an optional mode for new projects): the face models of the
+# Scener app's worker, byte-identical to the files it ships, from OpenCV
+# Zoo. Faster and smaller than SCRFD-10G and glintr100, less sure.
+[[model]]
+id = "yunet-2023mar"
+file = "face_detection_yunet_2023mar.onnx"
+purpose = "Face detection with five landmarks (Fast Scan)"
+url = "https://huggingface.co/opencv/face_detection_yunet/resolve/3cc26e7f1014a5ee5d74a42acee58bafc9d0a310/face_detection_yunet_2023mar.onnx"
+sha256 = "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4"
+size = 232589
+license = "MIT"
+source = "OpenCV Zoo YuNet 2023mar (Wu et al. 2023), Hugging Face opencv/face_detection_yunet"
+
+[[model]]
+id = "sface-2021dec"
+file = "face_recognition_sface_2021dec.onnx"
+purpose = "Face identity embeddings (Fast Scan)"
+url = "https://huggingface.co/opencv/face_recognition_sface/resolve/3d7082438a6e4551e840c9b2bb60b71e8da4b524/face_recognition_sface_2021dec.onnx"
+sha256 = "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79"
+size = 38696353
+license = "Apache-2.0"
+source = "OpenCV Zoo SFace 2021dec (Zhong et al. 2021), Hugging Face opencv/face_recognition_sface"
+
 # Characters who face away (an optional mode, see bench/bodies): people and
 # how they look. Both are files of InsightFace's cheetah_l package, a zip on
 # its model-zoo release that holds face models too: each is fetched alone by

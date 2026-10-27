@@ -83,6 +83,31 @@ pub async fn project_set_content(
     Ok(summary)
 }
 
+/// Say whether a project's faces are found with Fast Scan (the way the
+/// Scener app finds them). Faces found the other way are found again, the
+/// user's decisions on them kept, and the cast is grouped again.
+#[tauri::command]
+#[specta::specta]
+pub async fn project_set_fast_scan(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    project_id: ProjectId,
+    fast_scan: bool,
+) -> AppResult<ProjectSummary> {
+    let lib = state.library.clone();
+    let (summary, changed) = blocking(move || {
+        let (summary, changed) = lib.set_project_fast_scan(project_id, fast_scan)?;
+        Ok((summary, changed.then(|| lib.project(project_id)).transpose()?))
+    })
+    .await?;
+    if let Some(project) = changed {
+        work::queue_regroup(&app, &project);
+        work::queue_outdated_faces(&app, &project);
+    }
+    let _ = LibraryChanged { project_id: Some(project_id) }.emit(&app);
+    Ok(summary)
+}
+
 /// Remove a project. `delete_files` also deletes its `.autoscene` folder
 /// (never the source videos or exported clips).
 #[tauri::command]

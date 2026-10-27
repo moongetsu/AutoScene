@@ -366,6 +366,17 @@ impl ProjectDb {
         })
     }
 
+    /// The media whose faces are found, with what their tracks come from
+    /// (see [`Self::use_faces_model`]).
+    pub fn ready_faces_models(&self) -> DbResult<Vec<(MediaId, Option<String>)>> {
+        self.0.read(|c| {
+            let mut st = c.prepare("SELECT id, faces_model FROM media WHERE faces = 'ready' ORDER BY position")?;
+            let rows: Vec<(String, Option<String>)> =
+                st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<_, _>>()?;
+            rows.into_iter().map(|(id, m)| Ok((parse_id(&id)?, m))).collect()
+        })
+    }
+
     /// Media whose faces are found by another embedder than `model` (or one
     /// not recorded), left as they are.
     pub fn faces_by_other_model(&self, model: &str) -> DbResult<Vec<MediaId>> {

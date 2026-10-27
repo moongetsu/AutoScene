@@ -16,7 +16,7 @@ mod project;
 
 pub use analysis::ShotsPlan;
 pub use bodies::BodiesPlan;
-pub use cast::{FACE_CHUNK, FacesPlan, PORTRAIT, Portrait};
+pub use cast::{FACE_CHUNK, FacesPlan, PORTRAIT, Portrait, face_models};
 pub use error::{ProjectError, ProjectResult};
 pub use library::Library;
 pub use project::{Project, Recovery, RelinkedFolder};

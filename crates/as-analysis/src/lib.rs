@@ -1,10 +1,12 @@
 //! Analysis: the resumable passes over a media and what they produce —
-//! frame signals fused into shots and transitions, face tracks, and the
+//! frame signals fused into shots and transitions, face tracks (found in
+//! full or, with Fast Scan, the way the Scener app finds them), and the
 //! people around the faces (body tracks tied to them).
 
 pub mod bodies;
 pub mod body_tracker;
 pub mod faces;
+pub mod fast;
 pub mod fusion;
 pub mod link;
 pub mod pipeline;
@@ -18,6 +20,7 @@ pub use faces::{
     BodyModels, CLEAR_FACE, DETECT_BATCH, FaceChunk, FaceParams, Faces, Look, PERSON_INPUT, PeopleParams, Search,
     detect_looks, face_tracks, find_faces, frame_sizes,
 };
+pub use fast::{FastModels, FastParams, fast_face_tracks};
 pub use fusion::{FusionParams, Segment, SegmentKind, TransitionKind, fuse};
 pub use pipeline::{CHUNK, shot_signals};
 pub use portrait::{crowding, portrait_region};

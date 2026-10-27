@@ -488,3 +488,40 @@ fn proxy_keeps_every_frame_and_reports_offset() {
     let idx = build_frame_index(&tools, &path, &info, work.path(), &CancelToken::new(), |_| {}).unwrap();
     assert!(proxy::playable_direct(&info, &idx));
 }
+
+#[test]
+fn samples_decoded_on_the_gpu_are_the_frames_the_cpu_decodes() {
+    // NVDEC where there is an NVIDIA GPU (and the source suits it), the
+    // software fallback elsewhere: either way the same frames, in order.
+    use as_media::frames::{Decoder, decode_samples_with, sample_size};
+    let Some((tools, _)) = setup() else { return };
+    let work = tempfile::tempdir().unwrap();
+    for (file, from) in [("cfr24_h264.mp4", 0), ("cfr24_h264.mp4", 7), ("hevc10_hdr.mkv", 0), ("interlaced_h264.ts", 4)]
+    {
+        let path = fixtures_dir().join(file);
+        let info = probe(&tools, &path).unwrap();
+        let idx = build_frame_index(&tools, &path, &info, work.path(), &CancelToken::new(), |_| {}).unwrap();
+        let src = Source { path: &path, info: &info, index: &idx };
+        let (w, h) = sample_size(&info, (640, 640), 4);
+        let codes = |decoder| {
+            let mut out = Vec::new();
+            let n = decode_samples_with(&tools, src, from, 3, (w, h), decoder, &CancelToken::new(), |f, rgb| {
+                let luma: Vec<u8> = rgb
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
+                    .map(|p| (0.299 * f32::from(p[0]) + 0.587 * f32::from(p[1]) + 0.114 * f32::from(p[2])) as u8)
+                    .collect();
+                out.push((f, barcode::read_luma(&luma, w, h, w as usize).map(|c| c.frame)));
+                Ok(true)
+            })
+            .unwrap();
+            assert_eq!(n as usize, out.len(), "{file}");
+            out
+        };
+        let (cpu, gpu) = (codes(Decoder::Cpu), codes(Decoder::Nvdec));
+        assert_eq!(cpu.len() as u32, (idx.len() - from).div_ceil(3), "{file}: every 3rd frame from {from}");
+        assert_eq!(gpu, cpu, "{file} from {from}");
+        assert!(cpu.iter().all(|&(f, code)| code == Some(f as u16)), "{file}: each sample shows its own frame");
+    }
+}

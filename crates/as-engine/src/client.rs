@@ -99,6 +99,9 @@ pub struct FacesInput {
     /// 3D animation: faces are searched at more sizes
     /// (`as_analysis::FaceParams::animated`).
     pub animated: bool,
+    /// Fast Scan: faces are found the way the Scener app finds them
+    /// (`as_analysis::fast`); `bodies` and `animated` don't apply.
+    pub fast: bool,
 }
 
 enum Msg {
@@ -240,6 +243,7 @@ impl Engine {
                     bodies: job.bodies,
                     known: known.clone(),
                     animated: job.animated,
+                    fast: job.fast,
                 }))
             },
             |reply| match reply {

@@ -49,14 +49,25 @@ pub fn input(tracks: &[FaceTrack]) -> Vec<TrackIn> {
     v
 }
 
+/// The frames between samples and the samples a face may be missed, of
+/// the face pass the tracks come from: `GRID=<stride>,<gap>` (Fast Scan at
+/// 24 fps: `GRID=6,8`), the full pass's by default.
+pub fn grid() -> (u32, u32) {
+    std::env::var("GRID").ok().map_or((STRIDE, MAX_GAP), |v| {
+        let (s, g) = v.split_once(',').expect("GRID=<stride>,<gap>");
+        (s.parse().unwrap(), g.parse().unwrap())
+    })
+}
+
 fn input_raw(tracks: &[FaceTrack]) -> Vec<TrackIn> {
+    let (stride, max_gap) = grid();
     tracks
         .iter()
         .map(|t| TrackIn {
             media: 0,
             start: t.start,
             end: t.end,
-            spans: tracks::presence_spans(&t.dets, t.end, STRIDE, MAX_GAP),
+            spans: tracks::presence_spans(&t.dets, t.end, stride, max_gap),
             seen: t.dets.iter().map(|d| d.frame).collect(),
             embedding: t.embedding.clone(),
             quality: t.quality,

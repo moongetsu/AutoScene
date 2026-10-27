@@ -11,7 +11,7 @@ import { footageBlurb } from "@/lib/footage"
 import { commands, errorMessage } from "@/lib/ipc"
 import { FootagePicker } from "./FootagePicker"
 
-/** A project's title and what its footage is. */
+/** A project's title, what its footage is, and how its faces are found. */
 export function ProjectDetailsDialog({
   project,
   onOpenChange,
@@ -32,11 +32,15 @@ const ANIME_APART = "Anime is analysed differently from the start. Add the video
 function DetailsForm({ project, onDone }: { project: ProjectSummary; onDone: () => void }) {
   const [title, setTitle] = useState(project.title)
   const [content, setContent] = useState<ContentKind>(project.content)
+  const wasFast = project.fastScan ?? false
+  const [fast, setFast] = useState(wasFast)
   const [busy, setBusy] = useState(false)
   const retitled = title.trim() !== project.title
   const refilmed = content !== project.content
-  // 3D animation is searched for faces harder (see `Project::faces_plan`).
-  const researched = refilmed && (content === "animation" || project.content === "animation")
+  // Fast Scan finds faces with other models: they are all found again.
+  const rescanned = fast !== wasFast
+  // The full pass searches 3D animation for faces harder; Fast Scan looks the same way (see `Project::faces_plan`).
+  const researched = refilmed && !fast && !rescanned && (content === "animation" || project.content === "animation")
   const locked: Partial<Record<ContentKind, string>> =
     project.content === "anime"
       ? { live: ANIME_APART, animation: ANIME_APART, mixed: ANIME_APART }
@@ -44,18 +48,22 @@ function DetailsForm({ project, onDone }: { project: ProjectSummary; onDone: () 
   const save = async () => {
     setBusy(true)
     // The footage first: it is the one that can be refused.
-    let refilmedNow = false
+    let changedNow = false
     try {
       if (refilmed) {
         await commands.projectSetContent(project.id, content)
-        refilmedNow = true
+        changedNow = true
+      }
+      if (rescanned) {
+        await commands.projectSetFastScan(project.id, fast)
+        changedNow = true
       }
       if (retitled) await commands.projectRename(project.id, title)
       onDone()
     } catch (e) {
-      const what = refilmedNow ? "The footage changed, but the project couldn't be renamed" : "Couldn't change the project"
+      const what = changedNow ? "Some details changed, but not all of them" : "Couldn't change the project"
       toast.error(what, { description: errorMessage(e) })
-      if (refilmedNow) onDone()
+      if (changedNow) onDone()
     } finally {
       setBusy(false)
     }
@@ -84,11 +92,27 @@ function DetailsForm({ project, onDone }: { project: ProjectSummary; onDone: () 
         >
           <FootagePicker value={content} onChange={setContent} locked={locked} />
         </Field>
+        {content !== "anime" && (
+          <Field
+            label="Fast Scan"
+            htmlFor="details-fast-scan"
+            hint={
+              rescanned
+                ? "Faces are found again this way, then the characters regrouped. Your names and decisions stay."
+                : fast
+                  ? "Faces are found the way the Scener app does: much faster, less sure who is who."
+                  : "Faces are found in full: every few frames, with the larger face models."
+            }
+            className="mt-4 items-start"
+          >
+            <Switch id="details-fast-scan" checked={fast} onCheckedChange={setFast} />
+          </Field>
+        )}
         <DialogFooter>
           <Button variant="ghost" onClick={onDone}>
             Cancel
           </Button>
-          <Button type="submit" variant="primary" disabled={busy || !title.trim() || !(retitled || refilmed)}>
+          <Button type="submit" variant="primary" disabled={busy || !title.trim() || !(retitled || refilmed || rescanned)}>
             {busy && <CircleNotch className="animate-spin" />}
             Save
           </Button>

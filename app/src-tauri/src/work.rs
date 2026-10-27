@@ -213,12 +213,17 @@ fn finds_faces(project: &Project) -> bool {
     !matches!(project.content(), Ok(ContentKind::Anime))
 }
 
-/// Media whose faces another embedder found are found again: embeddings of
-/// two models can't be grouped together. Their decisions wait in
+/// Media whose faces another embedder found (another model, or the other of
+/// Fast Scan and the full pass) are found again: embeddings of two models
+/// can't be grouped together. Their decisions wait in
 /// `track_edits`. Returns them (pending now, not queued). Only call it once
 /// the current embedder is installed, so the old faces stay until then.
-fn refresh_outdated_faces(app: &AppHandle, project: &Arc<Project>) -> as_project::ProjectResult<Vec<MediaId>> {
-    let ids = project.refresh_outdated_faces(as_models::ids::ARCFACE)?;
+fn refresh_outdated_faces(
+    app: &AppHandle,
+    project: &Arc<Project>,
+    model: &str,
+) -> as_project::ProjectResult<Vec<MediaId>> {
+    let ids = project.refresh_outdated_faces(model)?;
     if !ids.is_empty() {
         let title = project.title().unwrap_or_default();
         log::info!("'{title}': {} media get their faces found with the new model", ids.len());
@@ -240,7 +245,7 @@ pub fn queue_outdated_faces(app: &AppHandle, project: &Arc<Project>) {
     if !finds_faces(project) {
         return;
     }
-    match project.faces_by_other_model(as_models::ids::ARCFACE) {
+    match project.faces_by_other_model(project.face_embedder()) {
         Ok(ids) => {
             for id in ids {
                 if project.media(id).is_ok_and(|m| m.status != as_api::MediaStatus::Missing) {
@@ -404,7 +409,9 @@ fn run_faces(
 ) -> Result<(), StageError> {
     // Faces an older embedder found (anywhere in the project) are found
     // again before this pass adds new ones.
-    let outdated = project.faces_by_other_model(as_models::ids::ARCFACE).map_err(stage_error)?;
+    let model = project.face_embedder();
+    let models = as_project::face_models(model);
+    let outdated = project.faces_by_other_model(model).map_err(stage_error)?;
     let ready = project.media(media_id).map_err(stage_error)?.faces == StageState::Ready;
     if ready && !outdated.contains(&media_id) {
         return Ok(());
@@ -413,17 +420,17 @@ fn run_faces(
         // Its old faces stay until the new model is here: a failed or
         // cancelled download leaves the cast as it was (and tries again on
         // the next launch).
-        if let Err(e) = install_models(state, &as_models::ids::FACES, ctx) {
+        if let Err(e) = install_models(state, models, ctx) {
             if !matches!(e, StageError::Cancelled) {
                 log::warn!("finding faces again with the new model has to wait");
             }
             return Ok(());
         }
     } else {
-        install_models(state, &as_models::ids::FACES, ctx)?;
+        install_models(state, models, ctx)?;
     }
     if !outdated.is_empty() {
-        for id in refresh_outdated_faces(app, project).map_err(stage_error)? {
+        for id in refresh_outdated_faces(app, project, model).map_err(stage_error)? {
             if id != media_id {
                 queue_analysis(app, project, id);
             }
@@ -431,7 +438,8 @@ fn run_faces(
     }
     // People are found in the same pass when their models are here; when
     // they can't be downloaded now, the people pass finds them later.
-    let mut people = project.finds_bodies()
+    let mut people = model != as_models::ids::SFACE
+        && project.finds_bodies()
         && match install_models(state, &as_models::ids::BODIES, ctx) {
             Ok(()) => true,
             Err(StageError::Cancelled) => return Err(StageError::Cancelled),
@@ -441,7 +449,7 @@ fn run_faces(
     media_changed(app, project, Some(media_id));
     const STAGE: &str = "Finding characters";
     loop {
-        let plan = project.faces_plan(media_id, as_models::ids::ARCFACE).map_err(stage_error)?;
+        let plan = project.faces_plan(media_id, model).map_err(stage_error)?;
         if plan.resume >= plan.frames {
             break;
         }
@@ -456,6 +464,7 @@ fn run_faces(
             bodies: people,
             known: None,
             animated: plan.animated,
+            fast: plan.fast,
         };
         let found = state.engine.faces(job, &ctx.cancel, |e| match e {
             FacesEvent::Progress(f) => {
@@ -478,6 +487,12 @@ fn run_faces(
             }
             Err(e) => return Err(engine_error(e)),
         }
+    }
+    // The project moved to the other pipeline (Fast Scan, 3D animation)
+    // while this pass ran: its faces are found again the new way.
+    if project.faces_outdated(media_id).map_err(stage_error)? {
+        log::info!("faces are now found another way; finding them again");
+        return run_faces(app, state, project, media_id, ctx);
     }
     ctx.stage("Grouping characters");
     project.finish_faces(media_id).map_err(stage_error)?;
@@ -519,6 +534,7 @@ fn run_bodies(
             bodies: true,
             known: Some(plan.known),
             animated: false,
+            fast: false,
         };
         state
             .engine
@@ -973,7 +989,7 @@ pub fn recover_all(app: &AppHandle) {
             if finds_faces(&project) {
                 // Faces of an older embedder: their analysis installs the new
                 // one first, then finds them again (see `run_faces`).
-                for id in project.faces_by_other_model(as_models::ids::ARCFACE)? {
+                for id in project.faces_by_other_model(project.face_embedder())? {
                     if !ids.contains(&id) {
                         ids.push(id);
                     }

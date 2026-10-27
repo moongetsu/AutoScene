@@ -17,6 +17,7 @@ const KEY_EXPORT_PRESET: &str = "export_preset_id";
 const DEFAULT_EXPORT_PRESET: &str = "prores-hq";
 const KEY_AUDIO_LANGUAGE: &str = "audio_language";
 const KEY_FIND_BODIES: &str = "find_bodies";
+const KEY_FAST_SCAN: &str = "fast_scan";
 /// Most series and films people cut are watched in their original English
 /// track; dubbed tracks are often flagged "default" too, so a language
 /// preference beats the file's flag.
@@ -54,7 +55,13 @@ impl Library {
             export_preset_id: self.db.setting(KEY_EXPORT_PRESET)?.unwrap_or_else(|| DEFAULT_EXPORT_PRESET.into()),
             audio_language: self.audio_language()?,
             find_bodies: self.finds_bodies(),
+            fast_scan: self.fast_scan()?,
         })
+    }
+
+    /// Whether new projects find their faces with Fast Scan.
+    pub fn fast_scan(&self) -> ProjectResult<bool> {
+        Ok(self.db.setting(KEY_FAST_SCAN)?.as_deref() == Some("1"))
     }
 
     pub fn update_settings(&self, s: &AppSettings) -> ProjectResult<AppSettings> {
@@ -72,6 +79,7 @@ impl Library {
         self.db.set_setting(KEY_AUDIO_LANGUAGE, &language)?;
         self.db.set_setting(KEY_FIND_BODIES, if s.find_bodies { "1" } else { "0" })?;
         self.find_bodies.store(s.find_bodies, Ordering::Relaxed);
+        self.db.set_setting(KEY_FAST_SCAN, if s.fast_scan { "1" } else { "0" })?;
         self.settings()
     }
 
@@ -126,6 +134,8 @@ impl Library {
             duration_sec: 0.0,
             poster: None,
             poster_small: None,
+            // Anime finds no faces at all.
+            fast_scan: self.fast_scan()? && req.content != ContentKind::Anime,
         };
         let project = Arc::new(Project::create(&summary, self.find_bodies.clone())?);
         self.db.insert_project(&summary)?;
@@ -182,6 +192,24 @@ impl Library {
             return Err(e);
         }
         Ok((self.summary(id)?, project.grouped_by_older_version()?))
+    }
+
+    /// Say whether a project's faces are found with Fast Scan (see
+    /// [`Project::set_fast_scan`]). Returns the summary and whether its
+    /// faces are to be found again.
+    pub fn set_project_fast_scan(&self, id: ProjectId, on: bool) -> ProjectResult<(ProjectSummary, bool)> {
+        let project = self.project(id)?;
+        if on && project.content()? == ContentKind::Anime {
+            return Err(ProjectError::Invalid("Anime has no faces to scan.".into()));
+        }
+        // The library first: it is what shows, and the project's own word
+        // is the one its faces follow.
+        let before = self.summary(id)?.fast_scan;
+        self.db.set_project_fast_scan(id, on)?;
+        let changed = project.set_fast_scan(on).inspect_err(|_| {
+            let _ = self.db.set_project_fast_scan(id, before);
+        })?;
+        Ok((self.summary(id)?, changed))
     }
 
     /// Remove a project from the library. With `delete_files`, also delete its
@@ -365,6 +393,7 @@ mod tests {
             export_preset_id: "h264-edit".into(),
             audio_language: "German".into(),
             find_bodies: false,
+            fast_scan: false,
         })
         .unwrap();
         assert_eq!(lib.audio_language().unwrap(), "deu", "stored as an ISO 639-2 code");
@@ -460,6 +489,39 @@ mod tests {
     }
 
     #[test]
+    fn fast_scan_is_for_projects_made_while_it_is_on() {
+        let (dir, lib) = lib();
+        let new =
+            |title: &str, content| NewProject { title: title.into(), kind: ProjectKind::Movie, content, files: vec![] };
+        // Off by default.
+        assert!(!lib.settings().unwrap().fast_scan);
+        let (before, ..) = lib.create_project(&new("Before", ContentKind::Live)).unwrap();
+        assert!(!before.fast_scan && !lib.project(before.id).unwrap().fast_scan());
+
+        let on = AppSettings { fast_scan: true, ..lib.settings().unwrap() };
+        assert!(lib.update_settings(&on).unwrap().fast_scan);
+        let (after, ..) = lib.create_project(&new("After", ContentKind::Animation)).unwrap();
+        assert!(after.fast_scan && lib.project(after.id).unwrap().fast_scan());
+        // Projects made before keep how they were made; anime finds no faces.
+        assert!(!lib.summary(before.id).unwrap().fast_scan);
+        let (anime, ..) = lib.create_project(&new("Anime", ContentKind::Anime)).unwrap();
+        assert!(!anime.fast_scan);
+        assert!(matches!(lib.set_project_fast_scan(anime.id, true), Err(ProjectError::Invalid(_))));
+
+        // Each project can be switched on its own ("Edit details…").
+        let (summary, changed) = lib.set_project_fast_scan(before.id, true).unwrap();
+        assert!(summary.fast_scan && changed && lib.project(before.id).unwrap().fast_scan());
+        assert!(!lib.set_project_fast_scan(before.id, true).unwrap().1);
+        let (summary, changed) = lib.set_project_fast_scan(after.id, false).unwrap();
+        assert!(!summary.fast_scan && changed);
+        // The setting itself is kept.
+        drop(lib);
+        let reopened = Library::open(&AppPaths::at(dir.path().join("data"))).unwrap();
+        assert!(reopened.settings().unwrap().fast_scan);
+        assert!(reopened.summary(before.id).unwrap().fast_scan && !reopened.summary(after.id).unwrap().fast_scan);
+    }
+
+    #[test]
     fn rejects_relative_library_roots() {
         let (_dir, lib) = lib();
         let bad = AppSettings {
@@ -467,6 +529,7 @@ mod tests {
             export_preset_id: "h264-edit".into(),
             audio_language: "eng".into(),
             find_bodies: false,
+            fast_scan: false,
         };
         assert!(matches!(lib.update_settings(&bad), Err(ProjectError::Invalid(_))));
         assert_eq!(lib.settings().unwrap().export_preset_id, "h264-edit");

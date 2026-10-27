@@ -132,3 +132,50 @@ per-track F; the faces it drops are below any usable quality.
 
 Characters without a visible face (bodies tracked through shots, found
 again by their clothes): see `bench/bodies`.
+
+## Fast Scan
+
+Fast Scan finds faces the way the Scener app does (YuNet, SFace, a few
+frames per shot; `as_analysis::fast`), so its tracks are sparser: score them
+with its grid and SFace's parameters.
+
+```sh
+cargo run --release -p as-analysis --example fast_run -- <ort_dir> <models_dir> <ffmpeg_dir> <bb_dir> <out>
+GRID=6,8 SFACE=1 cargo run --release -p as-analysis --example identity_bench -- score <out>.tracks <labels.tsv>
+```
+
+`GRID=<stride>,<gap>` is the grid its presence spans are read on (6,8 at
+24 fps: a look at most every 2 s), `SFACE=1` starts from `Params::sface`.
+`in a track` and `on their character` count a labelled face only when a
+track has a detection in exactly that frame, which a pass that looks once
+a second rarely has; compare passes over time instead (a labelled face is
+held when a track is on screen then, its face where the label's is).
+
+Both passes on the same inputs (2026-10-27). Breaking Bad from its 960×540
+playback proxy — **the proxy, not the original remux** (which is gone), so
+lower than the original's numbers above; Miraculous (3D animation, 4K
+HEVC) against its extended labels:
+
+| | BB proxy: full pass | BB proxy: Fast Scan | Miraculous: full pass (Scales, 0.5) | Miraculous: Fast Scan |
+|---|---|---|---|---|
+| tracks / faces | 1126 / 31,887 | 1129 / 4343 | 2834 / 51,016 | 2279 / 6383 |
+| main cast per track P / R / F | 0.989 / 0.910 / 0.948 | 0.974 / 0.761 / 0.854 | 0.946 / 0.696 / 0.802 | 0.910 / 0.458 / 0.609 |
+| per screen time P / R / F | 0.993 / 0.961 / 0.977 | 0.993 / 0.940 / 0.966 | 0.944 / 0.843 / 0.890 | 0.932 / 0.634 / 0.754 |
+| main cast faces held / on their character (over time) | 0.970 / 0.955 | 0.804 / 0.779 | 0.990 / 0.937 | 0.681 / 0.586 |
+| stress (27 runs) | 4 split, 0 merged | 0 split, 0 merged | | |
+
+Fast Scan groups what it finds about as well as the full pass; what it
+loses is faces. YuNet holds 90% of the labelled main-cast faces at the
+looks of BB (SCRFD 97%) and fewer of a CGI film's. Scener keeps YuNet's
+faces from 0.85: on the BB proxy that holds 76% at the looks and puts 65%
+of the main cast's screen time on their character; Fast Scan keeps them
+from 0.7 and lets the less sure ones count for less (without that, faces
+from 0.7 split Walter in most stress runs).
+
+Time on the film's last 22,319 frames (warm file cache, idle RTX 3060 Ti,
+16 threads; two runs each): the full pass 133–149 s for 3D animation,
+113–134 s for live action; Fast Scan 39–57 s decoding on the GPU (NVDEC),
+87–112 s decoding in software — the decoder, not the models, sets its
+pace. Whole: the film 371 s with Fast Scan, the BB proxy 40–50 s. (Whole
+runs of the full pass shared the GPU with another app and aren't
+comparable.)

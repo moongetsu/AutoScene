@@ -124,6 +124,12 @@ pub struct Params {
     /// Fit the face space to footage that looks like animation (see
     /// [`fit`]); off, only the bars are fitted ([`Params::fitted`]).
     pub adapt: bool,
+    /// Faces whose strangers (see [`strangers`]) are at most this alike are
+    /// left as they are, from this on as alike as a style makes them they
+    /// are fully fitted, in between in part — the embedder's actors and
+    /// its animation.
+    pub strangers_alone: f32,
+    pub strangers_style: f32,
 }
 
 impl Default for Params {
@@ -156,6 +162,35 @@ impl Default for Params {
             calibrate_from: 50,
             animated: false,
             adapt: true,
+            strangers_alone: 0.05,
+            strangers_style: 0.15,
+        }
+    }
+}
+
+impl Params {
+    /// For SFace (Fast Scan's embedder), which finds one person's faces
+    /// less alike and strangers more alike than ArcFace does (on the same
+    /// 1072 faces of a live-action episode: one person's median 0.40,
+    /// ArcFace 0.48; strangers' 0.08, ArcFace 0.01). Set on Fast Scan's
+    /// tracks of that episode (BB S01E01 from its 960×540 proxy; main cast
+    /// per screen time P 0.993, R 0.940): lower bars took two men for one
+    /// in every run of the stress test, and the less sure faces Fast Scan
+    /// keeps split Walter in some unless groups agree a little more than
+    /// ArcFace's must. Its strangers look alike from about 0.15 (actors
+    /// 0.12, a CGI film's characters 0.37).
+    pub fn sface() -> Self {
+        Self {
+            link: 0.40,
+            assign: 0.40,
+            margin: 0.055,
+            unsure: 0.30,
+            min_cohesion: 0.55,
+            copy_link: 0.52,
+            copy_alike: 0.43,
+            strangers_alone: 0.15,
+            strangers_style: 0.30,
+            ..Self::default()
         }
     }
 }
@@ -431,8 +466,17 @@ impl Params {
     /// fit for the whole project: one mixing live action with animation
     /// gets the bars of what most of its faces seen together are.
     pub fn fitted(&self, tracks: &[TrackIn]) -> Params {
-        let share = |s: f32| if self.animated { 1.0 } else { ((s - 0.05) / 0.10).clamp(0.0, 1.0) };
-        strangers(tracks, self).map_or(*self, |s| self.for_strangers(s * share(s)))
+        strangers(tracks, self).map_or(*self, |s| self.for_strangers(s * self.style_share(s)))
+    }
+
+    /// How far faces whose strangers look `alike` are fitted, 0..=1 (see
+    /// [`Params::strangers_alone`]); fully when the footage is known to be
+    /// [`Params::animated`].
+    pub fn style_share(&self, alike: f32) -> f32 {
+        if self.animated {
+            return 1.0;
+        }
+        ((alike - self.strangers_alone) / (self.strangers_style - self.strangers_alone).max(1e-6)).clamp(0.0, 1.0)
     }
 }
 

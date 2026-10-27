@@ -75,6 +75,11 @@ pub struct FacesJob {
     /// 3D animation: faces are searched as `FaceParams::animated` does.
     #[serde(default)]
     pub animated: bool,
+    /// Fast Scan: faces are found as `as_analysis::fast` does (YuNet,
+    /// SFace, a few frames per shot) whatever the footage; nobody is looked
+    /// for by their body.
+    #[serde(default)]
+    pub fast: bool,
 }
 
 /// A shot's sprite (`as_analysis::ShotSprite`).

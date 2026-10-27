@@ -72,6 +72,17 @@ export function GeneralSection() {
             onCheckedChange={(on) => settings && void save({ ...settings, findBodies: on })}
           />
         </SettingRow>
+        <SettingRow
+          label="Fast Scan"
+          description="Finds faces the way the Scener app does: smaller face models, and only a few frames of each shot. Much faster, but characters are told apart less surely, and no one is found without a visible face. Applies to projects you create while it is on; switch an existing project in Edit details…"
+        >
+          <Switch
+            aria-label="Fast Scan"
+            checked={settings?.fastScan ?? false}
+            disabled={!settings}
+            onCheckedChange={(on) => settings && void save({ ...settings, fastScan: on })}
+          />
+        </SettingRow>
       </SettingsGroup>
 
       <SettingsGroup title="Audio" description="Many files carry several soundtracks, and dubs are often marked as the default.">

@@ -66,6 +66,31 @@ fn set_footage(tx: &rusqlite::Transaction, id: ProjectId, content: ContentKind) 
     Ok(())
 }
 
+/// Projects whose faces Fast Scan finds are marked in the settings
+/// (`scan.<id>` = `fast`), where builds before it don't look.
+fn scan_key(id: ProjectId) -> String {
+    format!("scan.{id}")
+}
+
+fn set_scan(tx: &rusqlite::Transaction, id: ProjectId, fast: bool) -> DbResult<()> {
+    if fast {
+        tx.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, 'fast') ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [scan_key(id)],
+        )?;
+    } else {
+        tx.execute("DELETE FROM settings WHERE key = ?1", [scan_key(id)])?;
+    }
+    Ok(())
+}
+
+/// The projects marked for Fast Scan, by key.
+fn fast_scans(c: &rusqlite::Connection) -> DbResult<std::collections::HashSet<String>> {
+    let mut st = c.prepare("SELECT key FROM settings WHERE key LIKE 'scan.%' AND value = 'fast'")?;
+    let keys = st.query_map([], |r| r.get::<_, String>(0))?;
+    Ok(keys.collect::<Result<_, _>>()?)
+}
+
 /// The footage the settings hold for projects, by key.
 fn footages(c: &rusqlite::Connection) -> DbResult<std::collections::HashMap<String, ContentKind>> {
     let mut st = c.prepare("SELECT key, value FROM settings WHERE key LIKE 'footage.%'")?;
@@ -96,6 +121,7 @@ fn project_row(r: &Row) -> DbResult<ProjectSummary> {
         duration_sec: r.get(9)?,
         poster: r.get(10)?,
         poster_small: r.get(11)?,
+        fast_scan: false,
     })
 }
 
@@ -145,6 +171,7 @@ impl LibraryDb {
                     p.poster_small,
                 ],
             )?;
+            set_scan(tx, p.id, p.fast_scan)?;
             set_footage(tx, p.id, p.content)
         })
     }
@@ -152,13 +179,14 @@ impl LibraryDb {
     /// Most recently touched first.
     pub fn projects(&self) -> DbResult<Vec<ProjectSummary>> {
         self.0.read(|c| {
-            let footage = footages(c)?;
+            let (footage, fast) = (footages(c)?, fast_scans(c)?);
             let mut st = c.prepare(&format!("SELECT {PROJECT_COLS} FROM projects ORDER BY updated_at DESC"))?;
             let mut rows = st.query([])?;
             let mut out = Vec::new();
             while let Some(r) = rows.next()? {
                 let mut p = project_row(r)?;
                 p.content = footage.get(&footage_key(p.id)).copied().unwrap_or(p.content);
+                p.fast_scan = fast.contains(&scan_key(p.id));
                 out.push(p);
             }
             Ok(out)
@@ -167,11 +195,12 @@ impl LibraryDb {
 
     pub fn project(&self, id: ProjectId) -> DbResult<Option<ProjectSummary>> {
         self.0.read(|c| {
-            let footage = footages(c)?;
+            let (footage, fast) = (footages(c)?, fast_scans(c)?);
             let mut st = c.prepare(&format!("SELECT {PROJECT_COLS} FROM projects WHERE id = ?1"))?;
             let mut rows = st.query([id.to_string()])?;
             let Some(mut p) = rows.next()?.map(project_row).transpose()? else { return Ok(None) };
             p.content = footage.get(&footage_key(p.id)).copied().unwrap_or(p.content);
+            p.fast_scan = fast.contains(&scan_key(p.id));
             Ok(Some(p))
         })
     }
@@ -193,6 +222,14 @@ impl LibraryDb {
                 params![id.to_string(), enum_to_sql(stored(content).0), now_ms()],
             )?;
             set_footage(tx, id, content)
+        })
+    }
+
+    /// Say whether a project's faces are found with Fast Scan.
+    pub fn set_project_fast_scan(&self, id: ProjectId, fast: bool) -> DbResult<()> {
+        self.0.write(|tx| {
+            tx.execute("UPDATE projects SET updated_at = ?2 WHERE id = ?1", params![id.to_string(), now_ms()])?;
+            set_scan(tx, id, fast)
         })
     }
 
@@ -234,7 +271,7 @@ impl LibraryDb {
         self.0.write(|tx| {
             tx.execute("DELETE FROM projects WHERE id = ?1", [id.to_string()])?;
             tx.execute("DELETE FROM settings WHERE key = ?1", [footage_key(id)])?;
-            Ok(())
+            set_scan(tx, id, false)
         })
     }
 }
@@ -258,6 +295,7 @@ mod tests {
             duration_sec: 0.0,
             poster: None,
             poster_small: None,
+            fast_scan: false,
         }
     }
 
@@ -322,6 +360,31 @@ mod tests {
         )
         .unwrap();
         assert_eq!(db.project(b.id).unwrap().unwrap().content, ContentKind::Mixed);
+    }
+
+    #[test]
+    fn a_projects_scan_is_kept_beside_it() {
+        let db = LibraryDb::memory();
+        let fast = ProjectSummary { fast_scan: true, ..sample("Fast", "/lib/Fast.autoscene") };
+        let full = sample("Full", "/lib/Full.autoscene");
+        db.insert_project(&fast).unwrap();
+        db.insert_project(&full).unwrap();
+        let scans = |db: &LibraryDb| {
+            let mut v: Vec<(String, bool)> =
+                db.projects().unwrap().into_iter().map(|p| (p.title, p.fast_scan)).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(scans(&db), [("Fast".into(), true), ("Full".into(), false)]);
+        assert!(db.project(fast.id).unwrap().unwrap().fast_scan);
+        // Builds before Fast Scan see the project as it was.
+        assert_eq!(db.setting(&scan_key(fast.id)).unwrap().as_deref(), Some("fast"));
+        db.set_project_fast_scan(fast.id, false).unwrap();
+        db.set_project_fast_scan(full.id, true).unwrap();
+        assert_eq!(scans(&db), [("Fast".into(), false), ("Full".into(), true)]);
+        assert_eq!(db.setting(&scan_key(fast.id)).unwrap(), None);
+        db.delete_project(full.id).unwrap();
+        assert_eq!(db.setting(&scan_key(full.id)).unwrap(), None);
     }
 
     #[test]

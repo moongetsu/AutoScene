@@ -77,6 +77,7 @@ fn import_preview_and_export_three_episodes() {
         export_preset_id: "prores-hq".into(),
         audio_language: "eng".into(),
         find_bodies: false,
+        fast_scan: false,
     })
     .unwrap();
 
@@ -250,6 +251,7 @@ fn bad_ranges_and_missing_files_are_refused() {
         export_preset_id: "prores-hq".into(),
         audio_language: "eng".into(),
         find_bodies: false,
+        fast_scan: false,
     })
     .unwrap();
     // A copy we can delete to simulate a disconnected drive.
@@ -312,6 +314,7 @@ fn covers_get_portraits_from_the_exact_frame() {
         export_preset_id: "prores-hq".into(),
         audio_language: "eng".into(),
         find_bodies: false,
+        fast_scan: false,
     })
     .unwrap();
     // A copy we can delete to simulate a disconnected drive.
@@ -401,6 +404,7 @@ fn a_moved_episode_keeps_its_analysis() {
         export_preset_id: "prores-hq".into(),
         audio_language: "eng".into(),
         find_bodies: false,
+        fast_scan: false,
     })
     .unwrap();
     let file = tmp.path().join("Show - 01.mp4");
@@ -529,6 +533,7 @@ fn a_merged_export_is_one_file_with_every_clip() {
         export_preset_id: "prores-hq".into(),
         audio_language: "eng".into(),
         find_bodies: false,
+        fast_scan: false,
     })
     .unwrap();
     // Copies, so one can go missing.

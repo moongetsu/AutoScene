@@ -240,6 +240,7 @@ function project(title: string, kind: ProjectKind, content: ProjectSummary["cont
     durationSec: 0,
     poster: null,
     posterSmall: null,
+    fastScan: false,
     media: items,
     exports: [],
   }
@@ -550,6 +551,8 @@ const handlers: Record<string, Handler> = {
     const r = req as NewProject
     const items = scan(r.files, r.kind).map((c) => media(c.fileName, [c.season, c.episode], { status: "queued", path: c.path }))
     const p = project(r.title, r.kind, r.content, items, 0)
+    // Like the library: projects made while Fast Scan is on keep it (anime finds no faces).
+    p.fastScan = (settings.fastScan ?? false) && r.content !== "anime"
     projects.unshift(p)
     items.forEach((m) => ingest(p, m))
     void emit("library:changed", { projectId: p.id })
@@ -567,6 +570,13 @@ const handlers: Record<string, Handler> = {
       throw { code: "invalid", message: "Anime is analysed differently from the start. Add the videos as a new anime project instead." }
     }
     p.content = content as ContentKind
+    void emit("library:changed", { projectId: p.id })
+    return summary(p)
+  },
+  project_set_fast_scan: ({ projectId, fastScan }) => {
+    const p = find(projectId)
+    if (fastScan && p.content === "anime") throw { code: "invalid", message: "Anime has no faces to scan." }
+    p.fastScan = Boolean(fastScan)
     void emit("library:changed", { projectId: p.id })
     return summary(p)
   },

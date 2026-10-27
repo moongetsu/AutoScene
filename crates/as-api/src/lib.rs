@@ -69,6 +69,12 @@ pub struct AppSettings {
     /// scenepack. Analysis takes longer; off by default.
     #[serde(default)]
     pub find_bodies: bool,
+    /// Projects created while this is on find their faces the way the
+    /// Scener app does (smaller models, a few frames per shot): much
+    /// faster, less sure who is who. Each project keeps what it was created
+    /// with (see [`ProjectSummary::fast_scan`]); off by default.
+    #[serde(default)]
+    pub fast_scan: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -115,6 +121,9 @@ pub struct ProjectSummary {
     pub poster: Option<String>,
     /// The same picture small (covers 480×270), for rail tiles and lists.
     pub poster_small: Option<String>,
+    /// Its faces are found with Fast Scan (see [`AppSettings::fast_scan`]).
+    #[serde(default)]
+    pub fast_scan: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]

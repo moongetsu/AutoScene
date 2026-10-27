@@ -53,6 +53,7 @@ fn series(dir: &Path) -> (Arc<Project>, CharacterId) {
         export_preset_id: "h264-edit".into(),
         audio_language: String::new(),
         find_bodies: false,
+        fast_scan: false,
     })
     .unwrap();
     let files: Vec<String> = (1..=EPISODES)
