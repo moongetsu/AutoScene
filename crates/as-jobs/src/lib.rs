@@ -69,15 +69,26 @@ pub struct JobCtx {
 }
 
 impl JobCtx {
-    /// Report `fraction` (0..1) of `stage`. Cheap; throttled to 4 Hz.
+    /// Report `fraction` (0..1) of `stage`. Cheap; throttled to 4 Hz. In
+    /// millionths: the time left is measured from the first move, which
+    /// coarser steps would put late (a step of an hour's job is 3.6 s).
     pub fn progress(&self, stage: &str, fraction: f64) {
-        let done = (fraction.clamp(0.0, 1.0) * 1000.0).round() as u64;
-        self.sink.update(stage, done, 1000);
+        let done = (fraction.clamp(0.0, 1.0) * PARTS as f64).round() as u64;
+        self.sink.update(stage, done, PARTS);
     }
 
     /// Report a stage whose length is unknown.
     pub fn stage(&self, stage: &str) {
         self.sink.update(stage, 0, 0);
+    }
+
+    /// Report `fraction` of `stage`, or that how far it is isn't known for
+    /// now (`None`: its pace is measured anew from the next fraction).
+    pub fn report(&self, stage: &str, fraction: Option<f64>) {
+        match fraction {
+            Some(f) => self.progress(stage, f),
+            None => self.stage(stage),
+        }
     }
 }
 
@@ -124,6 +135,8 @@ struct Inner {
 
 /// Finished jobs kept for the Activity drawer.
 const KEEP_FINISHED: usize = 100;
+/// Parts of a whole progress is reported in.
+const PARTS: u64 = 1_000_000;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
 
 #[derive(Clone)]
@@ -452,6 +465,21 @@ mod tests {
         assert_eq!(r.jobs().len(), 3);
         r.clear_finished();
         assert!(r.jobs().is_empty());
+    }
+
+    #[test]
+    fn progress_is_told_in_fine_steps_and_unknown_when_it_is() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let s = seen.clone();
+        let ctx = JobCtx {
+            id: JobId::new(),
+            cancel: CancelToken::new(),
+            sink: ProgressSink::new(Duration::ZERO, move |p| s.lock().push((p.done, p.total))),
+        };
+        ctx.progress("Clip 1 of 2", 0.000_4);
+        ctx.report("Clip 1 of 2", None);
+        ctx.report("Clip 2 of 2", Some(0.5));
+        assert_eq!(*seen.lock(), [(400, PARTS), (0, 0), (PARTS / 2, PARTS)]);
     }
 
     #[test]

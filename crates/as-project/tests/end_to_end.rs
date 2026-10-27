@@ -602,6 +602,10 @@ fn a_merged_export_is_one_file_with_every_clip() {
     assert_eq!(again.merged.as_ref().unwrap().name, "Joined Walter_2");
     let queued = project.create_export(&req, prores.clone(), &out).unwrap();
     assert_eq!(queued.merged.as_ref().unwrap().name, "Joined Walter_3");
+    // And a file per clip, queued too.
+    let apart = project
+        .create_export(&ExportRequest { merge: None, ..req.clone() }, prores.clone(), &tmp.path().join("apart"))
+        .unwrap();
 
     // Stopped halfway: nothing is left, none of its clips is in a file.
     let stop = CancelToken::new();
@@ -610,7 +614,7 @@ fn a_merged_export_is_one_file_with_every_clip() {
         again.id,
         &stop,
         &|_, p| {
-            if p > 0.4 {
+            if p.is_some_and(|p| p > 0.4) {
                 stop.cancel()
             }
         },
@@ -637,6 +641,23 @@ fn a_merged_export_is_one_file_with_every_clip() {
     let got: Vec<u32> = frames_with_times(&tools, Path::new(&path)).into_iter().map(|(_, c)| c).collect();
     assert_eq!(got, [ranges[0], ranges[2]].iter().flat_map(|&(s, e)| s..e).collect::<Vec<_>>());
     assert_eq!(folder_names(&out), ["Joined Walter.mov", "Joined Walter_3.mov"]);
+
+    // A file per clip: the missing one fails as its turn comes. Its share is
+    // skipped, not made, so the pace is measured anew after it; the bar
+    // never goes back.
+    let told = std::cell::RefCell::new(Vec::new());
+    let separate = project
+        .run_export(&tools, apart.id, &cancel, &|stage, p| told.borrow_mut().push((stage.to_string(), p)), &|| {})
+        .unwrap();
+    assert_eq!(
+        separate.items.iter().map(|i| i.status).collect::<Vec<_>>(),
+        [ExportStatus::Done, ExportStatus::Failed, ExportStatus::Done]
+    );
+    let told = told.into_inner();
+    let skipped = told.iter().position(|(_, p)| p.is_none()).expect("a pause in the pace");
+    assert_eq!(told[skipped].0, "Clip 2 of 3");
+    let fractions: Vec<f64> = told.iter().filter_map(|(_, p)| *p).collect();
+    assert!(fractions.windows(2).all(|w| w[0] <= w[1]), "{fractions:?}");
 
     // Stopped while the clips are joined: nothing is left either.
     let still_there = ExportRequest { clips: vec![clips[0].clone(), clips[2].clone()], ..req.clone() };

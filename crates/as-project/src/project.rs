@@ -30,12 +30,43 @@ const POSTER_SMALL: StillSize = StillSize::Cover(480, 270);
 /// analysis (SSIM: the same frame scores about 0.95, another picture far less).
 const SAME_PICTURE: f64 = 0.85;
 
-/// Progress callback: `(stage, fraction 0..1)`.
-pub type Progress<'a> = &'a dyn Fn(&str, f64);
+/// Progress callback: `(stage, fraction 0..1)`; `None`: how far it is isn't
+/// known for now (a clip failed and its share is skipped: the pace is
+/// measured anew from the next fraction).
+pub type Progress<'a> = &'a dyn Fn(&str, Option<f64>);
 
 /// Share of a merged export's progress that rendering its clips takes; the
 /// join (a copy, and the sound encoded once) takes the rest.
 const RENDER_SHARE: f64 = 0.95;
+
+/// What rendering a clip costs besides its frames (starting ffmpeg, seeking
+/// into the episode, checking the clip), in frames' work: measured 0.6 s a
+/// clip against 6 ms a frame with NVENC, about 100 frames; slower encoders
+/// spend less beside their frames (about 25 at 25 ms a frame). Between the
+/// two, the time left of a 124-clip export was told within about 5 %; by
+/// clip count, 17 %.
+const CLIP_WORK: f64 = 48.0;
+
+/// How far along an export of clips is, by the work each one takes.
+struct ClipShares(Vec<f64>);
+
+impl ClipShares {
+    fn new(frames: impl IntoIterator<Item = u32>) -> Self {
+        let mut starts = vec![0.0];
+        for f in frames {
+            starts.push(starts.last().expect("starts at 0") + f64::from(f) + CLIP_WORK);
+        }
+        let all = starts.last().copied().unwrap_or_default().max(f64::MIN_POSITIVE);
+        Self(starts.into_iter().map(|s| s / all).collect())
+    }
+
+    /// The export when clip `i` is `p` done (a clip done is exactly where
+    /// the next one starts).
+    fn at(&self, i: usize, p: f64) -> f64 {
+        let (from, to) = (self.0[i], self.0[i + 1]);
+        if p >= 1.0 { to } else { from + (to - from) * p.max(0.0) }
+    }
+}
 
 /// Work a project still owes after a quit, a crash or an update.
 #[derive(Debug, Default)]
@@ -554,7 +585,7 @@ impl Project {
             return Err(ProjectError::NotFound(format!("{} can't be found.", m.file_name)));
         }
         self.db.set_media_status(id, MediaStatus::Indexing, None)?;
-        progress("Reading file", 0.0);
+        progress("Reading file", Some(0.0));
         let mut info = probe(tools, &path)?;
         cancel.check().map_err(|_| ProjectError::Cancelled)?;
         if info.video.field_order.is_none()
@@ -564,10 +595,11 @@ impl Project {
             info.video.field_order = Some(order.to_string());
         }
 
-        let index =
-            build_frame_index(tools, &path, &info, &self.tmp_dir(), cancel, |p| progress("Indexing frames", p * 0.95))?;
+        let index = build_frame_index(tools, &path, &info, &self.tmp_dir(), cancel, |p| {
+            progress("Indexing frames", Some(p * 0.95))
+        })?;
 
-        progress("Creating poster", 0.96);
+        progress("Creating poster", Some(0.96));
         let src = Source { path: &path, info: &info, index: &index };
         let (poster, poster_small) = match self.write_posters(tools, id, src, cancel) {
             Ok(()) => {
@@ -651,7 +683,7 @@ impl Project {
         self.db.set_proxy(id, ProxyState::Building, None, None)?;
         let path = PathBuf::from(&m.path);
         let src = Source { path: &path, info: &info, index: &index };
-        let result = proxy::build_proxy(tools, src, audio, &out, cancel, |p| progress("Preparing preview", p));
+        let result = proxy::build_proxy(tools, src, audio, &out, cancel, |p| progress("Preparing preview", Some(p)));
         // The audio track may have changed, or a newer build started, while we
         // worked; the newer state wins then.
         let superseded = !latest() || self.media(id)?.audio_ordinal != m.audio_ordinal;
@@ -918,7 +950,7 @@ impl Project {
         if let Some(file) = ex.merged.clone() {
             return self.run_merged(tools, &ex, file, cancel, progress, changed);
         }
-        let n = ex.items.len().max(1) as f64;
+        let shares = ClipShares::new(ex.items.iter().map(|i| i.end - i.start));
         let out_dir = PathBuf::from(&ex.out_dir);
         let mut failed = false;
         for (i, item) in ex.items.iter().enumerate() {
@@ -941,7 +973,7 @@ impl Project {
                     title: Some(item.name.clone()),
                     part: None,
                 };
-                Ok(export_clip(tools, &job, cancel, |p| progress(&stage, (i as f64 + p) / n))?)
+                Ok(export_clip(tools, &job, cancel, |p| progress(&stage, Some(shares.at(i, p))))?)
             })();
             match result {
                 Ok(outcome) => self.db.update_export_item(item.id, ExportStatus::Done, Some(&outcome), None)?,
@@ -950,6 +982,8 @@ impl Project {
                     failed = true;
                     tracing::warn!(clip = %item.name, error = %e, detail = %e.detail(), "clip export failed");
                     self.db.update_export_item(item.id, ExportStatus::Failed, None, Some(&e.to_string()))?;
+                    // Its share is skipped, not made: no pace to learn from.
+                    progress(&stage, None);
                 }
             }
             changed();
@@ -1047,6 +1081,7 @@ impl Project {
         };
 
         let n = sources.len();
+        let shares = ClipShares::new(sources.iter().map(|(item, ..)| item.end - item.start));
         let mut parts = Vec::with_capacity(n);
         let mut in_file = Vec::with_capacity(n);
         let mut verified = true;
@@ -1067,8 +1102,8 @@ impl Project {
                 title: None,
                 part: Some(Part { shape: &plan.shape, samples: timing.samples }),
             };
-            let share = |p: f64| (i as f64 + p) / n as f64 * RENDER_SHARE;
-            match export_clip(tools, &job, cancel, |p| progress(&stage, share(p))).map_err(ProjectError::from) {
+            let share = |p: f64| shares.at(i, p) * RENDER_SHARE;
+            match export_clip(tools, &job, cancel, |p| progress(&stage, Some(share(p)))).map_err(ProjectError::from) {
                 Ok(outcome) => {
                     self.db.update_export_part(item.id, ExportStatus::Done, Some(&outcome), None)?;
                     verified &= outcome.verified;
@@ -1081,7 +1116,11 @@ impl Project {
                     });
                 }
                 Err(ProjectError::Cancelled) => break,
-                Err(e) => fail(item, &e)?,
+                Err(e) => {
+                    fail(item, &e)?;
+                    // Its share is skipped, not made: no pace to learn from.
+                    progress(&stage, None);
+                }
             }
             changed();
         }
@@ -1093,7 +1132,7 @@ impl Project {
         }
 
         let stage = "Joining into one file";
-        progress(stage, RENDER_SHARE);
+        progress(stage, Some(RENDER_SHARE));
         let job = JoinJob {
             parts: &parts,
             shape: &plan.shape,
@@ -1102,7 +1141,7 @@ impl Project {
             work_dir: &work.0,
             title: ex.label.clone(),
         };
-        match join_parts(tools, &job, cancel, |p| progress(stage, RENDER_SHARE + (1.0 - RENDER_SHARE) * p))
+        match join_parts(tools, &job, cancel, |p| progress(stage, Some(RENDER_SHARE + (1.0 - RENDER_SHARE) * p)))
             .map_err(ProjectError::from)
         {
             Ok(outcome) => {
@@ -1315,6 +1354,20 @@ mod tests {
         assert!(size("prores-hq") > size("h264-edit") && size("h264-edit") > 0.0);
         // Out of range: refused, like the export itself would.
         assert!(project.export_plan(&[clip(2390, 2500, None)], &presets).is_err());
+    }
+
+    #[test]
+    fn an_export_moves_on_by_the_work_its_clips_take() {
+        // 148 and 348 frames' work of 496: the long clip takes most of the bar.
+        let s = ClipShares::new([100, 300]);
+        let near = |a: f64, b: f64| assert!((a - b).abs() < 1e-12, "{a} vs {b}");
+        assert_eq!(s.at(0, 0.0), 0.0);
+        near(s.at(0, 1.0), 148.0 / 496.0);
+        assert_eq!(s.at(0, 1.0), s.at(1, 0.0));
+        near(s.at(1, 0.5), (148.0 + 174.0) / 496.0);
+        assert_eq!(s.at(1, 1.0), 1.0);
+        assert_eq!(s.at(1, 2.0), 1.0, "past the end stays at the end");
+        assert_eq!(ClipShares::new([]).0, [0.0]);
     }
 
     #[test]

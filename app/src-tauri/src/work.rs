@@ -123,7 +123,7 @@ pub fn queue_ingest(app: &AppHandle, project: &Arc<Project>, media_id: MediaId) 
             log::warn!("preferred audio language: {}", e.detail());
             String::new()
         });
-        let result = project.ingest(&tools, media_id, &language, &ctx.cancel, &|stage, p| ctx.progress(stage, p));
+        let result = project.ingest(&tools, media_id, &language, &ctx.cancel, &|stage, p| ctx.report(stage, p));
         if matches!(result, Err(ProjectError::Cancelled))
             && !state.jobs.is_shutting_down()
             && let Err(e) = project.set_media_failed(media_id, "Indexing was cancelled.")
@@ -615,7 +615,9 @@ fn install_models(state: &AppState, ids: &[&str], ctx: &JobCtx) -> Result<(), St
             continue;
         }
         const STAGE: &str = "Downloading AI model";
-        ctx.progress(STAGE, 0.0);
+        // Unknown until the first count: a resumed download starts at the
+        // bytes it has, which mustn't count as fetched in no time.
+        ctx.stage(STAGE);
         state
             .models
             .install(id, &ctx.cancel, |done, total| ctx.progress(STAGE, done as f64 / total.max(1) as f64))
@@ -650,7 +652,7 @@ pub fn queue_proxy(app: &AppHandle, project: &Arc<Project>, media_id: MediaId) {
         let state = app2.state::<AppState>();
         let tools = state.tools().map_err(|e| JobError::Failed(e.message))?;
         ctx.stage("Preparing preview");
-        let result = project.build_proxy(&tools, media_id, &ctx.cancel, &|stage, p| ctx.progress(stage, p));
+        let result = project.build_proxy(&tools, media_id, &ctx.cancel, &|stage, p| ctx.report(stage, p));
         media_changed(&app2, &project, Some(media_id));
         result.map_err(job_error)
     });
@@ -900,7 +902,7 @@ pub fn queue_export(app: &AppHandle, project: &Arc<Project>, export: &ExportSumm
             }
         };
         notify();
-        let result = project.run_export(&tools, export_id, &ctx.cancel, &|stage, p| ctx.progress(stage, p), &notify);
+        let result = project.run_export(&tools, export_id, &ctx.cancel, &|stage, p| ctx.report(stage, p), &notify);
         if let Err(e) = &result
             && !matches!(e, ProjectError::Cancelled)
             && let Err(fail) = project.abandon_export(export_id, &e.to_string())

@@ -407,14 +407,19 @@ pub fn export_clip(
         let _ = std::fs::remove_dir(&work);
     };
     let mut last_err = String::new();
+    // A retry starts its frames again; what was shown holds until it passes.
+    let mut shown = 0.0f64;
     for preroll in [Some(3.0), Some(10.0), None] {
         let _ = std::fs::remove_file(&stats);
-        run_ffmpeg(tools, build(preroll), cancel, |p| progress((p.frame as f64 / n as f64).clamp(0.0, 1.0)))
-            .inspect_err(|_| {
-                let _ = std::fs::remove_file(&part);
-                let _ = std::fs::remove_file(&stats);
-                tidy();
-            })?;
+        run_ffmpeg(tools, build(preroll), cancel, |p| {
+            shown = shown.max((p.frame as f64 / n as f64).clamp(0.0, 1.0));
+            progress(shown)
+        })
+        .inspect_err(|_| {
+            let _ = std::fs::remove_file(&part);
+            let _ = std::fs::remove_file(&stats);
+            tidy();
+        })?;
         match verify(&stats, index, *range) {
             Ok(()) => {
                 let _ = std::fs::remove_file(&stats);
