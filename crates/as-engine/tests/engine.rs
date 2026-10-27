@@ -130,9 +130,15 @@ fn face_chunks_tile_the_media_even_across_a_kill() {
     }
     // Shots of 50 frames; chunks close at the first shot start 100 frames on.
     let shots: Vec<(u32, u32)> = (0..m.frames).step_by(50).map(|s| (s, (s + 50).min(m.frames))).collect();
+    // Live action, and 3D animation (searched at three sizes).
+    for animated in [false, true] {
+        face_chunks_tile(&engine, &m, FacesInput { animated, ..faces_input(&m, shots.clone(), false, None) });
+    }
+}
+
+fn face_chunks_tile(engine: &Engine, m: &Media, job: FacesInput) {
     let mut chunks: Vec<(u32, u32)> = Vec::new();
     let mut killed = false;
-    let job = faces_input(&m, shots, false, None);
     let r =
         engine.faces(job, &CancelToken::new(), |e| {
             if let FacesEvent::Chunk { start, end, tracks, sprites, bodies } = e {
@@ -174,6 +180,7 @@ fn faces_input(m: &Media, shots: Vec<(u32, u32)>, bodies: bool, known: Option<Ve
         chunk: 100,
         bodies,
         known,
+        animated: false,
     }
 }
 

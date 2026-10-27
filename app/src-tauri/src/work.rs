@@ -233,6 +233,25 @@ fn refresh_outdated_faces(app: &AppHandle, project: &Arc<Project>) -> as_project
 /// cast is clustered again. Resumes from checkpoints; downloads the models
 /// it needs first. Nothing happens when its analysis is already queued or
 /// running.
+/// Analyse again the media whose faces don't fit the project any more: an
+/// older embedder found them, or another search than its footage's (3D
+/// animation is searched harder). Their old faces stay until then.
+pub fn queue_outdated_faces(app: &AppHandle, project: &Arc<Project>) {
+    if !finds_faces(project) {
+        return;
+    }
+    match project.faces_by_other_model(as_models::ids::ARCFACE) {
+        Ok(ids) => {
+            for id in ids {
+                if project.media(id).is_ok_and(|m| m.status != as_api::MediaStatus::Missing) {
+                    queue_analysis(app, project, id);
+                }
+            }
+        }
+        Err(e) => log::warn!("checking for outdated faces: {}", e.detail()),
+    }
+}
+
 pub fn queue_analysis(app: &AppHandle, project: &Arc<Project>, media_id: MediaId) {
     let state = app.state::<AppState>();
     if state.jobs.is_active(|j| j.kind == JobKind::Analyze && j.media_id == Some(media_id)) {
@@ -436,6 +455,7 @@ fn run_faces(
             chunk: plan.chunk,
             bodies: people,
             known: None,
+            animated: plan.animated,
         };
         let found = state.engine.faces(job, &ctx.cancel, |e| match e {
             FacesEvent::Progress(f) => {
@@ -498,6 +518,7 @@ fn run_bodies(
             chunk: plan.chunk,
             bodies: true,
             known: Some(plan.known),
+            animated: false,
         };
         state
             .engine

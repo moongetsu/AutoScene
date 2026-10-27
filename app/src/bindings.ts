@@ -33,7 +33,8 @@ export const commands = {
 	projectRename: (projectId: ProjectId, title: string) => __TAURI_INVOKE<ProjectSummary>("project_rename", { projectId, title }),
 	/**
 	 *  Say what a project's footage is (live action, 3D animation, mixed; a
-	 *  project never moves to or from anime). Its cast is grouped again for it.
+	 *  project never moves to or from anime). Its cast is grouped again for it,
+	 *  and its faces found again when it moves to or from 3D animation.
 	 */
 	projectSetContent: (projectId: ProjectId, content: ContentKind) => __TAURI_INVOKE<ProjectSummary>("project_set_content", { projectId, content }),
 	/**

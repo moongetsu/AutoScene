@@ -7,7 +7,9 @@
 //! `EMBEDDER=<model.onnx>` embeds with another model than
 //! `arcface_glintr100.onnx` (in `<models_dir>`, next to `det_10g.onnx`);
 //! `NORMS=<floor>,<full>` sets the embedding lengths quality is read from,
-//! `MIN_TRACK_Q=<q>` the quality below which tracks are dropped.
+//! `MIN_TRACK_Q=<q>` the quality below which tracks are dropped;
+//! `ANIMATED=1` searches as for 3D animation (`FaceParams::animated`);
+//! `SEARCH=once|scales` and `DET_THRESHOLD=<score>` set the search alone.
 //! `PEOPLE=<dir with pp_det_med.onnx and reid_0265.onnx>` looks for people
 //! too, as the app does, and writes them to `<out_prefix>.found`
 //! (as_analysis::bodies::encode; faces by their place in `.tracks`).
@@ -40,7 +42,18 @@ fn main() {
         .collect();
     let tools = Tools::locate(Some(Path::new(ffmpeg))).unwrap();
     let rt = Runtime::load(Path::new(ort), true).unwrap();
-    let mut params = as_analysis::FaceParams::default();
+    let animated = std::env::var("ANIMATED").is_ok_and(|v| v == "1");
+    let mut params = if animated { as_analysis::FaceParams::animated() } else { as_analysis::FaceParams::default() };
+    if let Ok(v) = std::env::var("SEARCH") {
+        params.search = match v.as_str() {
+            "once" => as_analysis::Search::Once,
+            "scales" => as_analysis::Search::Scales,
+            _ => panic!("SEARCH=once|scales"),
+        };
+    }
+    if let Ok(v) = std::env::var("DET_THRESHOLD") {
+        params.det_threshold = v.parse().expect("DET_THRESHOLD=<score>");
+    }
     if let Ok(v) = std::env::var("NORMS") {
         let (floor, full) = v.split_once(',').expect("NORMS=<floor>,<full>");
         (params.norm_floor, params.norm_full) = (floor.parse().unwrap(), full.parse().unwrap());
@@ -49,8 +62,13 @@ fn main() {
         params.min_track_quality = v.parse().expect("MIN_TRACK_Q=<quality>");
     }
     let embedder = std::env::var("EMBEDDER").map_or_else(|_| models.join("arcface_glintr100.onnx"), PathBuf::from);
-    let (size, det_size) = as_analysis::frame_sizes(&info, &params);
-    let mut det = Scrfd::load(&rt, &models.join("det_10g.onnx"), det_size, as_analysis::DETECT_BATCH).unwrap();
+    let (size, _) = as_analysis::frame_sizes(&info, &params);
+    let looks = as_analysis::detect_looks(&info, &params);
+    println!("search {:?} at {} with {looks:?}", params.search, params.det_threshold);
+    let mut detectors: Vec<Scrfd> = looks
+        .iter()
+        .map(|l| Scrfd::load(&rt, &models.join("det_10g.onnx"), l.size, as_analysis::DETECT_BATCH).unwrap())
+        .collect();
     let mut rec = ArcFace::load(&rt, &embedder, 32).unwrap();
     let people = std::env::var("PEOPLE").ok().map(PathBuf::from);
     let mut person_models = people.as_ref().map(|dir| {
@@ -69,7 +87,7 @@ fn main() {
     as_analysis::face_tracks(
         &tools,
         Source { path: &path, info: &info, index: &index },
-        Faces::Find { detector: &mut det, embedder: &mut rec },
+        Faces::Find { detectors: &mut detectors, embedder: &mut rec },
         bodies,
         &shots,
         resume,

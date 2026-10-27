@@ -72,6 +72,9 @@ pub struct FacesJob {
     /// are looked for, and tied to these.
     #[serde(default)]
     pub known: Option<Blob>,
+    /// 3D animation: faces are searched as `FaceParams::animated` does.
+    #[serde(default)]
+    pub animated: bool,
 }
 
 /// A shot's sprite (`as_analysis::ShotSprite`).

@@ -33,11 +33,13 @@ impl Project {
         Ok(serde_json::from_value(serde_json::Value::String(v)).unwrap_or(ContentKind::Live))
     }
 
-    /// Store what the footage is. Only the grouping of characters changes
-    /// with it: anime is analysed differently from the start (shots, no
-    /// faces), so a project never moves to or from it. Returns whether it
-    /// changed; then the cast is grouped again by the next upkeep (see
-    /// [`Project::cast_upkeep`]).
+    /// Store what the footage is. The grouping of characters changes with
+    /// it, and so does how hard faces are searched for: faces found before a
+    /// move to or from 3D animation are found again (see
+    /// [`Project::faces_by_other_model`]). Anime is analysed differently from
+    /// the start (shots, no faces), so a project never moves to or from it.
+    /// Returns whether it changed; then the cast is grouped again by the next
+    /// upkeep (see [`Project::cast_upkeep`]).
     pub fn set_content(&self, content: ContentKind) -> ProjectResult<bool> {
         let old = self.content()?;
         if old == content {

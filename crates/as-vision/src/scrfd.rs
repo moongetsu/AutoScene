@@ -44,7 +44,7 @@ impl Heads {
 }
 
 /// Overlap at which the weaker of two faces is dropped.
-const NMS_IOU: f32 = 0.4;
+pub const NMS_IOU: f32 = 0.4;
 
 /// Input value of each byte: (v − 127.5) / 128.
 const NORM: [f32; 256] = {

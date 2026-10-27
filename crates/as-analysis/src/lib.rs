@@ -15,7 +15,8 @@ pub mod tracker;
 pub mod tracks;
 
 pub use faces::{
-    BodyModels, DETECT_BATCH, FaceChunk, FaceParams, Faces, PERSON_INPUT, PeopleParams, face_tracks, frame_sizes,
+    BodyModels, CLEAR_FACE, DETECT_BATCH, FaceChunk, FaceParams, Faces, Look, PERSON_INPUT, PeopleParams, Search,
+    detect_looks, face_tracks, find_faces, frame_sizes,
 };
 pub use fusion::{FusionParams, Segment, SegmentKind, TransitionKind, fuse};
 pub use pipeline::{CHUNK, shot_signals};

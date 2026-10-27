@@ -59,7 +59,8 @@ pub async fn project_rename(
 }
 
 /// Say what a project's footage is (live action, 3D animation, mixed; a
-/// project never moves to or from anime). Its cast is grouped again for it.
+/// project never moves to or from anime). Its cast is grouped again for it,
+/// and its faces found again when it moves to or from 3D animation.
 #[tauri::command]
 #[specta::specta]
 pub async fn project_set_content(
@@ -76,6 +77,7 @@ pub async fn project_set_content(
     .await?;
     if let Some(project) = regroup {
         work::queue_regroup(&app, &project);
+        work::queue_outdated_faces(&app, &project);
     }
     let _ = LibraryChanged { project_id: Some(project_id) }.emit(&app);
     Ok(summary)

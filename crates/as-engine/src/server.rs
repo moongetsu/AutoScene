@@ -13,11 +13,11 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use as_analysis::{
-    AnalysisError, BodyModels, DETECT_BATCH, FaceParams, Faces, PERSON_INPUT, PeopleParams, bodies, face_tracks,
-    frame_sizes, shot_signals, signals, tracks,
+    AnalysisError, BodyModels, DETECT_BATCH, FaceParams, Faces, Look, PERSON_INPUT, PeopleParams, Search, bodies,
+    detect_looks, face_tracks, frame_sizes, shot_signals, signals, tracks,
 };
 use as_core::{CancelToken, FrameIndex, FrameRange};
-use as_infer::Runtime;
+use as_infer::{Device, Runtime};
 use as_media::{Source, Tools};
 use as_models::ModelStore;
 use as_vision::{ArcFace, Fit, Norm, PersonReid, PpDet, Scrfd, TransNet};
@@ -91,7 +91,7 @@ pub fn serve(cfg: Config, input: impl BufRead + Send + 'static, output: impl Wri
     let mut models = Models {
         store: ModelStore::new(&cfg.models_dir),
         transnet: None,
-        scrfd: None,
+        scrfd: Vec::new(),
         arcface: None,
         persons: None,
         person_reid: None,
@@ -202,7 +202,8 @@ fn read_requests(
 struct Models {
     store: ModelStore,
     transnet: Option<TransNet>,
-    scrfd: Option<Scrfd>,
+    /// One face detector per look of the last faces job.
+    scrfd: Vec<Scrfd>,
     arcface: Option<ArcFace>,
     persons: Option<PpDet>,
     person_reid: Option<PersonReid>,
@@ -210,7 +211,8 @@ struct Models {
 
 impl Models {
     fn unload(&mut self) {
-        (self.transnet, self.scrfd, self.arcface) = (None, None, None);
+        (self.transnet, self.arcface) = (None, None);
+        self.scrfd.clear();
         (self.persons, self.person_reid) = (None, None);
     }
 
@@ -221,12 +223,21 @@ impl Models {
             .ok_or_else(|| AnalysisError::Internal(format!("{id} isn't installed in {}", self.store.dir().display())))
     }
 
-    /// Load the face models, the detector planned for `size` frames (loaded
-    /// again when a media needs another size).
-    fn load_faces(&mut self, rt: &Runtime, size: (usize, usize)) -> Result<(), AnalysisError> {
-        if self.scrfd.as_ref().is_none_or(|d| d.frame_size() != size) {
-            self.scrfd = None;
-            self.scrfd = Some(Scrfd::load(rt, &self.path(as_models::ids::SCRFD)?, size, DETECT_BATCH)?);
+    /// Load the face models, a detector planned for each look's size
+    /// (loaded again when a media needs other sizes; one of a size still
+    /// needed stays).
+    fn load_faces(&mut self, rt: &Runtime, looks: &[Look]) -> Result<(), AnalysisError> {
+        if !self.scrfd.iter().map(Scrfd::frame_size).eq(looks.iter().map(|l| l.size)) {
+            let mut old = std::mem::take(&mut self.scrfd);
+            old.retain(|d| looks.iter().any(|l| l.size == d.frame_size()));
+            let path = self.path(as_models::ids::SCRFD)?;
+            for l in looks {
+                let detector = match old.iter().position(|d| d.frame_size() == l.size) {
+                    Some(i) => old.swap_remove(i),
+                    None => Scrfd::load(rt, &path, l.size, DETECT_BATCH)?,
+                };
+                self.scrfd.push(detector);
+            }
         }
         if self.arcface.is_none() {
             self.arcface = Some(ArcFace::load(rt, &self.path(as_models::ids::ARCFACE)?, EMBED_BATCH)?);
@@ -303,8 +314,14 @@ fn run_faces(
     cancel: &CancelToken,
     out: &Out,
 ) -> Result<(), AnalysisError> {
-    let params = FaceParams::default();
-    let (size, det_size) = frame_sizes(&job.info, &params);
+    let params = match (job.animated, rt.preferred_device()) {
+        (false, _) => FaceParams::default(),
+        // Searching more sizes takes four times the detector's time: on the
+        // CPU, 3D animation is searched at the detection size alone.
+        (true, Device::Cpu) => FaceParams { search: Search::Once, ..FaceParams::animated() },
+        (true, _) => FaceParams::animated(),
+    };
+    let (size, _) = frame_sizes(&job.info, &params);
     let known = match &job.known {
         Some(b) => Some(
             tracks::decode_known(&b.0)
@@ -313,19 +330,23 @@ fn run_faces(
         None => None,
     };
     if known.is_none() {
-        models.load_faces(rt, det_size)?;
+        models.load_faces(rt, &detect_looks(&job.info, &params))?;
     }
     if job.bodies {
         models.load_people(rt, size)?;
     }
     let Models { scrfd, arcface, persons, person_reid, .. } = models;
     let device = match known {
-        None => scrfd.as_ref().map(Scrfd::device),
+        None => scrfd.first().map(Scrfd::device),
         Some(_) => persons.as_ref().map(PpDet::device),
     };
+    if known.is_none() && scrfd.iter().any(|d| Some(d.device()) != device) {
+        let devices: Vec<_> = scrfd.iter().map(|d| (d.frame_size(), d.device())).collect();
+        tracing::warn!(?devices, "face detectors run on different devices");
+    }
     let faces = match &known {
         Some(k) => Faces::Known(k),
-        None => Faces::Find { detector: scrfd.as_mut().expect("loaded"), embedder: arcface.as_mut().expect("loaded") },
+        None => Faces::Find { detectors: scrfd, embedder: arcface.as_mut().expect("loaded") },
     };
     let bodies = job.bodies.then(|| BodyModels {
         detector: persons.as_mut().expect("loaded"),
@@ -337,7 +358,15 @@ fn run_faces(
     let started = Instant::now();
     let id = job.id;
     let what = if job.known.is_some() { "people" } else { "faces" };
-    tracing::info!(id, path = %job.path.display(), resume = job.resume, people = job.bodies, ?device, "finding {what}");
+    tracing::info!(
+        id,
+        path = %job.path.display(),
+        resume = job.resume,
+        people = job.bodies,
+        animated = job.animated,
+        ?device,
+        "finding {what}"
+    );
     let (mut found, mut people) = (0usize, 0usize);
     face_tracks(
         tools,

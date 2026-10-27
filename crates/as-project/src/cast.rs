@@ -119,6 +119,25 @@ pub struct FacesPlan {
     /// First frame without a checkpoint (`frames` = done).
     pub resume: FrameIdx,
     pub chunk: u32,
+    /// 3D animation: the faces are searched for harder
+    /// (`as_analysis::FaceParams::animated`).
+    pub animated: bool,
+}
+
+/// How 3D animation's faces are searched for (`as_analysis::FaceParams::
+/// animated`), as recorded after the embedder in [`faces_key`].
+const SCALES: &str = "+scales";
+
+/// What a media's faces are recorded as found with: the embedder, and for
+/// 3D animation its search. Faces found one way are found again (their
+/// decisions kept) when the footage moves to or from 3D animation.
+fn faces_key(embedder: &str, animated: bool) -> String {
+    if animated { format!("{embedder}{SCALES}") } else { embedder.to_owned() }
+}
+
+/// The embedder of a [`faces_key`].
+fn embedder_of(key: &str) -> &str {
+    key.strip_suffix(SCALES).unwrap_or(key)
 }
 
 fn mean_box(dets: &[FaceDet]) -> [f32; 4] {
@@ -492,15 +511,18 @@ impl Project {
     // -- face pass ----------------------------------------------------------
 
     /// Where the face pass of `id` with embedder `model` resumes.
-    /// Checkpoints of another embedder, or that don't line up, are dropped
-    /// with everything after them; a fresh start clears old thumbnails.
+    /// Checkpoints of another embedder or search (see [`faces_key`]), or
+    /// that don't line up, are dropped with everything after them; a fresh
+    /// start clears old thumbnails.
     pub fn faces_plan(&self, id: MediaId, model: &str) -> ProjectResult<FacesPlan> {
         let (m, info, index) = self.ready_source(id)?;
         if m.shots != StageState::Ready {
             return Err(ProjectError::NotReady("Shots of this media aren't found yet.".into()));
         }
-        if self.db().use_faces_model(id, model)? {
-            tracing::info!(file = %m.file_name, model, "faces are found with a new model");
+        let animated = self.content()? == ContentKind::Animation;
+        let key = faces_key(model, animated);
+        if self.db().use_faces_model(id, &key)? {
+            tracing::info!(file = %m.file_name, model = key, "faces are found with a new model");
         }
         let frames = index.len();
         let shots: Vec<(FrameIdx, FrameIdx)> =
@@ -530,6 +552,7 @@ impl Project {
             frames,
             resume,
             chunk: FACE_CHUNK,
+            animated,
         })
     }
 
@@ -636,9 +659,9 @@ impl Project {
                 let dets = tracks::dets_from_bytes(&e.dets).unwrap_or_default();
                 let before = found.len();
                 // The face it was about, when the file changed and the same
-                // embedder made both.
-                let face = match (&e.emb, &e.model) {
-                    (Some(emb), Some(m)) if must_match && Some(m) == model.as_ref() => {
+                // embedder made both (searched for one way or another).
+                let face = match (&e.emb, &e.model, &model) {
+                    (Some(emb), Some(m), Some(now)) if must_match && embedder_of(m) == embedder_of(now) => {
                         tracks::embedding_from_bytes(emb)
                     }
                     _ => None,
@@ -675,15 +698,19 @@ impl Project {
         Ok(self.db().set_faces_state(id, StageState::Ready, None)?)
     }
 
-    /// Media whose faces another embedder than `model` found, untouched.
+    /// Media whose faces another embedder than `model` found, or another
+    /// search than this footage's (see [`faces_key`]), untouched.
     pub fn faces_by_other_model(&self, model: &str) -> ProjectResult<Vec<MediaId>> {
-        Ok(self.db().faces_by_other_model(model)?)
+        let key = faces_key(model, self.content()? == ContentKind::Animation);
+        Ok(self.db().faces_by_other_model(&key)?)
     }
 
-    /// Media whose faces another embedder than `model` found: their faces
-    /// are forgotten (decisions are kept) so they are found again.
+    /// Media whose faces another embedder than `model` found, or another
+    /// search than this footage's: their faces are forgotten (decisions are
+    /// kept) so they are found again.
     pub fn refresh_outdated_faces(&self, model: &str) -> ProjectResult<Vec<MediaId>> {
-        let ids = self.db().outdated_faces(model)?;
+        let key = faces_key(model, self.content()? == ContentKind::Animation);
+        let ids = self.db().outdated_faces(&key)?;
         for &id in &ids {
             let _ = std::fs::remove_dir_all(self.media_faces_dir(id));
         }
@@ -1444,6 +1471,50 @@ pub(crate) mod tests {
         assert_eq!(now.len(), 3);
         assert!(now.iter().all(|t| t.id != wrong));
         assert!(now.iter().any(|t| t.id == blurry[0].id && t.assign == TrackAssign::Pinned));
+    }
+
+    #[test]
+    fn faces_are_found_again_when_the_footage_moves_to_or_from_animation() {
+        let frames = 400;
+        let (_dir, project, id) = project_with_media(frames);
+        let segments: Vec<Segment> = (0..frames)
+            .step_by(100)
+            .map(|s| Segment { start: s, end: s + 100, kind: SegmentKind::Shot, tiny: false })
+            .collect();
+        project.db().store_segments(id, &segments).unwrap();
+        let find = |animated: bool| {
+            let plan = project.faces_plan(id, MODEL).unwrap();
+            assert_eq!((plan.animated, plan.resume), (animated, 0));
+            let found: Vec<FaceTrack> = (0..frames).step_by(100).map(|s| face(0, s, 0.1, 0.9)).collect();
+            project.store_face_chunk(id, 0, frames, &tracks::encode(&found), &[], &[]).unwrap();
+            project.finish_faces(id).unwrap();
+            assert!(project.faces_by_other_model(MODEL).unwrap().is_empty());
+        };
+        // Live action is searched as always.
+        find(false);
+        assert_eq!(project.recluster().unwrap(), 1);
+        // Its faces don't fit 3D animation, which is searched harder: they
+        // are found again, the new pass starting from scratch.
+        project.set_content(ContentKind::Animation).unwrap();
+        assert_eq!(project.faces_by_other_model(MODEL).unwrap(), [id]);
+        assert_eq!(project.refresh_outdated_faces(MODEL).unwrap(), [id]);
+        assert!(project.faces_by_other_model(MODEL).unwrap().is_empty(), "pending, not outdated");
+        find(true);
+        // And back.
+        project.set_content(ContentKind::Live).unwrap();
+        assert_eq!(project.faces_by_other_model(MODEL).unwrap(), [id]);
+        // A pass begun one way and resumed the other starts again.
+        project.refresh_outdated_faces(MODEL).unwrap();
+        let half: Vec<FaceTrack> = vec![face(0, 0, 0.1, 0.9)];
+        project.faces_plan(id, MODEL).unwrap();
+        project.store_face_chunk(id, 0, 100, &tracks::encode(&half), &[], &[]).unwrap();
+        assert_eq!(project.faces_plan(id, MODEL).unwrap().resume, 100);
+        project.set_content(ContentKind::Animation).unwrap();
+        assert_eq!(project.faces_plan(id, MODEL).unwrap().resume, 0);
+        // The search is recorded after the embedder; the embedder alone
+        // says whether two faces' embeddings compare.
+        assert_eq!(faces_key(MODEL, true), "test-embedder+scales");
+        assert_eq!((embedder_of("test-embedder+scales"), embedder_of(MODEL)), (MODEL, MODEL));
     }
 
     #[test]

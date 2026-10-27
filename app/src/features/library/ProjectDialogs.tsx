@@ -35,6 +35,8 @@ function DetailsForm({ project, onDone }: { project: ProjectSummary; onDone: () 
   const [busy, setBusy] = useState(false)
   const retitled = title.trim() !== project.title
   const refilmed = content !== project.content
+  // 3D animation is searched for faces harder (see `Project::faces_plan`).
+  const researched = refilmed && (content === "animation" || project.content === "animation")
   const locked: Partial<Record<ContentKind, string>> =
     project.content === "anime"
       ? { live: ANIME_APART, animation: ANIME_APART, mixed: ANIME_APART }
@@ -71,7 +73,13 @@ function DetailsForm({ project, onDone }: { project: ProjectSummary; onDone: () 
         </Field>
         <Field
           label="Footage"
-          hint={refilmed ? "The characters are grouped again for it. Your names and decisions stay." : footageBlurb(content)}
+          hint={
+            researched
+              ? "Faces are found again for it, then the characters regrouped. Your names and decisions stay."
+              : refilmed
+                ? "The characters are grouped again for it. Your names and decisions stay."
+                : footageBlurb(content)
+          }
           className="mt-4 items-start"
         >
           <FootagePicker value={content} onChange={setContent} locked={locked} />

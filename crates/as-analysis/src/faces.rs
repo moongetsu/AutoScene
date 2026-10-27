@@ -23,6 +23,7 @@ use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TryRecvError};
 use as_core::{CancelToken, FrameIdx, FrameRange};
 use as_media::{MediaInfo, Source, Tools};
 use as_vision::arcface::{self, ArcFace};
+use as_vision::scrfd::{NMS_IOU, iou};
 use as_vision::{FaceBox, PersonBox, PersonReid, PpDet, Scrfd, image, reid};
 
 use crate::AnalysisError;
@@ -38,10 +39,11 @@ pub struct FaceParams {
     /// Frames between samples.
     pub stride: u32,
     /// Frames are decoded to fit this box (aligned crops and thumbnails come
-    /// from it; detection runs at half size for frames wider than 960, see
-    /// [`frame_sizes`]).
+    /// from it; faces are searched for at the sizes of [`detect_looks`]).
     pub decode_max: (u32, u32),
     pub det_threshold: f32,
+    /// How thoroughly each sample is searched (see [`detect_looks`]).
+    pub search: Search,
     /// Faces smaller than this (fraction of the frame height) are ignored.
     pub min_height: f32,
     /// Thumbnail side and how much context around the face box it shows.
@@ -67,6 +69,7 @@ impl Default for FaceParams {
             stride: 3,
             decode_max: (1280, 720),
             det_threshold: 0.5,
+            search: Search::Once,
             min_height: 0.04,
             thumb_size: 160,
             thumb_context: 1.7,
@@ -133,24 +136,87 @@ pub struct BodyModels<'a> {
 
 /// Where a pass's faces come from.
 pub enum Faces<'a> {
-    /// Found by the pass: the detector takes frames of the detection size
-    /// of [`frame_sizes`].
-    Find { detector: &'a mut Scrfd, embedder: &'a mut ArcFace },
+    /// Found by the pass: one detector per look of [`detect_looks`], in
+    /// its order, each loaded for its look's size.
+    Find { detectors: &'a mut [Scrfd], embedder: &'a mut ArcFace },
     /// Found before: the pass only looks for people (with [`BodyModels`])
     /// and ties them to these.
     Known(&'a [KnownFace]),
 }
 
 /// The size a media's samples are decoded at, and the size faces are
-/// detected at (half of it for frames wider than 960) — the frame size the
-/// detector given to [`face_tracks`] must be loaded for.
+/// detected at (half of it for frames wider than 960) — the one size a
+/// [`Search::Once`] looks at (see [`detect_looks`]).
 pub fn frame_sizes(info: &MediaInfo, params: &FaceParams) -> ((usize, usize), (usize, usize)) {
     let (w, h) = as_media::frames::sample_size(info, params.decode_max, 4);
     let (w, h) = (w as usize, h as usize);
     ((w, h), if w > 960 { (w / 2, h / 2) } else { (w, h) })
 }
 
+/// How thoroughly a pass searches each sample for faces.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Search {
+    /// Once, at the detection size of [`frame_sizes`] (live action).
+    #[default]
+    Once,
+    /// At the decoded size and at half of it, and at a quarter of it where
+    /// neither found a clear face ([`CLEAR_FACE`]). SCRFD finds faces in a
+    /// band of sizes of its input: the decoded size finds the small faces
+    /// half of it loses, a quarter the close-ups too big for either.
+    Scales,
+}
+
+/// One size a sample is searched at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Look {
+    /// The size the detector for this look is loaded for: the decoded
+    /// frame shrunk `shrink` (1, 2 or 4) times.
+    pub size: (usize, usize),
+    pub shrink: usize,
+    /// Only in samples where the looks before found no clear face.
+    pub fallback: bool,
+}
+
+/// A face this sure (and at least `min_height` tall) is clear: a sample
+/// with one needs no fallback look.
+pub const CLEAR_FACE: f32 = 0.5;
+
+/// The sizes a pass searches `info`'s samples at, smallest shrink first —
+/// [`face_tracks`] takes one detector per look, loaded for its size. The
+/// first look of [`Search::Once`] is the detection size of [`frame_sizes`].
+pub fn detect_looks(info: &MediaInfo, params: &FaceParams) -> Vec<Look> {
+    let ((w, h), (dw, _)) = frame_sizes(info, params);
+    looks((w, h), w / dw, params.search)
+}
+
+/// The looks of a search of `w`×`h` samples (multiples of 4, as decoded)
+/// whose detection size is `shrink` times smaller.
+fn looks((w, h): (usize, usize), shrink: usize, search: Search) -> Vec<Look> {
+    let look = |shrink: usize, fallback| Look { size: (w / shrink, h / shrink), shrink, fallback };
+    match search {
+        Search::Once => vec![look(shrink, false)],
+        Search::Scales => vec![look(1, false), look(2, false), look(4, true)],
+    }
+}
+
 impl FaceParams {
+    /// The face pass for 3D animation: SCRFD, trained on photos, misses
+    /// rendered faces that are masked and in profile, close-ups and small
+    /// faces in the back, so it looks at more sizes. On 160 random
+    /// hand-labelled frames of one CGI film (233 faces; 2026-10-27) it finds
+    /// 79% of them, 97% of what it finds being faces, where the live-action
+    /// search finds 72% (99%). A lower threshold finds more but brings
+    /// things that aren't faces into the characters (0.4: 83% of the faces,
+    /// and 42 such tracks on the film instead of 17), so it stays at live
+    /// action's. Costs about four times the detector time, mostly the
+    /// decoded size's look (a fifth more time for the whole pass). End to
+    /// end on that film, Ladybug, Cat Noir and Hawk Moth keep 9-18% more
+    /// screen time on their character, but the harder faces group a little
+    /// worse (BCubed F per screen time 0.004-0.009 lower).
+    pub fn animated() -> Self {
+        Self { search: Search::Scales, ..Self::default() }
+    }
+
     /// How much a detection says about identity, 0..=1.
     pub fn quality(&self, norm: f32, height: f32) -> f32 {
         let n = ((norm - self.norm_floor) / (self.norm_full - self.norm_floor)).clamp(0.0, 1.0);
@@ -274,25 +340,95 @@ fn stage(
     }
 }
 
-/// The faces of a batch's samples. `halve`: detect on half-size copies
-/// (boxes are scaled back).
-fn find_faces(
-    detector: &mut Scrfd,
+/// The faces in `w`×`h` RGB24 `frames`, in their pixels, strongest first:
+/// each of `looks` searched with the detector at its place in `detectors`
+/// (on copies shrunk by halving). One look gives its detector's answer;
+/// several are pooled (see [`pool`]), faces too small to count left out.
+pub fn find_faces(
+    detectors: &mut [Scrfd],
+    looks: &[Look],
     (w, h): (usize, usize),
-    halve: bool,
-    threshold: f32,
-    batch: &mut Batch,
-) -> Result<(), AnalysisError> {
-    batch.faces = if halve {
-        let small: Vec<Vec<u8>> = batch.samples.iter().map(|q| image::half(&q.rgb, w, h)).collect();
-        let frames: Vec<&[u8]> = small.iter().map(Vec::as_slice).collect();
-        let found = detector.detect_many(&frames, threshold)?;
-        found.into_iter().map(|faces| faces.into_iter().map(|b| b.scaled(2.0)).collect()).collect()
-    } else {
-        let frames: Vec<&[u8]> = batch.samples.iter().map(|q| q.rgb.as_slice()).collect();
-        detector.detect_many(&frames, threshold)?
-    };
-    Ok(())
+    params: &FaceParams,
+    frames: &[&[u8]],
+) -> Result<Vec<Vec<FaceBox>>, AnalysisError> {
+    assert_eq!(detectors.len(), looks.len(), "one detector per look");
+    search(looks, (w, h), params, frames, |look, input| Ok(detectors[look].detect_many(input, params.det_threshold)?))
+}
+
+/// [`find_faces`] with `detect(look, frames)` finding the faces of frames
+/// at that look's size.
+fn search(
+    looks: &[Look],
+    (w, h): (usize, usize),
+    params: &FaceParams,
+    frames: &[&[u8]],
+    mut detect: impl FnMut(usize, &[&[u8]]) -> Result<Vec<Vec<FaceBox>>, AnalysisError>,
+) -> Result<Vec<Vec<FaceBox>>, AnalysisError> {
+    let tall = |b: &FaceBox| b.height() >= params.min_height * h as f32;
+    // Per frame, each box with the look that found it.
+    let mut found: Vec<Vec<(FaceBox, usize)>> = vec![Vec::new(); frames.len()];
+    // The frames at the shrink reached so far.
+    let (mut shrink, mut small): (usize, Vec<Vec<u8>>) = (1, Vec::new());
+    for (n, look) in looks.iter().enumerate() {
+        assert!(look.shrink >= shrink && look.shrink.is_power_of_two(), "looks by growing shrink: {looks:?}");
+        while shrink < look.shrink {
+            let (sw, sh) = (w / shrink, h / shrink);
+            small = if shrink == 1 {
+                frames.iter().map(|f| image::half(f, sw, sh)).collect()
+            } else {
+                small.iter().map(|f| image::half(f, sw, sh)).collect()
+            };
+            shrink *= 2;
+        }
+        let todo: Vec<usize> = (0..frames.len())
+            .filter(|&i| !look.fallback || !found[i].iter().any(|(b, _)| b.score >= CLEAR_FACE && tall(b)))
+            .collect();
+        if todo.is_empty() {
+            continue;
+        }
+        let input: Vec<&[u8]> =
+            todo.iter().map(|&i| if shrink == 1 { frames[i] } else { small[i].as_slice() }).collect();
+        for (i, faces) in todo.into_iter().zip(detect(n, &input)?) {
+            let faces = faces.into_iter().map(|b| if shrink == 1 { b } else { b.scaled(shrink as f32) });
+            // Pooled, a face too small to count must not hide one that counts.
+            found[i].extend(faces.filter(|b| looks.len() == 1 || tall(b)).map(|b| (b, n)));
+        }
+    }
+    Ok(found
+        .into_iter()
+        .map(|f| if looks.len() == 1 { f.into_iter().map(|(b, _)| b).collect() } else { pool(f) })
+        .collect())
+}
+
+/// A box of one look lying this much (of its own area) inside a stronger
+/// box of another look is part of that face.
+const INSIDE: f32 = 0.8;
+
+/// What several looks found in one frame, each face once, strongest first:
+/// a box goes when it overlaps a stronger one kept by more than
+/// [`NMS_IOU`], or lies mostly inside (or around) a stronger one another
+/// look found — one size may take a part of a face for a face, another the
+/// whole of it, and two boxes there would make two people of one.
+fn pool(mut found: Vec<(FaceBox, usize)>) -> Vec<FaceBox> {
+    found.sort_by(|a, b| b.0.score.total_cmp(&a.0.score));
+    let mut keep: Vec<(FaceBox, usize)> = Vec::with_capacity(found.len());
+    for (b, look) in found {
+        let apart = |(k, other): &(FaceBox, usize)| {
+            iou(&k.bbox, &b.bbox) <= NMS_IOU && (*other == look || within(&k.bbox, &b.bbox) < INSIDE)
+        };
+        if keep.iter().all(apart) {
+            keep.push((b, look));
+        }
+    }
+    keep.into_iter().map(|(b, _)| b).collect()
+}
+
+/// How much of the smaller of two boxes lies inside the other.
+fn within(a: &[f32; 4], b: &[f32; 4]) -> f32 {
+    let iw = (a[2].min(b[2]) - a[0].max(b[0])).max(0.0);
+    let ih = (a[3].min(b[3]) - a[1].max(b[1])).max(0.0);
+    let smaller = ((a[2] - a[0]) * (a[3] - a[1])).min((b[2] - b[0]) * (b[3] - b[1]));
+    if smaller <= 0.0 { 0.0 } else { iw * ih / smaller }
 }
 
 /// The people of a batch's samples on the people grid.
@@ -803,14 +939,16 @@ pub fn face_tracks(
     if resume >= n {
         return Ok(());
     }
-    let (size, det_size) = frame_sizes(src.info, params);
-    if let Faces::Find { detector, .. } = &faces
-        && detector.frame_size() != det_size
-    {
-        return Err(AnalysisError::Internal(format!(
-            "face detector loaded for {:?} frames, this media needs {det_size:?}",
-            detector.frame_size()
-        )));
+    let (size, _) = frame_sizes(src.info, params);
+    let looks = detect_looks(src.info, params);
+    if let Faces::Find { detectors, .. } = &faces {
+        let loaded: Vec<(usize, usize)> = detectors.iter().map(Scrfd::frame_size).collect();
+        let needed: Vec<(usize, usize)> = looks.iter().map(|l| l.size).collect();
+        if loaded != needed {
+            return Err(AnalysisError::Internal(format!(
+                "face detectors loaded for {loaded:?} frames, this media needs {needed:?}"
+            )));
+        }
     }
     if let Some(b) = &bodies {
         if b.detector.frame_size() != size {
@@ -827,7 +965,7 @@ pub fn face_tracks(
         }
     }
     let (embedder, known, face_detector) = match faces {
-        Faces::Find { detector, embedder } => (Some(embedder), &[][..], Some(detector)),
+        Faces::Find { detectors, embedder } => (Some(embedder), &[][..], Some(detectors)),
         Faces::Known(k) if bodies.is_some() => (None, k, None),
         // Nothing to look for.
         Faces::Known(_) => return Ok(()),
@@ -841,13 +979,12 @@ pub fn face_tracks(
     // Shots from the resume point on; samples outside them are skipped.
     let shots = &shots[shots.partition_point(|s| s.end <= resume)..];
     debug_assert!(shots.first().is_none_or(|s| s.start >= resume), "resume points are shot starts");
-    let batch = face_detector.as_ref().map_or(DETECT_BATCH, |d| d.batch());
+    let batch = face_detector.as_ref().and_then(|d| d.first()).map_or(DETECT_BATCH, Scrfd::batch);
     std::thread::scope(|scope| {
         // One batch waits while a detector works on the next. Faces first,
         // then people, then back here.
         let (to_detector, first) = mpsc::sync_channel::<Detected>(1);
         let (detected, from_detector) = mpsc::channel::<Detected>();
-        let (halve, threshold) = (det_size != size, params.det_threshold);
         let starting = |what: &str, e: std::io::Error| AnalysisError::Internal(format!("starting the {what}: {e}"));
         let (reid, people_detector, people_params) = match bodies {
             Some(BodyModels { detector, reid, params }) => (Some(reid), Some(detector), params),
@@ -856,7 +993,12 @@ pub fn face_tracks(
         // What the person detector takes its batches from, when it runs.
         let into_people: Option<Receiver<Detected>> = match face_detector {
             Some(d) => {
-                let work = move |b: &mut Batch| find_faces(d, size, halve, threshold, b);
+                let looks = &looks;
+                let work = move |b: &mut Batch| {
+                    let frames: Vec<&[u8]> = b.samples.iter().map(|q| q.rgb.as_slice()).collect();
+                    b.faces = find_faces(d, looks, size, params, &frames)?;
+                    Ok(())
+                };
                 let thread = std::thread::Builder::new().name("face detector".into());
                 if people_detector.is_some() {
                     let (out, rx) = mpsc::sync_channel::<Detected>(1);
@@ -968,11 +1110,10 @@ pub fn face_tracks(
 mod tests {
     use super::*;
 
-    #[test]
-    fn large_frames_are_searched_at_half_size() {
+    fn info(width: u32, height: u32) -> MediaInfo {
         use as_core::Rational;
         use as_media::{HdrKind, VideoStream};
-        let info = |width, height| MediaInfo {
+        MediaInfo {
             container: "matroska,webm".into(),
             duration_sec: Some(10.0),
             start_sec: 0.0,
@@ -1000,10 +1141,139 @@ mod tests {
             },
             audio: vec![],
             subtitles: vec![],
-        };
+        }
+    }
+
+    #[test]
+    fn large_frames_are_searched_at_half_size() {
         let p = FaceParams::default();
         assert_eq!(frame_sizes(&info(1920, 1080), &p), ((1280, 720), (640, 360)));
         assert_eq!(frame_sizes(&info(720, 480), &p), ((720, 480), (720, 480)));
+    }
+
+    #[test]
+    fn live_action_is_searched_once_at_the_detection_size() {
+        let p = FaceParams::default();
+        assert_eq!((p.search, p.det_threshold), (Search::Once, 0.5));
+        let once = |size, shrink| [Look { size, shrink, fallback: false }];
+        assert_eq!(detect_looks(&info(1920, 1080), &p), once((640, 360), 2));
+        assert_eq!(detect_looks(&info(720, 480), &p), once((720, 480), 1));
+    }
+
+    #[test]
+    fn animation_is_searched_at_three_sizes() {
+        let p = FaceParams::animated();
+        assert_eq!(p.search, Search::Scales);
+        // Only the search differs from live action, the threshold included.
+        let live = FaceParams::default();
+        assert_eq!(
+            (p.det_threshold, p.min_height, p.stride, p.decode_max),
+            (live.det_threshold, live.min_height, live.stride, live.decode_max)
+        );
+        let look = |size, shrink, fallback| Look { size, shrink, fallback };
+        let wide = [look((1280, 536), 1, false), look((640, 268), 2, false), look((320, 134), 4, true)];
+        assert_eq!(detect_looks(&info(3840, 1608), &p), wide);
+        let small = [look((720, 480), 1, false), look((360, 240), 2, false), look((180, 120), 4, true)];
+        assert_eq!(detect_looks(&info(720, 480), &p), small);
+    }
+
+    fn face(x: f32, y: f32, side: f32, score: f32) -> FaceBox {
+        FaceBox { bbox: [x, y, x + side, y + side], score, kps: [[x, y]; 5] }
+    }
+
+    /// Frames of one grey each (frame `i` is all `i`, at any size), and
+    /// what [`search`] finds in them when `fake(look, i)` is what each look
+    /// finds in frame `i`; plus which looks ran on how many frames of what length.
+    #[allow(clippy::type_complexity)]
+    fn fake_search(
+        looks: &[Look],
+        n: usize,
+        fake: impl Fn(usize, u8) -> Vec<FaceBox>,
+    ) -> (Vec<Vec<FaceBox>>, Vec<(usize, usize, usize)>) {
+        let (w, h) = (64, 32);
+        let frames: Vec<Vec<u8>> = (0..n).map(|i| vec![i as u8; w * h * 3]).collect();
+        let refs: Vec<&[u8]> = frames.iter().map(Vec::as_slice).collect();
+        let mut ran = Vec::new();
+        let found = search(looks, (w, h), &FaceParams::animated(), &refs, |look, input| {
+            ran.push((look, input.len(), input[0].len()));
+            Ok(input.iter().map(|f| fake(look, f[0])).collect())
+        })
+        .unwrap();
+        (found, ran)
+    }
+
+    #[test]
+    fn one_look_at_half_size_is_the_detector_s_own_answer_scaled() {
+        // Two overlapping faces stay two: the detector's own NMS decides.
+        let both = vec![face(2.0, 2.0, 4.0, 0.9), face(3.0, 2.0, 4.0, 0.6)];
+        let (found, ran) = fake_search(&looks((64, 32), 2, Search::Once), 2, |_, _| both.clone());
+        assert_eq!(ran, [(0, 2, 32 * 16 * 3)]);
+        let scaled: Vec<FaceBox> = both.iter().map(|b| b.scaled(2.0)).collect();
+        assert_eq!(found, [scaled.clone(), scaled]);
+    }
+
+    #[test]
+    fn the_quarter_looks_only_where_no_clear_face_was_found() {
+        let (found, ran) = fake_search(&looks((64, 32), 2, Search::Scales), 3, |look, frame| match (look, frame) {
+            // Frame 0: a clear face at full size.
+            (0, 0) => vec![face(10.0, 4.0, 8.0, 0.9)],
+            // Frame 1: an unsure one at half size.
+            (1, 1) => vec![face(20.0, 2.0, 4.0, 0.4)],
+            // Frame 2: a sure one too small to count (under 4% of 32 rows).
+            (0, 2) => vec![face(30.0, 10.0, 1.0, 0.95)],
+            // A close-up only a quarter shows.
+            (2, _) => vec![face(0.0, 0.0, 6.0, 0.7)],
+            _ => vec![],
+        });
+        assert_eq!(ran, [(0, 3, 64 * 32 * 3), (1, 3, 32 * 16 * 3), (2, 2, 16 * 8 * 3)]);
+        let close_up = face(0.0, 0.0, 24.0, 0.7);
+        assert_eq!(found[0], [face(10.0, 4.0, 8.0, 0.9)]);
+        assert_eq!(found[1], [close_up, face(40.0, 4.0, 8.0, 0.4)]);
+        // The face too small to count is gone too.
+        assert_eq!(found[2], [close_up]);
+    }
+
+    #[test]
+    fn a_face_several_looks_find_is_kept_once() {
+        let (found, _) = fake_search(&looks((64, 32), 2, Search::Scales), 1, |look, _| match look {
+            0 => vec![face(10.0, 4.0, 8.0, 0.6), face(40.0, 4.0, 8.0, 0.8)],
+            // The first face again, surer at half size.
+            1 => vec![face(5.0, 2.0, 4.0, 0.85)],
+            _ => panic!("a clear face was found: no quarter look"),
+        });
+        assert_eq!(found[0], [face(10.0, 4.0, 8.0, 0.85), face(40.0, 4.0, 8.0, 0.8)]);
+    }
+
+    #[test]
+    fn a_face_part_one_look_takes_for_a_face_goes() {
+        // The decoded size sees eyes and nose of a close-up as a face (IoU
+        // with the whole face 0.25, all of it inside); half size, the face.
+        let part = face(12.0, 8.0, 8.0, 0.6);
+        let whole = face(8.0, 4.0, 16.0, 0.9);
+        let (found, _) = fake_search(&looks((64, 32), 2, Search::Scales), 1, |look, _| match look {
+            0 => vec![part, face(40.0, 4.0, 4.0, 0.7)],
+            1 => vec![face(4.0, 2.0, 8.0, 0.9)],
+            _ => vec![],
+        });
+        assert_eq!(found[0], [whole, face(40.0, 4.0, 4.0, 0.7)]);
+        // One look's own boxes are its detector's to sort out.
+        let (found, _) = fake_search(&looks((64, 32), 2, Search::Scales), 1, |look, _| match look {
+            0 => vec![whole, part],
+            _ => vec![],
+        });
+        assert_eq!(found[0], [whole, part]);
+    }
+
+    #[test]
+    fn a_face_too_small_to_count_hides_none_that_counts() {
+        // 4% of 32 rows is 1.28: the surer box at the decoded size is under
+        // it, the one half size finds of the same face over it.
+        let (found, _) = fake_search(&looks((64, 32), 2, Search::Scales), 1, |look, _| match look {
+            0 => vec![face(10.0, 10.0, 1.2, 0.9)],
+            1 => vec![face(5.0, 5.0, 0.7, 0.6)],
+            _ => vec![],
+        });
+        assert_eq!(found[0], [face(10.0, 10.0, 1.4, 0.6)]);
     }
 
     #[test]

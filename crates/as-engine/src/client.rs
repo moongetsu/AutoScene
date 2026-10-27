@@ -96,6 +96,9 @@ pub struct FacesInput {
     /// Faces found before (`as_analysis::tracks::encode_known`): only
     /// people are looked for.
     pub known: Option<Vec<u8>>,
+    /// 3D animation: faces are searched at more sizes
+    /// (`as_analysis::FaceParams::animated`).
+    pub animated: bool,
 }
 
 enum Msg {
@@ -236,6 +239,7 @@ impl Engine {
                     chunk: job.chunk,
                     bodies: job.bodies,
                     known: known.clone(),
+                    animated: job.animated,
                 }))
             },
             |reply| match reply {
