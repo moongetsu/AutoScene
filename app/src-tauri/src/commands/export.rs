@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use as_api::{ClipRequest, ExportPlan, ExportPreset, ExportRequest, ExportSummary};
 use as_core::ProjectId;
 use as_export::builtin_presets;
+use as_media::Caps;
 use tauri::{AppHandle, State};
 use tauri_specta::Event;
 
@@ -66,8 +67,14 @@ pub async fn export_plan(
     project_id: ProjectId,
     clips: Vec<ClipRequest>,
 ) -> AppResult<ExportPlan> {
-    let lib = state.library.clone();
-    blocking(move || Ok(lib.project(project_id)?.export_plan(&clips, &builtin_presets())?)).await
+    let (lib, tools) = (state.library.clone(), state.tools().ok());
+    blocking(move || {
+        // Sized for the encoders an export would use (found once, in about a second).
+        let none = Caps::default();
+        let caps = tools.as_deref().map_or(&none, |t| t.caps());
+        Ok(lib.project(project_id)?.export_plan(&clips, &builtin_presets(), caps)?)
+    })
+    .await
 }
 
 /// Newest first.

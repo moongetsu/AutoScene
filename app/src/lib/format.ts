@@ -31,6 +31,11 @@ export function formatPercent(v: number | null | undefined): string {
   return v == null ? "" : `${Math.round(v * 100)}%`
 }
 
+/** "H.264 · Mobile (CapCut, Alight Motion)" → "H.264 · Mobile": an export format's name without what its brackets add. */
+export function shortFormatName(name: string): string {
+  return name.replace(/\s*\([^)]*\)\s*$/, "") || name
+}
+
 /** Remaining time for progress lines: "about 3 min left". */
 export function formatEta(ms: number | null | undefined): string {
   if (ms == null || !Number.isFinite(ms)) return ""

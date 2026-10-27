@@ -29,7 +29,7 @@ use as_media::{Caps, CodecFamily, HdrKind, MediaInfo, Source, Tools, Vendor, run
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
-use crate::merge::MergeShape;
+use crate::merge::{MergeShape, natural_size};
 use crate::preset::{
     AudioCodec, Container, DnxProfile, EncoderPref, ExportPreset, Gop, HdrMode, ProResProfile, VideoCodec,
 };
@@ -80,6 +80,39 @@ pub(crate) struct Encoding {
     pub(crate) pix_fmt: &'static str,
 }
 
+/// NVENC's constant quality for a preset's CRF-like `quality`. The scales
+/// differ, so NVENC gets a higher number: the one that looks like x264 (and
+/// x265) on film grain, where the difference shows. Measured on 1080p
+/// Breaking Bad (VMAF, PSNR): x264 CRF 14 all-intra ≈ CQ 21–23, CRF 16 with a
+/// keyframe a second ≈ CQ 17–19, x265 CRF 18 ≈ CQ 18–20, the same steps
+/// apart from CRF 10 to 22. A clean picture then looks a little better than
+/// x264's and takes more (there CQ +10 and +6 would match).
+pub(crate) fn nvenc_cq(quality: u8, gop: Gop) -> u8 {
+    let offset = if gop == Gop::AllIntra { 7 } else { 1 };
+    quality.saturating_add(offset).min(51)
+}
+
+/// The most bits a second NVENC may write of `w`×`h` pictures at `fps`.
+/// Without a cap of its own it keeps to the highest rate of the lowest
+/// H.264/HEVC level that fits the picture (1080p24: 25 Mbit/s H.264, 12
+/// HEVC), whatever the quality asked for; with one it picks the level that
+/// allows it (1080p24: H.264 level 4.1 with a GOP and 5 all-intra, HEVC 5
+/// High tier). Three bits a pixel all-intra and 1.5 with a GOP are well
+/// above what the presets take (film grain at 1080p: 1.2 and 0.6), and
+/// level 5.2's rate the most: above it NVENC picks levels made for 8K.
+pub(crate) fn nvenc_maxrate(gop: Gop, hevc: bool, (w, h): (u32, u32), fps: f64) -> f64 {
+    let bpp = if gop == Gop::AllIntra { 3.0 } else { 1.5 };
+    let top = if hevc { 240e6 } else { 300e6 };
+    (bpp * f64::from(w) * f64::from(h) * fps).clamp(1e6, top)
+}
+
+/// The frame rate ffmpeg tells the encoder of an episode at `fps`: the
+/// stream's own when it is higher (a field rate, a variable-rate file), so a
+/// cap per second leaves every frame its share.
+pub(crate) fn encoder_fps(info: &MediaInfo, fps: f64) -> f64 {
+    fps.max(info.video.r_frame_rate.to_f64())
+}
+
 fn gop_args(gop: Gop, fps: f64, hardware: Option<Vendor>, args: &mut Vec<String>) {
     match gop {
         Gop::Editing => {
@@ -98,7 +131,17 @@ fn gop_args(gop: Gop, fps: f64, hardware: Option<Vendor>, args: &mut Vec<String>
     }
 }
 
-pub(crate) fn resolve_encoding(codec: &VideoCodec, caps: &Caps, fps: f64) -> ExportResult<Encoding> {
+/// Which encoder and arguments `codec` resolves to on a machine with `caps`,
+/// for `size` pictures with keyframes spaced by `fps`. `fastest` is the
+/// highest frame rate an encoder of them is told ([`encoder_fps`]): NVENC's
+/// cap follows it.
+pub(crate) fn resolve_encoding(
+    codec: &VideoCodec,
+    caps: &Caps,
+    fps: f64,
+    size: (u32, u32),
+    fastest: f64,
+) -> ExportResult<Encoding> {
     let sw = |name: &str| -> ExportResult<String> {
         if caps.has_sw(name) { Ok(name.to_string()) } else { Err(ExportError::EncoderMissing(name.into())) }
     };
@@ -139,10 +182,16 @@ pub(crate) fn resolve_encoding(codec: &VideoCodec, caps: &Caps, fps: f64) -> Exp
                 Some(e) => {
                     args.extend(["-c:v".into(), e.name.clone()]);
                     match e.vendor {
-                        Vendor::Nvidia => args.extend(
-                            ["-preset", "p6", "-tune", "hq", "-rc", "vbr", "-cq", &q, "-b:v", "0", "-spatial-aq", "1"]
-                                .map(String::from),
-                        ),
+                        Vendor::Nvidia => {
+                            let cq = nvenc_cq(*quality, *gop).to_string();
+                            let kbps = nvenc_maxrate(*gop, hevc, size, fastest) / 1000.0;
+                            let (max, buf) = (format!("{kbps:.0}k"), format!("{:.0}k", 2.0 * kbps));
+                            args.extend(
+                                ["-preset", "p6", "-tune", "hq", "-rc", "vbr", "-cq", &cq, "-b:v", "0"]
+                                    .map(String::from),
+                            );
+                            args.extend(["-maxrate", &max, "-bufsize", &buf, "-spatial-aq", "1"].map(String::from));
+                        }
                         Vendor::Amd => args.extend(
                             ["-quality", "quality", "-rc", "cqp", "-qp_i", &q, "-qp_p", &q, "-qp_b", &q]
                                 .map(String::from),
@@ -227,7 +276,8 @@ fn clip_recipe(tools: &Tools, job: &ClipJob) -> ExportResult<Recipe> {
     let ClipJob { src: Source { info, index, .. }, range, preset, .. } = job;
     let (s, e) = (range.start, range.end);
     let fps = index.nominal_fps.to_f64();
-    let enc = resolve_encoding(&preset.video, tools.caps(), fps)?;
+    let size = natural_size(info, preset.max_height);
+    let enc = resolve_encoding(&preset.video, tools.caps(), fps, size, encoder_fps(info, fps))?;
 
     let hdr_in = info.video.hdr != HdrKind::None;
     let tonemap = hdr_in && (preset.hdr == HdrMode::ToneMap || !preset.video.supports_hdr());
@@ -491,4 +541,106 @@ fn verify(stats: &Path, index: &FrameIndex, range: FrameRange) -> Result<(), Str
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use as_media::HwEncoder;
+
+    use super::*;
+    use crate::builtin_presets;
+
+    const FILM: f64 = 24000.0 / 1001.0;
+
+    /// A machine with an NVIDIA card (the encoders a smoke test finds there).
+    fn nvidia() -> Caps {
+        let hw = |name: &str, family| HwEncoder { name: name.into(), family, vendor: Vendor::Nvidia };
+        Caps {
+            hw_encoders: vec![hw("h264_nvenc", CodecFamily::H264), hw("hevc_nvenc", CodecFamily::Hevc)],
+            sw_encoders: vec!["libx264".into(), "libx265".into()],
+            ..Caps::default()
+        }
+    }
+
+    fn video(id: &str) -> VideoCodec {
+        builtin_presets().into_iter().find(|p| p.id == id).unwrap_or_else(|| panic!("preset {id}")).video
+    }
+
+    fn args(id: &str, size: (u32, u32), fps: f64) -> String {
+        resolve_encoding(&video(id), &nvidia(), fps, size, fps).unwrap().args.join(" ")
+    }
+
+    #[test]
+    fn nvenc_gets_its_own_quality_and_a_cap_above_it() {
+        // 1080p23.976: CQ 14 + 7 all-intra, + 1 with a GOP; at most 3 and
+        // 1.5 bits a pixel, twice that buffered.
+        let hd = (1920, 1080);
+        assert_eq!(
+            args("h264-intra", hd, FILM),
+            "-c:v h264_nvenc -preset p6 -tune hq -rc vbr -cq 21 -b:v 0 -maxrate 149150k -bufsize 298300k \
+             -spatial-aq 1 -bf 0 -force_key_frames expr:1 -forced-idr 1"
+        );
+        assert_eq!(
+            args("h264-edit", hd, FILM),
+            "-c:v h264_nvenc -preset p6 -tune hq -rc vbr -cq 17 -b:v 0 -maxrate 74575k -bufsize 149150k \
+             -spatial-aq 1 -g 24 -bf 0"
+        );
+        assert_eq!(
+            args("h264-mobile", hd, FILM),
+            "-c:v h264_nvenc -preset p6 -tune hq -rc vbr -cq 19 -b:v 0 -maxrate 74575k -bufsize 149150k \
+             -spatial-aq 1 -g 24 -bf 0"
+        );
+        assert_eq!(
+            args("hevc10", hd, FILM),
+            "-c:v hevc_nvenc -preset p6 -tune hq -rc vbr -cq 19 -b:v 0 -maxrate 74575k -bufsize 149150k \
+             -spatial-aq 1 -g 24 -bf 0 -tag:v hvc1"
+        );
+        // The cap follows the picture and frame rate, from 1 Mbit/s up to
+        // level 5.2's rate.
+        assert!(args("h264-edit", (1280, 720), 25.0).contains("-maxrate 34560k -bufsize 69120k"));
+        assert!(args("h264-edit", (160, 96), 24.0).contains("-maxrate 1000k -bufsize 2000k"));
+        assert!(args("h264-intra", (3840, 2160), 60.0).contains("-maxrate 300000k -bufsize 600000k"));
+        assert!(args("hevc10", (3840, 2160), 60.0).contains("-maxrate 240000k -bufsize 480000k"));
+    }
+
+    #[test]
+    fn the_cap_follows_the_rate_the_encoder_is_told() {
+        let mut info: MediaInfo = serde_json::from_value(serde_json::json!({
+            "container": "mpegts", "durationSec": null, "startSec": 0.0, "sizeBytes": null, "bitRate": null,
+            "video": {
+                "index": 0, "codec": "h264", "profile": null, "pixFmt": "yuv420p", "bitDepth": 8,
+                "width": 1920, "height": 1080, "sar": Rational::new(1, 1), "rFrameRate": Rational::new(50, 1),
+                "avgFrameRate": null, "timeBase": Rational::new(1, 90_000), "colorPrimaries": null,
+                "colorTransfer": null, "colorSpace": null, "colorRange": null, "fieldOrder": "tt",
+                "rotation": 0, "hdr": "none"
+            },
+            "audio": [], "subtitles": []
+        }))
+        .unwrap();
+        // An interlaced stream at its field rate: ffmpeg tells the encoder 50.
+        assert_eq!(encoder_fps(&info, 25.0), 50.0);
+        info.video.r_frame_rate = Rational::new(25, 1);
+        assert_eq!(encoder_fps(&info, 25.0), 25.0);
+        // A stream without a rate of its own keeps its episode's.
+        info.video.r_frame_rate = Rational::new(0, 1);
+        assert_eq!(encoder_fps(&info, 25.0), 25.0);
+    }
+
+    #[test]
+    fn nvenc_quality_stays_on_its_scale() {
+        assert_eq!(nvenc_cq(0, Gop::AllIntra), 7);
+        assert_eq!(nvenc_cq(18, Gop::Delivery), 19);
+        assert_eq!(nvenc_cq(50, Gop::AllIntra), 51);
+        assert_eq!(nvenc_cq(u8::MAX, Gop::Editing), 51);
+    }
+
+    #[test]
+    fn the_software_encoders_keep_their_crf() {
+        let mut v = video("h264-intra");
+        if let VideoCodec::H264 { encoder, .. } = &mut v {
+            *encoder = EncoderPref::Software;
+        }
+        let x264 = resolve_encoding(&v, &nvidia(), FILM, (1920, 1080), FILM).unwrap().args.join(" ");
+        assert_eq!(x264, "-c:v libx264 -preset slow -crf 14 -profile:v high -g 1 -bf 0");
+    }
 }

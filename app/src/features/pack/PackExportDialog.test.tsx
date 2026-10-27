@@ -88,7 +88,9 @@ describe("PackExportDialog", () => {
     // One file has no folder of its own.
     expect(screen.queryByText(/In a folder named after/)).toBeNull()
     expect(screen.getByText("C:\\Library\\Exports\\Show")).toBeTruthy()
-    // Making it takes room for the shots while they are joined.
+    // About how big, in the format chosen; making it takes room for the
+    // shots while they are joined.
+    expect(screen.getByText(/About 286\.1 MB in all as ProRes 422 HQ\./)).toBeTruthy()
     expect(screen.getByText(/needs extra free space/)).toBeTruthy()
 
     fireEvent.click(screen.getByRole("button", { name: "Export 3 shots into one file" }))

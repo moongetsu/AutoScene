@@ -104,8 +104,9 @@ impl AppState {
         }
     }
 
-    /// ffmpeg/ffprobe, located once. Hardware capabilities are probed on first
-    /// use by a job (never on the UI thread).
+    /// ffmpeg/ffprobe, located once. Hardware capabilities are probed once, on
+    /// first use: the warm-up after launch, a job, or a plan sizing an export
+    /// for its encoders (never on the UI thread).
     pub fn tools(&self) -> AppResult<Arc<Tools>> {
         self.tools
             .get_or_init(|| {

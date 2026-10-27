@@ -20,7 +20,8 @@ import { TopBar } from "@/components/ui/topbar"
 import { VirtualGrid } from "@/components/ui/virtual-grid"
 import { castEdit, plural } from "@/features/cast/cast"
 import { ProjectLoadError } from "@/features/project/ProjectLoadError"
-import { firstFailure, useCast, useMediaList, useSettings } from "@/lib/queries"
+import { shortFormatName } from "@/lib/format"
+import { firstFailure, useCast, useMediaList, usePresets, useSettings } from "@/lib/queries"
 import { modKey } from "@/lib/platform"
 import { PACK_SHORTCUTS, useShortcuts } from "@/lib/shortcuts"
 import { type BodyVerdict } from "@/features/shots/shots"
@@ -99,6 +100,7 @@ function Builder({
 }) {
   const navigate = useNavigate()
   const { data: settings } = useSettings()
+  const { data: presets } = usePresets()
   const [show, setShow] = useState<Show>("all")
   const [exportOpen, setExportOpen] = useState(false)
   const clips = pack.preview.data?.clips ?? NO_CLIPS
@@ -108,6 +110,7 @@ function Builder({
   const taken = totals.clips
   const canExport = taken > 0 && pack.current && character != null
   const bytes = pack.plan.data?.sizes.find((s) => s.presetId === settings?.exportPresetId)?.bytes ?? null
+  const format = presets?.find((p) => p.id === settings?.exportPresetId)?.name
 
   useShortcuts(PACK_SHORTCUTS, { export: () => (canExport ? setExportOpen(true) : false) })
 
@@ -269,6 +272,7 @@ function Builder({
         <PackFooter
           totals={totals}
           bytes={bytes}
+          format={format ? shortFormatName(format) : null}
           picks={picks.length}
           canExport={canExport}
           onClearPicks={() => void pack.clearPicks(picks)}

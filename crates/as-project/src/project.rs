@@ -12,10 +12,11 @@ use as_core::{CancelToken, ExportId, FrameIndex, FrameRange, MediaId, ProjectId}
 use as_db::{IngestRecord, NewExportItem, ProjectDb};
 use as_export::clip::PARTIAL_DIR;
 use as_export::{
-    ClipJob, ExportPreset, JoinJob, JoinPart, MergeSource, Part, estimate_bytes, export_clip, join_parts, plan_merge,
+    ClipJob, EstimateClip, ExportPreset, JoinJob, JoinPart, MergeSource, Part, estimate_bytes, export_clip, join_parts,
+    plan_merge,
 };
 use as_media::poster::{StillSize, extract_frame_jpegs};
-use as_media::{MediaInfo, MediaResult, Source, Tools, build_frame_index, idet, probe, proxy};
+use as_media::{Caps, MediaInfo, MediaResult, Source, Tools, build_frame_index, idet, probe, proxy};
 use parking_lot::Mutex;
 
 use crate::naming::{CLIP_TEMPLATE, NameParts, clip_timecode, is_drop_frame, render_name, safe_component};
@@ -879,18 +880,23 @@ impl Project {
 
     /// What an export of `clips` would make: the names its files get (as
     /// [`Project::create_export`] names them, before telling them apart from
-    /// files already in the folder) and its size with each of `presets`.
-    pub fn export_plan(&self, clips: &[ClipRequest], presets: &[ExportPreset]) -> ProjectResult<ExportPlan> {
+    /// files already in the folder) and its size with each of `presets`, with
+    /// the encoders of `caps`.
+    pub fn export_plan(
+        &self,
+        clips: &[ClipRequest],
+        presets: &[ExportPreset],
+        caps: &Caps,
+    ) -> ProjectResult<ExportPlan> {
         let title = self.title()?;
         let mut sources: HashMap<MediaId, (MediaItem, MediaInfo, Arc<FrameIndex>)> = HashMap::new();
         let mut used: HashSet<String> = HashSet::new();
         let mut names = Vec::with_capacity(clips.len());
-        let mut sizes = vec![0.0; presets.len()];
         for c in clips {
             if let std::collections::hash_map::Entry::Vacant(e) = sources.entry(c.media_id) {
                 e.insert(self.ready_source(c.media_id)?);
             }
-            let (m, info, index) = &sources[&c.media_id];
+            let (m, _, index) = &sources[&c.media_id];
             if c.start >= c.end || c.end > index.len() {
                 return Err(ProjectError::Invalid(format!(
                     "Frames {}–{} are outside {}.",
@@ -904,12 +910,24 @@ impl Project {
             let name = unique_name(&base, |n| used.contains(&n.to_lowercase()));
             used.insert(name.to_lowercase());
             names.push(name);
-            let seconds = index.t(c.end) - index.t(c.start);
-            for (size, preset) in sizes.iter_mut().zip(presets) {
-                *size += estimate_bytes(preset, info, m.audio_ordinal, u64::from(c.end - c.start), seconds);
-            }
         }
-        let sizes = presets.iter().zip(sizes).map(|(p, bytes)| PresetSize { preset_id: p.id.clone(), bytes }).collect();
+        let sized: Vec<EstimateClip> = clips
+            .iter()
+            .map(|c| {
+                let (m, info, index) = &sources[&c.media_id];
+                EstimateClip {
+                    info,
+                    audio_ordinal: m.audio_ordinal,
+                    frames: u64::from(c.end - c.start),
+                    seconds: index.t(c.end) - index.t(c.start),
+                    fps: index.nominal_fps.to_f64(),
+                }
+            })
+            .collect();
+        let sizes = presets
+            .iter()
+            .map(|p| PresetSize { preset_id: p.id.clone(), bytes: estimate_bytes(p, caps, &sized, false) })
+            .collect();
         Ok(ExportPlan { names, sizes, folder: None, file: None })
     }
 
@@ -1342,6 +1360,7 @@ mod tests {
             .export_plan(
                 &[clip(48, 96, None), clip(48, 96, None), clip(240, 480, Some("Opening: shot")), clip(0, 24, None)],
                 &presets,
+                &Caps::default(),
             )
             .unwrap();
         // The default name; the same twice gets told apart; a given name is kept, made safe.
@@ -1353,7 +1372,7 @@ mod tests {
         let size = |id: &str| plan.sizes.iter().find(|s| s.preset_id == id).unwrap().bytes;
         assert!(size("prores-hq") > size("h264-edit") && size("h264-edit") > 0.0);
         // Out of range: refused, like the export itself would.
-        assert!(project.export_plan(&[clip(2390, 2500, None)], &presets).is_err());
+        assert!(project.export_plan(&[clip(2390, 2500, None)], &presets, &Caps::default()).is_err());
     }
 
     #[test]

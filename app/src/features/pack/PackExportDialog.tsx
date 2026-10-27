@@ -9,7 +9,7 @@ import { Field, Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { plural } from "@/features/cast/cast"
-import { formatBytes } from "@/lib/format"
+import { formatBytes, shortFormatName } from "@/lib/format"
 import { commands, errorMessage } from "@/lib/ipc"
 import { pickFolder } from "@/lib/media"
 import { qk, queryClient, useExportDir, usePresets, useSettings } from "@/lib/queries"
@@ -185,7 +185,12 @@ function ExportForm({ pid, character, pack, onDone }: { pid: string; character: 
             preset && (
               <>
                 {preset.description}
-                {bytes != null && bytes > 0 && <span className="text-fg-2"> About {formatBytes(bytes)} in all.</span>}
+                {bytes != null && bytes > 0 && (
+                  <span className="text-fg-2">
+                    {" "}
+                    About {formatBytes(bytes)} in all as {shortFormatName(preset.name)}.
+                  </span>
+                )}
                 {merge && bytes != null && bytes > 0 && " The shots are rendered first, so it needs extra free space for a while."}
               </>
             )

@@ -8,19 +8,23 @@ import { modKey } from "@/lib/platform"
 
 /**
  * The pack at a glance, floating over the shots: how many, how long, about
- * how big, the picks by hand (to hand back to the filters) and Export.
+ * how big in the format an export starts with, the picks by hand (to hand
+ * back to the filters) and Export.
  */
 export function PackFooter({
   totals,
   bytes,
+  format,
   picks,
   canExport,
   onClearPicks,
   onExport,
 }: {
   totals: PackTotals
-  /** With the preset an export would use. */
+  /** In `format`, the one an export starts with. */
   bytes: number | null
+  /** The format's short name. */
+  format: string | null
   picks: number
   canExport: boolean
   onClearPicks: () => void
@@ -31,7 +35,7 @@ export function PackFooter({
       <span className="text-md font-semibold text-fg-1">{plural(totals.clips, "shot")}</span>
       <span className="pr-2 pl-1.5 text-sm text-fg-3">
         {formatDuration(totals.seconds ?? 0)}
-        {bytes != null && bytes > 0 && ` · about ${formatBytes(bytes)}`}
+        {bytes != null && bytes > 0 && ` · about ${formatBytes(bytes)}${format ? ` (${format})` : ""}`}
       </span>
       {picks > 0 && (
         <Tooltip label="Hand every shot back to the filters">

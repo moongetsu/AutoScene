@@ -190,6 +190,7 @@ fn row(what: &str, ms: f64) {
 /// What the builder costs `c`'s pack in `project`, printed.
 fn measure(project: &Project, c: CharacterId) {
     let presets = as_export::builtin_presets();
+    let caps = Caps::default();
     let naming = PackNaming::default();
     let spec = PackSpec::default();
     let best = PackSpec { order: PackOrder::Best, limit: Some(200), ..PackSpec::default() };
@@ -210,7 +211,7 @@ fn measure(project: &Project, c: CharacterId) {
     row("pack_preview (best, limit 200)", ms(11, || project.pack_preview(c, &best).unwrap()));
     row("pack_preview + its JSON", ms(11, || json(&project.pack_preview(c, &spec).unwrap())));
     row("pack_choices + its JSON", ms(11, || json(&project.pack_choices(c, &spec).unwrap())));
-    row("pack_plan", ms(11, || project.pack_plan(c, &spec, &naming, &presets).unwrap()));
+    row("pack_plan", ms(11, || project.pack_plan(c, &spec, &naming, &presets, &caps).unwrap()));
     let key = |i: usize| PackKey { media_id: v.clips[i].shot.media_id, shot: v.clips[i].shot.start };
     row(
         "set_pack_overrides (1 shot)",
@@ -231,7 +232,7 @@ fn measure(project: &Project, c: CharacterId) {
     let sizes = (
         json(&project.pack_preview(c, &spec).unwrap()),
         json(&project.pack_choices(c, &spec).unwrap()),
-        json(&project.pack_plan(c, &spec, &naming, &presets).unwrap()),
+        json(&project.pack_plan(c, &spec, &naming, &presets, &caps).unwrap()),
     );
     println!("JSON: preview {:.0} kB, choices {:.0} kB, plan {:.1} kB", kb(sizes.0), kb(sizes.1), kb(sizes.2));
     // A click as the builder makes it: the pick answered with the pack's
@@ -241,7 +242,7 @@ fn measure(project: &Project, c: CharacterId) {
         ms(5, || {
             project.set_pack_overrides(c, &[key(10)], Some(false)).unwrap();
             json(&project.pack_choices(c, &spec).unwrap());
-            json(&project.pack_plan(c, &spec, &naming, &presets).unwrap());
+            json(&project.pack_plan(c, &spec, &naming, &presets, &caps).unwrap());
             project.set_pack_overrides(c, &[key(10)], None).unwrap();
         }),
     );

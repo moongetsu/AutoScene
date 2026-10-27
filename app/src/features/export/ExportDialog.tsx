@@ -9,7 +9,7 @@ import { Dialog, DialogContent, DialogFooter } from "@/components/ui/dialog"
 import { Field, Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { commands, errorMessage } from "@/lib/ipc"
-import { formatBytes } from "@/lib/format"
+import { formatBytes, shortFormatName } from "@/lib/format"
 import { pickFolder } from "@/lib/media"
 import { qk, queryClient, useExportDir, usePresets, useSettings } from "@/lib/queries"
 import { useUi } from "@/state/ui"
@@ -143,7 +143,12 @@ function ExportForm({
             preset && (
               <>
                 {preset.description}
-                {bytes != null && bytes > 0 && <span className="text-fg-2"> About {formatBytes(bytes)} in all.</span>}
+                {bytes != null && bytes > 0 && (
+                  <span className="text-fg-2">
+                    {" "}
+                    About {formatBytes(bytes)} in all as {shortFormatName(preset.name)}.
+                  </span>
+                )}
               </>
             )
           }

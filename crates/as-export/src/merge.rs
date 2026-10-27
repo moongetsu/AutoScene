@@ -29,7 +29,7 @@ use as_media::filters::TONEMAP_SDR;
 use as_media::{AudioStream, Caps, HdrKind, MediaError, MediaInfo, Tools, run_ffmpeg};
 use serde_json::Value;
 
-use crate::clip::{AUDIO_RATE, ClipOutcome, Encoding, resolve_encoding, with_suffix};
+use crate::clip::{AUDIO_RATE, ClipOutcome, Encoding, encoder_fps, resolve_encoding, with_suffix};
 use crate::preset::{AudioCodec, Container, ExportPreset, HdrMode, VideoCodec};
 use crate::{ExportError, ExportResult};
 
@@ -199,18 +199,18 @@ pub fn plan_merge(caps: &Caps, preset: &ExportPreset, sources: &[MergeSource]) -
     }
     let frames = |s: &MergeSource| u64::from(s.range.len());
 
-    let mut sizes: HashMap<(u32, u32), u64> = HashMap::new();
     let mut rates: HashMap<Rational, u64> = HashMap::new();
     for s in sources {
-        *sizes.entry(natural_size(s.info, preset.max_height)).or_default() += frames(s);
         *rates.entry(s.index.nominal_fps).or_default() += frames(s);
     }
-    // The size most frames have; of two, the bigger.
     let (width, height) =
-        sizes.into_iter().max_by_key(|&((w, h), n)| (n, u64::from(w) * u64::from(h), w)).map(|(s, _)| s).unwrap();
+        file_size(sources.iter().map(|s| (natural_size(s.info, preset.max_height), frames(s)))).expect("non-empty");
     let fps = rates.into_iter().max_by_key(|&(r, n)| (n, r.num * 1000 / r.den.max(1))).map(|(r, _)| r).unwrap();
 
-    let mut encoding = resolve_encoding(&preset.video, caps, fps.to_f64())?;
+    // Every part's encoder is told its own episode's rate: the cap leaves
+    // the fastest one's frames their share.
+    let fastest = sources.iter().map(|s| encoder_fps(s.info, s.index.nominal_fps.to_f64())).fold(0.0, f64::max);
+    let mut encoding = resolve_encoding(&preset.video, caps, fps.to_f64(), (width, height), fastest)?;
     // No B-frames: every part starts on a clean, already ordered frame.
     if matches!(preset.video, VideoCodec::H264 { .. } | VideoCodec::Hevc { .. })
         && !encoding.args.iter().any(|a| a == "-bf")
@@ -299,9 +299,19 @@ fn timings(ticks: &[u64], t: u64) -> Vec<PartTiming> {
         .collect()
 }
 
+/// The picture of a file joined from clips of these sizes, each with so
+/// many frames: the size most frames have; of two, the bigger.
+pub(crate) fn file_size(clips: impl IntoIterator<Item = ((u32, u32), u64)>) -> Option<(u32, u32)> {
+    let mut sizes: HashMap<(u32, u32), u64> = HashMap::new();
+    for (size, frames) in clips {
+        *sizes.entry(size).or_default() += frames;
+    }
+    sizes.into_iter().max_by_key(|&((w, h), n)| (n, u64::from(w) * u64::from(h), w)).map(|(s, _)| s)
+}
+
 /// The picture a clip of `info` shows: upright, square pixels, at most
 /// `max_height` tall, in even numbers.
-fn natural_size(info: &MediaInfo, max_height: Option<u32>) -> (u32, u32) {
+pub(crate) fn natural_size(info: &MediaInfo, max_height: Option<u32>) -> (u32, u32) {
     let v = &info.video;
     // ffmpeg turns rotated pictures upright before the filters see them.
     let quarter = matches!(v.rotation, 90 | 270);
@@ -749,6 +759,32 @@ mod tests {
             "audio": [], "subtitles": []
         });
         serde_json::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn nvenc_is_capped_for_the_file_and_its_fastest_part() {
+        use as_media::{CodecFamily, HwEncoder, Vendor};
+        let nvenc = HwEncoder { name: "h264_nvenc".into(), family: CodecFamily::H264, vendor: Vendor::Nvidia };
+        let caps = Caps { hw_encoders: vec![nvenc], ..Caps::default() };
+        let mut film = info(1920, 1080, r(1, 1), 0);
+        film.video.r_frame_rate = r(24000, 1001);
+        let mut fast = info(1280, 720, r(1, 1), 0);
+        fast.video.r_frame_rate = r(60000, 1001);
+        let (slow_index, fast_index) = (
+            FrameIndex::cfr(r(1, 24000), r(24000, 1001), 0, 1000),
+            FrameIndex::cfr(r(1, 60000), r(60000, 1001), 0, 1000),
+        );
+        let sources = [
+            MergeSource { info: &film, index: &slow_index, range: FrameRange::new(0, 500), audio_ordinal: None },
+            MergeSource { info: &fast, index: &fast_index, range: FrameRange::new(0, 100), audio_ordinal: None },
+        ];
+        let preset = crate::builtin_presets().into_iter().find(|p| p.id == "h264-edit").unwrap();
+        let args = plan_merge(&caps, &preset, &sources).unwrap().shape.encoding.args.join(" ");
+        // Keyframes a second of the film most frames are of; the cap for the
+        // file's 1080p picture at the 59.94 fps the fast part's encoder is told.
+        let max = crate::clip::nvenc_maxrate(crate::preset::Gop::Editing, false, (1920, 1080), 60000.0 / 1001.0);
+        assert!(args.contains("-g 24 "), "{args}");
+        assert!(args.contains(&format!("-maxrate {:.0}k", max / 1000.0)), "{args}");
     }
 
     #[test]

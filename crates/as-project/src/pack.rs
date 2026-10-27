@@ -24,7 +24,8 @@ use as_api::{
 };
 use as_core::{CharacterId, FrameIdx, FrameIndex, MediaId, Rational};
 use as_db::{PackBodyRow, PackRow};
-use as_export::{ExportPreset, estimate_bytes};
+use as_export::{EstimateClip, ExportPreset, estimate_bytes};
+use as_media::Caps;
 
 use crate::bodies::{showing_of, spans_of};
 use crate::cast::track_id;
@@ -121,32 +122,41 @@ impl Project {
     }
 
     /// The first names the pack's files (or chapters) get, in its order; the
-    /// one file's name or the character's folder; the pack's size per preset.
+    /// one file's name or the character's folder; the pack's size per preset
+    /// with the encoders of `caps`.
     pub fn pack_plan(
         &self,
         c: CharacterId,
         spec: &PackSpec,
         naming: &PackNaming,
         presets: &[ExportPreset],
+        caps: &Caps,
     ) -> ProjectResult<ExportPlan> {
         // The file's name first: the dialog shows its problem under it.
         let label = self.db().character_label(c)?.ok_or_else(gone)?;
         let file = self.pack_file_name(&label, naming)?;
         let made = self.make_pack(c, spec)?;
         let clips = self.named_clips(c, &made, naming)?;
-        let mut sizes = vec![0.0; presets.len()];
+        let mut sized = Vec::with_capacity(clips.len());
         for clip in &clips {
             let Some(Source { media, index: Some(index) }) = made.sources.get(&clip.media_id) else { continue };
             let Some(info) = &media.info else { continue };
-            let seconds = index.t(clip.end) - index.t(clip.start);
-            for (size, preset) in sizes.iter_mut().zip(presets) {
-                *size += estimate_bytes(preset, info, media.audio_ordinal, u64::from(clip.end - clip.start), seconds);
-            }
+            sized.push(EstimateClip {
+                info,
+                audio_ordinal: media.audio_ordinal,
+                frames: u64::from(clip.end - clip.start),
+                seconds: index.t(clip.end) - index.t(clip.start),
+                fps: index.nominal_fps.to_f64(),
+            });
         }
+        let sizes = presets
+            .iter()
+            .map(|p| PresetSize { preset_id: p.id.clone(), bytes: estimate_bytes(p, caps, &sized, file.is_some()) })
+            .collect();
         let folder = (naming.folder && file.is_none()).then(|| safe_component(&label, " ", 80));
         Ok(ExportPlan {
             names: clips.into_iter().filter_map(|c| c.name).take(PLAN_NAMES).collect(),
-            sizes: presets.iter().zip(sizes).map(|(p, bytes)| PresetSize { preset_id: p.id.clone(), bytes }).collect(),
+            sizes,
             folder,
             file,
         })
@@ -990,7 +1000,10 @@ mod tests {
             request.clips.iter().map(|c| c.name.clone().unwrap()).collect::<Vec<_>>(),
             ["Show_Walter_E01_00-00-00-00", "Show_Walter_E01_00-00-02-02", "Show_Walter_E01_00-00-12-02"]
         );
-        let plan = p.project.pack_plan(p.walter, &req.spec, &req.naming, &as_export::builtin_presets()).unwrap();
+        let plan = p
+            .project
+            .pack_plan(p.walter, &req.spec, &req.naming, &as_export::builtin_presets(), &Caps::default())
+            .unwrap();
         assert_eq!((plan.file.as_deref(), plan.folder), (Some("Show_Walter_scenepack"), None));
         assert_eq!(plan.names.len(), 3);
         // A file name can't use what only names a shot.
@@ -999,7 +1012,7 @@ mod tests {
         assert!(err.to_string().contains("names a shot"), "{err}");
         // With the shots' names broken too, the file's problem comes first.
         req.naming.template = "{series} {nme}".into();
-        let err = p.project.pack_plan(p.walter, &req.spec, &req.naming, &[]).unwrap_err();
+        let err = p.project.pack_plan(p.walter, &req.spec, &req.naming, &[], &Caps::default()).unwrap_err();
         assert!(err.to_string().contains("names a shot"), "{err}");
         // Settings saved before there was a choice load with one file.
         let naming: PackNaming = with_defaults(r#"{"template":"{character} {index}","folder":false}"#);
@@ -1026,7 +1039,8 @@ mod tests {
         let p = pack();
         let naming =
             PackNaming { template: "{character} {index}".into(), folder: true, merge: false, ..PackNaming::default() };
-        let plan = p.project.pack_plan(p.walter, &PackSpec::default(), &naming, &as_export::builtin_presets()).unwrap();
+        let presets = as_export::builtin_presets();
+        let plan = p.project.pack_plan(p.walter, &PackSpec::default(), &naming, &presets, &Caps::default()).unwrap();
         assert_eq!(plan.names, ["Walter_001", "Walter_002", "Walter_003"]);
         assert_eq!((plan.file, plan.folder.as_deref()), (None, Some("Walter")));
         assert!(plan.sizes.iter().all(|s| s.bytes > 0.0));

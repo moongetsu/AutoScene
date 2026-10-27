@@ -6,7 +6,7 @@ pub mod merge;
 pub mod preset;
 
 pub use clip::{ClipJob, ClipOutcome, Part, export_clip};
-pub use estimate::estimate_bytes;
+pub use estimate::{EstimateClip, estimate_bytes};
 pub use merge::{JoinJob, JoinPart, MergePlan, MergeShape, MergeSource, PartTiming, join_parts, plan_merge};
 pub use preset::{ExportPreset, builtin_presets};
 
