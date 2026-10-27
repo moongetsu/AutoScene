@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use as_api::{ProjectSummary, now_ms};
+use as_api::{ContentKind, ProjectSummary, now_ms};
 use as_core::ProjectId;
 use rusqlite::{OptionalExtension, Row, params};
 use rusqlite_migration::{M, Migrations};
@@ -41,13 +41,53 @@ pub struct LibraryDb(Db);
 const PROJECT_COLS: &str = "id, title, kind, content, dir, created_at, updated_at, media_count, ready_count, \
      duration_sec, poster, poster_small";
 
+/// Footage builds before it don't know is stored as the nearest kind they
+/// do (3D animation: mixed — faces, film-like cuts), the kind itself in the
+/// settings (`footage.<id>`): an older AutoScene still opens the library.
+fn stored(content: ContentKind) -> (ContentKind, Option<ContentKind>) {
+    match content {
+        ContentKind::Animation => (ContentKind::Mixed, Some(content)),
+        c => (c, None),
+    }
+}
+
+fn footage_key(id: ProjectId) -> String {
+    format!("footage.{id}")
+}
+
+fn set_footage(tx: &rusqlite::Transaction, id: ProjectId, content: ContentKind) -> DbResult<()> {
+    match stored(content).1 {
+        Some(f) => tx.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![footage_key(id), enum_to_sql(f)],
+        )?,
+        None => tx.execute("DELETE FROM settings WHERE key = ?1", [footage_key(id)])?,
+    };
+    Ok(())
+}
+
+/// The footage the settings hold for projects, by key.
+fn footages(c: &rusqlite::Connection) -> DbResult<std::collections::HashMap<String, ContentKind>> {
+    let mut st = c.prepare("SELECT key, value FROM settings WHERE key LIKE 'footage.%'")?;
+    let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+    let mut out = std::collections::HashMap::new();
+    for row in rows {
+        let (k, v) = row?;
+        if let Ok(f) = enum_from_sql(&v) {
+            out.insert(k, f);
+        }
+    }
+    Ok(out)
+}
+
 fn project_row(r: &Row) -> DbResult<ProjectSummary> {
     let id: String = r.get(0)?;
     Ok(ProjectSummary {
         id: ProjectId::parse(&id).map_err(|e| DbError::Corrupt(e.to_string()))?,
         title: r.get(1)?,
         kind: enum_from_sql(&r.get::<_, String>(2)?)?,
-        content: enum_from_sql(&r.get::<_, String>(3)?)?,
+        // Footage a later version stored: the nearest it can be here.
+        content: enum_from_sql(&r.get::<_, String>(3)?).unwrap_or(ContentKind::Mixed),
         dir: r.get(4)?,
         created_at: r.get(5)?,
         updated_at: r.get(6)?,
@@ -94,7 +134,7 @@ impl LibraryDb {
                     p.id.to_string(),
                     p.title,
                     enum_to_sql(p.kind),
-                    enum_to_sql(p.content),
+                    enum_to_sql(stored(p.content).0),
                     p.dir,
                     p.created_at,
                     p.updated_at,
@@ -105,18 +145,21 @@ impl LibraryDb {
                     p.poster_small,
                 ],
             )?;
-            Ok(())
+            set_footage(tx, p.id, p.content)
         })
     }
 
     /// Most recently touched first.
     pub fn projects(&self) -> DbResult<Vec<ProjectSummary>> {
         self.0.read(|c| {
+            let footage = footages(c)?;
             let mut st = c.prepare(&format!("SELECT {PROJECT_COLS} FROM projects ORDER BY updated_at DESC"))?;
             let mut rows = st.query([])?;
             let mut out = Vec::new();
             while let Some(r) = rows.next()? {
-                out.push(project_row(r)?);
+                let mut p = project_row(r)?;
+                p.content = footage.get(&footage_key(p.id)).copied().unwrap_or(p.content);
+                out.push(p);
             }
             Ok(out)
         })
@@ -124,9 +167,12 @@ impl LibraryDb {
 
     pub fn project(&self, id: ProjectId) -> DbResult<Option<ProjectSummary>> {
         self.0.read(|c| {
+            let footage = footages(c)?;
             let mut st = c.prepare(&format!("SELECT {PROJECT_COLS} FROM projects WHERE id = ?1"))?;
             let mut rows = st.query([id.to_string()])?;
-            rows.next()?.map(project_row).transpose()
+            let Some(mut p) = rows.next()?.map(project_row).transpose()? else { return Ok(None) };
+            p.content = footage.get(&footage_key(p.id)).copied().unwrap_or(p.content);
+            Ok(Some(p))
         })
     }
 
@@ -137,6 +183,16 @@ impl LibraryDb {
                 params![id.to_string(), title, now_ms()],
             )?;
             Ok(())
+        })
+    }
+
+    pub fn set_project_content(&self, id: ProjectId, content: ContentKind) -> DbResult<()> {
+        self.0.write(|tx| {
+            tx.execute(
+                "UPDATE projects SET content = ?2, updated_at = ?3 WHERE id = ?1",
+                params![id.to_string(), enum_to_sql(stored(content).0), now_ms()],
+            )?;
+            set_footage(tx, id, content)
         })
     }
 
@@ -177,6 +233,7 @@ impl LibraryDb {
     pub fn delete_project(&self, id: ProjectId) -> DbResult<()> {
         self.0.write(|tx| {
             tx.execute("DELETE FROM projects WHERE id = ?1", [id.to_string()])?;
+            tx.execute("DELETE FROM settings WHERE key = ?1", [footage_key(id)])?;
             Ok(())
         })
     }
@@ -185,7 +242,7 @@ impl LibraryDb {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use as_api::{ContentKind, ProjectKind};
+    use as_api::ProjectKind;
 
     fn sample(title: &str, dir: &str) -> ProjectSummary {
         ProjectSummary {
@@ -233,6 +290,38 @@ mod tests {
         assert!(db.insert_project(&sample("Other", "/lib/Frieren.autoscene")).is_err());
         db.delete_project(a.id).unwrap();
         assert!(db.projects().unwrap().is_empty());
+    }
+
+    #[test]
+    fn footage_older_versions_dont_know_keeps_the_library_readable_to_them() {
+        let db = LibraryDb::memory();
+        let a = ProjectSummary { content: ContentKind::Animation, ..sample("Film", "/lib/Film.autoscene") };
+        db.insert_project(&a).unwrap();
+        // What a build without 3D animation reads: the nearest kind it knows.
+        let raw = |id: ProjectId| -> String {
+            db.0.read(
+                |c| Ok(c.query_row("SELECT content FROM projects WHERE id = ?1", [id.to_string()], |r| r.get(0))?),
+            )
+            .unwrap()
+        };
+        assert_eq!(raw(a.id), "mixed");
+        assert_eq!(db.project(a.id).unwrap().unwrap().content, ContentKind::Animation);
+        assert_eq!(db.projects().unwrap()[0].content, ContentKind::Animation);
+        db.set_project_content(a.id, ContentKind::Live).unwrap();
+        assert_eq!((raw(a.id).as_str(), db.setting(&footage_key(a.id)).unwrap()), ("live", None));
+        assert_eq!(db.project(a.id).unwrap().unwrap().content, ContentKind::Live);
+        db.set_project_content(a.id, ContentKind::Animation).unwrap();
+        assert_eq!(db.project(a.id).unwrap().unwrap().content, ContentKind::Animation);
+        db.delete_project(a.id).unwrap();
+        assert_eq!(db.setting(&footage_key(a.id)).unwrap(), None);
+        // Footage a later version stored: the nearest kind this one knows.
+        let b = sample("Later", "/lib/Later.autoscene");
+        db.insert_project(&b).unwrap();
+        db.0.write(
+            |tx| Ok(tx.execute("UPDATE projects SET content = 'stopmotion' WHERE id = ?1", [b.id.to_string()])?),
+        )
+        .unwrap();
+        assert_eq!(db.project(b.id).unwrap().unwrap().content, ContentKind::Mixed);
     }
 
     #[test]

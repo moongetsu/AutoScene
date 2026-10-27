@@ -19,7 +19,7 @@ import { TopBar } from "@/components/ui/topbar"
 import { CharacterCard } from "@/features/cast/CharacterCard"
 import { plural, splitHidden } from "@/features/cast/cast"
 import { PickCharacter } from "@/features/cast/PickCharacter"
-import { RenameProjectDialog } from "@/features/library/ProjectDialogs"
+import { ProjectDetailsDialog } from "@/features/library/ProjectDialogs"
 import { useAmbient } from "@/lib/ambient"
 import { formatDuration } from "@/lib/format"
 import { reveal } from "@/lib/os"
@@ -82,7 +82,7 @@ export function OverviewPage() {
           </ContextMenuItem>
           <ContextMenuSeparator />
           <ContextMenuItem onSelect={() => project && setRenaming(project)}>
-            <PencilSimple /> Rename…
+            <PencilSimple /> Edit details…
           </ContextMenuItem>
           <ContextMenuItem onSelect={() => project && reveal(project.dir)}>
             <FolderOpen /> Show project folder
@@ -127,7 +127,7 @@ export function OverviewPage() {
                   <FilePlus /> Add files…
                 </DropdownMenuItem>
                 <DropdownMenuItem onSelect={() => project && setRenaming(project)}>
-                  <PencilSimple /> Rename…
+                  <PencilSimple /> Edit details…
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onSelect={() => project && reveal(project.dir)}>
@@ -198,7 +198,7 @@ export function OverviewPage() {
           )}
         </Section>
       </div>
-      <RenameProjectDialog project={renaming} onOpenChange={(o) => !o && setRenaming(null)} />
+      <ProjectDetailsDialog project={renaming} onOpenChange={(o) => !o && setRenaming(null)} />
       <RemoveMediaDialog projectId={pid} media={removing} onOpenChange={(o) => !o && setRemoving(null)} />
       <PickCharacter
         pid={pid}

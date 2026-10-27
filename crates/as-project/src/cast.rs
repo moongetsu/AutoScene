@@ -726,6 +726,13 @@ impl Project {
         Ok(media_with_faces > 0 && grouped < as_identity::VERSION)
     }
 
+    /// The cast was grouped for other footage (the user said what it is
+    /// after it was grouped): it counts as grouped by no version, so the
+    /// next upkeep groups it again, also after a restart.
+    pub(crate) fn cast_grouped_for_other_footage(&self) -> ProjectResult<()> {
+        Ok(self.db().set_meta(GROUPED_WITH, "0")?)
+    }
+
     /// The cast after a decision: every character keeps its members (pins
     /// and the tracks clustered into it) and every other face goes to whom
     /// it resembles now ([`as_identity::reassign`]) — at once, without

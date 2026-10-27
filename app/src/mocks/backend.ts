@@ -42,6 +42,7 @@ import type {
   PackState,
   AppSettings,
   ClipRequest,
+  ContentKind,
   ExportItem,
   ExportPlan,
   ExportPreset,
@@ -557,6 +558,15 @@ const handlers: Record<string, Handler> = {
   project_rename: ({ projectId, title }) => {
     const p = find(projectId)
     p.title = String(title)
+    void emit("library:changed", { projectId: p.id })
+    return summary(p)
+  },
+  project_set_content: ({ projectId, content }) => {
+    const p = find(projectId)
+    if (p.content === "anime" || content === "anime") {
+      throw { code: "invalid", message: "Anime is analysed differently from the start. Add the videos as a new anime project instead." }
+    }
+    p.content = content as ContentKind
     void emit("library:changed", { projectId: p.id })
     return summary(p)
   },

@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use as_api::{AppSettings, ImportCandidate, NewProject, ProjectKind, ProjectSummary};
+use as_api::{AppSettings, ContentKind, ImportCandidate, NewProject, ProjectKind, ProjectSummary};
 use as_core::ProjectId;
 use tauri::{AppHandle, State};
 use tauri_specta::Event;
@@ -54,6 +54,29 @@ pub async fn project_rename(
 ) -> AppResult<ProjectSummary> {
     let lib = state.library.clone();
     let summary = blocking(move || Ok(lib.rename_project(project_id, &title)?)).await?;
+    let _ = LibraryChanged { project_id: Some(project_id) }.emit(&app);
+    Ok(summary)
+}
+
+/// Say what a project's footage is (live action, 3D animation, mixed; a
+/// project never moves to or from anime). Its cast is grouped again for it.
+#[tauri::command]
+#[specta::specta]
+pub async fn project_set_content(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    project_id: ProjectId,
+    content: ContentKind,
+) -> AppResult<ProjectSummary> {
+    let lib = state.library.clone();
+    let (summary, regroup) = blocking(move || {
+        let (summary, regroup) = lib.set_project_content(project_id, content)?;
+        Ok((summary, regroup.then(|| lib.project(project_id)).transpose()?))
+    })
+    .await?;
+    if let Some(project) = regroup {
+        work::queue_regroup(&app, &project);
+    }
     let _ = LibraryChanged { project_id: Some(project_id) }.emit(&app);
     Ok(summary)
 }

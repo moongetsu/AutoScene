@@ -23,7 +23,7 @@ import { ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-m
 import { ProgressRing } from "@/components/ui/progress"
 import { Tooltip } from "@/components/ui/tooltip"
 import { contextKit } from "@/components/ui/menu-actions"
-import { DeleteProjectDialog, RenameProjectDialog } from "@/features/library/ProjectDialogs"
+import { DeleteProjectDialog, ProjectDetailsDialog } from "@/features/library/ProjectDialogs"
 import { NewProjectItems, ProjectItems } from "@/features/library/project-actions"
 import { useAppActions } from "@/lib/actions"
 import { commands } from "@/lib/ipc"
@@ -145,7 +145,7 @@ export function Rail() {
         />
       </div>
 
-      <RenameProjectDialog project={renaming} onOpenChange={(o) => !o && setRenaming(null)} />
+      <ProjectDetailsDialog project={renaming} onOpenChange={(o) => !o && setRenaming(null)} />
       <DeleteProjectDialog project={deleting} onOpenChange={(o) => !o && setDeleting(null)} />
     </nav>
   )

@@ -1,8 +1,7 @@
 import { toast } from "sonner"
 import type { ProjectSummary } from "@/bindings"
+import { CONTENT_LABEL } from "./footage"
 import { commands, errorMessage } from "./ipc"
-
-export const CONTENT_LABEL = { live: "Live action", anime: "Anime", mixed: "Mixed" } as const
 
 /** "Series · Live action · 3 episodes". */
 export function projectFacts(p: ProjectSummary): string {

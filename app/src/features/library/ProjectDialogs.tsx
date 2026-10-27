@@ -2,14 +2,17 @@ import { useState } from "react"
 import { useNavigate, useRouterState } from "@tanstack/react-router"
 import { CircleNotch } from "@/components/icons"
 import { toast } from "sonner"
-import type { ProjectSummary } from "@/bindings"
+import type { ContentKind, ProjectSummary } from "@/bindings"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogFooter } from "@/components/ui/dialog"
 import { Field, Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
+import { footageBlurb } from "@/lib/footage"
 import { commands, errorMessage } from "@/lib/ipc"
+import { FootagePicker } from "./FootagePicker"
 
-export function RenameProjectDialog({
+/** A project's title and what its footage is. */
+export function ProjectDetailsDialog({
   project,
   onOpenChange,
 }: {
@@ -18,38 +21,68 @@ export function RenameProjectDialog({
 }) {
   return (
     <Dialog open={project != null} onOpenChange={onOpenChange}>
-      {project && <RenameForm project={project} onDone={() => onOpenChange(false)} />}
+      {project && <DetailsForm project={project} onDone={() => onOpenChange(false)} />}
     </Dialog>
   )
 }
 
-function RenameForm({ project, onDone }: { project: ProjectSummary; onDone: () => void }) {
+/** Anime is analysed differently from the start (see `Project::set_content`). */
+const ANIME_APART = "Anime is analysed differently from the start. Add the videos as a new anime project instead."
+
+function DetailsForm({ project, onDone }: { project: ProjectSummary; onDone: () => void }) {
   const [title, setTitle] = useState(project.title)
+  const [content, setContent] = useState<ContentKind>(project.content)
+  const [busy, setBusy] = useState(false)
+  const retitled = title.trim() !== project.title
+  const refilmed = content !== project.content
+  const locked: Partial<Record<ContentKind, string>> =
+    project.content === "anime"
+      ? { live: ANIME_APART, animation: ANIME_APART, mixed: ANIME_APART }
+      : { anime: ANIME_APART }
   const save = async () => {
+    setBusy(true)
+    // The footage first: it is the one that can be refused.
+    let refilmedNow = false
     try {
-      await commands.projectRename(project.id, title)
+      if (refilmed) {
+        await commands.projectSetContent(project.id, content)
+        refilmedNow = true
+      }
+      if (retitled) await commands.projectRename(project.id, title)
       onDone()
     } catch (e) {
-      toast.error("Couldn't rename the project", { description: errorMessage(e) })
+      const what = refilmedNow ? "The footage changed, but the project couldn't be renamed" : "Couldn't change the project"
+      toast.error(what, { description: errorMessage(e) })
+      if (refilmedNow) onDone()
+    } finally {
+      setBusy(false)
     }
   }
   return (
-    <DialogContent title="Rename project" description="The project folder on disk keeps its name.">
+    <DialogContent title="Project details" description="The project folder on disk keeps its name.">
       <form
         onSubmit={(e) => {
           e.preventDefault()
           void save()
         }}
       >
-        <Field label="Title" htmlFor="rename-title">
-          <Input id="rename-title" autoFocus value={title} onChange={(e) => setTitle(e.target.value)} />
+        <Field label="Title" htmlFor="details-title">
+          <Input id="details-title" autoFocus value={title} onChange={(e) => setTitle(e.target.value)} />
+        </Field>
+        <Field
+          label="Footage"
+          hint={refilmed ? "The characters are grouped again for it. Your names and decisions stay." : footageBlurb(content)}
+          className="mt-4 items-start"
+        >
+          <FootagePicker value={content} onChange={setContent} locked={locked} />
         </Field>
         <DialogFooter>
           <Button variant="ghost" onClick={onDone}>
             Cancel
           </Button>
-          <Button type="submit" variant="primary" disabled={!title.trim() || title.trim() === project.title}>
-            Rename
+          <Button type="submit" variant="primary" disabled={busy || !title.trim() || !(retitled || refilmed)}>
+            {busy && <CircleNotch className="animate-spin" />}
+            Save
           </Button>
         </DialogFooter>
       </form>

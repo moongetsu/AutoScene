@@ -18,7 +18,7 @@ import { projectFacts } from "@/lib/projects"
 import { useProjects } from "@/lib/queries"
 import { useNewProject } from "@/state/new-project"
 import { ProjectCard } from "./ProjectCard"
-import { DeleteProjectDialog, RenameProjectDialog } from "./ProjectDialogs"
+import { DeleteProjectDialog, ProjectDetailsDialog } from "./ProjectDialogs"
 import { NewProjectItems, ProjectItems } from "./project-actions"
 
 const STEPS: { icon: React.ReactNode; title: string; body: string }[] = [
@@ -95,7 +95,7 @@ export function LibraryPage() {
           </Section>
         </>
       )}
-      <RenameProjectDialog project={renaming} onOpenChange={(o) => !o && setRenaming(null)} />
+      <ProjectDetailsDialog project={renaming} onOpenChange={(o) => !o && setRenaming(null)} />
       <DeleteProjectDialog project={deleting} onOpenChange={(o) => !o && setDeleting(null)} />
     </Page>
   )

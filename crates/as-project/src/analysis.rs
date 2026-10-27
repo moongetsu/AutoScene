@@ -26,10 +26,35 @@ pub struct ShotsPlan {
 }
 
 impl Project {
-    /// Live action or anime (fusion and, from M3, the detectors depend on it).
+    /// Live action, 3D animation or anime (fusion, the grouping of
+    /// characters and, from M3, the detectors depend on it).
     pub fn content(&self) -> ProjectResult<ContentKind> {
         let v = self.db().meta("content")?.unwrap_or_default();
         Ok(serde_json::from_value(serde_json::Value::String(v)).unwrap_or(ContentKind::Live))
+    }
+
+    /// Store what the footage is. Only the grouping of characters changes
+    /// with it: anime is analysed differently from the start (shots, no
+    /// faces), so a project never moves to or from it. Returns whether it
+    /// changed; then the cast is grouped again by the next upkeep (see
+    /// [`Project::cast_upkeep`]).
+    pub fn set_content(&self, content: ContentKind) -> ProjectResult<bool> {
+        let old = self.content()?;
+        if old == content {
+            return Ok(false);
+        }
+        if old == ContentKind::Anime || content == ContentKind::Anime {
+            return Err(ProjectError::Invalid(
+                "Anime is analysed differently from the start. Add the videos as a new anime project instead.".into(),
+            ));
+        }
+        let v = serde_json::to_value(content).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default();
+        // Not while the cast is being grouped: a grouping that read the old
+        // footage would mark the cast as grouped for the new one.
+        let _one = self.clustering.lock();
+        self.db().set_meta("content", &v)?;
+        self.cast_grouped_for_other_footage()?;
+        Ok(true)
     }
 
     /// Where the shot pass of `id` resumes. Checkpoints that don't line up
@@ -74,7 +99,9 @@ impl Project {
         }
         let params = match self.content()? {
             ContentKind::Anime => FusionParams::anime(),
-            ContentKind::Live | ContentKind::Mixed => FusionParams::live(),
+            // Rendered 3D cuts like film: shading and motion blur, no flat
+            // colours or impact frames.
+            ContentKind::Live | ContentKind::Animation | ContentKind::Mixed => FusionParams::live(),
         };
         let segments: Vec<Segment> = fuse(&all, &params)
             .into_iter()

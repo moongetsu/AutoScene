@@ -8,11 +8,13 @@ import { Tooltip } from "@/components/ui/tooltip"
 import { Dialog, DialogContent, DialogFooter } from "@/components/ui/dialog"
 import { Field, Input } from "@/components/ui/input"
 import { Segmented } from "@/components/ui/segmented"
+import { footageBlurb } from "@/lib/footage"
 import { formatBytes } from "@/lib/format"
 import { commands, errorMessage } from "@/lib/ipc"
 import { fileStem, pickFolder, pickVideoFiles } from "@/lib/media"
 import { cn } from "@/lib/utils"
 import { useNewProject } from "@/state/new-project"
+import { FootagePicker } from "./FootagePicker"
 import { suggestTitle } from "./suggest-title"
 
 export function NewProjectDialog() {
@@ -97,7 +99,7 @@ function NewProjectForm({ seed, onDone }: { seed: string[]; onDone: () => void }
       description="A project is one series or movie. Episodes are recognised and ordered from their file names."
       className="w-[min(760px,calc(100vw-32px))]"
     >
-      <div className="grid grid-cols-[1fr_auto_auto] items-end gap-4">
+      <div className="grid grid-cols-[1fr_auto] items-end gap-4">
         <Field label="Title" htmlFor="np-title">
           <Input
             id="np-title"
@@ -124,19 +126,10 @@ function NewProjectForm({ seed, onDone }: { seed: string[]; onDone: () => void }
             ]}
           />
         </Field>
-        <Field label="Footage">
-          <Segmented<ContentKind>
-            aria-label="Footage"
-            value={content}
-            onChange={setContent}
-            options={[
-              { value: "live", label: "Live action" },
-              { value: "anime", label: "Anime" },
-              { value: "mixed", label: "Mixed" },
-            ]}
-          />
-        </Field>
       </div>
+      <Field label="Footage" hint={footageBlurb(content)} className="mt-4 items-start">
+        <FootagePicker value={content} onChange={setContent} />
+      </Field>
 
       <div className="mt-6 overflow-hidden rounded-2xl border border-white/[0.08] bg-black/25">
         {candidates.length === 0 ? (

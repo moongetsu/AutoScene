@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use as_api::{AppSettings, ImportCandidate, NewProject, ProjectKind, ProjectSummary, now_ms};
+use as_api::{AppSettings, ContentKind, ImportCandidate, NewProject, ProjectKind, ProjectSummary, now_ms};
 use as_core::{AppPaths, MediaId, ProjectId};
 use as_db::{LibraryDb, NewMedia};
 use parking_lot::Mutex;
@@ -167,6 +167,21 @@ impl Library {
             p.set_title(title)?;
         }
         self.summary(id)
+    }
+
+    /// Say what a project's footage is (see [`Project::set_content`]).
+    /// Returns the summary and whether the cast must be grouped again (also
+    /// when an earlier attempt already changed it).
+    pub fn set_project_content(&self, id: ProjectId, content: ContentKind) -> ProjectResult<(ProjectSummary, bool)> {
+        let project = self.project(id)?;
+        let before = self.summary(id)?.content;
+        self.db.set_project_content(id, content)?;
+        if let Err(e) = project.set_content(content) {
+            // The library shows what the project's cast is grouped for.
+            let _ = self.db.set_project_content(id, before);
+            return Err(e);
+        }
+        Ok((self.summary(id)?, project.grouped_by_older_version()?))
     }
 
     /// Remove a project from the library. With `delete_files`, also delete its
@@ -340,7 +355,6 @@ fn walk(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use as_api::ContentKind;
     use as_db::ProjectDb;
 
     fn lib() -> (tempfile::TempDir, Library) {
@@ -418,6 +432,31 @@ mod tests {
         assert!(Path::new(&a).exists(), "source media are never deleted");
         assert_eq!(lib.projects().unwrap().len(), 1);
         assert!(matches!(lib.project(summary.id), Err(ProjectError::NotFound(_))));
+    }
+
+    #[test]
+    fn says_what_the_footage_is_after_import() {
+        let (_dir, lib) = lib();
+        let new = |content| NewProject { title: "Film".into(), kind: ProjectKind::Movie, content, files: vec![] };
+        let (film, ..) = lib.create_project(&new(ContentKind::Live)).unwrap();
+        let project = lib.project(film.id).unwrap();
+        project.db().set_meta(crate::cast::GROUPED_WITH, &as_identity::VERSION.to_string()).unwrap();
+
+        let (summary, regroup) = lib.set_project_content(film.id, ContentKind::Animation).unwrap();
+        assert!(!regroup, "no faces yet: nothing to group");
+        assert_eq!(summary.content, ContentKind::Animation);
+        assert_eq!(project.content().unwrap(), ContentKind::Animation);
+        // The cast is grouped again for it (by the next upkeep, also after a restart).
+        assert_eq!(project.db().meta(crate::cast::GROUPED_WITH).unwrap().as_deref(), Some("0"));
+        // The same again changes nothing.
+        assert!(!lib.set_project_content(film.id, ContentKind::Animation).unwrap().1);
+
+        // Never to or from anime: it is analysed differently from the start.
+        assert!(matches!(lib.set_project_content(film.id, ContentKind::Anime), Err(ProjectError::Invalid(_))));
+        assert_eq!(lib.summary(film.id).unwrap().content, ContentKind::Animation);
+        let (anime, ..) = lib.create_project(&new(ContentKind::Anime)).unwrap();
+        assert!(matches!(lib.set_project_content(anime.id, ContentKind::Live), Err(ProjectError::Invalid(_))));
+        assert_eq!(lib.summary(anime.id).unwrap().content, ContentKind::Anime);
     }
 
     #[test]

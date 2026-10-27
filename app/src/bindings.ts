@@ -32,6 +32,11 @@ export const commands = {
 	projectCreate: (req: NewProject) => __TAURI_INVOKE<ProjectSummary>("project_create", { req }),
 	projectRename: (projectId: ProjectId, title: string) => __TAURI_INVOKE<ProjectSummary>("project_rename", { projectId, title }),
 	/**
+	 *  Say what a project's footage is (live action, 3D animation, mixed; a
+	 *  project never moves to or from anime). Its cast is grouped again for it.
+	 */
+	projectSetContent: (projectId: ProjectId, content: ContentKind) => __TAURI_INVOKE<ProjectSummary>("project_set_content", { projectId, content }),
+	/**
 	 *  Remove a project. `delete_files` also deletes its `.autoscene` folder
 	 *  (never the source videos or exported clips).
 	 */
@@ -380,7 +385,13 @@ export type Container = "mov" | "mp4";
 export type ContentKind = 
 /**  Live-action footage (faces). */
 "live" | 
-/**  Anime / animation (heads, character art). */
+/**
+ *  3D / CGI animation (Pixar-like films and series): faces like live
+ *  action, but every character of one style looks alike to the face
+ *  model, so their similarity bars are always fitted to the footage.
+ */
+"animation" | 
+/**  Anime / 2D animation (heads, character art). */
 "anime" | "mixed";
 
 export type DnxProfile = 

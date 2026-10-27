@@ -87,7 +87,11 @@ pub enum ProjectKind {
 pub enum ContentKind {
     /// Live-action footage (faces).
     Live,
-    /// Anime / animation (heads, character art).
+    /// 3D / CGI animation (Pixar-like films and series): faces like live
+    /// action, but every character of one style looks alike to the face
+    /// model, so their similarity bars are always fitted to the footage.
+    Animation,
+    /// Anime / 2D animation (heads, character art).
     Anime,
     Mixed,
 }

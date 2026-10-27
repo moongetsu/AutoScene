@@ -45,7 +45,7 @@ export function ProjectItems({
         <FolderOpen /> Show project folder
       </Item>
       <Item onSelect={onRename}>
-        <PencilSimple /> Rename…
+        <PencilSimple /> Edit details…
       </Item>
       <Separator />
       <Item destructive onSelect={onDelete}>

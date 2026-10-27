@@ -42,6 +42,7 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::DynRuntime> {
             commands::library::project_get,
             commands::library::project_create,
             commands::library::project_rename,
+            commands::library::project_set_content,
             commands::library::project_delete,
             commands::library::import_scan,
             commands::library::settings_get,

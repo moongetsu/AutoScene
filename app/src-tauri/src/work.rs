@@ -8,7 +8,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use as_api::{AnalysisStage, CastEdit, ContentKind, ExportSummary, JobKind, MediaItem, ProxyState, StageState};
+use as_api::{
+    AnalysisStage, CastEdit, ContentKind, ExportSummary, JobKind, JobState, MediaItem, ProxyState, StageState,
+};
 use as_core::{MediaId, ProjectId};
 use as_engine::{EngineError, FacesEvent, FacesInput, ShotsEvent};
 use as_jobs::{Class, JobCtx, JobError, JobSpec};
@@ -205,7 +207,8 @@ fn record_stage(
     }
 }
 
-/// Faces are found in live action; anime gets its own detectors later.
+/// Faces are found in live action and 3D animation; anime gets its own
+/// detectors later.
 fn finds_faces(project: &Project) -> bool {
     !matches!(project.content(), Ok(ContentKind::Anime))
 }
@@ -666,7 +669,12 @@ pub fn queue_posters(app: &AppHandle, project: &Arc<Project>, ids: Vec<MediaId>)
 /// character, not the face in front of them.
 pub fn queue_regroup(app: &AppHandle, project: &Arc<Project>) {
     let state = app.state::<AppState>();
-    if state.jobs.is_active(|j| j.kind == JobKind::Regroup && j.project_id == Some(project.id)) {
+    // One waiting is enough; one already running may have read the cast
+    // (or footage) before the change that queues this.
+    if state
+        .jobs
+        .is_active(|j| j.kind == JobKind::Regroup && j.project_id == Some(project.id) && j.state == JobState::Queued)
+    {
         return;
     }
     let spec = JobSpec {
