@@ -240,9 +240,11 @@ pub fn safe_component(s: &str, sep: &str, max_chars: usize) -> String {
 }
 
 /// CON, PRN, AUX, NUL, COM0-9, LPT0-9 (and the superscript-digit forms
-/// Windows also reserves) can't be file names, whatever the extension.
+/// Windows also reserves) can't be file names, whatever the extension —
+/// including a `.` form like `con.txt`, so the check runs on the stem.
 fn is_reserved_device(name: &str) -> bool {
-    let upper = name.to_ascii_uppercase();
+    let stem = name.split('.').next().unwrap_or(name);
+    let upper = stem.to_ascii_uppercase();
     if ["CON", "PRN", "AUX", "NUL"].contains(&upper.as_str()) {
         return true;
     }
@@ -372,6 +374,10 @@ mod tests {
         assert_eq!(safe_component("Frieren: Beyond Journey's End", "_", 80), "Frieren_Beyond_Journey's_End");
         assert_eq!(safe_component("  What?  If  ", " ", 80), "What If");
         assert_eq!(safe_component("con", " ", 80), "_con");
+        assert_eq!(safe_component("con.x", " ", 80), "_con.x");
+        assert_eq!(safe_component("LPT1.mov", " ", 80), "_LPT1.mov");
+        assert_eq!(safe_component("content", " ", 80), "content");
+        assert_eq!(safe_component("x.con", " ", 80), "x.con");
         assert_eq!(safe_component("...", " ", 80), "_");
         assert_eq!(safe_component("abcdef", "_", 3), "abc");
     }
