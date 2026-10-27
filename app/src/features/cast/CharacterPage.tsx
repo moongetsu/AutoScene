@@ -44,6 +44,7 @@ import { ProjectLoadError } from "@/features/project/ProjectLoadError"
 import { ShotCard } from "@/features/shots/ShotCard"
 import { type BodyVerdict, formatShotLength } from "@/features/shots/shots"
 import { useAmbient } from "@/lib/ambient"
+import { useFittedTitle } from "@/lib/fit-text"
 import { assetUrl } from "@/lib/media"
 import { modKey } from "@/lib/platform"
 import { firstFailure, useCast, useCastTracks, useCharacterShots, useMediaList } from "@/lib/queries"
@@ -396,6 +397,7 @@ function Header({
   const [editing, setEditing] = useState(false)
   // The backdrop is blurred: the small face does, and stays put when the portrait arrives.
   const ambient = useAmbient(c?.coverSmall)
+  const [row, setRow] = useState<HTMLDivElement | null>(null)
 
   return (
     <ContextArea
@@ -405,7 +407,7 @@ function Header({
       }
     >
       <Hero path={c?.coverSmall} ambient={ambient} blur className="min-h-[clamp(320px,44vh,460px)]">
-        <div className="flex flex-wrap items-end justify-between gap-8">
+        <div ref={setRow} className="flex flex-wrap items-end justify-between gap-8">
           <div className="flex min-w-0 items-end gap-7">
             <Artwork
               key={c?.id}
@@ -425,13 +427,12 @@ function Header({
                 <NameField character={c} pid={pid} onDone={() => setEditing(false)} />
               ) : (
                 <Tooltip label="Rename" side="bottom">
+                  {/* Its margins reach 1rem past the column it sizes; so may it, or the name is cut 1rem short. */}
                   <button
                     onClick={() => setEditing(true)}
-                    className="group -mx-2 flex max-w-full items-center gap-3 rounded-xl px-2 text-left transition-colors hover:bg-white/[0.06]"
+                    className="group -mx-2 flex max-w-[calc(100%+1rem)] items-center gap-3 rounded-xl px-2 text-left transition-colors hover:bg-white/[0.06]"
                   >
-                    <h1 className={cn("display truncate text-6xl leading-[1.05] text-white", !c?.name && "text-white/75 italic")}>
-                      {c?.label ?? " "}
-                    </h1>
+                    <HeroName row={row} named={!!c?.name} text={c?.label ?? " "} />
                     <PencilSimple className="size-5 shrink-0 text-white/60 opacity-0 transition-opacity group-hover:opacity-100" />
                   </button>
                 </Tooltip>
@@ -492,6 +493,21 @@ function Header({
         </div>
       </Hero>
     </ContextArea>
+  )
+}
+
+/** The character's name, as big as the hero's row has room for (a long name gets smaller). */
+function HeroName({ row, named, text }: { row: HTMLDivElement | null; named: boolean; text: string }) {
+  const ref = useRef<HTMLHeadingElement>(null)
+  const size = useFittedTitle(ref, row, text, 48)
+  return (
+    <h1
+      ref={ref}
+      style={size ? { fontSize: size } : undefined}
+      className={cn("display truncate text-6xl leading-[1.05] text-white", !named && "text-white/75 italic")}
+    >
+      {text}
+    </h1>
   )
 }
 
