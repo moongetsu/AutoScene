@@ -1,4 +1,0 @@
-[[permission]]
-identifier = "allow-updates"
-description = "Allow the UI to check for, download, install, and relaunch into app updates."
-commands.allow = ["update_check", "update_install", "update_relaunch"]

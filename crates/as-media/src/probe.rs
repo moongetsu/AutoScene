@@ -225,7 +225,7 @@ fn num<T: std::str::FromStr>(v: &Value, k: &str) -> Option<T> {
 /// durations, sizes or rates — a non-finite value poisons every comparison
 /// it feeds (`same_source`, `-ss`, byte estimates).
 fn fnum(v: &Value, k: &str) -> Option<f64> {
-    num(v, k).filter(|f| f.is_finite())
+    num::<f64>(v, k).filter(|f| f.is_finite())
 }
 
 fn rational(v: &Value, k: &str) -> Option<Rational> {
