@@ -1,0 +1,82 @@
+name: Claude Review
+
+# Posts only bugs and security findings, as inline comments on the PR's own
+# lines. Style, docs, tests, performance and other notes are left out on purpose.
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: Bugs and security
+    # Fork PRs get no secrets, and drafts aren't ready to review.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+      - uses: anthropics/claude-code-action@v1.0.264
+        with:
+          # One of the two secrets is enough: an API key from the Console, or
+          # a subscription token from `claude setup-token`.
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # The workflow's own token, so the Claude GitHub App needn't be installed.
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            This repository is AutoScene, a Tauri desktop app: a Rust workspace (crates/, app/src-tauri/)
+            and a React + TypeScript frontend (app/src/). It runs FFmpeg and ONNX models on local video files.
+            The PR branch is checked out in the current directory.
+
+            Review this pull request for exactly two kinds of findings:
+
+            1. Bug: code that will likely fail or behave incorrectly. Wrong logic, off-by-one, unhandled
+               errors, panics or None paths, races, leaked resources, broken invariants, data loss, wrong
+               API use, or a change that breaks a caller elsewhere in the repository.
+            2. Security: a vulnerability or missing hardening someone could exploit. Command, SQL or path
+               injection, unsafe deserialization, secrets in code or logs, weak crypto or randomness,
+               untrusted input (files, network, IPC from the webview) used without validation, unsound
+               `unsafe` Rust, over-broad Tauri capabilities, or supply-chain risks in dependency and
+               workflow changes.
+
+            Report nothing else. Style, naming, formatting, documentation, test coverage, performance
+            (unless it is a bug), refactoring ideas, questions and praise are switched off.
+
+            How to work:
+            - Read the diff with `gh pr diff ${{ github.event.pull_request.number }}`. Read the
+              surrounding code and its callers before reporting, so each finding is checked against the
+              real code and not guessed from the diff.
+            - Report a finding only when you can name the concrete input or state that leads to the wrong
+              result or the exploit. When in doubt, leave it out. No findings is a fine result.
+            - Only report defects this PR introduces, on lines it adds or changes.
+            - This workflow runs again on every push. First list the comments already on the PR with
+              `gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/comments --paginate`
+              and skip every finding that is already raised there.
+
+            How to post:
+            - One inline comment per finding, with `mcp__github_inline_comment__create_inline_comment`
+              and `confirmed: true`, on the line where the defect is.
+            - Start the body with **Bug** or **Security**, then one sentence naming the defect, then the
+              concrete failure scenario, then the fix. Add a suggestion block only when it is a complete
+              drop-in replacement for the selected lines.
+            - Post nothing else: no summary comment, and no comment at all when there are no findings.
+          claude_args: |
+            --model claude-opus-5-5
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Read,Glob,Grep,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/comments:*)"
