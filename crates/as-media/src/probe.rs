@@ -221,6 +221,13 @@ fn num<T: std::str::FromStr>(v: &Value, k: &str) -> Option<T> {
     }
 }
 
+/// `num` for floats: `"nan"`/`"inf"` parse fine but must not become
+/// durations, sizes or rates — a non-finite value poisons every comparison
+/// it feeds (`same_source`, `-ss`, byte estimates).
+fn fnum(v: &Value, k: &str) -> Option<f64> {
+    num(v, k).filter(|f| f.is_finite())
+}
+
 fn rational(v: &Value, k: &str) -> Option<Rational> {
     let r = Rational::parse(v.get(k)?.as_str()?).ok()?;
     (r.num > 0).then_some(r)
@@ -365,10 +372,10 @@ fn parse(v: &Value) -> Option<MediaInfo> {
 
     Some(MediaInfo {
         container: s(format, "format_name").unwrap_or_default(),
-        duration_sec: num(format, "duration"),
-        start_sec: num(format, "start_time").unwrap_or(0.0),
-        size_bytes: num(format, "size"),
-        bit_rate: num(format, "bit_rate"),
+        duration_sec: fnum(format, "duration"),
+        start_sec: fnum(format, "start_time").unwrap_or(0.0),
+        size_bytes: fnum(format, "size"),
+        bit_rate: fnum(format, "bit_rate"),
         video,
         audio,
         subtitles,

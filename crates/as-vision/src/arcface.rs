@@ -91,6 +91,12 @@ impl ArcFace {
             for i in 0..group.len() {
                 let raw = &e[i * DIM..(i + 1) * DIM];
                 let norm = raw.iter().map(|x| x * x).sum::<f32>().sqrt();
+                // A NaN embedding must not be stored: it would poison its
+                // track's running mean so every later link gate fails and
+                // the face silently fragments into new tracks.
+                if !norm.is_finite() {
+                    return Err(InferError::Run("ArcFace returned a non-finite embedding".into()));
+                }
                 let k = 1.0 / norm.max(1e-6);
                 out.push(Embedding { v: raw.iter().map(|x| x * k).collect(), norm });
             }

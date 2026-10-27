@@ -246,11 +246,16 @@ impl Scrfd {
                     for a in 0..anchors {
                         let i = (loc * batch + f) * anchors + a;
                         let score = scores[i];
-                        if score < threshold {
+                        // NaN/inf must not pass: a NaN box clamps to the
+                        // whole frame and total_cmp ranks NaN first in nms.
+                        if !score.is_finite() || score < threshold {
                             continue;
                         }
                         let bx = &boxes[i * 4..i * 4 + 4];
                         let k = &kps[i * 10..i * 10 + 10];
+                        if !bx.iter().all(|v| v.is_finite()) || !k.iter().all(|v| v.is_finite()) {
+                            continue;
+                        }
                         let mut p = [[0f32; 2]; 5];
                         for (j, pt) in p.iter_mut().enumerate() {
                             *pt = [cx + k[2 * j] * s, cy + k[2 * j + 1] * s];
