@@ -50,6 +50,17 @@ pub struct IdentityTrack {
     pub via_body: bool,
 }
 
+/// One of a character's own faces (pinned or automatic, not named by its
+/// body), as the faces a name pins are chosen from them.
+#[derive(Clone, Debug)]
+pub struct OwnFace {
+    pub id: i64,
+    pub pinned: bool,
+    pub quality: f32,
+    /// 512 × f16.
+    pub emb: Vec<u8>,
+}
+
 /// What a clustering made of a track.
 #[derive(Clone, Copy, Debug)]
 pub struct TrackUpdate {
@@ -1038,9 +1049,32 @@ impl ProjectDb {
         })
     }
 
-    /// Name a character and pin its best `anchors` tracks, so it stays this
-    /// character whatever later clustering does.
-    pub fn rename_character(&self, c: CharacterId, name: Option<&str>, anchors: usize) -> DbResult<()> {
+    /// A character's own faces (pinned or automatic, not named by its
+    /// body), in track order: what its anchors are chosen from.
+    pub fn own_faces(&self, c: CharacterId) -> DbResult<Vec<OwnFace>> {
+        self.0.read(|conn| {
+            Ok(conn
+                .prepare_cached(
+                    "SELECT id, assign, quality, emb FROM tracks
+                      WHERE character_id = ?1 AND assign IN ('auto', 'pinned') AND not_face = 0 AND via_body = 0
+                      ORDER BY id",
+                )?
+                .query_map([c.to_string()], |r| {
+                    Ok(OwnFace {
+                        id: r.get(0)?,
+                        pinned: r.get::<_, String>(1)? == "pinned",
+                        quality: r.get(2)?,
+                        emb: r.get(3)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?)
+        })
+    }
+
+    /// Name a character and pin `anchors` of its own faces (chosen from
+    /// [`ProjectDb::own_faces`]), so it stays this character whatever later
+    /// clustering does.
+    pub fn rename_character(&self, c: CharacterId, name: Option<&str>, anchors: &[i64]) -> DbResult<()> {
         self.0.write(|tx| {
             tx.execute("UPDATE characters SET name = ?2 WHERE id = ?1", params![c.to_string(), name])?;
             pin_anchors(tx, c, anchors)?;
@@ -1048,9 +1082,9 @@ impl ProjectDb {
         })
     }
 
-    /// Hide or show a character; hiding pins its best `anchors` tracks, so the
-    /// character it hides stays the same.
-    pub fn set_character_hidden(&self, c: CharacterId, hidden: bool, anchors: usize) -> DbResult<()> {
+    /// Hide or show a character; hiding pins `anchors` of its own faces, so
+    /// the character it hides stays the same.
+    pub fn set_character_hidden(&self, c: CharacterId, hidden: bool, anchors: &[i64]) -> DbResult<()> {
         self.0.write(|tx| {
             tx.execute("UPDATE characters SET hidden = ?2 WHERE id = ?1", params![c.to_string(), hidden])?;
             if hidden {
@@ -1118,14 +1152,22 @@ impl ProjectDb {
     }
 }
 
-/// Pin a character's best `anchors` automatic tracks (its own faces: one
-/// its body named never shapes it).
-fn pin_anchors(tx: &Transaction, c: CharacterId, anchors: usize) -> DbResult<()> {
+/// Pin `anchors` that are still automatic faces of `c`'s own (chosen a
+/// moment before: one grouped elsewhere since stays as it is; a face its
+/// body named never shapes it).
+fn pin_anchors(tx: &Transaction, c: CharacterId, anchors: &[i64]) -> DbResult<()> {
+    if anchors.is_empty() {
+        return Ok(());
+    }
+    let mut args = vec![rusqlite::types::Value::Text(c.to_string())];
+    args.extend(ids_param(anchors));
     tx.execute(
-        "UPDATE tracks SET assign = 'pinned' WHERE id IN
-           (SELECT id FROM tracks WHERE character_id = ?1 AND assign = 'auto' AND not_face = 0 AND via_body = 0
-             ORDER BY quality DESC LIMIT ?2)",
-        params![c.to_string(), anchors as i64],
+        &format!(
+            "UPDATE tracks SET assign = 'pinned'
+              WHERE character_id = ? AND assign = 'auto' AND not_face = 0 AND via_body = 0 AND id IN ({})",
+            marks(anchors.len())
+        ),
+        params_from_iter(args),
     )?;
     Ok(())
 }
@@ -1137,6 +1179,15 @@ pub(crate) mod tests {
     use crate::{IngestRecord, ProjectDb};
     use as_api::ProxyState;
     use as_core::Rational;
+
+    /// Anchors as quality alone chooses them: the `n` sharpest automatic
+    /// faces of `c` (the first of faces alike).
+    pub(crate) fn best(db: &ProjectDb, c: CharacterId, n: usize) -> Vec<i64> {
+        let faces = db.own_faces(c).unwrap();
+        let mut auto: Vec<&OwnFace> = faces.iter().filter(|f| !f.pinned).collect();
+        auto.sort_by(|a, b| b.quality.total_cmp(&a.quality).then(a.id.cmp(&b.id)));
+        auto.into_iter().take(n).map(|f| f.id).collect()
+    }
 
     /// A clustering stored as the cast stores one, without bodies.
     pub(crate) fn apply(
@@ -1247,6 +1298,49 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn anchors_chosen_a_moment_ago_pin_only_what_is_still_its_own() {
+        let db = ProjectDb::memory();
+        let m = ready_media(&db, "/v/a.mkv");
+        let faces: Vec<NewTrack> = (0..6).map(|i| track(i * 100, 0.9)).collect();
+        let ids = db.put_face_chunk(m, 0, 1000, &faces, &[], |_| Ok(())).unwrap();
+        db.set_faces_state(m, StageState::Ready, None).unwrap();
+        let (a, b) = (CharacterId::new(), CharacterId::new());
+        // A's faces when its anchors were chosen; since, one went to B, one
+        // is only a guess, one was named by its body, one isn't a face and
+        // one was pinned by hand.
+        let t = |i: usize, c, assign, via_body| TrackUpdate {
+            id: ids[i],
+            character: Some(c),
+            assign,
+            score: 1.0,
+            via_body,
+        };
+        let now = [
+            t(0, a, TrackAssign::Auto, false),
+            t(1, b, TrackAssign::Auto, false),
+            t(2, a, TrackAssign::Unsure, false),
+            t(3, a, TrackAssign::Auto, true),
+            t(4, a, TrackAssign::Auto, false),
+            t(5, a, TrackAssign::Auto, false),
+        ];
+        assert!(db.apply_identity(db.cast_rev().unwrap(), &[a, b], &now, &[], &[]).unwrap());
+        db.mark_not_face(&[ids[4]]).unwrap();
+        db.pin_tracks(&[ids[5]], a, None).unwrap();
+        let state = |db: &ProjectDb| {
+            db.tracks_by_id(&ids).unwrap().into_iter().map(|t| (t.id, t.character_id, t.assign)).collect::<Vec<_>>()
+        };
+        let before = state(&db);
+        db.rename_character(a, Some("A"), &ids).unwrap();
+        let mut want = before.clone();
+        want[0].2 = TrackAssign::Pinned;
+        assert_eq!(state(&db), want);
+        // Hiding B asks the same of B's: only its own automatic face.
+        db.set_character_hidden(b, true, &ids).unwrap();
+        want[1].2 = TrackAssign::Pinned;
+        assert_eq!(state(&db), want);
+    }
+
+    #[test]
     fn edits_stick_and_survive_reanalysis() {
         let db = ProjectDb::memory();
         let m = ready_media(&db, "/v/a.mkv");
@@ -1263,7 +1357,7 @@ pub(crate) mod tests {
             &ids.iter().map(|&t| (t, Some(a), TrackAssign::Auto, 0.9)).collect::<Vec<_>>(),
         )
         .unwrap();
-        db.rename_character(a, Some("Walter"), 1).unwrap();
+        db.rename_character(a, Some("Walter"), &best(&db, a, 1)).unwrap();
         let rows = db.characters().unwrap();
         assert_eq!((rows.len(), rows[0].name.as_deref(), rows[0].tracks, rows[0].number), (1, Some("Walter"), 3, 1));
         assert_eq!(rows[0].cover.map(|c| c.0), Some(ids[0]));
@@ -1334,7 +1428,7 @@ pub(crate) mod tests {
             ],
         )
         .unwrap();
-        db.rename_character(b, Some("Skyler"), 0).unwrap();
+        db.rename_character(b, Some("Skyler"), &best(&db, b, 0)).unwrap();
         db.merge_characters(b, a).unwrap();
         let rows = db.characters().unwrap();
         assert_eq!(rows.len(), 1);
@@ -1376,12 +1470,12 @@ pub(crate) mod tests {
         };
         // Naming (or hiding) a character pins its best faces: its own, not
         // the clearer one its body named.
-        db.rename_character(k, Some("Skyler"), 5).unwrap();
+        db.rename_character(k, Some("Skyler"), &best(&db, k, 5)).unwrap();
         assert_eq!(state(ids[0]), (Some(k), TrackAssign::Pinned, false));
         assert_eq!(state(ids[1]), (Some(k), TrackAssign::Auto, true));
-        db.set_character_hidden(j, true, 5).unwrap();
+        db.set_character_hidden(j, true, &best(&db, j, 5)).unwrap();
         assert_eq!(state(ids[3]), (Some(j), TrackAssign::Auto, true));
-        db.set_character_hidden(j, false, 0).unwrap();
+        db.set_character_hidden(j, false, &best(&db, j, 0)).unwrap();
         // A merge pins the character's own faces; the others follow as they were.
         db.merge_characters(j, k).unwrap();
         assert_eq!(state(ids[2]), (Some(k), TrackAssign::Pinned, false));
@@ -1399,7 +1493,7 @@ pub(crate) mod tests {
         let a = CharacterId::new();
         let all = |c: Option<CharacterId>| ids.iter().map(|&t| (t, c, TrackAssign::Auto, 0.9)).collect::<Vec<_>>();
         assert!(apply(&db, db.cast_rev().unwrap(), &[a], &all(Some(a))).unwrap());
-        db.rename_character(a, Some("A"), 0).unwrap();
+        db.rename_character(a, Some("A"), &best(&db, a, 0)).unwrap();
         // Clustering reads the cast, the user says "not them" meanwhile.
         let rev = db.cast_rev().unwrap();
         db.forbid_tracks(&[ids[0]], a).unwrap();
@@ -1420,7 +1514,7 @@ pub(crate) mod tests {
         let (a, h) = (CharacterId::new(), CharacterId::new());
         db.pin_tracks(&[ids[0]], a, Some(None)).unwrap();
         apply(&db, db.cast_rev().unwrap(), &[h], &[(ids[1], Some(h), TrackAssign::Auto, 0.9)]).unwrap();
-        db.set_character_hidden(h, true, 5).unwrap();
+        db.set_character_hidden(h, true, &best(&db, h, 5)).unwrap();
         // Analysed again: both are empty until the new tracks come.
         db.reset_faces(m).unwrap();
         apply(&db, db.cast_rev().unwrap(), &[], &[]).unwrap();
@@ -1513,7 +1607,7 @@ pub(crate) mod tests {
             &[(ids[0], Some(a), TrackAssign::Auto, 0.9), (ids[1], Some(b), TrackAssign::Auto, 0.9)],
         )
         .unwrap();
-        db.rename_character(b, Some("B"), 0).unwrap();
+        db.rename_character(b, Some("B"), &best(&db, b, 0)).unwrap();
         // ids[1] is on b and the user said it is not a.
         db.forbid_tracks(&[ids[1]], a).unwrap();
         db.merge_characters(b, a).unwrap();
@@ -1810,9 +1904,9 @@ pub(crate) mod tests {
         // Among faces alike, a cover is the first automatic one, else the first pinned.
         assert_eq!(now.cover_tracks().unwrap(), [ids[1], ids[4], ids[6]]);
 
-        // The anchors a name pins: Jesse's best, of two alike.
+        // A name pins what is chosen of Jesse's faces, which come in the same order in each.
         for db in [&before, &now, &opened] {
-            db.rename_character(jesse, Some("Jesse"), 1).unwrap();
+            db.rename_character(jesse, Some("Jesse"), &best(db, jesse, 1)).unwrap();
         }
         same();
         let pinned = now.tracks(TrackFilter::Character(jesse)).unwrap();

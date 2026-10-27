@@ -15,7 +15,9 @@ mod pack;
 mod project;
 
 pub use bodies::{BodyEdit, BodyEditKind, BodyRow, BodySource, BodyUpdate, IdentityBody, NewBody, PackBodyRow};
-pub use cast::{CharacterRow, CharacterShotRow, EditKind, IdentityTrack, NewTrack, TrackEdit, TrackRow, TrackUpdate};
+pub use cast::{
+    CharacterRow, CharacterShotRow, EditKind, IdentityTrack, NewTrack, OwnFace, TrackEdit, TrackRow, TrackUpdate,
+};
 pub use library::LibraryDb;
 pub use pack::PackRow;
 pub use project::{IngestRecord, NewExportItem, NewMedia, ProjectDb, ProjectStats, episode_label};

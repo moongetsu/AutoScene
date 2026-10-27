@@ -15,7 +15,7 @@ use as_api::{
     TrackAssign, TrackFilter,
 };
 use as_core::{CancelToken, CharacterId, FrameIdx, FrameRange, MediaId};
-use as_db::{EditKind, IdentityTrack, NewTrack, TrackRow, TrackUpdate};
+use as_db::{EditKind, IdentityTrack, NewTrack, OwnFace, TrackRow, TrackUpdate};
 use as_identity::{Assign, CharKey, Outcome, Params, Space, TrackIn, identify};
 use as_media::poster::{StillSize, extract_frame_jpegs};
 use as_media::{Source, Tools};
@@ -30,7 +30,8 @@ pub const FACE_CHUNK: u32 = 2400;
 /// about 240×320) — and in the 176×235 cards of the Overview. Thumbnails
 /// (160 px squares from the face pass) serve lists and avatars.
 pub const PORTRAIT: (u32, u32) = (450, 600);
-/// Tracks pinned when a character is named, so it keeps its identity.
+/// Tracks pinned when a character is named, so it keeps its identity (see
+/// [`anchors`]).
 const NAME_ANCHORS: usize = 5;
 /// Clusterings in a row that may find the cast changed by the user before
 /// one is stored.
@@ -344,6 +345,55 @@ fn unhex(s: &str) -> Option<Vec<u8>> {
 
 pub(crate) fn track_id(id: i64) -> u32 {
     u32::try_from(id).unwrap_or(u32::MAX)
+}
+
+/// Which of a character's own faces a name (or hiding it) pins, at most
+/// `n`: the sharpest of its most typical clear faces. Its clear faces (as
+/// clear as a face that defines a character; all of them when none is) are
+/// measured against each other: a face is typical when it is as like the
+/// rest as at least half of them are, and as like them as a face must be
+/// to be placed with a character. A face the others don't look like
+/// (someone else grouped or placed with the character, however sharp) is
+/// never one: pinned, it would stay theirs and draw that person's other
+/// faces to them. Blurry faces placed with the character neither set the
+/// bar nor are chosen.
+fn anchors(faces: &[OwnFace], n: usize, p: &Params) -> Vec<i64> {
+    let readable: Vec<(&OwnFace, Vec<f32>)> = faces
+        .iter()
+        .filter_map(|f| {
+            let e = tracks::embedding_from_bytes(&f.emb).filter(|e| e.iter().all(|x| x.is_finite()))?;
+            Some((f, e))
+        })
+        .collect();
+    let clear: Vec<&(&OwnFace, Vec<f32>)> = readable.iter().filter(|(f, _)| f.quality >= p.core_quality).collect();
+    let faces: Vec<&(&OwnFace, Vec<f32>)> = if clear.is_empty() { readable.iter().collect() } else { clear };
+    let Some(dim) = faces.first().map(|(_, e)| e.len()) else { return Vec::new() };
+    let mut sum = vec![0f32; dim];
+    for (_, e) in &faces {
+        sum.iter_mut().zip(e).for_each(|(s, x)| *s += x);
+    }
+    let sum2: f32 = sum.iter().map(|x| x * x).sum();
+    // How like the others each face is: its cosine to their mean (the rest
+    // of the sum). A face alone has nothing against it.
+    let like: Vec<f32> = if faces.len() == 1 {
+        vec![1.0]
+    } else {
+        faces
+            .iter()
+            .map(|(_, e)| {
+                let d: f32 = e.iter().zip(&sum).map(|(x, s)| x * s).sum();
+                let rest = (sum2 - 2.0 * d + 1.0).max(0.0).sqrt();
+                ((d - 1.0) / rest.max(1e-6)).clamp(-1.0, 1.0)
+            })
+            .collect()
+    };
+    let mut sorted = like.clone();
+    sorted.sort_by(f32::total_cmp);
+    let bar = sorted[(sorted.len() - 1) / 2].max(p.assign);
+    let mut chosen: Vec<usize> = (0..faces.len()).filter(|&i| !faces[i].0.pinned && like[i] >= bar).collect();
+    // Sharpest first; of faces alike (a quality of 1 is common), the most typical.
+    chosen.sort_by(|&a, &b| faces[b].0.quality.total_cmp(&faces[a].0.quality).then(like[b].total_cmp(&like[a])));
+    chosen.into_iter().take(n).map(|i| faces[i].0.id).collect()
 }
 
 impl Project {
@@ -1058,10 +1108,16 @@ impl Project {
             CastEdit::Rename { character_id, name } => {
                 known(*character_id)?;
                 let name = name.as_deref().map(str::trim).filter(|n| !n.is_empty());
-                self.db().rename_character(*character_id, name, NAME_ANCHORS)?;
+                let pins = anchors(&self.db().own_faces(*character_id)?, NAME_ANCHORS, &self.identity_params()?);
+                self.db().rename_character(*character_id, name, &pins)?;
             }
             CastEdit::SetHidden { character_id, hidden } => {
-                self.db().set_character_hidden(*character_id, *hidden, NAME_ANCHORS)?
+                let pins = if *hidden {
+                    anchors(&self.db().own_faces(*character_id)?, NAME_ANCHORS, &self.identity_params()?)
+                } else {
+                    Vec::new()
+                };
+                self.db().set_character_hidden(*character_id, *hidden, &pins)?
             }
             CastEdit::Merge { from, into } => {
                 known(*from)?;
@@ -1544,6 +1600,117 @@ pub(crate) mod tests {
         assert_eq!(now.len(), 3);
         assert!(now.iter().all(|t| t.id != wrong));
         assert!(now.iter().any(|t| t.id == blurry[0].id && t.assign == TrackAssign::Pinned));
+    }
+
+    /// Person `who`'s face in one of their looks: turned `by` towards `toward`.
+    fn look(who: usize, toward: usize, by: f32) -> Vec<u8> {
+        let mut e = face(who, 0, 0.1, 0.9).embedding;
+        e[toward] += by;
+        tracks::embedding_to_bytes(&e)
+    }
+
+    #[test]
+    fn a_name_pins_the_sharpest_typical_faces_never_someone_else() {
+        let own = |id, pinned, quality, emb| OwnFace { id, pinned, quality, emb };
+        // Jesse in his looks, one of them pinned by hand, and the sharpest
+        // face of all a SWAT officer's that was grouped with him.
+        let faces = [
+            own(1, false, 0.7, look(1, 10, 0.2)),
+            own(2, false, 0.95, look(1, 11, 0.9)), // a look unlike most of his
+            own(3, false, 0.8, look(1, 12, 0.1)),
+            own(4, true, 0.6, look(1, 13, 0.05)), // pinned already: never chosen again
+            own(5, false, 1.0, look(1, 14, 0.15)),
+            own(6, false, 1.0, look(1, 15, 0.05)), // as sharp as 5, more like the rest
+            own(7, false, 1.0, look(2, 16, 0.1)),  // the officer
+            own(8, false, 0.5, look(1, 17, 0.25)),
+        ];
+        // By quality alone the officer and the odd look would be anchors.
+        assert_eq!(anchors(&faces, 5, &Params::default()), [6, 5, 3, 1]);
+        assert_eq!(anchors(&faces, 2, &Params::default()), [6, 5]);
+        assert!(!anchors(&faces, faces.len(), &Params::default()).contains(&7));
+        // A face whose embedding holds no number (NaN) counts for nothing.
+        let mut broken = look(1, 18, 0.1);
+        broken[..2].copy_from_slice(&[0x00, 0x7E]);
+        let with_it: Vec<OwnFace> = faces.iter().cloned().chain([own(9, false, 1.0, broken)]).collect();
+        assert_eq!(anchors(&with_it, 5, &Params::default()), [6, 5, 3, 1]);
+        // A face alone is the character; two people's faces, neither.
+        assert_eq!(anchors(&faces[..1], 5, &Params::default()), [1]);
+        assert!(
+            anchors(
+                &[own(1, false, 0.9, look(1, 10, 0.0)), own(2, false, 0.9, look(2, 10, 0.0))],
+                5,
+                &Params::default()
+            )
+            .is_empty()
+        );
+        // A face without a readable embedding is no anchor and counts for nothing.
+        let unreadable = [own(9, false, 1.0, vec![0; 3]), own(1, false, 0.7, look(1, 10, 0.2))];
+        assert_eq!(anchors(&unreadable, 5, &Params::default()), [1]);
+        assert!(anchors(&[], 5, &Params::default()).is_empty());
+    }
+
+    #[test]
+    fn blurry_faces_placed_with_a_character_dont_let_a_sharp_stranger_through() {
+        // Unit parts of a face: `who` most, its own look the rest.
+        let face = |who: f32, own: usize| -> Vec<u8> {
+            let mut e = vec![0.0f32; tracks::DIM];
+            e[0] = who;
+            e[own] = (1.0 - who * who).sqrt();
+            tracks::embedding_to_bytes(&e)
+        };
+        let own = |id, quality, emb| OwnFace { id, pinned: false, quality, emb };
+        // Four sharp faces of Jesse (0.64 alike), eight blurry ones placed
+        // with him (0.47 like his mean face, enough to be placed) and a
+        // sharp stranger grouped with him (0.40 like each of his sharp
+        // faces). Over all thirteen, the blurry ones set the bar low and the
+        // stranger, sharpest, would lead.
+        let mut faces: Vec<OwnFace> = (1..=4).map(|i| own(i, 0.9, face(0.8, 10 + i as usize))).collect();
+        faces.extend((5..=12).map(|i| own(i, 0.3, face(0.5, 10 + i as usize))));
+        faces.push(own(13, 1.0, face(0.5, 40)));
+        assert_eq!(anchors(&faces, 5, &Params::default()), [1, 2, 3, 4]);
+        assert!(!anchors(&faces, faces.len(), &Params::default()).contains(&13));
+        // A character of blurry faces alone is measured by them.
+        let blurry: Vec<OwnFace> = (1..=4).map(|i| own(i, 0.3, face(0.8, 10 + i as usize))).collect();
+        assert_eq!(anchors(&blurry, 2, &Params::default()), [1, 2]);
+    }
+
+    #[test]
+    fn naming_a_character_keeps_someone_else_grouped_with_them_free() {
+        let frames = 1000;
+        let (_dir, project, id) = project_with_media(frames);
+        let segments: Vec<Segment> = (0..frames)
+            .step_by(100)
+            .map(|s| Segment { start: s, end: s + 100, kind: SegmentKind::Shot, tiny: false })
+            .collect();
+        project.db().store_segments(id, &segments).unwrap();
+        // Jesse in six shots; a sharper face of someone else in another.
+        let mut faces: Vec<FaceTrack> = (0..6).map(|i| face(1, i * 100, 0.1, 0.8)).collect();
+        faces.push(face(2, 700, 0.5, 1.0));
+        project.store_face_chunk(id, 0, frames, &tracks::encode(&faces), &[], &[]).unwrap();
+        project.finish_faces(id).unwrap();
+        assert_eq!(project.recluster().unwrap(), 1);
+        let jesse = project.cast().unwrap().characters[0].id;
+        let officer = project.cast_tracks(TrackFilter::Unassigned).unwrap()[0].id;
+        // A grouping put the officer with Jesse.
+        let rev = project.db().cast_rev().unwrap();
+        let wrong = TrackUpdate {
+            id: officer.into(),
+            character: Some(jesse),
+            assign: TrackAssign::Auto,
+            score: 1.0,
+            via_body: false,
+        };
+        assert!(project.db().apply_identity(rev, &[], &[wrong], &[], &[]).unwrap());
+
+        project.cast_edit(&CastEdit::Rename { character_id: jesse, name: Some("Jesse".into()) }).unwrap();
+        let theirs = project.cast_tracks(TrackFilter::Character(jesse)).unwrap();
+        let pinned: Vec<u32> = theirs.iter().filter(|t| t.assign == TrackAssign::Pinned).map(|t| t.id).collect();
+        assert!(!pinned.is_empty() && !pinned.contains(&officer), "anchors {pinned:?}");
+        // Not pinned, he goes where his own face takes him at the next
+        // grouping: to no one, as he is like no one here.
+        project.recluster().unwrap();
+        assert!(project.cast_tracks(TrackFilter::Character(jesse)).unwrap().iter().all(|t| t.id != officer));
+        assert!(project.cast_tracks(TrackFilter::Unassigned).unwrap().iter().any(|t| t.id == officer));
     }
 
     #[test]

@@ -247,7 +247,7 @@ mod tests {
         let (db, _, ids) = setup();
         let walter = character(&db, &[ids[0], ids[1], ids[3]], "Walter");
         let jesse = character(&db, &[ids[2]], "Jesse");
-        db.set_character_hidden(jesse, true, 0).unwrap();
+        db.set_character_hidden(jesse, true, &[]).unwrap();
         db.mark_not_face(&[ids[0]]).unwrap();
         let rows = db.pack_rows(walter).unwrap();
         assert!(rows.iter().all(|r| r.track != ids[0]), "not a face");
