@@ -86,7 +86,11 @@ function ExportForm({ pid, character, pack, onDone }: { pid: string; character: 
     try {
       await commands.packExport(pid, character.id, { spec: state.spec, naming, presetId, outDir: dir, stamp })
       if (settings && settings.exportPresetId !== presetId) {
-        void commands.settingsUpdate({ ...settings, exportPresetId: presetId }).then((s) => queryClient.setQueryData(qk.settings, s))
+        void commands
+          .settingsUpdate({ ...settings, exportPresetId: presetId })
+          .then((s) => queryClient.setQueryData(qk.settings, s))
+          // Remembering the preset is minor; the export itself already went.
+          .catch(() => {})
       }
       onDone()
       toast(merge ? `Exporting ${shots} of ${character.label} into one file` : `Exporting ${shots} of ${character.label}`, {

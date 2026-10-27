@@ -28,6 +28,11 @@ export function usePlayer(clock: FrameClock | null) {
   const [rate, setRate] = useState(0)
   const [ready, setReady] = useState(false)
   const target = useRef<number | null>(null)
+  // The direction of the last commanded seek, and — once `seeked` drops the
+  // gate early — the frame it landed on: frames on the far side of it were
+  // composited before the seek and must not overwrite the playhead.
+  const seekDir = useRef(0)
+  const settle = useRef<{ frame: number; dir: number } | null>(null)
   const backwards = useRef<{ frame: number; carry: number } | null>(null)
   // The latest `play()` asked of the video: a refusal of an older one (undone
   // by K or J meanwhile) says nothing about what plays now.
@@ -42,6 +47,14 @@ export function usePlayer(clock: FrameClock | null) {
     if (v.requestVideoFrameCallback) {
       const onFrame = (_: number, meta: VideoFrameMeta) => {
         const f = clock.frameAt(meta.mediaTime)
+        const s = settle.current
+        if (s) {
+          if (s.dir > 0 ? f < s.frame : f > s.frame) {
+            handle = v.requestVideoFrameCallback!(onFrame)
+            return
+          }
+          settle.current = null
+        }
         // While a seek is pending, ignore frames from before it.
         if (target.current == null || target.current === f) {
           target.current = null
@@ -66,6 +79,8 @@ export function usePlayer(clock: FrameClock | null) {
       const v = videoRef.current
       if (!v || !clock) return
       const c = clock.clamp(f)
+      seekDir.current = Math.sign(c - store.get())
+      settle.current = null
       target.current = c
       store.set(c)
       v.currentTime = clock.seekTime(c)
@@ -91,16 +106,22 @@ export function usePlayer(clock: FrameClock | null) {
       // to the frame actually on screen so stepping continues from there.
       if (!clock || target.current != null) return
       const f = clock.frameAt(v.currentTime)
+      seekDir.current = Math.sign(f - store.get())
+      settle.current = null
       target.current = f
       store.set(f)
       v.currentTime = clock.seekTime(f)
     }
     const onReady = () => setReady(true)
     const onSeeked = () => {
-      // rVFC may not fire for a seek that lands on the frame already shown.
+      // rVFC may not fire for a seek that lands on the frame already shown,
+      // so show the target here — then let only onward frames through: a
+      // stale rVFC callback from before the seek is always on the far side.
       if (target.current != null && clock) {
-        store.set(target.current)
+        const t = target.current
         target.current = null
+        store.set(t)
+        if (seekDir.current !== 0) settle.current = { frame: t, dir: seekDir.current }
       }
     }
     v.addEventListener("play", onPlay)

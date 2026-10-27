@@ -52,7 +52,13 @@ export function EpisodeItems({
         </Item>
       )}
       {m.status === "failed" && (
-        <Item onSelect={() => void commands.mediaRetry(projectId, m.id)}>
+        <Item
+          onSelect={() =>
+            void commands
+              .mediaRetry(projectId, m.id)
+              .catch((e) => toast.error("Couldn't start the indexing", { description: errorMessage(e) }))
+          }
+        >
           <ArrowCounterClockwise /> Index again
         </Item>
       )}

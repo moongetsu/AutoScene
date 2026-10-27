@@ -16,6 +16,8 @@ export function usePageScrollElement(): HTMLElement | null {
 
 /** Where each visited page was scrolled to, by history entry (for Back). */
 const positions = new Map<string, number>()
+/** Long sessions visit many pages; only the most recent places are worth keeping. */
+const POSITIONS_MAX = 100
 /** How long a page coming back keeps trying to reach its place while its lists load. */
 const SETTLE_MS = 1000
 
@@ -38,7 +40,12 @@ export function useScrollMemory(el: HTMLElement | null, entry: string) {
     }
     if (Math.abs(el.scrollTop - target) > 1) frame = requestAnimationFrame(settle)
     const stop = () => cancelAnimationFrame(frame)
-    const remember = () => positions.set(entry, el.scrollTop)
+    const remember = () => {
+      positions.delete(entry)
+      positions.set(entry, el.scrollTop)
+      const oldest = positions.keys().next().value
+      if (positions.size > POSITIONS_MAX && oldest !== undefined) positions.delete(oldest)
+    }
     el.addEventListener("scroll", remember, { passive: true })
     for (const e of ["wheel", "touchstart", "pointerdown", "keydown"]) el.addEventListener(e, stop, { passive: true })
     return () => {

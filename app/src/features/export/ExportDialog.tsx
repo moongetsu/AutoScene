@@ -95,7 +95,11 @@ function ExportForm({
       await commands.exportStart(projectId, req)
       // Remember the preset for next time.
       if (settings && settings.exportPresetId !== presetId) {
-        void commands.settingsUpdate({ ...settings, exportPresetId: presetId }).then((s) => queryClient.setQueryData(qk.settings, s))
+        void commands
+          .settingsUpdate({ ...settings, exportPresetId: presetId })
+          .then((s) => queryClient.setQueryData(qk.settings, s))
+          // Remembering the preset is minor; the export itself already went.
+          .catch(() => {})
       }
       onDone()
       toast(single ? `Exporting “${name.trim() || suggested || "the clip"}”` : `Exporting ${clips.length} clips`, {

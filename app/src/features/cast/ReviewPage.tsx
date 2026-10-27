@@ -41,6 +41,9 @@ export function ReviewPage() {
   const [answered, setAnswered] = useState<Set<number>>(new Set())
   const [done, setDone] = useState(0)
   const [busy, setBusy] = useState(false)
+  // `busy` also guards `answer`, but as a ref: a state read would let a
+  // second answer in the same commit window through to a duplicate edit.
+  const busyRef = useRef(false)
   // Quick picks 1–9: the biggest characters when the review started, in a
   // fixed order (numbers don't move as answers change the screen time).
   const [pickIds, setPickIds] = useState<string[] | null>(null)
@@ -82,10 +85,12 @@ export function ReviewPage() {
   }, [pid, upcomingIds])
 
   const answer = async (id: number, fn: () => Promise<unknown>) => {
-    if (busy) return
+    if (busyRef.current) return
+    busyRef.current = true
     setBusy(true)
     setAnswered((s) => new Set(s).add(id))
     const r = await fn()
+    busyRef.current = false
     setBusy(false)
     if (r !== undefined) {
       setDone((d) => d + 1)
