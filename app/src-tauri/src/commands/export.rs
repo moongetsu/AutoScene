@@ -11,6 +11,7 @@ use tauri_specta::Event;
 
 use crate::error::{AppError, AppResult, ErrorCode};
 use crate::events::ExportChanged;
+use crate::paths;
 use crate::state::{AppState, blocking};
 use crate::work;
 
@@ -42,11 +43,16 @@ pub async fn export_start(
         .into_iter()
         .find(|p| p.id == req.preset_id)
         .ok_or_else(|| AppError::new(ErrorCode::Invalid, "Unknown export preset."))?;
+    // The folder picked for it; none: the project's own in the library.
+    let chosen = req.out_dir.as_deref().map(str::trim).filter(|d| !d.is_empty()).map(PathBuf::from);
+    if let Some(dir) = &chosen {
+        paths::check(dir)?;
+    }
     let lib = state.library.clone();
     let (project, summary) = blocking(move || {
         let project = lib.project(project_id)?;
-        let out_dir = match req.out_dir.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
-            Some(d) => PathBuf::from(d),
+        let out_dir = match chosen {
+            Some(d) => d,
             None => lib.default_export_dir(&lib.summary(project_id)?)?,
         };
         let summary = project.create_export(&req, preset, &out_dir)?;

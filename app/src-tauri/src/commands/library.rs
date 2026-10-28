@@ -10,6 +10,7 @@ use tauri_specta::Event;
 use crate::commands::media::stop_jobs;
 use crate::error::AppResult;
 use crate::events::LibraryChanged;
+use crate::paths;
 use crate::state::{AppState, allow_asset_dir, blocking};
 use crate::work;
 
@@ -35,6 +36,7 @@ pub async fn project_get(state: State<'_, AppState>, project_id: ProjectId) -> A
 #[tauri::command]
 #[specta::specta]
 pub async fn project_create(app: AppHandle, state: State<'_, AppState>, req: NewProject) -> AppResult<ProjectSummary> {
+    paths::check_all(&req.files)?;
     let lib = state.library.clone();
     let (summary, project, added) = blocking(move || Ok(lib.create_project(&req)?)).await?;
     allow_asset_dir(&app, &project.thumbs_dir());
@@ -142,6 +144,7 @@ pub async fn import_scan(
     kind: ProjectKind,
     project_id: Option<ProjectId>,
 ) -> AppResult<Vec<ImportCandidate>> {
+    crate::paths::check_all(&paths)?;
     let lib = state.library.clone();
     blocking(move || {
         let project = project_id.map(|id| lib.project(id)).transpose()?;
@@ -166,7 +169,15 @@ pub async fn settings_update(
 ) -> AppResult<AppSettings> {
     let lib = state.library.clone();
     let before = lib.finds_bodies();
-    let saved = blocking(move || Ok(lib.update_settings(&settings)?)).await?;
+    let saved = blocking(move || {
+        // Only a new library folder is checked: every other change sends
+        // back the one in use.
+        if settings.library_root.trim() != lib.library_root()?.display().to_string() {
+            paths::check(settings.library_root.trim())?;
+        }
+        Ok(lib.update_settings(&settings)?)
+    })
+    .await?;
     // Finding people by their bodies changes every cast.
     if saved.find_bodies != before {
         work::bodies_setting_changed(&app, saved.find_bodies);

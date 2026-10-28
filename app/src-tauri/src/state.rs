@@ -16,6 +16,7 @@ use tauri_specta::Event;
 
 use crate::error::{AppError, AppResult, ErrorCode};
 use crate::events::{JobChanged, JobProgressEvent};
+use crate::paths;
 
 /// Concurrent jobs per resource class. Two decode-heavy jobs keep a GPU busy
 /// without starving the UI's preview; exports run one at a time so encoder
@@ -50,7 +51,9 @@ pub struct AppState {
     pub portraits: Arc<parking_lot::Mutex<HashMap<ProjectId, bool>>>,
     /// Per project, the last decision that moved faces (see `work::cast_edited`).
     pub decisions: Arc<parking_lot::Mutex<HashMap<ProjectId, u64>>>,
-    tools: Arc<OnceLock<Result<Arc<Tools>, String>>>,
+    /// ffmpeg/ffprobe once found (see [`AppState::tools`]).
+    tools: Arc<OnceLock<Arc<Tools>>>,
+    /// The ffmpeg folder this build uses (see [`sidecar_dir`]).
     bundled_ffmpeg: Option<PathBuf>,
 }
 
@@ -63,22 +66,13 @@ impl AppState {
                 JobEvent::Progress(p) => JobProgressEvent(p).emit(&handle),
             };
         });
-        // Release builds ship ffmpeg as a resource; dev builds use the same
-        // pinned build when `cargo xtask fetch-sidecars` has fetched it.
-        let bundled_ffmpeg =
-            app.path().resource_dir().ok().map(|d| d.join("ffmpeg")).filter(|d| d.is_dir()).or_else(|| {
-                cfg!(debug_assertions)
-                    .then(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ffmpeg"))
-                    .filter(|d| d.is_dir())
-            });
-        // The ONNX Runtime the analysis engine loads, found the same way.
-        let ort_dir = app
-            .path()
-            .resource_dir()
-            .ok()
-            .map(|d| d.join("onnxruntime"))
-            .filter(|d| d.is_dir())
-            .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("onnxruntime"));
+        // The ffmpeg the app and its engine run, and the ONNX Runtime the
+        // engine loads (see `sidecar_dir`).
+        let resources = app.path().resource_dir().ok();
+        let dev = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let bundled_ffmpeg = sidecar_dir(resources.as_deref(), "ffmpeg", RELEASE, dev);
+        let ort_dir =
+            sidecar_dir(resources.as_deref(), "onnxruntime", RELEASE, dev).unwrap_or_else(|| dev.join("onnxruntime"));
         let models = ModelStore::new(paths.models());
         let engine_cfg = as_engine::Config {
             ort_dir,
@@ -87,7 +81,12 @@ impl AppState {
             gpu: true,
             idle_exit: Some(as_engine::IDLE_EXIT),
         };
-        let program = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("autoscene-app"));
+        // The engine is this very executable, and nothing found by name stands
+        // in for it: without one, starting it fails and analysis says so.
+        let program = std::env::current_exe().unwrap_or_else(|e| {
+            log::error!("can't locate the app's executable to start the analysis engine: {e}");
+            PathBuf::new()
+        });
         let mut args = vec!["--engine".into()];
         args.extend(as_engine::args(&engine_cfg));
         let engine = Arc::new(Engine::new(Launch { program, args }));
@@ -104,18 +103,17 @@ impl AppState {
         }
     }
 
-    /// ffmpeg/ffprobe, located once. Hardware capabilities are probed once, on
-    /// first use: the warm-up after launch, a job, or a plan sizing an export
-    /// for its encoders (never on the UI thread).
+    /// ffmpeg/ffprobe, kept once found. Not finding them isn't kept: the
+    /// next use looks again, so a file an antivirus held for a moment, or a
+    /// reinstall, doesn't leave every job failing until a restart.
+    /// Hardware capabilities are probed once, on first use: the warm-up
+    /// after launch, a job, or a plan sizing an export for its encoders
+    /// (never on the UI thread).
     pub fn tools(&self) -> AppResult<Arc<Tools>> {
-        self.tools
-            .get_or_init(|| {
-                Tools::locate(self.bundled_ffmpeg.as_deref().filter(|d| d.is_dir()))
-                    .map(Arc::new)
-                    .map_err(|e| e.to_string())
-            })
-            .clone()
-            .map_err(|m| AppError::new(ErrorCode::Media, m))
+        found(&self.tools, || Tools::locate(self.bundled_ffmpeg.as_deref()).map(Arc::new)).cloned().map_err(|e| {
+            log::warn!("media tools: {}", e.detail());
+            AppError::new(ErrorCode::Media, e.to_string())
+        })
     }
 
     pub fn tools_status(&self) -> MediaToolsStatus {
@@ -129,6 +127,38 @@ impl AppState {
             Err(e) => MediaToolsStatus { ready: false, version: None, path: None, error: Some(e.message) },
         }
     }
+}
+
+/// Whether this is a release build: it uses only the sidecars it ships with.
+const RELEASE: bool = !cfg!(debug_assertions);
+
+/// Where a sidecar shipped as a resource (`ffmpeg`, `onnxruntime`) is.
+///
+/// A release build uses its own resource folder and nothing else, even when
+/// that's gone: the tools then say they're missing ("reinstall") rather than
+/// run a build found on PATH, named by `AUTOSCENE_FFMPEG_DIR`, or left at the
+/// path the binary was built at. Not knowing its resources (it can't tell
+/// where it runs from) gives an empty path, which finds nothing, never the
+/// working directory. A dev build takes the resource folder when it exists,
+/// else the source tree's copy `cargo xtask fetch-sidecars` made (`dev`),
+/// else `None`: ffmpeg then comes from `AUTOSCENE_FFMPEG_DIR` or PATH.
+fn sidecar_dir(resources: Option<&Path>, name: &str, release: bool, dev: &Path) -> Option<PathBuf> {
+    let shipped = resources.map(|d| d.join(name));
+    if release {
+        return Some(shipped.unwrap_or_default());
+    }
+    shipped.filter(|d| d.is_dir()).or_else(|| Some(dev.join(name)).filter(|d| d.is_dir()))
+}
+
+/// The value in `cell`, else `find`'s once it succeeds. A failure isn't
+/// kept, so the next caller looks again.
+fn found<T, E>(cell: &OnceLock<T>, find: impl FnOnce() -> Result<T, E>) -> Result<&T, E> {
+    if let Some(v) = cell.get() {
+        return Ok(v);
+    }
+    let v = find()?;
+    // A caller that found them meanwhile wins; the same tools either way.
+    Ok(cell.get_or_init(|| v))
 }
 
 /// Stop all background work before the process goes away (quit, restart,
@@ -151,22 +181,39 @@ pub fn resume_work(app: &AppHandle) {
 /// Let the webview load a file through the asset protocol (players, posters).
 /// Scope grows per file at runtime; nothing on disk is reachable by default.
 pub fn allow_asset(app: &AppHandle, path: &Path) {
-    if let Err(e) = app.asset_protocol_scope().allow_file(path) {
-        log::warn!("asset scope: {}: {e}", path.display());
+    if grantable(path)
+        && let Err(e) = app.asset_protocol_scope().allow_file(path)
+    {
+        log::warn!("asset scope: {}: {e}", paths::name(path));
     }
 }
 
 pub fn allow_asset_dir(app: &AppHandle, dir: &Path) {
-    if let Err(e) = app.asset_protocol_scope().allow_directory(dir, false) {
-        log::warn!("asset scope: {}: {e}", dir.display());
+    if grantable(dir)
+        && let Err(e) = app.asset_protocol_scope().allow_directory(dir, false)
+    {
+        log::warn!("asset scope: {}: {e}", paths::name(dir));
     }
 }
 
 /// Like [`allow_asset_dir`], including subfolders (face thumbnails per media).
 pub fn allow_asset_tree(app: &AppHandle, dir: &Path) {
-    if let Err(e) = app.asset_protocol_scope().allow_directory(dir, true) {
-        log::warn!("asset scope: {}: {e}", dir.display());
+    if grantable(dir)
+        && let Err(e) = app.asset_protocol_scope().allow_directory(dir, true)
+    {
+        log::warn!("asset scope: {}: {e}", paths::name(dir));
     }
+}
+
+/// Only plain paths are opened to the webview (see `paths`). Grants come
+/// from the databases, and the scope resolves what it's given: a `..` in a
+/// stored path would open wherever it leads.
+fn grantable(path: &Path) -> bool {
+    let plain = paths::is_plain(path);
+    if !plain {
+        log::warn!("asset scope: refused {}, which isn't a plain path", paths::name(path));
+    }
+    plain
 }
 
 /// Run blocking work (database, filesystem scans) off the async runtime.
@@ -175,4 +222,49 @@ pub async fn blocking<T: Send + 'static>(f: impl FnOnce() -> AppResult<T> + Send
         log::error!("a command failed unexpectedly: {e}");
         AppError::internal("Something went wrong. Details are in the log.")
     })?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_release_build_uses_only_its_own_sidecars() {
+        let tmp = std::env::temp_dir().join(format!("autoscene-sidecars-{}", std::process::id()));
+        let (resources, dev) = (tmp.join("resources"), tmp.join("src-tauri"));
+        std::fs::create_dir_all(dev.join("ffmpeg")).unwrap();
+
+        // Gone from the install: still only there (the tools say "reinstall").
+        assert_eq!(sidecar_dir(Some(&resources), "ffmpeg", true, &dev), Some(resources.join("ffmpeg")));
+        assert_eq!(sidecar_dir(None, "ffmpeg", true, &dev), Some(PathBuf::new()));
+        // A dev build falls back to the source tree's copy, else to none.
+        assert_eq!(sidecar_dir(Some(&resources), "ffmpeg", false, &dev), Some(dev.join("ffmpeg")));
+        assert_eq!(sidecar_dir(Some(&resources), "onnxruntime", false, &dev), None);
+        std::fs::create_dir_all(resources.join("ffmpeg")).unwrap();
+        assert_eq!(sidecar_dir(Some(&resources), "ffmpeg", false, &dev), Some(resources.join("ffmpeg")));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn tools_not_found_are_looked_for_again() {
+        let cell = OnceLock::new();
+        let mut looks = 0;
+        assert_eq!(
+            found(&cell, || {
+                looks += 1;
+                Err("held by the antivirus")
+            }),
+            Err("held by the antivirus")
+        );
+        assert_eq!(
+            found(&cell, || {
+                looks += 1;
+                Ok::<_, &str>(7)
+            }),
+            Ok(&7)
+        );
+        // Once found, kept.
+        assert_eq!(found(&cell, || Err::<i32, _>("never asked")), Ok(&7));
+        assert_eq!(looks, 2);
+    }
 }

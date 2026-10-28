@@ -2,8 +2,8 @@
 //!
 //! Wraps `tauri-plugin-updater` in three commands the webview drives:
 //! `update_check`, `update_install`, `update_relaunch`. Keeping the logic in
-//! Rust means the webview needs no updater capability, and the local override
-//! file below can fake an update without a release server.
+//! Rust means the webview needs no updater capability, and in dev builds the
+//! local override file below can fake an update without a release server.
 //!
 //! ## Release side
 //!
@@ -12,7 +12,7 @@
 //! `plugins.updater.endpoints`. Signing needs `TAURI_SIGNING_PRIVATE_KEY`; the
 //! matching public key is `plugins.updater.pubkey`.
 //!
-//! ## Local override — `~/.autoscene/updates.json`
+//! ## Local override — `~/.autoscene/updates.json` (dev builds only)
 //!
 //! ```json
 //! {
@@ -25,7 +25,10 @@
 //! short-circuits it: `update_check` reports that version as available and
 //! `update_install` runs the progress arc without touching the installed app.
 //! A file is used rather than an env var because an app launched from Finder
-//! or the Start menu inherits no shell environment.
+//! or the Start menu inherits no shell environment. `tauri dev` and
+//! `tauri build --debug` builds (installers included) read it; release builds
+//! never do, so a file left behind (or planted) can't fake an update, hide
+//! real ones, or point the check at another feed.
 
 use std::time::Duration;
 
@@ -87,20 +90,36 @@ pub struct UpdateProgress {
     pub total: Option<u64>,
 }
 
+/// Whether this build reads the local override: dev builds only.
+const OVERRIDE_ALLOWED: bool = cfg!(debug_assertions);
+
 fn config_path() -> std::path::PathBuf {
     as_core::AppPaths::legacy_dot_dir().join("updates.json")
 }
 
-/// Missing or malformed file means "no override" — never a failed check.
 fn local_config() -> LocalConfig {
-    let path = config_path();
-    let Ok(raw) = std::fs::read_to_string(&path) else {
+    read_override(&config_path(), OVERRIDE_ALLOWED)
+}
+
+/// The override at `path` when `allowed`. Missing or malformed file means
+/// "no override" — never a failed check.
+fn read_override(path: &std::path::Path, allowed: bool) -> LocalConfig {
+    if !allowed {
+        return LocalConfig::default();
+    }
+    let Ok(raw) = std::fs::read_to_string(path) else {
         return LocalConfig::default();
     };
-    serde_json::from_str::<LocalConfig>(&raw).unwrap_or_else(|e| {
-        log::warn!("Ignoring {}: {e}", path.display());
-        LocalConfig::default()
-    })
+    match serde_json::from_str::<LocalConfig>(&raw) {
+        Ok(cfg) => {
+            log::warn!("Updates follow the dev override in ~/.autoscene/updates.json");
+            cfg
+        }
+        Err(e) => {
+            log::warn!("Ignoring ~/.autoscene/updates.json: {e}");
+            LocalConfig::default()
+        }
+    }
 }
 
 fn update_err(e: impl std::fmt::Display) -> AppError {
@@ -236,4 +255,30 @@ async fn simulate_install(app: &AppHandle) -> AppResult<()> {
         emit_progress(app, FAKE_BYTES * step / FAKE_STEPS, Some(FAKE_BYTES));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_override_is_read_only_where_allowed() {
+        let path = std::env::temp_dir().join(format!("autoscene-updates-{}.json", std::process::id()));
+        std::fs::write(
+            &path,
+            r#"{ "endpoint": "https://example.test/latest.json", "simulate": { "version": "9.9.9" } }"#,
+        )
+        .unwrap();
+        let read = read_override(&path, true);
+        assert_eq!(read.endpoint.as_deref(), Some("https://example.test/latest.json"));
+        assert_eq!(read.simulate.and_then(|s| s.version).as_deref(), Some("9.9.9"));
+        // A release build: the real feed, whatever the file says.
+        let release = read_override(&path, false);
+        assert!(release.endpoint.is_none() && release.simulate.is_none());
+
+        std::fs::write(&path, "not json").unwrap();
+        assert!(read_override(&path, true).simulate.is_none());
+        let _ = std::fs::remove_file(&path);
+        assert!(read_override(&path, true).endpoint.is_none());
+    }
 }

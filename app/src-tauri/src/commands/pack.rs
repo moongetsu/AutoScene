@@ -13,6 +13,7 @@ use tauri_specta::Event;
 
 use crate::error::{AppError, AppResult, ErrorCode};
 use crate::events::{ExportChanged, PackChanged};
+use crate::paths;
 use crate::state::{AppState, allow_asset_tree, blocking};
 use crate::work;
 
@@ -122,6 +123,10 @@ pub async fn pack_export(
         .into_iter()
         .find(|p| p.id == req.preset_id)
         .ok_or_else(|| AppError::new(ErrorCode::Invalid, "Unknown export preset."))?;
+    // The folder picked for it (the character's own goes inside, by name).
+    if let Some(dir) = req.out_dir.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
+        paths::check(dir)?;
+    }
     let lib = state.library.clone();
     let (project, summary) = blocking(move || {
         let project = lib.project(project_id)?;

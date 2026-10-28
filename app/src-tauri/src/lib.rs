@@ -12,6 +12,7 @@ mod events;
 mod keep_awake;
 #[cfg(target_os = "macos")]
 mod mac_menu;
+mod paths;
 mod state;
 mod updater;
 mod window;
@@ -163,7 +164,11 @@ pub fn run() {
     builder
         .setup(move |app| {
             specta.mount_events(app);
-            log::info!("AutoScene {} starting; data dir {}", app.package_info().version, paths.data.display());
+            // The data folder's path names the user (their home folder), so
+            // it's logged at debug: release logs, which people share, keep
+            // info and up.
+            log::info!("AutoScene {} starting", app.package_info().version);
+            log::debug!("data dir {}", paths.data.display());
             let library = match Library::open(&paths) {
                 Ok(l) => l,
                 Err(e) => {

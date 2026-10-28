@@ -8,7 +8,12 @@ import * as __TAURI_EVENT from "@tauri-apps/api/event";
 /** Commands */
 export const commands = {
 	appInfo: () => __TAURI_INVOKE<AppInfo>("app_info"),
-	/**  Show a file or folder in Explorer / Finder. */
+	/**
+	 *  Show a file or folder in Explorer / Finder: one AutoScene knows (its
+	 *  library, data and logs, a project's folder, an episode's file, an
+	 *  export's folder or files), never just any path. Off the main thread: a
+	 *  share that doesn't answer would freeze the window until Windows gives up.
+	 */
 	revealPath: (path: string) => __TAURI_INVOKE<null>("reveal_path", { path }),
 	/**
 	 *  Put text on the clipboard. Natively, so it also works from the macOS

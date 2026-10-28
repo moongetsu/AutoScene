@@ -321,9 +321,9 @@ fn run_shots(
     let net = models.transnet(rt)?;
     let index = FrameIndex::from_bytes(&job.index.0).map_err(|e| AnalysisError::Internal(e.to_string()))?;
     let started = Instant::now();
-    let id = job.id;
+    let (id, file) = (job.id, job.path.file_name().unwrap_or_default());
     send_devices(out, id, rt, &[(as_models::ids::TRANSNET, net.device())]);
-    tracing::info!(id, path = %job.path.display(), resume = job.resume, device = ?net.device(), "finding shots");
+    tracing::info!(id, ?file, resume = job.resume, device = ?net.device(), "finding shots");
     shot_signals(
         tools,
         Source { path: Path::new(&job.path), info: &job.info, index: &index },
@@ -410,7 +410,7 @@ fn run_faces(
     let what = if job.known.is_some() { "people" } else { "faces" };
     tracing::info!(
         id,
-        path = %job.path.display(),
+        file = ?job.path.file_name().unwrap_or_default(),
         resume = job.resume,
         people = job.bodies,
         animated = job.animated,
@@ -479,8 +479,8 @@ fn run_fast_faces(
     let index = FrameIndex::from_bytes(&job.index.0).map_err(|e| AnalysisError::Internal(e.to_string()))?;
     let shots: Vec<FrameRange> = job.shots.iter().map(|&(s, e)| FrameRange::new(s, e)).collect();
     let started = Instant::now();
-    let id = job.id;
-    tracing::info!(id, path = %job.path.display(), resume = job.resume, ?device, "finding faces (Fast Scan)");
+    let (id, file) = (job.id, job.path.file_name().unwrap_or_default());
+    tracing::info!(id, ?file, resume = job.resume, ?device, "finding faces (Fast Scan)");
     let mut found = 0usize;
     fast_face_tracks(
         tools,

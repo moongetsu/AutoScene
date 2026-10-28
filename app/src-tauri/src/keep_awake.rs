@@ -18,8 +18,9 @@ pub fn hold() -> KeepAwake {
     }
     #[cfg(target_os = "macos")]
     {
-        // `caffeinate -i` prevents idle sleep while it runs; `-w` ends it with us.
-        let child = std::process::Command::new("caffeinate")
+        // `caffeinate -i` prevents idle sleep while it runs; `-w` ends it with
+        // us. By its full path: the system's own, never one found on PATH.
+        let child = std::process::Command::new("/usr/bin/caffeinate")
             .args(["-i", "-w", &std::process::id().to_string()])
             .spawn()
             .map_err(|e| log::debug!("caffeinate: {e}"))

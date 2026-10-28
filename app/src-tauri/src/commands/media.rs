@@ -11,6 +11,7 @@ use tauri::{AppHandle, State};
 use tauri_specta::Event;
 
 use crate::error::{AppError, AppResult, ErrorCode};
+use crate::paths;
 use crate::state::{AppState, allow_asset, allow_asset_dir, blocking};
 use crate::work;
 
@@ -47,6 +48,7 @@ pub async fn media_add(
     project_id: ProjectId,
     files: Vec<String>,
 ) -> AppResult<u32> {
+    paths::check_all(&files)?;
     let lib = state.library.clone();
     let (project, added) = blocking(move || {
         let p = lib.project(project_id)?;
@@ -127,6 +129,7 @@ pub async fn media_relink(
     path: String,
     force: bool,
 ) -> AppResult<Relink> {
+    paths::check(&path)?;
     let lib = state.library.clone();
     let tools = state.tools()?;
     let _one_at_a_time = RELINKING.lock().await;
@@ -248,6 +251,7 @@ pub async fn media_relink_folder(
     project_id: ProjectId,
     dir: String,
 ) -> AppResult<RelinkSummary> {
+    paths::check(&dir)?;
     let lib = state.library.clone();
     let tools = state.tools()?;
     let _one_at_a_time = RELINKING.lock().await;
@@ -379,6 +383,12 @@ pub async fn media_frame_map(
         work::queue_proxy(&app, &project, media_id);
     }
     let map = map?;
+    // A preview only ever lives in its project's previews folder: one the
+    // database names anywhere else isn't opened to the webview.
+    if map.is_proxy && !paths::is_within(Path::new(&map.src), &project.proxies_dir()) {
+        log::warn!("refused a preview outside its project's previews folder: {}", paths::name(Path::new(&map.src)));
+        return Err(AppError::new(ErrorCode::NotReady, "This episode's preview can't be shown. Prepare it again."));
+    }
     allow_asset(&app, Path::new(&map.src));
     Ok(map)
 }

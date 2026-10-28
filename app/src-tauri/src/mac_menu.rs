@@ -102,8 +102,9 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
 pub fn on_event<R: Runtime>(app: &AppHandle<R>, event: MenuEvent) {
     let id: &str = event.id().as_ref();
     if id == "help:logs" {
-        // Handled in Rust — no IPC round-trip needed.
-        let _ = std::process::Command::new("open").arg(as_core::AppPaths::resolve().logs()).spawn();
+        // Handled in Rust — no IPC round-trip needed. The system's `open`,
+        // never one found on PATH.
+        let _ = std::process::Command::new("/usr/bin/open").arg(as_core::AppPaths::resolve().logs()).spawn();
         return;
     }
     if let Err(e) = MenuAction(id.to_string()).emit(app) {
