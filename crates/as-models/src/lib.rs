@@ -148,6 +148,8 @@ pub mod ids {
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 /// A download that receives nothing for this long fails (and resumes later).
 const STALL_TIMEOUT: Duration = Duration::from_secs(60);
+/// The most redirects a request follows (ureq's own limit).
+const MAX_REDIRECTS: usize = 10;
 /// Bytes left free on the drive besides a download: the library's database
 /// and the logs live there too.
 const SPARE: u64 = 64 << 20;
@@ -349,12 +351,8 @@ impl ModelStore {
         }
         self.room_for(m.size - have)?;
         tracing::info!(model = %m.id, resume_from = have, "downloading model");
-        let mut req = agent.get(&m.url);
-        if have > 0 {
-            req = req.header("Range", &format!("bytes={have}-"));
-        }
-        watch.check()?;
-        let resp = req.call().map_err(|e| ModelError::Download(e.to_string()))?;
+        let range = (have > 0).then(|| format!("bytes={have}-"));
+        let resp = get(agent, &m.url, range.as_deref(), None, watch)?;
         // A server that ignores the range sends everything again.
         if have > 0 && resp.status() != 206 {
             have = 0;
@@ -414,12 +412,7 @@ impl ModelStore {
         if have < entry.compressed {
             tracing::info!(model = %m.id, member, resume_from = have, "downloading model");
             let (from, to) = (data + have, data + entry.compressed - 1);
-            watch.check()?;
-            let resp = agent
-                .get(&m.url)
-                .header("Range", &format!("bytes={from}-{to}"))
-                .call()
-                .map_err(|e| ModelError::Download(e.to_string()))?;
+            let resp = get(agent, &m.url, Some(&format!("bytes={from}-{to}")), None, watch)?;
             if resp.status() != 206 {
                 return Err(fail(format!("the server sent {} instead of the member's bytes", resp.status())));
             }
@@ -617,20 +610,51 @@ fn stream(
     Ok(())
 }
 
+/// GET `url` (`range`: its Range header), following its redirects here, not
+/// in ureq: ureq reads a redirect's body to its end inside `.call()`, where
+/// only a global timeout bounds it, and a whole model can't have one. A
+/// redirect's body is never read; its connection just closes. A cancel is
+/// checked before every hop, and each keeps the agent's `https_only`.
+/// `budget`: how long a small request may take in all, its body included.
+fn get(
+    agent: &ureq::Agent,
+    url: &str,
+    range: Option<&str>,
+    budget: Option<Duration>,
+    watch: Watch,
+) -> ModelResult<ureq::http::Response<ureq::Body>> {
+    let failed = |e: String| ModelError::Download(format!("{url}: {e}"));
+    let deadline = budget.map(|b| Instant::now() + b);
+    let mut at = url::Url::parse(url).map_err(|e| failed(e.to_string()))?;
+    for _ in 0..=MAX_REDIRECTS {
+        watch.check()?;
+        let mut req = agent.get(at.as_str());
+        if let Some(range) = range {
+            req = req.header("Range", range);
+        }
+        let resp = req
+            .config()
+            .max_redirects(0)
+            .timeout_global(deadline.map(|d| d.saturating_duration_since(Instant::now())))
+            .build()
+            .call()
+            .map_err(|e| failed(e.to_string()))?;
+        let Some(location) = resp.headers().get("location").filter(|_| resp.status().is_redirection()) else {
+            return Ok(resp);
+        };
+        let location = location.to_str().map_err(|_| failed("a redirect to an unreadable address".into()))?;
+        at = at.join(location).map_err(|e| failed(format!("a redirect to {location}: {e}")))?;
+    }
+    Err(failed(format!("more than {MAX_REDIRECTS} redirects")))
+}
+
 /// Bytes `from..from + len` of the file at `url` (`len` > 0): only those,
 /// or an error.
 fn get_range(agent: &ureq::Agent, url: &str, from: u64, len: u64, watch: Watch) -> ModelResult<Vec<u8>> {
     let what = format!("{url} bytes {from}+{len}");
     let failed = |e: String| ModelError::Download(format!("{what}: {e}"));
-    watch.check()?;
-    let resp = agent
-        .get(url)
-        .header("Range", &format!("bytes={from}-{}", from + len.max(1) - 1))
-        .config()
-        .timeout_global(Some(small_request_budget(len)))
-        .build()
-        .call()
-        .map_err(|e| failed(e.to_string()))?;
+    let range = format!("bytes={from}-{}", from + len.max(1) - 1);
+    let resp = get(agent, url, Some(&range), Some(small_request_budget(len)), watch)?;
     if resp.status() != 206 {
         return Err(failed(format!("the server answered {} to a range request", resp.status())));
     }
@@ -651,15 +675,7 @@ fn get_range(agent: &ureq::Agent, url: &str, from: u64, len: u64, watch: Watch) 
 /// How big the file at `url` is: the total its server names for its first byte.
 fn remote_len(agent: &ureq::Agent, url: &str, watch: Watch) -> ModelResult<u64> {
     let failed = |e: String| ModelError::Download(format!("{url}: {e}"));
-    watch.check()?;
-    let resp = agent
-        .get(url)
-        .header("Range", "bytes=0-0")
-        .config()
-        .timeout_global(Some(small_request_budget(1)))
-        .build()
-        .call()
-        .map_err(|e| failed(e.to_string()))?;
+    let resp = get(agent, url, Some("bytes=0-0"), Some(small_request_budget(1)), watch)?;
     let total = resp
         .headers()
         .get("content-range")
@@ -806,16 +822,30 @@ mod tests {
     }
 
     /// A server for one file that answers byte ranges, counting what it sent.
+    /// `/moved/…` redirects to `/…` and `/loop/…` to itself, each redirect
+    /// announcing a body it sends a few bytes of, then holding the
+    /// connection without a word more.
     fn serve(data: Vec<u8>) -> (String, Arc<AtomicU64>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/cheetah.zip", listener.local_addr().unwrap());
         let sent = Arc::new(AtomicU64::new(0));
         let counted = sent.clone();
         std::thread::spawn(move || {
+            let mut held = Vec::new();
             for conn in listener.incoming() {
                 let Ok(mut conn) = conn else { return };
                 let mut reader = std::io::BufReader::new(conn.try_clone().unwrap());
-                let (status, body, extra) = match read_range(&mut reader, data.len() as u64) {
+                let mut request = String::new();
+                let _ = reader.read_line(&mut request);
+                let path = request.split(' ').nth(1).unwrap_or("/").to_string();
+                let range = read_range(&mut reader, data.len() as u64);
+                if let Some(to) = path.strip_prefix("/moved").or_else(|| path.starts_with("/loop/").then_some(&*path)) {
+                    let head = format!("HTTP/1.1 302 Found\r\nLocation: {to}\r\nContent-Length: 4096\r\n\r\n");
+                    let _ = conn.write_all(head.as_bytes()).and_then(|()| conn.write_all(&[b'.'; 16]));
+                    held.push(conn);
+                    continue;
+                }
+                let (status, body, extra) = match range {
                     Some((a, b)) => (
                         "206 Partial Content",
                         &data[a as usize..=b as usize],
@@ -854,6 +884,14 @@ mod tests {
             }
         });
         url
+    }
+
+    /// `fetch` on a thread of its own: a request that hangs fails the test
+    /// instead of holding it up for good.
+    fn fetch_within(store: ModelStore, m: Model, limit: Duration) -> ModelResult<PathBuf> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || drop(tx.send(store.fetch(&m, &CancelToken::new(), |_, _| {}))));
+        rx.recv_timeout(limit).expect("the download hung")
     }
 
     fn sha(bytes: &[u8]) -> String {
@@ -968,6 +1006,29 @@ mod tests {
         let started = Instant::now();
         assert!(matches!(store.fetch(&m, &cancel, |_, _| {}), Err(ModelError::Cancelled)));
         assert!(started.elapsed() < Duration::from_secs(5), "{:?}", started.elapsed());
+    }
+
+    #[test]
+    fn a_redirect_whose_body_never_ends_holds_up_nothing() {
+        // A whole model and one inside a zip, each behind a redirect that
+        // announces a body, sends a little of it and goes quiet: ureq
+        // would wait for the rest inside `.call()`, with nothing to end it.
+        let model = model_bytes(300_000);
+        let dir = tempfile::tempdir().unwrap();
+        let (url, _) = serve(model.clone());
+        let whole = test_model("whole.onnx", url.replace("/cheetah", "/moved/cheetah"), None, &model);
+        let path = fetch_within(ModelStore::new(dir.path()), whole, Duration::from_secs(20)).unwrap();
+        assert_eq!(fs::read(path).unwrap(), model);
+        let (url, _) = serve(archive_around(&model));
+        let member =
+            test_model("reid_0265.onnx", url.replace("/cheetah", "/moved/cheetah"), Some("reid_0265.onnx"), &model);
+        let path = fetch_within(ModelStore::new(dir.path()), member, Duration::from_secs(20)).unwrap();
+        assert_eq!(fs::read(path).unwrap(), model);
+
+        // A redirect back to itself ends at the limit.
+        let looping = test_model("loop.onnx", url.replace("/cheetah", "/loop/cheetah"), None, &model);
+        let r = fetch_within(ModelStore::new(dir.path()), looping, Duration::from_secs(20));
+        assert!(matches!(&r, Err(ModelError::Download(why)) if why.contains("redirects")), "{r:?}");
     }
 
     #[test]
