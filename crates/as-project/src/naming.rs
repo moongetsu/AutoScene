@@ -240,9 +240,12 @@ pub fn safe_component(s: &str, sep: &str, max_chars: usize) -> String {
 }
 
 /// CON, PRN, AUX, NUL, COM0-9, LPT0-9 (and the superscript-digit forms
-/// Windows also reserves) can't be file names, whatever the extension.
+/// Windows also reserves) can't be file names, whatever the extension:
+/// Windows 10 opens the device for `CON.x.mov` or `nul .mov` too, so only
+/// what comes before the first dot counts, without trailing spaces.
 fn is_reserved_device(name: &str) -> bool {
-    let upper = name.to_ascii_uppercase();
+    let base = name.split('.').next().unwrap_or_default().trim_end_matches(' ');
+    let upper = base.to_ascii_uppercase();
     if ["CON", "PRN", "AUX", "NUL"].contains(&upper.as_str()) {
         return true;
     }
@@ -372,6 +375,19 @@ mod tests {
         assert_eq!(safe_component("Frieren: Beyond Journey's End", "_", 80), "Frieren_Beyond_Journey's_End");
         assert_eq!(safe_component("  What?  If  ", " ", 80), "What If");
         assert_eq!(safe_component("con", " ", 80), "_con");
+        // A device name before an extension is the device too.
+        assert_eq!(safe_component("con.x", " ", 80), "_con.x");
+        assert_eq!(safe_component("Con.Air", "_", 80), "_Con.Air");
+        assert_eq!(safe_component("Nul.Points", " ", 80), "_Nul.Points");
+        assert_eq!(safe_component("COM1.x.y", " ", 80), "_COM1.x.y");
+        assert_eq!(safe_component("lpt³.mov", " ", 80), "_lpt³.mov");
+        assert_eq!(safe_component("aux .txt", " ", 80), "_aux .txt");
+        // Only the whole word before the dot.
+        assert_eq!(safe_component("Con_Air", " ", 80), "Con_Air");
+        assert_eq!(safe_component("Con Air", " ", 80), "Con Air");
+        assert_eq!(safe_component("Console.x", " ", 80), "Console.x");
+        assert_eq!(safe_component("COM10.x", " ", 80), "COM10.x");
+        assert_eq!(safe_component(".con", " ", 80), ".con");
         assert_eq!(safe_component("...", " ", 80), "_");
         assert_eq!(safe_component("abcdef", "_", 3), "abc");
     }

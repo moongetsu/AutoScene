@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use as_api::{AppSettings, ContentKind, ImportCandidate, NewProject, ProjectKind, ProjectSummary, now_ms};
 use as_core::{AppPaths, MediaId, ProjectId};
-use as_db::{LibraryDb, NewMedia};
+use as_db::{LibraryDb, NewMedia, ProjectDb};
 use parking_lot::Mutex;
 
 use crate::naming::{episode_cmp, is_video, parse_episode, safe_component};
@@ -29,6 +29,10 @@ const SCAN_DEPTH: usize = 4;
 pub struct Library {
     db: LibraryDb,
     open: Mutex<HashMap<ProjectId, Arc<Project>>>,
+    /// One lock per project that was opened here: a project is opened once
+    /// at a time, while other projects open, and open ones are handed out,
+    /// meanwhile (see [`Library::project`]).
+    opening: Mutex<HashMap<ProjectId, Arc<Mutex<()>>>>,
     /// Whether people are followed by their bodies too (a setting every
     /// open project reads).
     find_bodies: Arc<AtomicBool>,
@@ -39,7 +43,7 @@ impl Library {
         std::fs::create_dir_all(&paths.data)?;
         let db = LibraryDb::open(&paths.library_db())?;
         let find_bodies = Arc::new(AtomicBool::new(db.setting(KEY_FIND_BODIES)?.as_deref() == Some("1")));
-        Ok(Self { db, open: Mutex::new(HashMap::new()), find_bodies })
+        Ok(Self { db, open: Mutex::default(), opening: Mutex::default(), find_bodies })
     }
 
     /// Whether characters are looked for by their bodies too.
@@ -146,12 +150,20 @@ impl Library {
 
     /// Open (or return the cached) project.
     ///
-    /// The cache stays locked while opening: `Project::open` closes out stale
+    /// A project is opened once at a time: `Project::open` closes out stale
     /// exports and deletes unused preview files, which a second, racing open
     /// would otherwise do to work the first instance had already started.
+    /// Only that project waits for it, though: opening one can take a while
+    /// (a database upgrade, its faces placed again), and every other project,
+    /// open or not, is handed out meanwhile.
     pub fn project(&self, id: ProjectId) -> ProjectResult<Arc<Project>> {
-        let mut open = self.open.lock();
-        if let Some(p) = open.get(&id) {
+        if let Some(p) = self.open.lock().get(&id) {
+            return Ok(p.clone());
+        }
+        let one = self.opening.lock().entry(id).or_default().clone();
+        let _one_at_a_time = one.lock();
+        // Opened while this waited.
+        if let Some(p) = self.open.lock().get(&id) {
             return Ok(p.clone());
         }
         let summary = self.summary(id)?;
@@ -163,6 +175,11 @@ impl Library {
             )));
         }
         let project = Arc::new(Project::open(id, dir, self.find_bodies.clone())?);
+        let mut open = self.open.lock();
+        // Removed from the library while it opened: not kept open.
+        if self.db.project(id)?.is_none() {
+            return Err(ProjectError::NotFound("This project no longer exists.".into()));
+        }
         open.insert(id, project.clone());
         Ok(project)
     }
@@ -222,8 +239,8 @@ impl Library {
         self.db.delete_project(id)?;
         if delete_files {
             let dir = PathBuf::from(&summary.dir);
-            // Only ever delete what is recognisably a project folder.
-            if dir.join(PROJECT_DB).is_file() {
+            // Only ever delete what is recognisably this project's folder.
+            if is_project_dir(&dir, id) {
                 remove_dir_with_retry(&dir).map_err(|e| {
                     ProjectError::Io(std::io::Error::new(
                         e.kind(),
@@ -308,6 +325,25 @@ fn unique_dir(root: &Path, name: &str) -> PathBuf {
     dir
 }
 
+/// Whether `dir` is recognisably project `id`'s folder, to be deleted with
+/// everything in it: an `.autoscene` folder whose database says it is that
+/// project. The library's record alone isn't trusted with a whole folder.
+/// Where the folder is doesn't matter: the library folder can be changed,
+/// and projects made before stay where they are.
+fn is_project_dir(dir: &Path, id: ProjectId) -> bool {
+    let db = dir.join(PROJECT_DB);
+    if !db.is_file() {
+        return false;
+    }
+    let named = dir.extension().is_some_and(|e| e.eq_ignore_ascii_case("autoscene"));
+    let says = ProjectDb::stored_id(&db);
+    let theirs = named && matches!(&says, Ok(Some(s)) if *s == id.to_string());
+    if !theirs {
+        tracing::warn!(dir = %dir.display(), ?says, "not deleting a folder that isn't recognisably the project's");
+    }
+    theirs
+}
+
 /// Windows keeps files locked for a moment after handles close (antivirus,
 /// the indexer, a just-closed SQLite WAL); retry briefly before giving up.
 fn remove_dir_with_retry(dir: &Path) -> std::io::Result<()> {
@@ -383,7 +419,6 @@ fn walk(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use as_db::ProjectDb;
 
     fn lib() -> (tempfile::TempDir, Library) {
         let dir = tempfile::tempdir().unwrap();
@@ -461,6 +496,108 @@ mod tests {
         assert!(Path::new(&a).exists(), "source media are never deleted");
         assert_eq!(lib.projects().unwrap().len(), 1);
         assert!(matches!(lib.project(summary.id), Err(ProjectError::NotFound(_))));
+    }
+
+    #[test]
+    fn only_the_projects_own_folder_is_deleted_with_it() {
+        let (dir, lib) = lib();
+        let new = |title: &str| NewProject {
+            title: title.into(),
+            kind: ProjectKind::Movie,
+            content: ContentKind::Live,
+            files: vec![],
+        };
+        let (a, ..) = lib.create_project(&new("A")).unwrap();
+        let (b, ..) = lib.create_project(&new("B")).unwrap();
+        let (c, ..) = lib.create_project(&new("C")).unwrap();
+        // What the library says a project's folder is (as a damaged or
+        // edited library.db could).
+        let point = |id: ProjectId, to: &Path| {
+            rusqlite::Connection::open(AppPaths::at(dir.path().join("data")).library_db())
+                .unwrap()
+                .execute("UPDATE projects SET dir = ?2 WHERE id = ?1", [id.to_string(), to.display().to_string()])
+                .unwrap();
+        };
+        // A folder with a project database that says it is `id`'s.
+        let says = |to: &Path, id: ProjectId| {
+            std::fs::create_dir_all(to).unwrap();
+            ProjectDb::open(&to.join(PROJECT_DB)).unwrap().set_meta("id", &id.to_string()).unwrap();
+            std::fs::write(to.join("keep.txt"), b"mine").unwrap();
+        };
+
+        // Another project's folder (a copy of B's): kept.
+        let b_copy = dir.path().join("B copy.autoscene");
+        says(&b_copy, b.id);
+        point(a.id, &b_copy);
+        lib.delete_project(a.id, true).unwrap();
+        assert!(b_copy.join("keep.txt").is_file());
+        assert!(matches!(lib.summary(a.id), Err(ProjectError::NotFound(_))), "the project itself is removed");
+
+        // A folder that isn't a project folder, even with the project's database in it: kept.
+        let stuff = dir.path().join("Stuff");
+        says(&stuff, b.id);
+        point(b.id, &stuff);
+        lib.delete_project(b.id, true).unwrap();
+        assert!(stuff.join("keep.txt").is_file());
+
+        // Its own folder goes, also when the library has moved since.
+        let moved =
+            AppSettings { library_root: dir.path().join("Elsewhere").display().to_string(), ..lib.settings().unwrap() };
+        lib.update_settings(&moved).unwrap();
+        lib.delete_project(c.id, true).unwrap();
+        assert!(!Path::new(&c.dir).exists());
+    }
+
+    #[test]
+    fn a_project_opens_once_while_others_are_handed_out() {
+        let (dir, lib) = lib();
+        let new = |title: &str| NewProject {
+            title: title.into(),
+            kind: ProjectKind::Movie,
+            content: ContentKind::Live,
+            files: vec![],
+        };
+        let (a, ..) = lib.create_project(&new("A")).unwrap();
+        let (b, ..) = lib.create_project(&new("B")).unwrap();
+        let (c, ..) = lib.create_project(&new("C")).unwrap();
+        drop(lib);
+        // A launch: nothing is open yet.
+        let lib = Library::open(&AppPaths::at(dir.path().join("data"))).unwrap();
+        let open_a = lib.project(a.id).unwrap();
+        let wait = std::time::Duration::from_secs(20);
+
+        std::thread::scope(|s| {
+            // B is being opened (say, its database upgraded) for as long as this is held.
+            let b_opening = lib.opening.lock().entry(b.id).or_default().clone();
+            let held = b_opening.lock();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let lib = &lib;
+            let tx_b = tx.clone();
+            s.spawn(move || tx_b.send(("b", lib.project(b.id).unwrap())).unwrap());
+            // Meanwhile an open project is handed out, and another one opens.
+            let tx_a = tx.clone();
+            s.spawn(move || tx_a.send(("a", lib.project(a.id).unwrap())).unwrap());
+            s.spawn(move || tx.send(("c", lib.project(c.id).unwrap())).unwrap());
+            let mut done: Vec<_> = (0..2).map(|_| rx.recv_timeout(wait).expect("not held up by B")).collect();
+            done.sort_by_key(|(name, _)| *name);
+            assert_eq!(done.iter().map(|(name, _)| *name).collect::<Vec<_>>(), ["a", "c"]);
+            assert!(Arc::ptr_eq(&done[0].1, &open_a));
+            // B waits for its own opening only.
+            assert!(rx.recv_timeout(std::time::Duration::from_millis(200)).is_err());
+            drop(held);
+            let (name, open_b) = rx.recv_timeout(wait).unwrap();
+            assert_eq!(name, "b");
+            assert!(Arc::ptr_eq(&open_b, &lib.project(b.id).unwrap()));
+        });
+
+        // Asked for by many at once: opened once, the same for all.
+        drop(lib);
+        let lib = Library::open(&AppPaths::at(dir.path().join("data"))).unwrap();
+        let all: Vec<Arc<Project>> = std::thread::scope(|s| {
+            let asks: Vec<_> = (0..8).map(|_| s.spawn(|| lib.project(c.id).unwrap())).collect();
+            asks.into_iter().map(|t| t.join().unwrap()).collect()
+        });
+        assert!(all.iter().all(|p| Arc::ptr_eq(p, &all[0])));
     }
 
     #[test]

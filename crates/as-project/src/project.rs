@@ -9,7 +9,7 @@ use as_api::{
     MediaItem, MediaStatus, MergedFile, PresetSize, ProjectKind, ProjectSummary, ProxyState, Relink, RelinkSummary,
 };
 use as_core::{CancelToken, ExportId, FrameIndex, FrameRange, MediaId, ProjectId};
-use as_db::{IngestRecord, NewExportItem, ProjectDb};
+use as_db::{IngestRecord, NewExportItem, ProjectDb, Relinked};
 use as_export::LosslessCodec;
 use as_export::clip::PARTIAL_DIR;
 use as_export::preset::VideoCodec;
@@ -302,7 +302,8 @@ impl Project {
     /// Point a media whose file moved at `path` (see [`Relink`]): the same
     /// file keeps everything; another copy is indexed again (the caller
     /// queues it) and keeps its analysis if its frames are the same; another
-    /// video is refused unless `force`.
+    /// video is refused unless `force`. A file showing another picture at the
+    /// poster's frame is another video, even at the very same size.
     pub fn relink(&self, tools: &Tools, id: MediaId, path: &Path, force: bool) -> ProjectResult<Relink> {
         let m = self.db.media(id)?.ok_or_else(|| ProjectError::NotFound("This episode was removed.".into()))?;
         if !path.is_file() {
@@ -312,8 +313,16 @@ impl Project {
         if same_path(&m.path, &new) && Path::new(&m.path).is_file() {
             return Ok(Relink::Same);
         }
-        if let Some(other) =
-            self.db.media_list_uncounted()?.into_iter().find(|x| x.id != id && same_path(&x.path, &new))
+        // Another path to a file in the project keeps its name (a mapped
+        // drive and its network path, a link to the folder): only media of
+        // that name are looked up on disk, not every episode of a long series
+        // for every file a folder search tries.
+        let lower_name = path.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+        if let Some(other) = self
+            .db
+            .media_list_uncounted()?
+            .into_iter()
+            .find(|x| x.id != id && x.file_name.to_lowercase() == lower_name && same_path(&x.path, &new))
         {
             let name = if other.label.is_empty() { other.file_name } else { other.label };
             return Err(ProjectError::Invalid(format!("That file is already in the project, as {name}.")));
@@ -330,11 +339,11 @@ impl Project {
         // one).
         let indexed = m.status == MediaStatus::Ready && m.info.is_some();
         let same_bytes = same.is_ok() && indexed && meta.len() == m.size_bytes as u64;
-        // Another copy (another size, or one never fully indexed): does it
-        // show the same picture as the poster, at the poster's frame? Two
-        // episodes can be just as long. Without a poster or an index nobody
-        // can tell (`None`).
-        let same_picture = match same.is_ok() && m.info.is_some() && !same_bytes {
+        // Does it show the same picture as the poster, at the poster's
+        // frame? Two episodes can be just as long, and another video can
+        // have the very same size, so this is asked of the same bytes too.
+        // Without a poster or an index nobody can tell (`None`).
+        let same_picture = match same.is_ok() && m.info.is_some() {
             true => self.same_picture(tools, &m, path, &found),
             false => None,
         };
@@ -347,21 +356,24 @@ impl Project {
             .ok()
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_millis() as i64);
-        self.db.relink_media(id, &new, &file_name, meta.len(), mtime)?;
-        // What failed while the file was gone can run now.
-        self.db.retry_failed_analysis(id)?;
+        let changed_key = crate::cast::source_changed_key(id);
+        let how = if same_bytes && same_picture != Some(false) {
+            Relinked::Same
+        } else if same_picture == Some(true) {
+            Relinked::Copy
+        } else {
+            // Not shown to be the same picture: its analysis is made again,
+            // and the decisions wait for faces that look like theirs.
+            Relinked::Changed { changed_key: &changed_key }
+        };
+        // All of it or nothing: never the new file on the old one's index.
+        if !self.db.relink_media(id, &new, &file_name, meta.len(), mtime, how)? {
+            return Err(ProjectError::NotFound("This episode was removed.".into()));
+        }
         tracing::info!(media = %id, file = %file_name, ?same_picture, "found again");
-        if same_bytes {
+        if how == Relinked::Same {
             return Ok(Relink::Same);
         }
-        // Not shown to be the same picture: its analysis is made again, and
-        // the decisions wait for faces that look like theirs.
-        if same_picture != Some(true) {
-            self.db.set_meta(&crate::cast::source_changed_key(id), "1")?;
-            self.db.reset_shots(id)?;
-        }
-        // Not playable or cut on the old frame index meanwhile.
-        self.db.set_media_status(id, MediaStatus::Queued, None)?;
         self.indexes.lock().remove(&id);
         Ok(Relink::Reindex)
     }
@@ -806,6 +818,7 @@ impl Project {
         if req.clips.is_empty() {
             return Err(ProjectError::Invalid("Nothing to export.".into()));
         }
+        check_export_dir(out_dir)?;
         let title = self.title()?;
         let ext = preset.container.ext();
         // Names already promised to exports that haven't written their files
@@ -1002,6 +1015,7 @@ impl Project {
         changed: &dyn Fn(),
     ) -> ProjectResult<ExportSummary> {
         let ex = self.export(id)?;
+        check_export_dir(Path::new(&ex.out_dir))?;
         self.db.set_export_status(id, ExportStatus::Running)?;
         if let Some(file) = ex.merged.clone() {
             return self.run_merged(tools, &ex, file, cancel, progress, changed);
@@ -1025,7 +1039,7 @@ impl Project {
                     range: FrameRange::new(item.start, item.end),
                     audio_ordinal: self.db.export_item_audio(item.id)?,
                     preset: &ex.preset,
-                    out_stem: out_dir.join(&item.name),
+                    out_stem: out_dir.join(stored_name(&item.name)),
                     title: Some(item.name.clone()),
                     part: None,
                 };
@@ -1203,7 +1217,7 @@ impl Project {
             parts: &parts,
             shape: &plan.shape,
             preset: &ex.preset,
-            out_stem: out_dir.join(&file.name),
+            out_stem: out_dir.join(stored_name(&file.name)),
             work_dir: &work.0,
             title: ex.label.clone(),
         };
@@ -1302,6 +1316,32 @@ fn merge_work_dir(out_dir: &Path, id: ExportId) -> PathBuf {
     out_dir.join(PARTIAL_DIR).join(id.to_string())
 }
 
+/// Exports go to a full folder path: a relative one would land wherever the
+/// app happens to run from.
+fn check_export_dir(out_dir: &Path) -> ProjectResult<()> {
+    match out_dir.is_absolute() {
+        true => Ok(()),
+        false => Err(ProjectError::Invalid("Choose a full folder path for the export.".into())),
+    }
+}
+
+/// Longer than any name an export is given (up to 120 characters, and a
+/// `_2` that tells it apart), so those come out as they are.
+const STORED_NAME_CHARS: usize = 200;
+
+/// The file name an export's database row gives, made safe once more right
+/// before something is written under it: one path component, never a way out
+/// of the export's folder or a device name. Names are made safe when the
+/// export is made, so they come out the same; the database isn't trusted
+/// with where files go.
+fn stored_name(name: &str) -> String {
+    let safe = safe_component(name, " ", STORED_NAME_CHARS);
+    if safe != name {
+        tracing::warn!(name, safe, "an export's stored file name wasn't safe to write");
+    }
+    safe
+}
+
 /// A merged export's work folder, removed with everything in it however the
 /// export ends; the shared hidden folder goes too once nothing else uses it.
 struct WorkDir(PathBuf);
@@ -1388,13 +1428,16 @@ fn unique_name(base: &str, taken: impl Fn(&str) -> bool) -> String {
     (2..).map(|i| format!("{base}_{i}")).find(|n| !taken(n)).expect("unbounded")
 }
 
-/// Two paths name the same file (on Windows whatever the case and slashes).
+/// Two paths name the same file: spelled alike (on Windows whatever the case
+/// and slashes), or, when both files are there, leading to the same file
+/// once `.` and `..`, links, mapped drives (and their network paths), `\\?\`
+/// and short 8.3 names are resolved.
 fn same_path(a: &str, b: &str) -> bool {
     let norm = |p: &str| {
         let p = p.replace('\\', "/");
         if cfg!(windows) { p.to_lowercase() } else { p }
     };
-    norm(a) == norm(b)
+    norm(a) == norm(b) || matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(a), Ok(b)) if a == b)
 }
 
 #[cfg(test)]
@@ -1472,6 +1515,82 @@ mod tests {
         let taken = ["a", "a_2"];
         assert_eq!(unique_name("a", |n| taken.contains(&n)), "a_3");
         assert_eq!(unique_name("b", |n| taken.contains(&n)), "b");
+    }
+
+    #[test]
+    fn the_same_file_by_another_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("Show - 01.mkv");
+        std::fs::write(&file, b"x").unwrap();
+        std::fs::create_dir(dir.path().join("Season 1")).unwrap();
+        let s = |p: &Path| p.display().to_string();
+        let plain = s(&file);
+        assert!(same_path(&plain, &plain));
+        // Spelled otherwise, leading to the same file.
+        assert!(same_path(&plain, &s(&dir.path().join(".").join("Show - 01.mkv"))));
+        assert!(same_path(&s(&dir.path().join("Season 1").join("..").join("Show - 01.mkv")), &plain));
+        #[cfg(windows)]
+        {
+            assert!(same_path(&plain, &format!(r"\\?\{plain}")));
+            assert!(same_path(&plain, &plain.to_uppercase()));
+            assert!(same_path(&plain, &plain.replace('\\', "/")));
+        }
+        #[cfg(unix)]
+        {
+            let link = dir.path().join("Linked");
+            std::os::unix::fs::symlink(dir.path(), &link).unwrap();
+            assert!(same_path(&plain, &s(&link.join("Show - 01.mkv"))));
+        }
+        // Another file is another file.
+        let other = dir.path().join("Show - 02.mkv");
+        std::fs::write(&other, b"x").unwrap();
+        assert!(!same_path(&plain, &s(&other)));
+        // A file that isn't there can only be told by its spelling.
+        let gone = s(&dir.path().join("Gone.mkv"));
+        assert!(same_path(&gone, &gone));
+        assert!(!same_path(&gone, &s(&dir.path().join(".").join("Gone.mkv"))));
+    }
+
+    #[test]
+    fn exports_are_written_where_their_names_say_and_nowhere_else() {
+        // Names exports are given come back as they are.
+        for raw in ["Opening: shot", "  What?  If  ", "Frieren – 03", "con", "Con.Air", "...", &"x".repeat(300)] {
+            let made = safe_component(raw, " ", 120);
+            for name in [made.clone(), format!("{made}_2"), format!("{made}_123")] {
+                assert_eq!(stored_name(&name), name);
+            }
+        }
+        let rendered = default_clip_name(
+            "Show: The Series",
+            &media(MediaStatus::Ready, None, None),
+            &FrameIndex::cfr(Rational::new(1, 24), Rational::new(24, 1), 0, 240),
+            48,
+        );
+        assert_eq!(stored_name(&rendered), rendered);
+        // Anything else a database says is one name in the export's folder.
+        assert_eq!(stored_name("../../Windows/evil"), ".. .. Windows evil");
+        assert_eq!(stored_name(r"C:\Users\me\x"), "C Users me x");
+        assert_eq!(stored_name(".."), "_");
+        assert_eq!(stored_name("nul.x"), "_nul.x");
+        // And the folder is a full path.
+        assert!(matches!(check_export_dir(Path::new("relative/out")), Err(ProjectError::Invalid(_))));
+        assert!(check_export_dir(&std::env::temp_dir()).is_ok());
+    }
+
+    #[test]
+    fn an_export_to_a_relative_folder_is_refused() {
+        let (_dir, project, m) = crate::analysis::tests::project_with_media(240);
+        let req = ExportRequest {
+            preset_id: "h264-edit".into(),
+            out_dir: None,
+            clips: vec![ClipRequest { media_id: m, start: 0, end: 24, name: None }],
+            label: None,
+            merge: None,
+        };
+        let preset = as_export::builtin_presets().into_iter().find(|p| p.id == "h264-edit").unwrap();
+        let e = project.create_export(&req, preset, Path::new("Exports")).unwrap_err();
+        assert!(matches!(&e, ProjectError::Invalid(s) if s == "Choose a full folder path for the export."), "{e:?}");
+        assert!(project.exports().unwrap().is_empty());
     }
 
     #[test]

@@ -8,7 +8,7 @@ use as_api::{
     ProxyState, Segment, StageState, now_ms,
 };
 use as_core::{ExportId, FrameIdx, MediaId, ProjectId, Rational};
-use rusqlite::{OptionalExtension, Row, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, params};
 use rusqlite_migration::{M, Migrations};
 
 use crate::{Db, DbError, DbResult, enum_from_sql, enum_to_sql, json_from_sql, json_to_sql};
@@ -350,6 +350,21 @@ pub struct ProjectStats {
     pub poster_small: Option<String>,
 }
 
+/// What finding a media's file again changes besides its path
+/// ([`ProjectDb::relink_media`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Relinked<'a> {
+    /// The same bytes: everything it had is kept.
+    Same,
+    /// Another copy that shows the same picture: indexed again (`queued`),
+    /// its analysis kept if the new index numbers the frames the same.
+    Copy,
+    /// Not shown to be the same picture: indexed again and its shots and
+    /// faces found anew. Meta `changed_key` is set, so the decisions on its
+    /// faces wait for faces that look like theirs.
+    Changed { changed_key: &'a str },
+}
+
 #[derive(Clone, Debug)]
 pub struct NewExportItem {
     pub media_id: MediaId,
@@ -482,6 +497,15 @@ impl ProjectDb {
     #[cfg(test)]
     pub(crate) fn migrate(&self) {
         MIGRATIONS.to_latest(&mut self.0.conn.lock()).unwrap();
+    }
+
+    /// The id the project database at `path` says it belongs to (meta `id`),
+    /// read without changing anything: no file is made and no migration
+    /// runs, so a file that isn't a project's database stays as it was.
+    pub fn stored_id(path: &Path) -> DbResult<Option<String>> {
+        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        let conn = Connection::open_with_flags(path, flags)?;
+        Ok(conn.query_row("SELECT value FROM meta WHERE key = 'id'", [], |r| r.get(0)).optional()?)
     }
 
     pub fn meta(&self, key: &str) -> DbResult<Option<String>> {
@@ -645,7 +669,12 @@ impl ProjectDb {
         })
     }
 
-    /// The media's file is at `path` now (found again after it moved).
+    /// The media's file is at `path` now (found again after it moved), and
+    /// what that changes besides (`how`), in one transaction: a crash or an
+    /// error midway leaves the media as it was, pointing at the file that
+    /// went missing, never at the new file with the old one's frame index
+    /// and analysis. Analysis stages that failed go back to pending: what
+    /// failed for want of the file can run now. `false` when the media is gone.
     pub fn relink_media(
         &self,
         id: MediaId,
@@ -653,13 +682,37 @@ impl ProjectDb {
         file_name: &str,
         size_bytes: u64,
         mtime: Option<i64>,
-    ) -> DbResult<()> {
+        how: Relinked<'_>,
+    ) -> DbResult<bool> {
         self.0.write(|tx| {
-            tx.execute(
+            let m = id.to_string();
+            let n = tx.execute(
                 "UPDATE media SET path = ?2, file_name = ?3, size_bytes = ?4, mtime = ?5 WHERE id = ?1",
-                params![id.to_string(), path, file_name, size_bytes as i64, mtime],
+                params![m, path, file_name, size_bytes as i64, mtime],
             )?;
-            Ok(())
+            if n == 0 {
+                return Ok(false);
+            }
+            for stage in ["shots", "faces", "bodies"] {
+                tx.execute(
+                    &format!(
+                        "UPDATE media SET {stage} = 'pending', {stage}_error = NULL WHERE id = ?1 AND {stage} = 'failed'"
+                    ),
+                    [&m],
+                )?;
+            }
+            if let Relinked::Changed { changed_key } = how {
+                tx.execute(
+                    "INSERT INTO meta (key, value) VALUES (?1, '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    [changed_key],
+                )?;
+                clear_shots(tx, id)?;
+            }
+            if how != Relinked::Same {
+                // Not playable or cut on the old frame index meanwhile.
+                tx.execute("UPDATE media SET status = 'queued', error = NULL WHERE id = ?1", [&m])?;
+            }
+            Ok(true)
         })
     }
 
@@ -790,28 +843,8 @@ impl ProjectDb {
         })
     }
 
-    /// Forget a media's shot analysis (signals and segments).
-    /// Analysis stages of a media that failed go back to pending (its file
-    /// was found again: what failed for want of it can run now).
-    pub fn retry_failed_analysis(&self, id: MediaId) -> DbResult<()> {
-        self.0.write(|tx| {
-            let m = id.to_string();
-            tx.execute(
-                "UPDATE media SET shots = 'pending', shots_error = NULL WHERE id = ?1 AND shots = 'failed'",
-                [&m],
-            )?;
-            tx.execute(
-                "UPDATE media SET faces = 'pending', faces_error = NULL WHERE id = ?1 AND faces = 'failed'",
-                [&m],
-            )?;
-            tx.execute(
-                "UPDATE media SET bodies = 'pending', bodies_error = NULL WHERE id = ?1 AND bodies = 'failed'",
-                [&m],
-            )?;
-            Ok(())
-        })
-    }
-
+    /// Forget a media's shot analysis (signals and segments) and the faces
+    /// found in its shots.
     pub fn reset_shots(&self, id: MediaId) -> DbResult<()> {
         self.0.write(|tx| clear_shots(tx, id))
     }
@@ -1235,6 +1268,82 @@ pub(crate) mod tests {
         db.record_ingest(m.id, &rec).unwrap();
         assert!(db.shot_chunks(m.id).unwrap().is_empty() && db.segments(m.id).unwrap().is_empty());
         assert_eq!(db.media(m.id).unwrap().unwrap().shots, StageState::Pending);
+    }
+
+    #[test]
+    fn a_relink_is_written_all_at_once_or_not_at_all() {
+        use crate::cast::tests::{ready_media, track};
+        use as_api::SegmentKind;
+        let db = ProjectDb::memory();
+        let a = ready_media(&db, "/s/Show - 01.mkv");
+        db.store_segments(a, &[Segment { start: 0, end: 1000, kind: SegmentKind::Shot, tiny: false }]).unwrap();
+        db.put_face_chunk(a, 0, 1000, &[track(10, 0.9)], &[], |_| Ok(())).unwrap();
+        db.set_faces_state(a, StageState::Ready, None).unwrap();
+        db.set_bodies_state(a, StageState::Failed, Some("The file is missing.")).unwrap();
+        let key = "source_changed";
+        let state = |db: &ProjectDb| {
+            let m = db.media(a).unwrap().unwrap();
+            (m.path, m.status, m.shots, m.shot_count, m.face_count, m.bodies, db.meta(key).unwrap())
+        };
+        let relink = |path: &str, how| db.relink_media(a, path, "Show - 01.mkv", 2000, Some(7), how);
+
+        // The same bytes: only where it is changes (and what failed for want
+        // of it is tried again).
+        assert!(relink("/t/Show - 01.mkv", Relinked::Same).unwrap());
+        let ready = ("/t/Show - 01.mkv".to_string(), MediaStatus::Ready, StageState::Ready, Some(1), Some(1));
+        assert_eq!(state(&db), (ready.0.clone(), ready.1, ready.2, ready.3, ready.4, StageState::Pending, None));
+
+        // A write that fails midway (the disk filled up) leaves the media as
+        // it was: still at its old path, with its analysis and index.
+        db.0.read(|c| {
+            c.execute_batch(
+                "CREATE TEMP TRIGGER full BEFORE UPDATE OF status ON media BEGIN SELECT RAISE(ABORT, 'disk full'); END;",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        assert!(relink("/u/Other.mkv", Relinked::Changed { changed_key: key }).is_err());
+        assert_eq!(state(&db), (ready.0.clone(), ready.1, ready.2, ready.3, ready.4, StageState::Pending, None));
+        db.0.read(|c| Ok(c.execute_batch("DROP TRIGGER full;")?)).unwrap();
+
+        // Another copy of the same picture: indexed again, its analysis kept.
+        assert!(relink("/u/Copy.mkv", Relinked::Copy).unwrap());
+        let s = state(&db);
+        assert_eq!((s.1, s.2, s.3, s.4, s.6), (MediaStatus::Queued, StageState::Ready, Some(1), Some(1), None));
+
+        // Another picture: indexed again and analysed anew, all in one go.
+        assert!(relink("/u/Other.mkv", Relinked::Changed { changed_key: key }).unwrap());
+        let s = state(&db);
+        assert_eq!(s.0, "/u/Other.mkv");
+        assert_eq!((s.1, s.2, s.3, s.4), (MediaStatus::Queued, StageState::Pending, None, None));
+        assert_eq!(s.6.as_deref(), Some("1"));
+        assert!(db.segments(a).unwrap().is_empty());
+
+        // A media removed meanwhile isn't found again.
+        assert!(!db.relink_media(MediaId::new(), "/v/x.mkv", "x.mkv", 1, None, Relinked::Copy).unwrap());
+    }
+
+    #[test]
+    fn a_project_database_says_whose_it_is_without_being_changed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("project.db");
+        let db = ProjectDb::open(&path).unwrap();
+        db.set_meta("id", "0193a1c2-0000-7000-8000-000000000001").unwrap();
+        // While the project is open, and after it closed.
+        assert_eq!(ProjectDb::stored_id(&path).unwrap().as_deref(), Some("0193a1c2-0000-7000-8000-000000000001"));
+        drop(db);
+        assert_eq!(ProjectDb::stored_id(&path).unwrap().as_deref(), Some("0193a1c2-0000-7000-8000-000000000001"));
+
+        // Another program's database: refused as it is, untouched.
+        let other = dir.path().join("other.db");
+        rusqlite::Connection::open(&other).unwrap().execute_batch("CREATE TABLE notes (text TEXT);").unwrap();
+        let before = std::fs::read(&other).unwrap();
+        assert!(ProjectDb::stored_id(&other).is_err());
+        assert_eq!(std::fs::read(&other).unwrap(), before);
+        // No file: none is made.
+        let none = dir.path().join("none.db");
+        assert!(ProjectDb::stored_id(&none).is_err());
+        assert!(!none.exists());
     }
 
     #[test]

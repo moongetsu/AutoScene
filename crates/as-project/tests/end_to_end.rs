@@ -457,6 +457,10 @@ fn a_moved_episode_keeps_its_analysis() {
     let m = project.media(id).unwrap();
     assert_eq!((m.status, m.path.as_str()), (MediaStatus::Ready, there.display().to_string().as_str()));
     assert_eq!(walters(&project), 1);
+    // Another way to spell where it is now is that same file: nothing changes.
+    let spelled = moved.join(".").join("Show - 01.mp4");
+    assert_eq!(project.relink(&tools, id, &spelled, false).unwrap(), Relink::Same);
+    assert_eq!(project.media(id).unwrap().path, there.display().to_string());
 
     // Another video is refused unless taken anyway, and changes nothing.
     let other = tmp.path().join("Other.mkv");
@@ -491,7 +495,7 @@ fn a_moved_episode_keeps_its_analysis() {
         .ffmpeg()
         .args(["-v", "error", "-i"])
         .arg(&copy)
-        .args(["-map", "0", "-vf", "negate", "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "copy"])
+        .args(["-map", "0", "-vf", "negate", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "51", "-c:a", "copy"])
         .args(["-video_track_timescale", &timescale])
         .arg(&other)
         .status()
@@ -499,8 +503,22 @@ fn a_moved_episode_keeps_its_analysis() {
     assert!(encode.success());
     let r = project.relink(&tools, id, &other, false).unwrap();
     assert_eq!(r, Relink::Different { reason: "At the same moment it shows another picture.".into() });
+    // Even at the very same size as the episode's file (padded with an MP4
+    // `free` box after everything else): asked about too.
+    let padded = tmp.path().join("Show - 01 padded.mp4");
+    let mut bytes = std::fs::read(&other).unwrap();
+    let size = std::fs::metadata(&copy).unwrap().len() as usize;
+    let pad = size.checked_sub(bytes.len()).filter(|&n| n >= 8).expect("the other picture is the smaller file");
+    bytes.extend_from_slice(&u32::try_from(pad).unwrap().to_be_bytes());
+    bytes.extend_from_slice(b"free");
+    bytes.resize(size, 0);
+    std::fs::write(&padded, &bytes).unwrap();
+    assert_eq!(project.media(id).unwrap().size_bytes, size as f64);
+    let r = project.relink(&tools, id, &padded, false).unwrap();
+    assert_eq!(r, Relink::Different { reason: "At the same moment it shows another picture.".into() });
+    assert_eq!(project.media(id).unwrap().path, copy.display().to_string());
     // Taken anyway: analysed again; the decision waits for a face like Walter's.
-    assert_eq!(project.relink(&tools, id, &other, true).unwrap(), Relink::Reindex);
+    assert_eq!(project.relink(&tools, id, &padded, true).unwrap(), Relink::Reindex);
     assert_eq!(project.media(id).unwrap().status, MediaStatus::Queued, "not cut on the old index meanwhile");
     project.ingest(&tools, id, "eng", &cancel, &|_, _| {}).unwrap();
     assert_eq!(walters(&project), 0);
