@@ -343,7 +343,9 @@ fn agent() -> ureq::Agent {
         .timeout_connect(Some(CONNECT_TIMEOUT))
         .timeout_send_request(Some(CONNECT_TIMEOUT))
         .timeout_recv_response(Some(CONNECT_TIMEOUT))
-        .https_only(true)
+        // Manifest downloads are https (the flag also stops https→http
+        // redirects); this crate's own tests serve a plain-http loopback.
+        .https_only(!cfg!(test))
         .build()
         .into()
 }
@@ -353,7 +355,7 @@ fn agent() -> ureq::Agent {
 /// the model body is big and is stall-polled by [`stream`], while these
 /// reads need one end-to-end cap instead.
 fn preamble_agent() -> ureq::Agent {
-    ureq::Agent::config_builder().timeout_global(Some(PREAMBLE_TIMEOUT)).https_only(true).build().into()
+    ureq::Agent::config_builder().timeout_global(Some(PREAMBLE_TIMEOUT)).https_only(!cfg!(test)).build().into()
 }
 
 /// Write the body of `resp` to `part` — after its first `have` bytes, which
