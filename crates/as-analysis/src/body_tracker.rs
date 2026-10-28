@@ -164,6 +164,7 @@ impl BodyTracker {
     pub fn push(&mut self, frame: FrameIdx, obs: Vec<BodyObs>) -> Vec<Option<(usize, usize)>> {
         let (p, open) = (&self.p, &mut self.open);
         debug_assert!(self.shot.contains(frame));
+        debug_assert!(open.iter().all(|t| t.last().det.frame <= frame), "frames in order");
         let mut target: Vec<Option<usize>> = vec![None; obs.len()];
         let mut taken = vec![false; open.len()];
         // Sure sightings first, then the unsure ones for the tracks left.
@@ -175,7 +176,7 @@ impl BodyTracker {
                 }
                 for (ti, t) in open.iter().enumerate() {
                     let last = &t.last().det;
-                    if taken[ti] || frame - last.frame > p.max_gap {
+                    if taken[ti] || frame.saturating_sub(last.frame) > p.max_gap {
                         continue;
                     }
                     let overlap = iou(&o.det.visible, &t.predicted(frame)).max(iou(&o.det.visible, &last.visible));
@@ -210,7 +211,7 @@ impl BodyTracker {
         let gone: Vec<(usize, &Vec<f32>)> = open
             .iter()
             .enumerate()
-            .filter(|&(ti, t)| !taken[ti] && frame - t.last().det.frame > p.max_gap)
+            .filter(|&(ti, t)| !taken[ti] && frame.saturating_sub(t.last().det.frame) > p.max_gap)
             .filter_map(|(ti, t)| t.mean.as_ref().map(|m| (ti, m)))
             .collect();
         let mut far: Vec<(f32, usize, usize)> =
@@ -286,6 +287,15 @@ mod tests {
 
     fn who(t: &BodyTrack) -> Vec<usize> {
         t.reids.iter().map(|e| e.as_ref().unwrap().iter().position(|&v| v == 1.0).unwrap()).collect()
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "frames in order")]
+    fn frames_out_of_order_are_caught() {
+        let shot = FrameRange::new(0, 30);
+        let samples = vec![(6, vec![obs(6, 0.1, 1, 0.9)]), (3, vec![obs(3, 0.1, 1, 0.9)])];
+        track_bodies(shot, samples, &BodyTrackerParams::new(3));
     }
 
     #[test]

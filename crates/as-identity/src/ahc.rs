@@ -12,7 +12,8 @@
 //! groups of one person apart for good. So the clustering runs twice:
 //!
 //! 1. Faces seen together are two people (cannot-link, inherited by the
-//!    groups they are in) — per media first when there are many groups.
+//!    groups they are in) — per media first when there are many groups,
+//!    and a long media in stretches of time.
 //! 2. Then the groups of two or more faces, each whole: groups with faces
 //!    seen together still merge when their mean faces are clearly one
 //!    person's (`Params::copy_link`) and few of their faces were seen
@@ -33,10 +34,28 @@ use crate::{CharKey, Params, TrackIn, together};
 /// Pairs of tracks whose faces were seen together.
 type Pairs = Vec<(usize, usize)>;
 
-/// Above this many groups the clustering runs per media first.
-const SINGLE_LEVEL: usize = 4000;
-/// At most this many multi-track groups go into the cross-media level.
-const SECOND_LEVEL: usize = 6000;
+/// How many groups one run of the clustering takes. A run holds the
+/// similarity of every two of its groups (`k × k`, 4 bytes each: 6000 groups
+/// are 144 MB), so a big project goes in levels.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Levels {
+    /// Above this many groups the clustering runs per media first.
+    pub single: usize,
+    /// At most this many groups go into any run after that: the heaviest
+    /// meet across media. A media with more clear tracks than that of its
+    /// own (a whole season in one file, a long recording) runs in
+    /// consecutive stretches of time of at most this many, which then meet
+    /// as episodes do. Up to that, a media runs whole.
+    pub second: usize,
+}
+
+const LEVELS: Levels = Levels { single: 4000, second: 6000 };
+
+#[cfg(test)]
+thread_local! {
+    /// The most groups one run of the clustering took on this thread.
+    pub(crate) static BIGGEST_RUN: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 struct Group {
     members: Vec<usize>,
@@ -78,10 +97,15 @@ fn heaviest(groups: &mut Vec<Group>, cap: usize) -> Vec<Group> {
 /// groups (track indices, ascending), largest first; tracks that stepped
 /// aside for a merge come last, one per group.
 pub fn cluster(tracks: &[TrackIn], core: &[usize], p: &Params) -> Vec<Vec<usize>> {
+    cluster_in(tracks, core, p, LEVELS)
+}
+
+/// [`cluster`] in runs of at most `levels` groups (but all the pinned ones).
+pub(crate) fn cluster_in(tracks: &[TrackIn], core: &[usize], p: &Params, levels: Levels) -> Vec<Vec<usize>> {
     let mut groups = initial_groups(tracks, core);
     let mut aside = Vec::new();
     // 1. Faces seen together are two people.
-    if groups.len() > SINGLE_LEVEL {
+    if groups.len() > levels.single {
         // Per media, then across media with the groups that formed.
         let mut by_media: HashMap<u32, Vec<Group>> = HashMap::new();
         let mut pinned = Vec::new();
@@ -96,12 +120,16 @@ pub fn cluster(tracks: &[TrackIn], core: &[usize], p: &Params) -> Vec<Vec<usize>
         media.sort_unstable();
         let mut level1 = pinned;
         for m in media {
-            level1.extend(merge(tracks, by_media.remove(&m).expect("listed"), p, Together::Apart, &mut aside));
+            for part in stretches(tracks, by_media.remove(&m).expect("listed"), levels.second) {
+                level1.extend(merge(tracks, part, p, Together::Apart, &mut aside));
+            }
         }
-        // Pinned groups and then the heaviest meet across media. A person
-        // seen once per episode is a single track in each: those join too,
-        // as far as the cap allows.
-        let rest = heaviest(&mut level1, SECOND_LEVEL);
+        // Pinned groups and then the heaviest meet across media (and a long
+        // media's stretches). A person seen once per episode is a single
+        // track in each: those join too, as far as the cap allows. Faces
+        // seen together on either side of a cut are still two people: the
+        // run finds them from the groups' tracks.
+        let rest = heaviest(&mut level1, levels.second);
         groups = merge(tracks, level1, p, Together::Apart, &mut aside);
         groups.extend(rest);
     } else {
@@ -113,7 +141,7 @@ pub fn cluster(tracks: &[TrackIn], core: &[usize], p: &Params) -> Vec<Vec<usize>
     // again, so it is left out, and the run stays small.
     let (mut whole, mut rest): (Vec<Group>, Vec<Group>) =
         groups.into_iter().partition(|g| g.pin.is_some() || g.members.len() >= 2);
-    rest.extend(heaviest(&mut whole, SECOND_LEVEL));
+    rest.extend(heaviest(&mut whole, levels.second));
     groups = merge(tracks, whole, p, Together::Copies, &mut aside);
     groups.extend(rest);
     let mut out: Vec<Vec<usize>> = groups
@@ -126,6 +154,24 @@ pub fn cluster(tracks: &[TrackIn], core: &[usize], p: &Params) -> Vec<Vec<usize>
     out.sort_by(|a, b| b.len().cmp(&a.len()).then(a[0].cmp(&b[0])));
     aside.sort_unstable();
     out.extend(aside.into_iter().map(|t| vec![t]));
+    out
+}
+
+/// One media's `groups` (single tracks: pinned ones go elsewhere) as they
+/// are when at most `cap`; more, in consecutive stretches of time of at most
+/// `cap` groups each, as even as can be.
+fn stretches(tracks: &[TrackIn], mut groups: Vec<Group>, cap: usize) -> Vec<Vec<Group>> {
+    if groups.len() <= cap {
+        return vec![groups];
+    }
+    groups.sort_by_key(|g| (tracks[g.members[0]].start, g.members[0]));
+    let size = groups.len().div_ceil(groups.len().div_ceil(cap.max(1)));
+    let mut out = Vec::new();
+    while groups.len() > size {
+        let later = groups.split_off(size);
+        out.push(std::mem::replace(&mut groups, later));
+    }
+    out.push(groups);
     out
 }
 
@@ -454,6 +500,8 @@ impl Merging<'_> {
 
 fn merge(tracks: &[TrackIn], groups: Vec<Group>, p: &Params, together: Together, aside: &mut Vec<usize>) -> Vec<Group> {
     let k = groups.len();
+    #[cfg(test)]
+    BIGGEST_RUN.with(|b| b.set(b.get().max(k)));
     if k < 2 {
         return groups;
     }
@@ -518,4 +566,51 @@ fn merge(tracks: &[TrackIn], groups: Vec<Group>, p: &Params, together: Together,
         }
     }
     m.groups.into_iter().zip(m.alive).filter(|(_, a)| *a).map(|(g, _)| g).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn at(start: u32) -> TrackIn {
+        TrackIn {
+            media: 0,
+            start,
+            end: start + 10,
+            spans: vec![],
+            seen: vec![],
+            embedding: vec![1.0],
+            quality: 1.0,
+            dets: 2,
+            pin: None,
+            forbid: vec![],
+            previous: None,
+        }
+    }
+
+    /// The first track of each group, per stretch.
+    fn firsts(parts: &[Vec<Group>]) -> Vec<Vec<usize>> {
+        parts.iter().map(|p| p.iter().map(|g| g.members[0]).collect()).collect()
+    }
+
+    #[test]
+    fn a_media_that_fits_in_one_run_goes_in_as_it_is() {
+        // Not in time order: the run takes them in the order they came.
+        let tracks: Vec<TrackIn> = [50, 10, 30, 20].map(at).into();
+        for cap in [4, 5, usize::MAX] {
+            assert_eq!(firsts(&stretches(&tracks, initial_groups(&tracks, &[0, 1, 2, 3]), cap)), [[0, 1, 2, 3]]);
+        }
+    }
+
+    #[test]
+    fn a_longer_media_runs_in_even_stretches_of_time() {
+        // 11 tracks, at most 4 a run: stretches of 4, 4 and 3, in time order.
+        let tracks: Vec<TrackIn> = (0..11u32).map(|i| at(i * 7 % 11 * 100)).collect();
+        let core: Vec<usize> = (0..11).collect();
+        let starts: Vec<Vec<u32>> = stretches(&tracks, initial_groups(&tracks, &core), 4)
+            .iter()
+            .map(|p| p.iter().map(|g| tracks[g.members[0]].start).collect())
+            .collect();
+        assert_eq!(starts, [vec![0, 100, 200, 300], vec![400, 500, 600, 700], vec![800, 900, 1000]]);
+    }
 }

@@ -185,17 +185,28 @@ impl Open {
     }
 }
 
+/// Whether the tracker can go by `o`: its box, quality and identity are
+/// numbers. One that a model spoilt (NaN, infinite) links to no face by
+/// identity, and whatever track it went into would get a sum, mean and
+/// quality of NaN for good.
+fn readable(o: &Observation) -> bool {
+    o.det.quality.is_finite() && o.det.bbox.iter().all(|v| v.is_finite()) && o.embedding.iter().all(|v| v.is_finite())
+}
+
 /// Link the observations of one shot (`samples` in frame order) into tracks,
-/// ordered by start.
+/// ordered by start. Observations a model spoilt (see `readable`) are left
+/// out.
 pub fn track_shot(shot: FrameRange, samples: Vec<(FrameIdx, Vec<Observation>)>, p: &TrackerParams) -> Vec<FaceTrack> {
     let mut open: Vec<Open> = Vec::new();
-    for (frame, obs) in samples {
+    for (frame, mut obs) in samples {
         debug_assert!(shot.contains(frame));
+        debug_assert!(open.iter().all(|t| t.last_frame <= frame), "samples in frame order");
+        obs.retain(readable);
         // Candidate links, best first: overlap plus identity.
         let mut pairs: Vec<(f32, usize, usize)> = Vec::new();
         for (oi, o) in obs.iter().enumerate() {
             for (ti, t) in open.iter().enumerate() {
-                let gap = (frame - t.last_frame) / p.stride.max(1);
+                let gap = frame.saturating_sub(t.last_frame) / p.stride.max(1);
                 let cos = cosine(&o.embedding, &t.mean);
                 let overlap = iou(&o.det.bbox, &t.predicted(frame)).max(iou(&o.det.bbox, &t.last_bbox));
                 let near = gap <= p.max_gap && overlap >= p.min_iou && cos >= p.min_cos_near;
@@ -378,6 +389,45 @@ mod tests {
         let tracks = track_shot(shot, samples, &TrackerParams::new(3));
         assert_eq!(tracks.len(), 1);
         assert_eq!((tracks[0].start, tracks[0].end, tracks[0].shot), (102, 228, 100));
+    }
+
+    #[test]
+    fn a_sighting_that_is_no_number_spoils_no_track() {
+        // One face over 5 samples, spoilt by the models in the middle one: a
+        // NaN embedding would open a track of its own, an infinite box or a
+        // NaN quality would join the face's and spoil its box, embedding or
+        // quality.
+        let shot = FrameRange::new(0, 30);
+        for spoil in 0..3 {
+            let samples = (0..5u32)
+                .map(|i| {
+                    let mut o = obs(i * 3, 0.3, 1, 0.8);
+                    if i == 2 {
+                        match spoil {
+                            0 => o.embedding[5] = f32::NAN,
+                            1 => o.det.bbox[2] = f32::INFINITY,
+                            _ => o.det.quality = f32::NAN,
+                        }
+                    }
+                    (i * 3, vec![o])
+                })
+                .collect();
+            let tracks = track_shot(shot, samples, &TrackerParams::new(3));
+            assert_eq!(tracks.len(), 1, "spoilt {spoil}");
+            let t = &tracks[0];
+            assert_eq!(t.dets.iter().map(|d| d.frame).collect::<Vec<_>>(), [0, 3, 9, 12], "spoilt {spoil}");
+            assert!(t.quality.is_finite() && t.embedding.iter().all(|x| x.is_finite()), "spoilt {spoil}");
+            assert!((cosine(&t.embedding, &emb(1)) - 1.0).abs() < 1e-5);
+        }
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "samples in frame order")]
+    fn samples_out_of_order_are_caught() {
+        let shot = FrameRange::new(0, 30);
+        let samples = vec![(6, vec![obs(6, 0.3, 1, 0.8)]), (3, vec![obs(3, 0.3, 1, 0.8)])];
+        track_shot(shot, samples, &TrackerParams::new(3));
     }
 
     #[test]

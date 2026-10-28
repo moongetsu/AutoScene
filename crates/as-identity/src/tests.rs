@@ -786,6 +786,94 @@ fn a_person_seen_once_per_episode_is_found_in_a_big_series() {
     assert!(o.tracks[first..].iter().all(|(a, _)| a.character() == c));
 }
 
+/// The groups of `tracks` (all of them clear), clustered per media from
+/// `single` groups on and in runs of at most `second` groups after that,
+/// and the most groups a run took.
+fn cluster_capped(tracks: &[TrackIn], single: usize, second: usize) -> (Vec<Vec<usize>>, usize) {
+    let core: Vec<usize> = (0..tracks.len()).collect();
+    crate::ahc::BIGGEST_RUN.with(|b| b.set(0));
+    let groups = crate::ahc::cluster_in(tracks, &core, &Params::default(), crate::ahc::Levels { single, second });
+    (groups, crate::ahc::BIGGEST_RUN.with(|b| b.get()))
+}
+
+#[test]
+fn a_media_longer_than_one_run_takes_is_grouped_in_stretches_of_time() {
+    // Six people one after another in one media, 30 tracks each, at most 60
+    // groups a run: three stretches of 60 tracks, each with 10 of everyone's,
+    // whose groups then meet as episodes do.
+    let mut rng = Rng(139);
+    let (_, tracks, truth) = cast(&mut rng, 6, 30);
+    let (groups, biggest) = cluster_capped(&tracks, 40, 60);
+    assert!(biggest <= 60, "a run of {biggest} groups");
+    let people: Vec<Vec<usize>> = (0..6).map(|p| (0..tracks.len()).filter(|&i| truth[i] == p).collect()).collect();
+    let mut found = groups.clone();
+    found.sort();
+    assert_eq!(found, people, "everyone is one group");
+    // Just as one run would group them.
+    let (whole, biggest) = cluster_capped(&tracks, 40, usize::MAX);
+    assert_eq!(biggest, tracks.len());
+    assert_eq!(whole, groups);
+}
+
+#[test]
+fn faces_seen_together_on_either_side_of_a_cut_stay_two() {
+    // Twins (mean faces 0.8 alike) on screen together in 90 shots of one
+    // media, after somebody else's face: at most 60 groups a run makes
+    // stretches of 46 tracks, and the first cut falls between the twins of
+    // shot 22.
+    let mut rng = Rng(149);
+    let a = rng.unit();
+    let b = around(&mut rng, &a, 0.8);
+    let mut tracks = vec![track(0, 0, rng.unit(), 0.8)];
+    let (mut twin_a, mut twin_b) = (Vec::new(), Vec::new());
+    for i in 0..90u32 {
+        twin_a.push(tracks.len());
+        tracks.push(track(0, i * 100 + 50, around(&mut rng, &a, 0.8), 0.8));
+        twin_b.push(tracks.len());
+        tracks.push(track(0, i * 100 + 60, around(&mut rng, &b, 0.8), 0.8));
+    }
+    let (groups, biggest) = cluster_capped(&tracks, 40, 60);
+    assert!(biggest <= 60, "a run of {biggest} groups");
+    let group_of = |t: usize| groups.iter().position(|g| g.contains(&t)).unwrap();
+    assert_ne!(group_of(twin_a[22]), group_of(twin_b[22]), "the twins of the shot that was cut");
+    for g in &groups {
+        for (x, &i) in g.iter().enumerate() {
+            for &j in &g[x + 1..] {
+                assert!(!together(&tracks[i], &tracks[j]), "{i} and {j} are on screen at once");
+            }
+        }
+    }
+    assert!(twin_a.iter().all(|&t| group_of(t) == group_of(twin_a[0])), "the first twin is one group");
+    assert!(twin_b.iter().all(|&t| group_of(t) == group_of(twin_b[0])), "the second twin is one group");
+}
+
+#[test]
+fn a_media_too_long_for_one_run_is_grouped_within_the_bound() {
+    // More clear tracks in one media than a run takes (a season in one
+    // file, a long recording): strangers one after another, and now and
+    // then a person, in two stretches of time.
+    let mut rng = Rng(151);
+    let person = rng.unit();
+    let mut tracks = Vec::new();
+    let mut theirs = Vec::new();
+    for i in 0..6100u32 {
+        if i % 200 == 0 {
+            theirs.push(tracks.len());
+            tracks.push(track(0, i * 100, around(&mut rng, &person, 0.75), 0.8));
+        } else {
+            tracks.push(track(0, i * 100, rng.unit(), 0.9));
+        }
+    }
+    let core: Vec<usize> = (0..tracks.len()).collect();
+    crate::ahc::BIGGEST_RUN.with(|b| b.set(0));
+    let groups = cluster(&tracks, &core, &Params::default());
+    let biggest = crate::ahc::BIGGEST_RUN.with(|b| b.get());
+    assert!(biggest <= 6000, "a run of {biggest} groups");
+    let mut theirs_found = groups[0].clone();
+    theirs_found.sort_unstable();
+    assert_eq!(theirs_found, theirs, "the person is one group");
+}
+
 /// What identify made, as `reassign` takes it: each character's members.
 fn members_of(o: &Outcome) -> Vec<(CharKey, Vec<usize>)> {
     (0..o.characters.len())

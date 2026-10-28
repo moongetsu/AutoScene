@@ -38,6 +38,9 @@ pub struct ArcFace {
     device: Device,
     batch: usize,
     x: Vec<f32>,
+    /// Embeddings with no direction since loading (see [`unit`]); the first
+    /// is logged.
+    spoilt: u64,
 }
 
 impl ArcFace {
@@ -51,7 +54,7 @@ impl ArcFace {
             .map(|i| i.name().to_string())
             .ok_or_else(|| InferError::Model(format!("{}: no input", model.display())))?;
         tracing::info!(device = ?device, batch, "ArcFace ready");
-        Ok(Self { session, input, device, batch, x: vec![0.0; batch * 3 * CROP * CROP] })
+        Ok(Self { session, input, device, batch, x: vec![0.0; batch * 3 * CROP * CROP], spoilt: 0 })
     }
 
     pub fn device(&self) -> Device {
@@ -89,14 +92,37 @@ impl ArcFace {
                 )));
             }
             for i in 0..group.len() {
-                let raw = &e[i * DIM..(i + 1) * DIM];
-                let norm = raw.iter().map(|x| x * x).sum::<f32>().sqrt();
-                let k = 1.0 / norm.max(1e-6);
-                out.push(Embedding { v: raw.iter().map(|x| x * k).collect(), norm });
+                let embedding = unit(&e[i * DIM..(i + 1) * DIM]);
+                if embedding.norm == 0.0 {
+                    // A broken run would otherwise only find no one: say so, once.
+                    if self.spoilt == 0 {
+                        tracing::warn!(
+                            device = ?self.device,
+                            "ArcFace gave an embedding with no direction (NaN, infinite or zero); it matches no one"
+                        );
+                    }
+                    self.spoilt += 1;
+                }
+                out.push(embedding);
             }
         }
         Ok(out)
     }
+}
+
+/// The network's `raw` output as an [`Embedding`]. One with no direction —
+/// a value that is no number (NaN, infinite: a faulty execution provider or
+/// driver) or no length at all — is all zeros with norm 0: it resembles no
+/// one and reads as the least clear face there is, so it joins no track and
+/// shapes no character. Divided by a NaN length it would stay NaN, and so
+/// would every sum and mean it went into.
+pub(crate) fn unit(raw: &[f32]) -> Embedding {
+    let norm = raw.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if !(norm.is_finite() && norm > 1e-6) {
+        return Embedding { v: vec![0.0; raw.len()], norm: 0.0 };
+    }
+    let k = 1.0 / norm;
+    Embedding { v: raw.iter().map(|x| x * k).collect(), norm }
 }
 
 /// The similarity transform (rotation, uniform scale, translation) that maps
@@ -207,6 +233,25 @@ mod tests {
             let (x, y) = (a * p[0] - b * p[1] + tx, b * p[0] + a * p[1] + ty);
             assert!((x - t[0]).abs() < 1e-2 && (y - t[1]).abs() < 1e-2, "{x},{y} vs {t:?}");
         }
+    }
+
+    #[test]
+    fn embeddings_are_unit_length_with_the_length_they_had() {
+        let e = unit(&[3.0, 0.0, -4.0]);
+        assert_eq!(e, Embedding { v: vec![0.6, 0.0, -0.8], norm: 5.0 });
+    }
+
+    #[test]
+    fn an_embedding_that_is_no_number_points_nowhere() {
+        // NaN anywhere makes the norm NaN, which `norm.max(1e-6)` passes
+        // over: the NaN would stay and the rest grow a million times. An
+        // infinite value (or one whose square is) makes the norm infinite:
+        // the rest would be 0 and itself NaN, with the best quality there is.
+        for spoilt in [f32::NAN, f32::INFINITY, -f32::INFINITY, 1e30] {
+            let e = unit(&[0.5, spoilt, 0.5]);
+            assert_eq!(e, Embedding { v: vec![0.0; 3], norm: 0.0 }, "{spoilt}");
+        }
+        assert_eq!(unit(&[0.0; 4]), Embedding { v: vec![0.0; 4], norm: 0.0 });
     }
 
     #[test]

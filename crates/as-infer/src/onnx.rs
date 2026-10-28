@@ -272,7 +272,9 @@ fn varint_value(f: &Field) -> Option<u64> {
 
 /// Where in `model` the first value of an INT64 `TensorProto` (`tensor`, a
 /// slice of `model`) is stored, if that value is exactly 1: the byte that
-/// turns it into 0 (raw data is little-endian; varints of 0 and 1 are one byte).
+/// turns it into 0 (raw data is little-endian; varints of 0 and 1 are one
+/// byte). A 1 written in more bytes than it needs (0x81 0x00), which no
+/// protobuf writer makes, is left as it is: no one byte of it turns it into 0.
 fn first_one(model: &[u8], tensor: &[u8]) -> Option<Option<usize>> {
     let fs = fields(tensor)?;
     if !fs.iter().any(|f| f.number == TENSOR_DATA_TYPE && varint_value(f) == Some(INT64)) {
@@ -291,7 +293,7 @@ fn first_one(model: &[u8], tensor: &[u8]) -> Option<Option<usize>> {
             // Unpacked: a field per value; a value of 1 is the field's last byte.
             (TENSOR_INT64_DATA, VARINT) => {
                 let last = &f.raw[f.raw.len() - 1..];
-                return Some((varint_value(f) == Some(1)).then(|| offset_in(model, last)));
+                return Some((varint_value(f) == Some(1) && last == [1]).then(|| offset_in(model, last)));
             }
             _ => {}
         }
@@ -561,6 +563,22 @@ mod tests {
         assert!(changed.iter().all(|&i| m[i] == 1 && free[i] == 0));
         // Done once, there is nothing left to do.
         assert_eq!(free_reshape_batch(&free).unwrap().1, 0);
+        // A 1 in two bytes (0x81 0x00), packed or a field of its own, isn't
+        // counted as freed: setting either byte to 0 doesn't make it 0.
+        for packed in [true, false] {
+            let mut t = Vec::new();
+            varint_field(&mut t, TENSOR_DATA_TYPE, INT64);
+            len_field(&mut t, TENSOR_NAME, b"long");
+            if packed {
+                len_field(&mut t, TENSOR_INT64_DATA, &[0x81, 0x00, 0x7F]);
+            } else {
+                put_varint(&mut t, TENSOR_INT64_DATA << 3);
+                t.extend([0x81, 0x00]);
+                varint_field(&mut t, TENSOR_INT64_DATA, 127);
+            }
+            let m = model(&[(GRAPH_INITIALIZER, t), reshape("a", "long", None)]);
+            assert_eq!(free_reshape_batch(&m), Some((m.clone(), 0)), "packed: {packed}");
+        }
         // A Reshape that takes 0 literally can't be freed this way.
         assert!(free_reshape_batch(&graph(reshape("h", "raw", Some(1)))).is_none());
     }

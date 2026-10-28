@@ -104,6 +104,46 @@ impl FaceBox {
     }
 }
 
+/// What one anchor of the heads found.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Anchor {
+    Face(FaceBox),
+    /// Below the threshold, or a box of no size.
+    Nothing,
+    /// A value that is no number (NaN, infinite): a faulty execution
+    /// provider or driver. Clipped to the frame, a box of NaN would cover
+    /// all of it, and a NaN score can sort before every real face.
+    Spoilt,
+}
+
+/// The face at the anchor (`cx`, `cy`) of stride `s`, from the heads' values
+/// there: its `score`, the box's sides `bx` and the five points `k` as
+/// distances from the anchor in strides, the box clipped to the `w`×`h`
+/// frame.
+fn anchor(
+    score: f32,
+    bx: &[f32],
+    k: &[f32],
+    (cx, cy): (f32, f32),
+    s: f32,
+    (w, h): (usize, usize),
+    threshold: f32,
+) -> Anchor {
+    if score < threshold {
+        return Anchor::Nothing;
+    }
+    let sides = [cx - bx[0] * s, cy - bx[1] * s, cx + bx[2] * s, cy + bx[3] * s];
+    let mut p = [[0f32; 2]; 5];
+    for (j, pt) in p.iter_mut().enumerate() {
+        *pt = [cx + k[2 * j] * s, cy + k[2 * j + 1] * s];
+    }
+    if !(score.is_finite() && sides.iter().chain(p.as_flattened()).all(|v| v.is_finite())) {
+        return Anchor::Spoilt;
+    }
+    let bbox = [sides[0].max(0.0), sides[1].max(0.0), sides[2].min(w as f32), sides[3].min(h as f32)];
+    if bbox[2] > bbox[0] && bbox[3] > bbox[1] { Anchor::Face(FaceBox { bbox, score, kps: p }) } else { Anchor::Nothing }
+}
+
 pub fn iou(a: &[f32; 4], b: &[f32; 4]) -> f32 {
     let iw = (a[2].min(b[2]) - a[0].max(b[0])).max(0.0);
     let ih = (a[3].min(b[3]) - a[1].max(b[1])).max(0.0);
@@ -125,6 +165,9 @@ pub struct Scrfd {
     /// Input buffer (NCHW float). Frames only ever overwrite their own area,
     /// so the padding stays black.
     x: Vec<f32>,
+    /// Anchors skipped since loading because a value of theirs was no
+    /// number (see [`Anchor::Spoilt`]); the first are logged.
+    spoilt: u64,
 }
 
 impl Scrfd {
@@ -161,7 +204,7 @@ impl Scrfd {
         }
         tracing::info!(device = ?device, w, h, batch, ?heads, "SCRFD ready");
         let x = vec![NORM[0]; batch * 3 * pw * ph];
-        Ok(Self { session, input, device, heads, size: (w, h), batch, nms_iou: NMS_IOU, x })
+        Ok(Self { session, input, device, heads, size: (w, h), batch, nms_iou: NMS_IOU, x, spoilt: 0 })
     }
 
     /// Drop the weaker of two boxes that overlap more than `iou` (faces: 0.4;
@@ -219,6 +262,7 @@ impl Scrfd {
         let t = TensorRef::from_array_view(([batch, 3, ph, pw], &self.x[..]))?;
         let outs = self.session.run(as_infer::inputs![self.input.as_str() => t])?;
         let mut faces: Vec<Vec<FaceBox>> = vec![Vec::new(); frames.len()];
+        let mut spoilt = 0u64;
         // Outputs: scores for every stride (smallest first), then boxes, then
         // points. Each head is transposed to (y, x, frame, anchor) before
         // flattening.
@@ -241,34 +285,32 @@ impl Scrfd {
             }
             let s = stride as f32;
             for loc in 0..locs {
-                let (cx, cy) = (((loc % gw) * stride) as f32, ((loc / gw) * stride) as f32);
+                let at = (((loc % gw) * stride) as f32, ((loc / gw) * stride) as f32);
                 for (f, found) in faces.iter_mut().enumerate() {
                     for a in 0..anchors {
                         let i = (loc * batch + f) * anchors + a;
-                        let score = scores[i];
-                        if score < threshold {
-                            continue;
-                        }
-                        let bx = &boxes[i * 4..i * 4 + 4];
-                        let k = &kps[i * 10..i * 10 + 10];
-                        let mut p = [[0f32; 2]; 5];
-                        for (j, pt) in p.iter_mut().enumerate() {
-                            *pt = [cx + k[2 * j] * s, cy + k[2 * j + 1] * s];
-                        }
-                        let bbox = [
-                            (cx - bx[0] * s).max(0.0),
-                            (cy - bx[1] * s).max(0.0),
-                            (cx + bx[2] * s).min(w as f32),
-                            (cy + bx[3] * s).min(h as f32),
-                        ];
-                        if bbox[2] > bbox[0] && bbox[3] > bbox[1] {
-                            found.push(FaceBox { bbox, score, kps: p });
+                        let (bx, k) = (&boxes[i * 4..i * 4 + 4], &kps[i * 10..i * 10 + 10]);
+                        match anchor(scores[i], bx, k, at, s, (w, h), threshold) {
+                            Anchor::Face(b) => found.push(b),
+                            Anchor::Nothing => {}
+                            Anchor::Spoilt => spoilt += 1,
                         }
                     }
                 }
             }
         }
         drop(outs);
+        if spoilt > 0 {
+            // A broken run would otherwise only find no faces: say so, once.
+            if self.spoilt == 0 {
+                tracing::warn!(
+                    device = ?self.device,
+                    anchors = spoilt,
+                    "SCRFD gave values that are no numbers (NaN, infinite); those anchors are skipped"
+                );
+            }
+            self.spoilt += spoilt;
+        }
         let max_iou = self.nms_iou;
         Ok(faces.into_iter().map(|f| nms(f, max_iou)).collect())
     }
@@ -303,6 +345,40 @@ mod tests {
         // looser threshold people get.
         assert_eq!(nms(vec![face(0.0, 0.6), face(3.0, 0.9)], NMS_IOU).len(), 1);
         assert_eq!(nms(vec![face(0.0, 0.6), face(3.0, 0.9)], 0.6).len(), 2);
+    }
+
+    #[test]
+    fn anchors_decode_to_boxes_clipped_to_the_frame() {
+        // Stride 8 at (16, 8): sides 1 stride left and up, 3 right and down.
+        let (bx, k) = ([1.0, 1.0, 3.0, 3.0], [0.5; 10]);
+        let found = anchor(0.9, &bx, &k, (16.0, 8.0), 8.0, (32, 24), 0.5);
+        assert_eq!(found, Anchor::Face(FaceBox { bbox: [8.0, 0.0, 32.0, 24.0], score: 0.9, kps: [[20.0, 12.0]; 5] }));
+        assert_eq!(anchor(0.4, &bx, &k, (16.0, 8.0), 8.0, (32, 24), 0.5), Anchor::Nothing);
+        assert_eq!(anchor(f32::NEG_INFINITY, &bx, &k, (16.0, 8.0), 8.0, (32, 24), 0.5), Anchor::Nothing);
+        // Outside the frame: no size left.
+        assert_eq!(anchor(0.9, &[-5.0, 1.0, 6.0, 3.0], &k, (16.0, 8.0), 8.0, (32, 24), 0.5), Anchor::Nothing);
+    }
+
+    #[test]
+    fn values_that_are_no_numbers_find_no_face() {
+        // Clipped to the frame, a box of NaN would be all of it: a face as
+        // big as the frame, before every other in NMS with a NaN score.
+        let (at, size) = ((16.0, 8.0), (32, 24));
+        let (bx, k) = ([1.0, 1.0, 3.0, 3.0], [0.5; 10]);
+        assert_eq!(anchor(f32::NAN, &bx, &k, at, 8.0, size, 0.5), Anchor::Spoilt);
+        assert_eq!(anchor(f32::INFINITY, &bx, &k, at, 8.0, size, 0.5), Anchor::Spoilt);
+        for i in 0..4 {
+            for v in [f32::NAN, f32::INFINITY, -f32::INFINITY, 1e38] {
+                let mut bad = bx;
+                bad[i] = v;
+                assert_eq!(anchor(0.9, &bad, &k, at, 8.0, size, 0.5), Anchor::Spoilt, "side {i} = {v}");
+            }
+        }
+        for i in 0..10 {
+            let mut bad = k;
+            bad[i] = f32::NAN;
+            assert_eq!(anchor(0.9, &bx, &bad, at, 8.0, size, 0.5), Anchor::Spoilt, "point value {i}");
+        }
     }
 
     #[test]
