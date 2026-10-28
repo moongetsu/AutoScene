@@ -15,7 +15,9 @@
 //!
 //! To move to a newer version, update the URLs and hashes below (FFmpeg
 //! publishers list a `.sha256` next to every download, GitHub release assets
-//! carry a digest) and run the engine test suites.
+//! carry a digest) and run the engine test suites. BtbN deletes autobuilds
+//! a few weeks after they publish — a 404 here means re-pin to the current
+//! one, or move the archives onto this repo's own releases for good.
 
 use std::fs;
 use std::io::Read;
@@ -63,9 +65,9 @@ const BUNDLES: &[Bundle] = &[
         dir: "ffmpeg",
         // BtbN FFmpeg-Builds, release 9.0.2, GPL, shared libraries (DLLs next to the exes).
         archives: &[Archive {
-            url: "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-13-13-05/ffmpeg-n9.0.2-27-g7e93014c5b-win64-gpl-shared-9.0.zip",
-            sha256: "73222d3e5e0952033b1140dc771fe00b82a4414c7a6544d5ff2febe7e450850c",
-            pick: Pick::Dir("ffmpeg-n9.0.2-27-g7e93014c5b-win64-gpl-shared-9.0/bin"),
+            url: "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-27-18-38/ffmpeg-n9.0.2-36-g6882969ce9-win64-gpl-shared-9.0.zip",
+            sha256: "dbfef481021a393424c9bd4e588c8d568f0ebba780c01c63dfcb87c87be901c7",
+            pick: Pick::Dir("ffmpeg-n9.0.2-36-g6882969ce9-win64-gpl-shared-9.0/bin"),
         }],
         required: &[("ffmpeg.exe", true), ("ffprobe.exe", true)],
         vc_runtime: false,
@@ -144,15 +146,15 @@ const BUNDLES: &[Bundle] = &[
 /// The libraries FFmpeg's programs load, by the names they ask for.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const FFMPEG_LIBS: &[(&str, &str)] = &[
-    ("ffmpeg-n9.0.2-27-g7e93014c5b-linux64-gpl-shared-9.0/bin/ffmpeg", "ffmpeg"),
-    ("ffmpeg-n9.0.2-27-g7e93014c5b-linux64-gpl-shared-9.0/bin/ffprobe", "ffprobe"),
-    ("ffmpeg-n9.0.2-27-g7e93014c5b-linux64-gpl-shared-9.0/lib/libavcodec.so.63", "libavcodec.so.63"),
-    ("ffmpeg-n9.0.2-27-g7e93014c5b-linux64-gpl-shared-9.0/lib/libavdevice.so.63", "libavdevice.so.63"),
-    ("ffmpeg-n9.0.2-27-g7e93014c5b-linux64-gpl-shared-9.0/lib/libavfilter.so.12", "libavfilter.so.12"),
-    ("ffmpeg-n9.0.2-27-g7e93014c5b-linux64-gpl-shared-9.0/lib/libavformat.so.63", "libavformat.so.63"),
-    ("ffmpeg-n9.0.2-27-g7e93014c5b-linux64-gpl-shared-9.0/lib/libavutil.so.61", "libavutil.so.61"),
-    ("ffmpeg-n9.0.2-27-g7e93014c5b-linux64-gpl-shared-9.0/lib/libswresample.so.7", "libswresample.so.7"),
-    ("ffmpeg-n9.0.2-27-g7e93014c5b-linux64-gpl-shared-9.0/lib/libswscale.so.10", "libswscale.so.10"),
+    ("ffmpeg-n9.0.2-36-g6882969ce9-linux64-gpl-shared-9.0/bin/ffmpeg", "ffmpeg"),
+    ("ffmpeg-n9.0.2-36-g6882969ce9-linux64-gpl-shared-9.0/bin/ffprobe", "ffprobe"),
+    ("ffmpeg-n9.0.2-36-g6882969ce9-linux64-gpl-shared-9.0/lib/libavcodec.so.63", "libavcodec.so.63"),
+    ("ffmpeg-n9.0.2-36-g6882969ce9-linux64-gpl-shared-9.0/lib/libavdevice.so.63", "libavdevice.so.63"),
+    ("ffmpeg-n9.0.2-36-g6882969ce9-linux64-gpl-shared-9.0/lib/libavfilter.so.12", "libavfilter.so.12"),
+    ("ffmpeg-n9.0.2-36-g6882969ce9-linux64-gpl-shared-9.0/lib/libavformat.so.63", "libavformat.so.63"),
+    ("ffmpeg-n9.0.2-36-g6882969ce9-linux64-gpl-shared-9.0/lib/libavutil.so.61", "libavutil.so.61"),
+    ("ffmpeg-n9.0.2-36-g6882969ce9-linux64-gpl-shared-9.0/lib/libswresample.so.7", "libswresample.so.7"),
+    ("ffmpeg-n9.0.2-36-g6882969ce9-linux64-gpl-shared-9.0/lib/libswscale.so.10", "libswscale.so.10"),
 ];
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -161,8 +163,8 @@ const BUNDLES: &[Bundle] = &[
         dir: "ffmpeg",
         // BtbN FFmpeg-Builds, release 9.0.2, GPL, shared libraries (as on Windows).
         archives: &[Archive {
-            url: "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-13-13-05/ffmpeg-n9.0.2-27-g7e93014c5b-linux64-gpl-shared-9.0.tar.xz",
-            sha256: "9021fc847d154f66581f1620e51fdb052aa84f5c434cf7f79bbe08f61260e3f2",
+            url: "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-27-18-38/ffmpeg-n9.0.2-36-g6882969ce9-linux64-gpl-shared-9.0.tar.xz",
+            sha256: "17a9e690d2009e13f96eeca346825bd7a432ed8537f7fe8bdcbb86a3a56100eb",
             pick: Pick::Files(FFMPEG_LIBS),
         }],
         required: &[("ffmpeg", true), ("ffprobe", true)],

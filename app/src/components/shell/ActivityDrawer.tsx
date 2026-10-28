@@ -1,5 +1,6 @@
 import type * as React from "react"
 import { useNavigate } from "@tanstack/react-router"
+import { toast } from "sonner"
 import {
   Check,
   Copy,
@@ -28,7 +29,7 @@ import { Progress } from "@/components/ui/progress"
 import { Sheet, SheetContent } from "@/components/ui/sheet"
 import { Tooltip, TruncatedText } from "@/components/ui/tooltip"
 import { formatEta, formatPercent } from "@/lib/format"
-import { commands } from "@/lib/ipc"
+import { commands, errorMessage } from "@/lib/ipc"
 import { copyText } from "@/lib/os"
 import { cn } from "@/lib/utils"
 import { isFinished, useActivity, useJobs } from "@/state/activity"
@@ -53,7 +54,9 @@ export function ActivityDrawer() {
   const finished = jobs.filter(isFinished)
 
   const clear = () => {
-    void commands.jobsClearFinished()
+    void commands
+      .jobsClearFinished()
+      .catch((e) => toast.error("Couldn't clear the list", { description: errorMessage(e) }))
     useActivity.getState().clearFinished()
   }
 
@@ -128,7 +131,11 @@ function JobRow({ job: j }: { job: JobInfo }) {
   const menu = (
     <>
       {!done && (
-        <ContextMenuItem onSelect={() => void commands.jobCancel(j.id)}>
+        <ContextMenuItem
+          onSelect={() =>
+            void commands.jobCancel(j.id).catch((e) => toast.error("Couldn't cancel the job", { description: errorMessage(e) }))
+          }
+        >
           <X /> Cancel
         </ContextMenuItem>
       )}
@@ -193,7 +200,9 @@ function JobRow({ job: j }: { job: JobInfo }) {
                   aria-label={`Cancel ${j.title}`}
                   onClick={(e) => {
                     e.stopPropagation()
-                    void commands.jobCancel(j.id)
+                    void commands
+                      .jobCancel(j.id)
+                      .catch((err) => toast.error("Couldn't cancel the job", { description: errorMessage(err) }))
                   }}
                   className="flex size-7 items-center justify-center rounded-full text-fg-3 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-white/[0.1] hover:text-fg-1 focus-visible:opacity-100"
                 >

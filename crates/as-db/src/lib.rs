@@ -95,10 +95,12 @@ impl Db {
             let _ = std::fs::create_dir_all(dir);
         }
         let mut conn = Connection::open(path)?;
+        // Before the pragmas: a journal_mode change can't wait on a busy
+        // database — set the budget first so every pragma below honours it.
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
-        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         tracing::debug!(db = %path.display(), "opening database");
         match migrations.to_latest(&mut conn) {
             Err(rusqlite_migration::Error::MigrationDefinition(

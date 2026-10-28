@@ -84,9 +84,13 @@ export const useUpdates = create<UpdatesState>((set, get) => ({
   },
 
   async relaunch() {
-    const restarted = await commands.updateRelaunch()
-    // Simulated installs don't restart; close the dialog and reset.
-    if (!restarted) set({ dialogOpen: false, phase: "current" })
+    try {
+      const restarted = await commands.updateRelaunch()
+      // Simulated installs don't restart; close the dialog and reset.
+      if (!restarted) set({ dialogOpen: false, phase: "current" })
+    } catch (e) {
+      set({ phase: "error", error: errorMessage(e) })
+    }
   },
 
   remindLater() {
