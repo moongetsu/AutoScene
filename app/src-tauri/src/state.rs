@@ -175,12 +175,24 @@ pub fn shutdown_work(app: &AppHandle) {
     }
 }
 
+/// How long [`resume_work`] waits for work the shutdown stopped to end.
+const RESUME_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// The process didn't go away after [`shutdown_work`] after all (the update
-/// installer failed to start): bring background work back.
+/// installer failed to start): bring background work back, and with it what
+/// the shutdown interrupted, which it left as a quit does (an analysis
+/// `running`, an ingest `indexing`): the launch's recovery queues it again.
+/// Off the caller's thread: it waits for the stopped work and opens every
+/// project.
 pub fn resume_work(app: &AppHandle) {
-    if let Some(state) = app.try_state::<AppState>() {
-        state.jobs.resume();
-    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        if let Some(state) = app.try_state::<AppState>()
+            && state.jobs.resume(RESUME_GRACE)
+        {
+            crate::work::recover_all(&app);
+        }
+    });
 }
 
 /// Let the webview load a file through the asset protocol (players, posters).

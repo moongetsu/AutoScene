@@ -118,6 +118,8 @@ struct State {
     /// turns, see [`next_job`]).
     jobs: VecDeque<Entry>,
     shutting_down: bool,
+    /// Shutdowns begun: a resume undoes only the one it waited for.
+    shutdowns: u64,
     /// Last revision handed out; bumped under the lock on every change.
     rev: u64,
     /// Worker threads alive per class (they exit during a shutdown).
@@ -182,14 +184,27 @@ impl JobRunner {
     }
 
     /// Undo a [`shutdown`](Self::shutdown) whose exit didn't happen (an
-    /// update installer that failed to start): restart the workers that
-    /// exited and close out queued jobs whose work was dropped.
-    pub fn resume(&self) {
+    /// update installer that failed to start): once the work it stopped has
+    /// ended (up to `grace` more), restart the workers that exited and close
+    /// out queued jobs whose work was dropped. Work ending meanwhile still
+    /// sees the shutdown, so it leaves its state as a quit would. Returns
+    /// whether a shutdown was undone: what it stopped then waits for the
+    /// app to queue it again, as on a launch. One begun while it waited
+    /// (the app quits after all) is never undone.
+    pub fn resume(&self, grace: Duration) -> bool {
+        let waited_for = {
+            let st = self.inner.state.lock();
+            if !st.shutting_down {
+                return false;
+            }
+            st.shutdowns
+        };
+        self.settle(grace);
         let mut changed = Vec::new();
         {
             let mut st = self.inner.state.lock();
-            if !st.shutting_down {
-                return;
+            if !st.shutting_down || st.shutdowns != waited_for {
+                return false;
             }
             st.shutting_down = false;
             let mut rev = st.rev;
@@ -206,6 +221,7 @@ impl JobRunner {
         for info in changed {
             (self.inner.listener)(JobEvent::Changed(info));
         }
+        true
     }
 
     /// Queue `work`. Returns immediately.
@@ -338,6 +354,7 @@ impl JobRunner {
         let dropped: Vec<Work> = {
             let mut st = self.inner.state.lock();
             st.shutting_down = true;
+            st.shutdowns += 1;
             st.jobs
                 .iter_mut()
                 .filter_map(|e| {
@@ -348,6 +365,11 @@ impl JobRunner {
         };
         drop(dropped);
         self.inner.wake.notify_all();
+        self.settle(grace);
+    }
+
+    /// Wait up to `grace` until no job is running.
+    fn settle(&self, grace: Duration) {
         let deadline = std::time::Instant::now() + grace;
         while std::time::Instant::now() < deadline {
             if !self.inner.state.lock().jobs.iter().any(|e| e.info.state == JobState::Running) {
@@ -359,7 +381,8 @@ impl JobRunner {
 }
 
 /// Bring every class back to its worker limit. Workers still finishing a job
-/// during a shutdown count as alive, so a resume never exceeds the limit.
+/// during a shutdown count as alive, so a resume never exceeds the limit;
+/// one that saw the shutdown and is leaving doesn't, so it is replaced.
 fn spawn_missing_workers(inner: &Arc<Inner>, st: &mut State) {
     for &(class, n) in &inner.limits {
         let live = st.live.entry(class).or_insert(0);
@@ -406,13 +429,27 @@ struct Alive<'a> {
     inner: &'a Arc<Inner>,
     class: Class,
     holding: Option<JobId>,
+    /// Still in `live` (see [`Alive::leave`]).
+    counted: bool,
+}
+
+impl Alive<'_> {
+    /// Stop counting, under the lock that saw the shutdown: a resume right
+    /// after then starts another worker instead of counting this one, which
+    /// is on its way out.
+    fn leave(&mut self, st: &mut State) {
+        if let Some(live) = st.live.get_mut(&self.class) {
+            *live = live.saturating_sub(1);
+        }
+        self.counted = false;
+    }
 }
 
 impl Drop for Alive<'_> {
     fn drop(&mut self) {
         let mut st = self.inner.state.lock();
-        if let Some(live) = st.live.get_mut(&self.class) {
-            *live = live.saturating_sub(1);
+        if self.counted {
+            self.leave(&mut st);
         }
         if !std::thread::panicking() {
             return;
@@ -433,13 +470,14 @@ impl Drop for Alive<'_> {
 }
 
 fn run_worker(inner: &Arc<Inner>, class: Class) {
-    let mut alive = Alive { inner, class, holding: None };
+    let mut alive = Alive { inner, class, holding: None, counted: true };
     loop {
         // Claim the next queued job of our class.
         let (id, work, cancel, info) = {
             let mut st = inner.state.lock();
             loop {
                 if st.shutting_down {
+                    alive.leave(&mut st);
                     drop(st);
                     return;
                 }
@@ -645,7 +683,8 @@ mod tests {
         });
         assert_eq!(finished(&rx, refused).state, JobState::Cancelled);
         assert!(!r.is_active(|j| j.id == refused));
-        r.resume();
+        assert!(r.resume(Duration::from_secs(5)));
+        assert!(!r.resume(Duration::from_secs(5)), "nothing more to undo");
         let after = r.submit(spec("after", Class::Media), |_| Ok(()));
         assert_eq!(finished(&rx, after).state, JobState::Done, "work runs again after resume");
         let jobs = r.jobs();
@@ -654,6 +693,69 @@ mod tests {
         // Workers came back up to the limit, not beyond it.
         assert_eq!(r.inner.state.lock().live[&Class::Media], 2);
         assert!(!ran.load(Ordering::SeqCst), "work refused during the shutdown never runs");
+    }
+
+    /// Work that, once cancelled, stops only when the returned sender says
+    /// so (or is dropped), then records whether the runner still said it was
+    /// shutting down.
+    fn slow_to_stop(r: &JobRunner) -> (JobId, mpsc::Sender<()>, Arc<AtomicBool>) {
+        let (release, released) = mpsc::channel::<()>();
+        let saw = Arc::new(AtomicBool::new(false));
+        let (seen, jobs) = (saw.clone(), r.clone());
+        let id = r.submit(spec("slow to stop", Class::Analysis), move |ctx| {
+            while !ctx.cancel.is_cancelled() {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let _ = released.recv();
+            seen.store(jobs.is_shutting_down(), Ordering::SeqCst);
+            Err(JobError::Cancelled)
+        });
+        while !r.is_active(|j| j.id == id && j.state == JobState::Running) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        (id, release, saw)
+    }
+
+    #[test]
+    fn a_resume_waits_for_the_work_the_shutdown_stopped() {
+        let (r, rx) = runner(&[(Class::Analysis, 1)]);
+        assert!(!r.resume(Duration::from_secs(5)), "no shutdown to undo");
+        // Work that takes a moment to stop sees the shutdown when it does,
+        // so it leaves its state as a quit would (for the app to resume).
+        let (slow, release, saw) = slow_to_stop(&r);
+        r.shutdown(Duration::from_millis(20));
+        assert!(r.is_active(|j| j.id == slow), "still stopping after the shutdown's grace");
+        let later = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            drop(release);
+        });
+        assert!(r.resume(Duration::from_secs(5)));
+        later.join().unwrap();
+        assert!(saw.load(Ordering::SeqCst), "it ended while the shutdown held");
+        assert_eq!(finished(&rx, slow).state, JobState::Cancelled);
+        let after = r.submit(spec("after", Class::Analysis), |_| Ok(()));
+        assert_eq!(finished(&rx, after).state, JobState::Done);
+        assert_eq!(r.inner.state.lock().live[&Class::Analysis], 1, "the worker that left was replaced");
+        assert!(!r.resume(Duration::from_secs(5)), "nothing more to undo");
+    }
+
+    #[test]
+    fn a_shutdown_begun_while_a_resume_waits_is_never_undone() {
+        let (r, _rx) = runner(&[(Class::Analysis, 1)]);
+        let (_, release, _) = slow_to_stop(&r);
+        r.shutdown(Duration::from_millis(20));
+        // The app quits after all while the resume waits for the slow job.
+        let quitting = r.clone();
+        let quit = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            quitting.shutdown(Duration::from_millis(20));
+            drop(release);
+        });
+        assert!(!r.resume(Duration::from_secs(5)));
+        quit.join().unwrap();
+        assert!(r.is_shutting_down());
+        let refused = r.submit(spec("too late", Class::Analysis), |_| Ok(()));
+        assert!(!r.is_active(|j| j.id == refused), "nothing runs while the app quits");
     }
 
     /// Work that records `title` in `ran` when it runs.
@@ -804,7 +906,7 @@ mod tests {
         };
         let inner = r.inner.clone();
         let worker = std::thread::spawn(move || {
-            let _alive = Alive { inner: &inner, class: Class::Upkeep, holding: Some(held) };
+            let _alive = Alive { inner: &inner, class: Class::Upkeep, holding: Some(held), counted: true };
             panic!("a bug outside the job");
         });
         assert!(worker.join().is_err());

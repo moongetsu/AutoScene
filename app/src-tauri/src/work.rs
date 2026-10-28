@@ -1060,9 +1060,10 @@ fn failed_message(failed: usize, clips: usize, one_file: bool) -> String {
     }
 }
 
-/// On launch: reopen every project, resume interrupted indexing, pending
-/// previews and analyses, make outdated posters again and the portraits
-/// covers don't have yet.
+/// On launch (and when a shutdown for an update is undone, see
+/// `state::resume_work`): reopen every project, resume interrupted
+/// indexing, pending previews and analyses, make outdated posters again and
+/// the portraits covers don't have yet.
 pub fn recover_all(app: &AppHandle) {
     let state = app.state::<AppState>();
     let projects = match state.library.projects() {
