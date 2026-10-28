@@ -52,6 +52,25 @@ pub struct MediaToolsStatus {
     pub error: Option<String>,
 }
 
+/// An AI model AutoScene downloads the first time an analysis needs it
+/// (Settings → About).
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelInfo {
+    pub id: String,
+    /// What it finds.
+    pub purpose: String,
+    /// Who made it, and the copy AutoScene downloads.
+    pub source: String,
+    /// Its licence, as its makers name it.
+    pub license: String,
+    /// The licence allows non-commercial use only.
+    pub non_commercial: bool,
+    pub size_bytes: f64,
+    /// Downloaded and verified.
+    pub installed: bool,
+}
+
 /// User preferences stored in `library.db`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]

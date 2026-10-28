@@ -25,7 +25,54 @@ pub struct ShotsPlan {
     pub chunk: u32,
 }
 
+/// A pass over a media whose checkpoints [`Project::record_devices`] keeps
+/// the devices of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pass {
+    Shots,
+    /// Faces, and the people found with them.
+    Faces,
+    /// People alone, for faces found before.
+    People,
+}
+
+impl Pass {
+    pub(crate) const ALL: [Pass; 3] = [Pass::Shots, Pass::Faces, Pass::People];
+
+    /// The `meta` key of the devices `id`'s checkpoints of this pass were made on.
+    pub(crate) fn devices_key(self, id: MediaId) -> String {
+        let pass = match self {
+            Pass::Shots => "shots",
+            Pass::Faces => "faces",
+            Pass::People => "people",
+        };
+        format!("devices:{pass}:{id}")
+    }
+}
+
 impl Project {
+    /// Record that a `pass` of `id` makes its checkpoints from frame `resume`
+    /// on with `devices` (the engine's `Devices::summary`). Returns the
+    /// devices of the checkpoints before `resume` when they were others: a
+    /// run resumed on another device (the GPU gone after a driver crash, a
+    /// project carried to another machine) differs from one that ran through
+    /// in the last digits, now and then in a borderline cut or face. Its
+    /// checkpoints stay; each is whole, only not bit-for-bit one run's.
+    pub fn record_devices(
+        &self,
+        id: MediaId,
+        pass: Pass,
+        devices: &str,
+        resume: FrameIdx,
+    ) -> ProjectResult<Option<String>> {
+        let key = pass.devices_key(id);
+        let before = if resume > 0 { self.db().meta(&key)? } else { None };
+        if before.as_deref() != Some(devices) {
+            self.db().set_meta(&key, devices)?;
+        }
+        Ok(before.filter(|b| b != devices))
+    }
+
     /// Live action, 3D animation or anime (fusion, the grouping of
     /// characters and, from M3, the detectors depend on it).
     pub fn content(&self) -> ProjectResult<ContentKind> {
@@ -254,5 +301,23 @@ pub(crate) mod tests {
         project.reset_shots(id).unwrap();
         assert_eq!(project.shots_plan(id).unwrap().resume, 0);
         assert_eq!(project.pending_shots().unwrap(), vec![id]);
+    }
+
+    #[test]
+    fn a_pass_resumed_on_other_devices_is_noted() {
+        let (_dir, project, id) = project_with_media(100);
+        let (gpu, cpu) = ("transnetv2 on GPU (DirectML)", "transnetv2 on CPU");
+        assert_eq!(project.record_devices(id, Pass::Shots, gpu, 0).unwrap(), None);
+        // Resumed on the same device: nothing to say.
+        assert_eq!(project.record_devices(id, Pass::Shots, gpu, 2400).unwrap(), None);
+        // On the CPU: the checkpoints before were made on the GPU.
+        assert_eq!(project.record_devices(id, Pass::Shots, cpu, 4800).unwrap().as_deref(), Some(gpu));
+        assert_eq!(project.record_devices(id, Pass::Shots, cpu, 7200).unwrap(), None);
+        // Each pass keeps its own; a pass from the start has nothing before.
+        assert_eq!(project.record_devices(id, Pass::Faces, gpu, 300).unwrap(), None);
+        assert_eq!(project.record_devices(id, Pass::Shots, gpu, 0).unwrap(), None);
+        // A removed media takes its record along.
+        project.remove_media(id).unwrap();
+        assert!(Pass::ALL.iter().all(|p| project.db().meta(&p.devices_key(id)).unwrap().is_none()));
     }
 }

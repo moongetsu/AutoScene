@@ -63,7 +63,7 @@ export function GeneralSection() {
       <SettingsGroup title="Characters" description="How the analysis finds who is in a shot.">
         <SettingRow
           label="Find characters without a visible face"
-          description="Also follows people by their body and clothes, so shots where someone faces away or is too small for their face join their scenepack, marked “No face”. Analysis takes about a quarter longer; episodes analysed before are looked through again for their people."
+          description="Also follows people by their body and clothes, so shots where someone faces away or is too small for their face join their scenepack, marked “No face”. Analysis takes about a quarter longer; episodes analysed before are looked through again for their people. Its two models come from InsightFace and may only be used for non-commercial work."
         >
           <Switch
             aria-label="Find characters without a visible face"
@@ -74,7 +74,7 @@ export function GeneralSection() {
         </SettingRow>
         <SettingRow
           label="Fast Scan"
-          description="Finds faces the way the Scener app does: smaller face models, and only a few frames of each shot. Much faster, but characters are told apart less surely, and no one is found without a visible face. Applies to projects you create while it is on; switch an existing project in Edit details…"
+          description="Finds faces the way the Scener app does: smaller face models, and only a few frames of each shot. Much faster, but characters are told apart less surely, and no one is found without a visible face. Applies to projects you create while it is on; switch an existing project in Edit details… Fast Scan's models (MIT, Apache-2.0) may be used for any work; the full scan's face models come from InsightFace and may only be used for non-commercial work."
         >
           <Switch
             aria-label="Fast Scan"

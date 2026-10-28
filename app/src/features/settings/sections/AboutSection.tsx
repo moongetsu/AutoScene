@@ -1,7 +1,11 @@
+import { useQuery } from "@tanstack/react-query"
 import { FileText } from "@/components/icons"
 import { AutoSceneMark } from "@/components/brand/AutoSceneMark"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { useAppActions } from "@/lib/actions"
+import { formatBytes } from "@/lib/format"
+import { commands } from "@/lib/ipc"
 import { useAppInfo, useMediaTools } from "@/lib/queries"
 import { SettingRow, SettingsGroup } from "../primitives"
 
@@ -35,9 +39,18 @@ const STILLS: { name: string; by: string; url: string; license: string; licenseU
   },
 ]
 
+/**
+ * The AI models and their licences. Asked again each time About opens:
+ * an analysis may have downloaded one since.
+ */
+function useModels() {
+  return useQuery({ queryKey: ["models"], queryFn: () => commands.models(), staleTime: 0 })
+}
+
 export function AboutSection() {
   const { data: info } = useAppInfo()
   const { data: tools } = useMediaTools()
+  const { data: models } = useModels()
   const a = useAppActions()
   return (
     <>
@@ -77,6 +90,30 @@ export function AboutSection() {
         >
           <span className="text-sm text-fg-3">LGPL / GPL</span>
         </SettingRow>
+      </SettingsGroup>
+
+      <SettingsGroup
+        title="AI models"
+        description="Downloaded the first time an analysis needs them. Models marked non-commercial may only be used for non-commercial work; Fast Scan uses none of them."
+      >
+        {models?.map((m) => (
+          <SettingRow
+            key={m.id}
+            label={m.purpose}
+            description={
+              <span data-selectable>
+                {m.source}
+                <span className="block text-fg-3">
+                  {m.installed ? "Downloaded" : "Not downloaded yet"} · {formatBytes(m.sizeBytes ?? 0)}
+                </span>
+              </span>
+            }
+            className="min-h-12 py-2.5"
+          >
+            {m.nonCommercial && <Badge tone="accent">Non-commercial</Badge>}
+            <span className="text-sm text-fg-3">{m.license}</span>
+          </SettingRow>
+        )) ?? <SettingRow label="Checking…" />}
       </SettingsGroup>
 
       <SettingsGroup title="Open-source licenses" description="AutoScene is built on these projects.">

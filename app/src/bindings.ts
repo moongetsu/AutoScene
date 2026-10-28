@@ -26,6 +26,11 @@ export const commands = {
 	openLogsDir: () => __TAURI_INVOKE<null>("open_logs_dir"),
 	/**  The media engine (ffmpeg) found on this machine — Settings → About. */
 	mediaTools: () => __TAURI_INVOKE<MediaToolsStatus>("media_tools"),
+	/**
+	 *  The AI models AutoScene downloads when an analysis first needs them:
+	 *  what each is for, its licence, and whether it is here — Settings → About.
+	 */
+	models: () => __TAURI_INVOKE<ModelInfo[]>("models"),
 	projectsList: () => __TAURI_INVOKE<ProjectSummary[]>("projects_list"),
 	projectGet: (projectId: ProjectId) => __TAURI_INVOKE<ProjectSummary>("project_get", { projectId }),
 	/**  Create a project from video files and start indexing them. */
@@ -746,6 +751,25 @@ export type MergedFile = {
 	bytes: number | null,
 	/**  Why it couldn't be made. */
 	error: string | null,
+};
+
+/**
+ *  An AI model AutoScene downloads the first time an analysis needs it
+ *  (Settings → About).
+ */
+export type ModelInfo = {
+	id: string,
+	/**  What it finds. */
+	purpose: string,
+	/**  Who made it, and the copy AutoScene downloads. */
+	source: string,
+	/**  Its licence, as its makers name it. */
+	license: string,
+	/**  The licence allows non-commercial use only. */
+	nonCommercial: boolean,
+	sizeBytes: number | null,
+	/**  Downloaded and verified. */
+	installed: boolean,
 };
 
 export type NewProject = {

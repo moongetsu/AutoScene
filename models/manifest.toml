@@ -1,6 +1,7 @@
 # AI models AutoScene downloads on demand into the app data folder
 # (`AppPaths::models()`). Every file is pinned by URL (immutable revision)
-# and SHA256; see docs/plan for provenance and licences.
+# and SHA256; `source` and `license` say where each comes from and on what
+# terms (`non_commercial`: for non-commercial use only, which the app shows).
 
 # Files of models a better one replaced: removed from the models folder at
 # launch (`ModelStore::prune`). Nothing else there is ever deleted.
@@ -24,6 +25,7 @@ url = "https://huggingface.co/immich-app/buffalo_l/resolve/d09715916a0778919a770
 sha256 = "5838f7fe053675b1c7a08b633df49e7af5495cee0493c7dcf6697200b85b5b91"
 size = 16923827
 license = "InsightFace non-commercial research"
+non_commercial = true
 source = "InsightFace buffalo_l det_10g (SCRFD-10G, Guo et al. 2021), byte-identical mirror by Immich"
 
 # Chosen on bench/identity (Breaking Bad S01E01): tells people apart much
@@ -38,6 +40,7 @@ url = "https://huggingface.co/immich-app/antelopev2/resolve/51ca7e153bccebdbae22
 sha256 = "4ab1d6435d639628a6f3e5008dd4f929edf4c4124b1a7169e1048f9fef534cdf"
 size = 260665334
 license = "InsightFace non-commercial research"
+non_commercial = true
 source = "InsightFace antelopev2 glintr100 (ArcFace ResNet-100 on Glint360K), byte-identical mirror by Immich"
 
 # Fast Scan (an optional mode for new projects): the face models of the
@@ -77,6 +80,7 @@ member = "pp_det_med.onnx"
 sha256 = "6e9842a1a0122a474765838780012a4e7553623578b460848e5d47e743e22801"
 size = 29836627
 license = "InsightFace non-commercial (cheetah_l-public-v1)"
+non_commercial = true
 source = "InsightFace cheetah_l pp_det_med: PaddleDetection PP-YOLOE pedestrian detector"
 
 [[model]]
@@ -88,4 +92,5 @@ member = "reid_0265.onnx"
 sha256 = "c15084e7fa47e5ade8af236372e0c81d7d6a11d10d4f4db2d98b72ec6cefef0f"
 size = 8440242
 license = "InsightFace non-commercial (cheetah_l-public-v1)"
+non_commercial = true
 source = "InsightFace cheetah_l reid_0265: OpenVINO person-reidentification-retail-0277 (OmniScaleNet)"

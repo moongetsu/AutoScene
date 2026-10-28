@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use as_api::{AppInfo, MediaToolsStatus, Platform};
+use as_api::{AppInfo, MediaToolsStatus, ModelInfo, Platform};
 use as_core::AppPaths;
 use tauri::{AppHandle, State};
 
@@ -32,6 +32,30 @@ pub fn app_info(app: AppHandle, state: State<'_, AppState>) -> AppInfo {
 pub async fn media_tools(state: State<'_, AppState>) -> AppResult<MediaToolsStatus> {
     let state = state.inner().clone();
     blocking(move || Ok(state.tools_status())).await
+}
+
+/// The AI models AutoScene downloads when an analysis first needs them:
+/// what each is for, its licence, and whether it is here — Settings → About.
+#[tauri::command]
+#[specta::specta]
+pub async fn models(state: State<'_, AppState>) -> AppResult<Vec<ModelInfo>> {
+    let state = state.inner().clone();
+    blocking(move || {
+        Ok(as_models::manifest()
+            .iter()
+            .map(|m| ModelInfo {
+                id: m.id.clone(),
+                purpose: m.purpose.clone(),
+                source: m.source.clone(),
+                license: m.license.clone(),
+                non_commercial: m.non_commercial,
+                size_bytes: m.size as f64,
+                // Listing doesn't hash: a damaged file is found when it is next used.
+                installed: state.models.downloaded(&m.id).is_ok_and(|p| p.is_some()),
+            })
+            .collect())
+    })
+    .await
 }
 
 /// Show a file or folder in Explorer / Finder.

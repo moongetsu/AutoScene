@@ -17,7 +17,7 @@ use as_media::MediaInfo;
 use parking_lot::Mutex;
 use thiserror::Error;
 
-use crate::protocol::{Blob, FacesJob, Reply, Request, ShotsJob};
+use crate::protocol::{Blob, FacesJob, ModelDevice, Reply, Request, ShotsJob};
 
 #[derive(Debug, Error)]
 pub enum EngineError {
@@ -54,8 +54,55 @@ pub struct Launch {
     pub args: Vec<OsString>,
 }
 
+/// Where a job's models run, as the engine reports it once they are loaded.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Devices {
+    /// The device the engine tries first (`as_infer::Device::label`).
+    pub preferred: String,
+    /// Each model the job uses, and the device it runs on.
+    pub models: Vec<(String, String)>,
+}
+
+impl Devices {
+    fn new(preferred: String, models: Vec<ModelDevice>) -> Self {
+        Self { preferred, models: models.into_iter().map(|m| (m.model, m.device)).collect() }
+    }
+
+    /// Models on the CPU although the engine prefers a GPU, which couldn't
+    /// take them (no usable adapter, a driver reset, too little video
+    /// memory): their part of the job runs many times slower.
+    pub fn on_cpu(&self) -> Vec<&str> {
+        let cpu = as_infer::Device::Cpu.label();
+        if self.preferred == cpu {
+            return Vec::new();
+        }
+        let mut on: Vec<&str> = Vec::new();
+        for (m, d) in &self.models {
+            if d == cpu && !on.contains(&m.as_str()) {
+                on.push(m);
+            }
+        }
+        on
+    }
+
+    /// The devices in one line, model by model in a fixed order: two runs
+    /// computed alike exactly when theirs are equal.
+    pub fn summary(&self) -> String {
+        let mut each: Vec<String> = self.models.iter().map(|(m, d)| format!("{m} on {d}")).collect();
+        each.sort();
+        each.dedup();
+        each.join(", ")
+    }
+}
+
 /// What a shots job reports while it runs.
 pub enum ShotsEvent {
+    /// Where its models run, before the first progress of each engine that
+    /// works on it, which resumes at frame `resume`.
+    Devices {
+        devices: Devices,
+        resume: u32,
+    },
     Progress(f64),
     /// Signals of frames `start..` (`as_analysis::signals` format).
     Chunk {
@@ -66,6 +113,12 @@ pub enum ShotsEvent {
 
 /// What a faces job reports while it runs.
 pub enum FacesEvent {
+    /// Where its models run, before the first progress of each engine that
+    /// works on it, which resumes at frame `resume`.
+    Devices {
+        devices: Devices,
+        resume: u32,
+    },
     Progress(f64),
     /// Face tracks of frames `start..end` (`as_analysis::tracks` format),
     /// the sprites of its shots and the people found there
@@ -179,7 +232,8 @@ impl Engine {
     }
 
     /// Where the running engine prefers to compute (`None` before it first
-    /// started; a model the GPU can't take runs on the CPU).
+    /// started; a model the GPU can't take runs on the CPU, which each job
+    /// reports: `ShotsEvent::Devices`, `FacesEvent::Devices`).
     pub fn device(&self) -> Option<String> {
         self.proc.lock().as_ref().map(|p| p.device.clone())
     }
@@ -206,6 +260,9 @@ impl Engine {
                 Request::Shots(Box::new(ShotsJob { id, path, info, index, resume, chunk }))
             },
             |reply| match reply {
+                Reply::Devices { preferred, models, .. } => {
+                    on(ShotsEvent::Devices { devices: Devices::new(preferred, models), resume: resume.get() })
+                }
                 Reply::Progress { fraction, .. } => on(ShotsEvent::Progress(fraction)),
                 Reply::ShotChunk { start, len, signals, .. } => {
                     on(ShotsEvent::Chunk { start, signals: signals.0 })?;
@@ -247,6 +304,9 @@ impl Engine {
                 }))
             },
             |reply| match reply {
+                Reply::Devices { preferred, models, .. } => {
+                    on(FacesEvent::Devices { devices: Devices::new(preferred, models), resume: resume.get() })
+                }
                 Reply::Progress { fraction, .. } => on(FacesEvent::Progress(fraction)),
                 Reply::FaceChunk { start, end, tracks, sprites, bodies, .. } => {
                     let sprites = sprites
@@ -367,7 +427,8 @@ impl Engine {
                         self.discard(&mut guard);
                         return Err(EngineError::Start { message, detail });
                     }
-                    r @ (Reply::Progress { id: rid, .. }
+                    r @ (Reply::Devices { id: rid, .. }
+                    | Reply::Progress { id: rid, .. }
                     | Reply::ShotChunk { id: rid, .. }
                     | Reply::FaceChunk { id: rid, .. })
                         if rid == id =>
@@ -476,6 +537,31 @@ impl Drop for Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn devices(preferred: &str, models: &[(&str, &str)]) -> Devices {
+        Devices { preferred: preferred.into(), models: models.iter().map(|&(m, d)| (m.into(), d.into())).collect() }
+    }
+
+    #[test]
+    fn models_the_gpu_couldnt_take_are_named() {
+        let gpu = as_infer::Device::DirectMl.label();
+        let all = devices(gpu, &[("scrfd-10g", gpu), ("scrfd-10g", gpu), ("arcface-glintr100", gpu)]);
+        assert!(all.on_cpu().is_empty());
+        let fell_back = devices(
+            gpu,
+            &[("scrfd-10g", gpu), ("scrfd-10g", "CPU"), ("scrfd-10g", "CPU"), ("arcface-glintr100", "CPU")],
+        );
+        assert_eq!(fell_back.on_cpu(), ["scrfd-10g", "arcface-glintr100"]);
+        // An engine told to use the CPU runs nothing there against its will.
+        assert!(devices("CPU", &[("transnetv2", "CPU")]).on_cpu().is_empty());
+        // The same devices, in any order and however many looks: the same summary.
+        assert_eq!(
+            devices(gpu, &[("arcface-glintr100", "CPU"), ("scrfd-10g", gpu)]).summary(),
+            devices(gpu, &[("scrfd-10g", gpu), ("scrfd-10g", gpu), ("arcface-glintr100", "CPU")]).summary()
+        );
+        assert_ne!(all.summary(), fell_back.summary());
+        assert_eq!(all.summary(), "arcface-glintr100 on GPU (DirectML), scrfd-10g on GPU (DirectML)");
+    }
 
     #[test]
     fn pipe_lines_survive_odd_bytes() {

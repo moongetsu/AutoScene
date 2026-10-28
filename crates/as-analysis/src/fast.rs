@@ -16,9 +16,10 @@
 //! Like the full pass ([`crate::faces`]), chunks are whole shots and the
 //! candidates sit on an absolute grid of frames ([`FastParams::grid`]): what
 //! a shot looks at depends on the shot alone, so a resumed run produces the
-//! same tracks as an uninterrupted one. Looking at this few frames, the pass
-//! is as fast as its frames are decoded: like Scener, it has an NVIDIA GPU
-//! decode them where there is one ([`FastParams::decoder`]).
+//! same tracks as an uninterrupted one on the same device and runtime.
+//! Looking at this few frames, the pass is as fast as its frames are
+//! decoded: like Scener, it has an NVIDIA GPU decode them where there is one
+//! ([`FastParams::decoder`]).
 //!
 //! Measured on `bench/identity` (2026-10-27): about three times as fast as
 //! the full pass on a 4K film (39–57 s against 133–149 s for its last

@@ -477,6 +477,9 @@ impl Project {
         let m = self.media(id)?;
         self.db.remove_media(id)?;
         let _ = self.db.delete_meta(&crate::cast::source_changed_key(id));
+        for pass in crate::analysis::Pass::ALL {
+            let _ = self.db.delete_meta(&pass.devices_key(id));
+        }
         self.indexes.lock().remove(&id);
         // Its pictures go: the ones it points at, and ones made under its
         // names that it doesn't point at yet (a poster upkeep it raced).

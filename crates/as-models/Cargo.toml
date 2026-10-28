@@ -18,5 +18,12 @@ toml = "=1.1.8"
 ureq = "=3.4.2"
 flate2 = "=1.1.10"
 
+# The free space on the models folder's drive, before a download.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Storage_FileSystem"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "=0.2.190"
+
 [dev-dependencies]
 tempfile = "3.27"

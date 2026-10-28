@@ -54,6 +54,7 @@ import type {
   JobKind,
   MediaInfo,
   MediaItem,
+  ModelInfo,
   NewProject,
   ProjectKind,
   ProjectSummary,
@@ -530,6 +531,17 @@ function scan(paths: string[], kind: ProjectKind): ImportCandidate[] {
   })
 }
 
+/** `models/manifest.toml`, as the `models` command lists it. */
+const MODELS: ModelInfo[] = [
+  { id: "transnetv2", purpose: "Shot boundaries (hard cuts and gradual transitions)", source: "TransNetV2 (Souček & Lokoč), ONNX export of the original weights", license: "MIT", nonCommercial: false, sizeBytes: 31250929, installed: true },
+  { id: "scrfd-10g", purpose: "Face detection with five landmarks (live action)", source: "InsightFace buffalo_l det_10g (SCRFD-10G, Guo et al. 2021), byte-identical mirror by Immich", license: "InsightFace non-commercial research", nonCommercial: true, sizeBytes: 16923827, installed: true },
+  { id: "arcface-glintr100", purpose: "Face identity embeddings (live action)", source: "InsightFace antelopev2 glintr100 (ArcFace ResNet-100 on Glint360K), byte-identical mirror by Immich", license: "InsightFace non-commercial research", nonCommercial: true, sizeBytes: 260665334, installed: true },
+  { id: "yunet-2023mar", purpose: "Face detection with five landmarks (Fast Scan)", source: "OpenCV Zoo YuNet 2023mar (Wu et al. 2023), Hugging Face opencv/face_detection_yunet", license: "MIT", nonCommercial: false, sizeBytes: 232589, installed: false },
+  { id: "sface-2021dec", purpose: "Face identity embeddings (Fast Scan)", source: "OpenCV Zoo SFace 2021dec (Zhong et al. 2021), Hugging Face opencv/face_recognition_sface", license: "Apache-2.0", nonCommercial: false, sizeBytes: 38696353, installed: false },
+  { id: "person-ppyoloe", purpose: "People (whole bodies), to follow characters while their face doesn't show", source: "InsightFace cheetah_l pp_det_med: PaddleDetection PP-YOLOE pedestrian detector", license: "InsightFace non-commercial (cheetah_l-public-v1)", nonCommercial: true, sizeBytes: 29836627, installed: false },
+  { id: "person-reid-0277", purpose: "How a person looks (clothes, build), to find them again without a face", source: "InsightFace cheetah_l reid_0265: OpenVINO person-reidentification-retail-0277 (OmniScaleNet)", license: "InsightFace non-commercial (cheetah_l-public-v1)", nonCommercial: true, sizeBytes: 8440242, installed: false },
+]
+
 // -- handlers -----------------------------------------------------------------
 
 const handlers: Record<string, Handler> = {
@@ -545,6 +557,7 @@ const handlers: Record<string, Handler> = {
   clipboard_read: () => mockClipboard,
   open_logs_dir: () => null,
   media_tools: () => ({ ready: true, version: "8.0.1-full_build-www.gyan.dev", path: String.raw`C:\ffmpeg\bin\ffmpeg.exe`, error: null }),
+  models: () => MODELS,
   settings_get: () => settings,
   settings_update: ({ settings: s }) => {
     settings = s as AppSettings

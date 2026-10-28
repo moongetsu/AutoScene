@@ -101,7 +101,7 @@ function DetailsForm({ project, onDone }: { project: ProjectSummary; onDone: () 
                 ? "Faces are found again this way, then the characters regrouped. Your names and decisions stay."
                 : fast
                   ? "Faces are found the way the Scener app does: much faster, less sure who is who."
-                  : "Faces are found in full: every few frames, with the larger face models."
+                  : "Faces are found in full: every few frames, with the larger face models (for non-commercial use only)."
             }
             className="mt-4 items-start"
           >

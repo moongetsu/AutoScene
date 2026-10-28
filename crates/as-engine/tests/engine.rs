@@ -59,6 +59,8 @@ fn collect(
     (r, chunks)
 }
 
+/// Same machine, same device: a resume on another device (the GPU gone
+/// after a driver crash) differs in the last digits, which the app notes.
 #[test]
 fn a_killed_engine_resumes_with_identical_signals() {
     let Some((engine, m)) = setup(None) else { return };
@@ -82,6 +84,37 @@ fn a_killed_engine_resumes_with_identical_signals() {
     assert!(killed);
     assert_ne!(engine.pid(), Some(first_pid), "a fresh engine finished the job");
     assert_eq!(resumed, full, "signals after a hard kill match an uninterrupted run");
+}
+
+#[test]
+fn every_engine_on_a_job_says_where_its_models_run() {
+    let Some((engine, m)) = setup(None) else { return };
+    let mut seen = Vec::new();
+    let mut killed = false;
+    engine
+        .shots(m.path.clone(), m.info.clone(), m.index.clone(), 0, 100, &CancelToken::new(), |e| {
+            match e {
+                ShotsEvent::Devices { devices, resume } => seen.push((devices, resume)),
+                ShotsEvent::Progress(_) => assert!(!seen.is_empty(), "the devices come first"),
+                ShotsEvent::Chunk { start, .. } => {
+                    if start == 0 && !killed {
+                        killed = true;
+                        kill_hard(engine.pid().unwrap());
+                    }
+                }
+            }
+            Ok(())
+        })
+        .unwrap();
+    assert!(killed);
+    // The first engine from the start, the fresh one from the last chunk it got.
+    assert_eq!(seen.len(), 2, "{seen:?}");
+    assert_eq!(seen[0].1, 0);
+    assert!(seen[1].1 > 0 && seen[1].1 % 100 == 0, "{seen:?}");
+    for (d, _) in &seen {
+        assert_eq!(d.models.iter().map(|(m, _)| m.as_str()).collect::<Vec<_>>(), [as_models::ids::TRANSNET]);
+        assert!(!d.preferred.is_empty() && !d.summary().is_empty());
+    }
 }
 
 #[test]
@@ -146,8 +179,14 @@ fn face_chunks_tile_the_media_even_across_a_kill() {
 fn face_chunks_tile(engine: &Engine, m: &Media, job: FacesInput) {
     let mut chunks: Vec<(u32, u32)> = Vec::new();
     let mut killed = false;
+    let fast = job.fast;
+    let mut devices = Vec::new();
     let r =
         engine.faces(job, &CancelToken::new(), |e| {
+            if let FacesEvent::Devices { devices: d, resume } = &e {
+                assert_eq!(*resume, chunks.last().map_or(0, |c| c.1), "it resumes after the last chunk");
+                devices.push(d.models.iter().map(|(m, _)| m.clone()).collect::<Vec<_>>());
+            }
             if let FacesEvent::Chunk { start, end, tracks, sprites, bodies } = e {
                 // The synthetic fixture shows barcodes, not people.
                 assert!(as_analysis::tracks::decode(&tracks).expect("readable tracks").is_empty());
@@ -168,6 +207,16 @@ fn face_chunks_tile(engine: &Engine, m: &Media, job: FacesInput) {
         });
     r.unwrap();
     assert!(killed);
+    // Both engines say which models they run: the detector (one per look) and the embedder.
+    assert_eq!(devices.len(), 2, "{devices:?}");
+    let (detector, embedder) = if fast {
+        (as_models::ids::YUNET, as_models::ids::SFACE)
+    } else {
+        (as_models::ids::SCRFD, as_models::ids::ARCFACE)
+    };
+    for models in &devices {
+        assert!(models.iter().any(|m| m == detector) && models.last().is_some_and(|m| m == embedder), "{models:?}");
+    }
     let mut expect = 0;
     for &(s, e) in &chunks {
         assert_eq!(s, expect, "chunks tile the media: {chunks:?}");

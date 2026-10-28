@@ -14,10 +14,10 @@ use as_api::{
     ProxyState, StageState,
 };
 use as_core::{MediaId, ProjectId};
-use as_engine::{EngineError, FacesEvent, FacesInput, ShotsEvent};
+use as_engine::{Devices, EngineError, FacesEvent, FacesInput, ShotsEvent};
 use as_jobs::{Class, JobCtx, JobError, JobSpec};
 use as_models::ModelError;
-use as_project::{Portrait, Project, ProjectError};
+use as_project::{Pass, Portrait, Project, ProjectError};
 use tauri::{AppHandle, Manager};
 use tauri_specta::Event;
 
@@ -447,11 +447,16 @@ fn run_shots(
     const STAGE: &str = "Finding shots";
     if plan.resume < plan.frames {
         ctx.progress(STAGE, plan.resume as f64 / plan.frames as f64);
+        let mut stage = STAGE.to_owned();
         state
             .engine
             .shots(plan.path, plan.info, plan.index, plan.resume, plan.chunk, &ctx.cancel, |e| match e {
+                ShotsEvent::Devices { devices, resume } => {
+                    stage = devices_reported(project, media_id, Pass::Shots, STAGE, &devices, resume);
+                    Ok(())
+                }
                 ShotsEvent::Progress(f) => {
-                    ctx.progress(STAGE, f);
+                    ctx.progress(&stage, f);
                     Ok(())
                 }
                 ShotsEvent::Chunk { start, signals } => {
@@ -532,9 +537,14 @@ fn run_faces(
             animated: plan.animated,
             fast: plan.fast,
         };
+        let mut stage = STAGE.to_owned();
         let found = state.engine.faces(job, &ctx.cancel, |e| match e {
+            FacesEvent::Devices { devices, resume } => {
+                stage = devices_reported(project, media_id, Pass::Faces, STAGE, &devices, resume);
+                Ok(())
+            }
             FacesEvent::Progress(f) => {
-                ctx.progress(STAGE, f);
+                ctx.progress(&stage, f);
                 Ok(())
             }
             FacesEvent::Chunk { start, end, tracks, sprites, bodies } => project
@@ -602,11 +612,16 @@ fn run_bodies(
             animated: false,
             fast: false,
         };
+        let mut stage = STAGE.to_owned();
         state
             .engine
             .faces(job, &ctx.cancel, |e| match e {
+                FacesEvent::Devices { devices, resume } => {
+                    stage = devices_reported(project, media_id, Pass::People, STAGE, &devices, resume);
+                    Ok(())
+                }
                 FacesEvent::Progress(f) => {
-                    ctx.progress(STAGE, f);
+                    ctx.progress(&stage, f);
                     Ok(())
                 }
                 FacesEvent::Chunk { start, end, bodies, .. } => {
@@ -683,6 +698,35 @@ pub fn bodies_setting_changed(app: &AppHandle, on: bool) {
             }
         }
     });
+}
+
+/// Where a pass's models run, as the engine says when it starts on it: the
+/// project records the devices with the pass's checkpoints (noting a pass
+/// resumed on others), and a pass the GPU couldn't take says in its stage
+/// that it runs on the CPU, many times slower. Returns the stage to show.
+fn devices_reported(
+    project: &Project,
+    media_id: MediaId,
+    pass: Pass,
+    stage: &str,
+    devices: &Devices,
+    resume: u32,
+) -> String {
+    match project.record_devices(media_id, pass, &devices.summary(), resume) {
+        Ok(Some(before)) => log::warn!(
+            "{stage}: resumed at frame {resume} with {} after checkpoints made with {before}; \
+             its numbers may differ from an uninterrupted run's in the last digits",
+            devices.summary()
+        ),
+        Ok(None) => {}
+        Err(e) => log::warn!("recording the devices of '{stage}': {}", e.detail()),
+    }
+    let on_cpu = devices.on_cpu();
+    if on_cpu.is_empty() {
+        return stage.to_owned();
+    }
+    log::warn!("{stage}: the GPU couldn't take {}; on the CPU (slower)", on_cpu.join(", "));
+    format!("{stage} · on the CPU (slower)")
 }
 
 /// Download AI models on first use (verified; resumes an interrupted download).

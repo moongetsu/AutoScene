@@ -4,7 +4,8 @@
 //!
 //! Resuming at a chunk start `K` decodes from `K - 25` (TransNet's context;
 //! the pixel lags need 4) and drops everything before `K`, so the signals of
-//! a resumed run are identical to those of an uninterrupted one.
+//! a resumed run are identical to those of an uninterrupted one on the same
+//! device and runtime (one resumed on another differs in the last digits).
 
 use std::collections::VecDeque;
 

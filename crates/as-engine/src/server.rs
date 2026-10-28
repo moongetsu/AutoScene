@@ -24,7 +24,7 @@ use as_models::ModelStore;
 use as_vision::{ArcFace, Fit, Norm, PersonReid, PpDet, SFace, Scrfd, TransNet, YuNet};
 use parking_lot::Mutex;
 
-use crate::protocol::{Blob, FacesJob, Reply, Request, ShotsJob, Sprite};
+use crate::protocol::{Blob, FacesJob, ModelDevice, Reply, Request, ShotsJob, Sprite};
 
 /// Faces per embedding call.
 const EMBED_BATCH: usize = 32;
@@ -62,6 +62,23 @@ impl Out {
         // A broken pipe means the app is gone; the reader thread ends the loop.
         let _ = w.write_all(line.as_bytes()).and_then(|()| w.flush());
     }
+}
+
+/// Tell the app where job `id`'s models run (each model's id and device),
+/// before its first progress. A model the GPU couldn't take runs on the
+/// CPU, much slower: the app shows it with the job, not only in the log.
+fn send_devices(out: &Out, id: u64, rt: &Runtime, models: &[(&str, Device)]) {
+    let preferred = rt.preferred_device();
+    let on_cpu: Vec<&str> =
+        models.iter().filter(|(_, d)| *d == Device::Cpu && preferred != Device::Cpu).map(|(m, _)| *m).collect();
+    if !on_cpu.is_empty() {
+        tracing::warn!(id, ?on_cpu, preferred = ?preferred, "the GPU couldn't take every model; these run on the CPU");
+    }
+    out.send(&Reply::Devices {
+        id,
+        preferred: preferred.label().into(),
+        models: models.iter().map(|(m, d)| ModelDevice { model: (*m).into(), device: d.label().into() }).collect(),
+    });
 }
 
 /// Run the engine until stdin closes, a `shutdown` arrives, or it has been
@@ -227,11 +244,12 @@ impl Models {
         (self.yunet, self.sface) = (None, None);
     }
 
+    /// The file of model `id`, hashed the first time this engine loads it
+    /// (a damaged one loses its marker: the app's next install fetches it).
     fn path(&self, id: &str) -> Result<PathBuf, AnalysisError> {
-        self.store
-            .installed(id)
-            .map_err(|e| AnalysisError::Internal(e.detail()))?
-            .ok_or_else(|| AnalysisError::Internal(format!("{id} isn't installed in {}", self.store.dir().display())))
+        self.store.installed(id).map_err(|e| AnalysisError::Internal(e.detail()))?.ok_or_else(|| {
+            AnalysisError::Internal(format!("{id} isn't installed (or is damaged) in {}", self.store.dir().display()))
+        })
     }
 
     /// Load the face models, a detector planned for each look's size
@@ -285,13 +303,7 @@ impl Models {
 
     fn transnet(&mut self, rt: &Runtime) -> Result<&mut TransNet, AnalysisError> {
         if self.transnet.is_none() {
-            let path = self
-                .store
-                .installed(as_models::ids::TRANSNET)
-                .map_err(|e| AnalysisError::Internal(e.detail()))?
-                .ok_or_else(|| {
-                    AnalysisError::Internal(format!("TransNetV2 isn't installed in {}", self.store.dir().display()))
-                })?;
+            let path = self.path(as_models::ids::TRANSNET)?;
             self.transnet = Some(TransNet::load(rt, &path)?);
         }
         Ok(self.transnet.as_mut().expect("just loaded"))
@@ -310,6 +322,7 @@ fn run_shots(
     let index = FrameIndex::from_bytes(&job.index.0).map_err(|e| AnalysisError::Internal(e.to_string()))?;
     let started = Instant::now();
     let id = job.id;
+    send_devices(out, id, rt, &[(as_models::ids::TRANSNET, net.device())]);
     tracing::info!(id, path = %job.path.display(), resume = job.resume, device = ?net.device(), "finding shots");
     shot_signals(
         tools,
@@ -371,6 +384,16 @@ fn run_faces(
         let devices: Vec<_> = scrfd.iter().map(|d| (d.frame_size(), d.device())).collect();
         tracing::warn!(?devices, "face detectors run on different devices");
     }
+    let mut used: Vec<(&str, Device)> = Vec::new();
+    if known.is_none() {
+        used.extend(scrfd.iter().map(|d| (as_models::ids::SCRFD, d.device())));
+        used.extend(arcface.as_ref().map(|e| (as_models::ids::ARCFACE, e.device())));
+    }
+    if job.bodies {
+        used.extend(persons.as_ref().map(|d| (as_models::ids::PERSONS, d.device())));
+        used.extend(person_reid.as_ref().map(|r| (as_models::ids::PERSON_REID, r.device())));
+    }
+    send_devices(out, job.id, rt, &used);
     let faces = match &known {
         Some(k) => Faces::Known(k),
         None => Faces::Find { detectors: scrfd, embedder: arcface.as_mut().expect("loaded") },
@@ -452,6 +475,7 @@ fn run_fast_faces(
     if embedder.device() != device {
         tracing::warn!(detector = ?device, embedder = ?embedder.device(), "Fast Scan's models run on different devices");
     }
+    send_devices(out, job.id, rt, &[(as_models::ids::YUNET, device), (as_models::ids::SFACE, embedder.device())]);
     let index = FrameIndex::from_bytes(&job.index.0).map_err(|e| AnalysisError::Internal(e.to_string()))?;
     let shots: Vec<FrameRange> = job.shots.iter().map(|&(s, e)| FrameRange::new(s, e)).collect();
     let started = Instant::now();

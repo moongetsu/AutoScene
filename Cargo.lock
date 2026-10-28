@@ -247,6 +247,7 @@ version = "1.0.2-BETA"
 dependencies = [
  "as-core",
  "flate2",
+ "libc",
  "serde",
  "sha2 0.11.1",
  "tempfile",
@@ -254,6 +255,7 @@ dependencies = [
  "toml 1.1.8+spec-1.1.0",
  "tracing",
  "ureq",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

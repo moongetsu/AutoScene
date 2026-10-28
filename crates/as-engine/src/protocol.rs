@@ -101,14 +101,28 @@ impl Request {
     }
 }
 
+/// A model a job uses and the device it runs on (`as_infer::Device::label`).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelDevice {
+    pub model: String,
+    pub device: String,
+}
+
 /// Engine → app.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum Reply {
     /// The runtime is loaded; models run on `device` where they can (each
-    /// falls back to the CPU on its own, which the engine logs).
+    /// falls back to the CPU on its own, which every job reports: `Devices`).
     Ready {
         device: String,
+    },
+    /// Where job `id`'s models run, once they are loaded (before its first
+    /// progress): on `preferred` each one it can take, on the CPU the rest.
+    Devices {
+        id: u64,
+        preferred: String,
+        models: Vec<ModelDevice>,
     },
     Progress {
         id: u64,
@@ -165,6 +179,23 @@ mod tests {
         }
         let c: Request = serde_json::from_str(r#"{"op":"cancel","id":3}"#).unwrap();
         assert!(matches!(c, Request::Cancel { id: 3 }));
+    }
+
+    #[test]
+    fn devices_travel_by_model() {
+        let r = Reply::Devices {
+            id: 2,
+            preferred: "GPU (DirectML)".into(),
+            models: vec![ModelDevice { model: "transnetv2".into(), device: "CPU".into() }],
+        };
+        let line = serde_json::to_string(&r).unwrap();
+        assert_eq!(
+            line,
+            r#"{"event":"devices","id":2,"preferred":"GPU (DirectML)","models":[{"model":"transnetv2","device":"CPU"}]}"#
+        );
+        assert!(
+            matches!(serde_json::from_str::<Reply>(&line).unwrap(), Reply::Devices { models, .. } if models.len() == 1)
+        );
     }
 
     #[test]

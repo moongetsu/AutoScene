@@ -7,7 +7,8 @@
 //! first and last frame — exactly the reference inference, so results match
 //! the published model. [`TransNetStream`] does this incrementally and can
 //! start at any multiple of 50 given the 25 frames before it, which makes a
-//! resumed analysis produce the same numbers as an uninterrupted one.
+//! resumed analysis produce the same numbers as an uninterrupted one on the
+//! same device and runtime (the GPU and the CPU differ in the last digits).
 
 use std::collections::VecDeque;
 use std::path::Path;
