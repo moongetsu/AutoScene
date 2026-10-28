@@ -1,8 +1,9 @@
 name: CI
 
+# main is the only branch: everything is built where it lands.
 on:
   push:
-    branches: [main, "rebuild/**"]
+    branches: [main]
   pull_request:
 
 concurrency:
