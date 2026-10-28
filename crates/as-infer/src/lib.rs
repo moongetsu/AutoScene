@@ -105,7 +105,7 @@ impl Runtime {
             let _ = LOADED.set(dir.to_path_buf());
         }
         let env = ort::init().with_name("autoscene").build().map_err(|e| InferError::Runtime(e.to_string()))?;
-        tracing::info!(runtime = %lib.display(), gpu, "onnxruntime loaded");
+        tracing::info!(runtime = %name(&lib), gpu, "onnxruntime loaded");
         Ok(Self { env, gpu })
     }
 
@@ -160,7 +160,7 @@ impl Runtime {
             match self.build(model, bytes, want) {
                 Ok(s) => return Ok((s, want)),
                 Err(e) => {
-                    tracing::warn!(model = %model.display(), device = ?want, error = %e.detail(), "GPU session failed; using the CPU")
+                    tracing::warn!(model = %name(model), device = ?want, error = %e.detail(), "GPU session failed; using the CPU")
                 }
             }
         }
@@ -197,6 +197,12 @@ impl Runtime {
     }
 }
 
+/// Just the file name, for the log: full paths name the user (their home
+/// folder), and logs get shared.
+fn name(path: &Path) -> std::borrow::Cow<'_, str> {
+    path.file_name().map_or("?".into(), |n| n.to_string_lossy())
+}
+
 /// Make DirectML.dll resolve to the bundled copy: load it by full path (the
 /// runtime's later `LoadLibrary("DirectML.dll")` then finds it already loaded)
 /// and put the folder on the DLL search path for anything else it needs.
@@ -211,7 +217,7 @@ fn preload_windows(dir: &Path) {
         SetDllDirectoryW(wide(dir).as_ptr());
         let dml = dir.join("DirectML.dll");
         if dml.is_file() && LoadLibraryW(wide(&dml).as_ptr()).is_null() {
-            tracing::warn!(path = %dml.display(), "couldn't preload DirectML.dll");
+            tracing::warn!(path = %name(&dml), "couldn't preload DirectML.dll");
         }
     }
 }

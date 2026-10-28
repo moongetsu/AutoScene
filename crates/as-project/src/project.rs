@@ -456,7 +456,7 @@ impl Project {
                         break;
                     }
                     // A file that can't be read (half copied, not a video): the next one.
-                    Err(e) => tracing::warn!(file = %c.path, error = %e.detail(), "a candidate couldn't be used"),
+                    Err(e) => tracing::warn!(file = %c.file_name, error = %e.detail(), "a candidate couldn't be used"),
                 }
             }
             match outcome {
@@ -1456,7 +1456,7 @@ impl Drop for WorkDir {
                     std::thread::sleep(std::time::Duration::from_millis(100 * attempt));
                 }
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
-                    tracing::warn!(dir = %self.0.display(), error = %e, "couldn't remove an export's work folder");
+                    tracing::warn!(dir = %as_core::paths::name(&self.0), error = %e, "couldn't remove an export's work folder");
                 }
                 _ => break,
             }

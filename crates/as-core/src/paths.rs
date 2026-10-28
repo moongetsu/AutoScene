@@ -8,7 +8,8 @@
 //!
 //! `AUTOSCENE_DATA_DIR` overrides the app data root (tests, portable installs).
 
-use std::path::PathBuf;
+use std::borrow::Cow;
+use std::path::{Path, PathBuf};
 
 const APP_DIR: &str = "AutoScene";
 
@@ -54,5 +55,28 @@ impl AppPaths {
     /// Legacy `~/.autoscene` dir — kept only for the updater override file.
     pub fn legacy_dot_dir() -> PathBuf {
         dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".autoscene")
+    }
+}
+
+/// Just the file (or folder) name, for the log: full paths name the user
+/// (their home folder) and their folders, and logs get shared.
+pub fn name(path: &Path) -> Cow<'_, str> {
+    path.file_name().map_or(Cow::Borrowed("?"), |n| n.to_string_lossy())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_log_gets_only_a_files_name() {
+        assert_eq!(name(Path::new("/home/someone/Videos/Show - 01.mkv")), "Show - 01.mkv");
+        assert_eq!(name(&Path::new("/data").join("models")), "models");
+        assert_eq!(name(Path::new("/")), "?");
+        #[cfg(windows)]
+        assert_eq!(
+            name(Path::new(r"C:\Users\someone\AppData\Local\AutoScene\runtimes\onnxruntime.dll")),
+            "onnxruntime.dll"
+        );
     }
 }

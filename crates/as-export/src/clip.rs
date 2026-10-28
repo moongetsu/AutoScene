@@ -24,6 +24,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
+use as_core::paths::name;
 use as_core::{CancelToken, FrameIndex, FrameRange, Rational, Timecode};
 use as_media::filters::{deinterlace, picture_chain};
 use as_media::{Caps, CodecFamily, HdrKind, MediaInfo, Source, Tools, Vendor, run_ffmpeg};
@@ -653,7 +654,7 @@ pub fn export_clip(
             tidy();
         })?;
         if let Err(why) = verify(&stats, index, *range) {
-            tracing::warn!(?preroll, %why, clip = %out.display(), "export verification failed; retrying");
+            tracing::warn!(?preroll, %why, clip = %name(&out), "export verification failed; retrying");
             last_err = why;
             continue;
         }
@@ -667,7 +668,7 @@ pub fn export_clip(
                 // The hashes are of the very frames the encoder got: another
                 // seek can't change what it made of them.
                 Err(Ok(why)) => {
-                    tracing::warn!(?preroll, %why, clip = %out.display(), "the clip isn't the source exactly");
+                    tracing::warn!(?preroll, %why, clip = %name(&out), "the clip isn't the source exactly");
                     last_err = why;
                     break;
                 }
@@ -700,13 +701,13 @@ pub fn export_clip(
         // Bit-Perfect promises the source: nothing else is kept.
         let _ = std::fs::remove_file(&part);
         tidy();
-        tracing::error!(clip = %out.display(), reason = %last_err, "clip isn't the source exactly");
+        tracing::error!(clip = %name(&out), reason = %last_err, "clip isn't the source exactly");
         return Err(ExportError::Inexact(format!("it didn't come out exactly as the source ({last_err})")));
     }
     // Keep the best effort but say so: the UI marks it "unverified".
     let out = place(&part)?;
     tidy();
-    tracing::error!(clip = %out.display(), reason = %last_err, "clip could not be verified");
+    tracing::error!(clip = %name(&out), reason = %last_err, "clip could not be verified");
     let bytes = std::fs::metadata(&out).map(|m| m.len() as f64).unwrap_or(0.0);
     Ok(ClipOutcome { path: out.display().to_string(), frames: n, verified: false, encoder: recipe.encoder, bytes })
 }

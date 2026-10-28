@@ -360,7 +360,7 @@ fn is_project_dir(dir: &Path, id: ProjectId) -> bool {
     let says = ProjectDb::stored_id(&db);
     let theirs = named && matches!(&says, Ok(Some(s)) if *s == id.to_string());
     if !theirs {
-        tracing::warn!(dir = %dir.display(), ?says, "not deleting a folder that isn't recognisably the project's");
+        tracing::warn!(dir = %as_core::paths::name(dir), ?says, "not deleting a folder that isn't recognisably the project's");
     }
     theirs
 }

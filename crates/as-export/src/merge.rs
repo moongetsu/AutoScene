@@ -739,7 +739,7 @@ pub fn join_parts(
             return Err(ExportError::Inexact(format!("the joined file isn't its parts exactly ({why})")));
         }
         Err(why) => {
-            tracing::error!(file = %joined.display(), reason = %why, "the joined file could not be verified");
+            tracing::error!(file = %as_core::paths::name(&joined), reason = %why, "the joined file could not be verified");
             false
         }
     };

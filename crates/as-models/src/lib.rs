@@ -326,7 +326,7 @@ impl ModelStore {
             Ok(free) if free < need => Err(ModelError::NoSpace { dir: self.dir.clone(), need, free }),
             Ok(_) => Ok(()),
             Err(e) => {
-                tracing::warn!(dir = %self.dir.display(), "free space unknown: {e}");
+                tracing::warn!(dir = %as_core::paths::name(&self.dir), "free space unknown: {e}");
                 Ok(())
             }
         }
