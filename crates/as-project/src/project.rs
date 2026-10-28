@@ -1,8 +1,9 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, LazyLock};
+use std::time::SystemTime;
 
 use as_api::{
     ClipRequest, ExportItem, ExportPlan, ExportRequest, ExportStatus, ExportSummary, FrameMap, ImportCandidate,
@@ -32,6 +33,18 @@ const POSTER_SMALL: StillSize = StillSize::Cover(480, 270);
 /// How alike a file found again must look at the poster's frame to keep its
 /// analysis (SSIM: the same frame scores about 0.95, another picture far less).
 const SAME_PICTURE: f64 = 0.85;
+
+/// When this process first opened (or made) a project. Nothing of this
+/// process wrote into a project or an export folder before it, and one
+/// AutoScene runs at a time: a work file last written before it (an
+/// unfinished clip or poster, a scratch file) is a crash's leftover.
+static FIRST_OPEN: LazyLock<SystemTime> = LazyLock::new(SystemTime::now);
+
+/// A file last written before this process opened a project ([`FIRST_OPEN`]):
+/// nothing is writing it any more.
+fn left_over(e: &std::fs::DirEntry) -> bool {
+    e.metadata().is_ok_and(|m| m.is_file() && m.modified().is_ok_and(|t| t < *FIRST_OPEN))
+}
 
 /// Progress callback: `(stage, fraction 0..1)`; `None`: how far it is isn't
 /// known for now (a clip failed and its share is skipped: the pace is
@@ -120,6 +133,7 @@ const FAST: &str = "fast";
 
 impl Project {
     pub(crate) fn create(s: &ProjectSummary, find_bodies: Arc<AtomicBool>) -> ProjectResult<Self> {
+        LazyLock::force(&FIRST_OPEN);
         let dir = PathBuf::from(&s.dir);
         let db = ProjectDb::open(&dir.join(PROJECT_DB))?;
         // The folder describes itself, so it can be re-opened without library.db.
@@ -153,6 +167,7 @@ impl Project {
     }
 
     pub(crate) fn open(id: ProjectId, dir: PathBuf, find_bodies: Arc<AtomicBool>) -> ProjectResult<Self> {
+        LazyLock::force(&FIRST_OPEN);
         let db = ProjectDb::open(&dir.join(PROJECT_DB))?;
         let fast_scan = AtomicBool::new(db.meta(SCAN)?.as_deref() == Some(FAST));
         let p = Self {
@@ -179,6 +194,7 @@ impl Project {
             }
         }
         p.clean_proxies();
+        p.sweep_leftovers();
         // Characters aren't looked for by their bodies any more, but the
         // setting changed while this project was closed (or its faces
         // couldn't be placed again then): what the bodies said goes now.
@@ -739,6 +755,76 @@ impl Project {
             if !current.contains(&p) {
                 tracing::debug!(file = %p.display(), "removing unused preview file");
                 let _ = std::fs::remove_file(p);
+            }
+        }
+    }
+
+    /// Remove what a crash (or a delete that failed) left behind: pictures of
+    /// media that are gone (`faces/<id>/`, `thumbs/<id>-*.jpg`), unfinished
+    /// posters, scratch files, and this project's unfinished clips in export
+    /// folders. Only names this app gives are touched, and nothing being
+    /// written (nothing of this project runs before it is open; a tool
+    /// opening it beside the app leaves the app's files alone).
+    fn sweep_leftovers(&self) {
+        // Listed before the media are read: a media's row always exists
+        // before its files do.
+        let faces: Vec<_> = std::fs::read_dir(self.faces_dir()).into_iter().flatten().flatten().collect();
+        let thumbs: Vec<_> = std::fs::read_dir(self.thumbs_dir()).into_iter().flatten().flatten().collect();
+        let Ok(media) = self.db.media_list_uncounted() else { return };
+        let known: HashSet<MediaId> = media.iter().map(|m| m.id).collect();
+        let gone = |name: &str| name.parse::<MediaId>().is_ok_and(|id| !known.contains(&id));
+        for e in faces {
+            if gone(&e.file_name().to_string_lossy()) {
+                tracing::debug!(dir = %e.path().display(), "removing the faces of a removed media");
+                let _ = std::fs::remove_dir_all(e.path());
+            }
+        }
+        for e in thumbs {
+            let name = e.file_name().to_string_lossy().into_owned();
+            // `<id>-<size>.jpg` (`<id>.jpg` from before the sizes).
+            let poster = name.get(..36).filter(|_| name[36..].starts_with(['-', '.']));
+            let unfinished = |id: &str| id.parse::<MediaId>().is_ok() && name.ends_with(".part.jpg") && left_over(&e);
+            if poster.is_some_and(|id| gone(id) || unfinished(id)) {
+                tracing::debug!(file = %e.path().display(), "removing a poster nothing uses");
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+        for e in std::fs::read_dir(self.tmp_dir()).into_iter().flatten().flatten() {
+            if left_over(&e) {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+        self.clean_partial_clips();
+    }
+
+    /// Unfinished clips a crash left in their export folder's work folder:
+    /// this project's clips that never finished (`<name>.*`), last written
+    /// before this process opened a project — another project may be
+    /// exporting a clip of the same name there now. (A merged export's
+    /// parts are in a folder of its own, removed by `open`.)
+    fn clean_partial_clips(&self) {
+        let Ok(exports) = self.db.exports(self.id) else { return };
+        let mut unfinished: HashMap<&str, HashSet<&str>> = HashMap::new();
+        for e in exports.iter().filter(|e| e.merged.is_none() && Path::new(&e.out_dir).is_absolute()) {
+            for item in e.items.iter().filter(|i| i.status != ExportStatus::Done) {
+                unfinished.entry(e.out_dir.as_str()).or_default().insert(item.name.as_str());
+            }
+        }
+        for (out_dir, names) in unfinished {
+            let work = Path::new(out_dir).join(PARTIAL_DIR);
+            let mut removed = false;
+            for e in std::fs::read_dir(&work).into_iter().flatten().flatten() {
+                let file = e.file_name().to_string_lossy().into_owned();
+                let ours = names.iter().any(|n| file.strip_prefix(n).is_some_and(|rest| rest.starts_with('.')));
+                if ours && left_over(&e) {
+                    tracing::debug!(file = %e.path().display(), "removing an unfinished clip");
+                    removed |= std::fs::remove_file(e.path()).is_ok();
+                }
+            }
+            // Only when something went: another export may have just made
+            // it for its clip.
+            if removed {
+                let _ = std::fs::remove_dir(&work);
             }
         }
     }
@@ -1517,6 +1603,67 @@ mod tests {
         assert_eq!(s.at(1, 1.0), 1.0);
         assert_eq!(s.at(1, 2.0), 1.0, "past the end stays at the end");
         assert_eq!(ClipShares::new([]).0, [0.0]);
+    }
+
+    #[test]
+    fn what_a_crash_left_goes_when_the_project_opens() {
+        let (dir, project, m) = crate::analysis::tests::project_with_media(240);
+        let gone = MediaId::new();
+        let write = |p: &Path| {
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, b"x").unwrap();
+            p.to_path_buf()
+        };
+        // Written before this process opened a project (as by a run that crashed).
+        let old = |p: &Path| {
+            let p = write(p);
+            let hour_ago = SystemTime::now() - std::time::Duration::from_secs(3600);
+            std::fs::File::options().write(true).open(&p).unwrap().set_modified(hour_ago).unwrap();
+            p
+        };
+        let (faces, thumbs) = (project.faces_dir(), project.thumbs_dir());
+        let stray_faces = write(&faces.join(gone.to_string()).join("1.jpg"));
+        let stray_poster = write(&thumbs.join(format!("{gone}-720.jpg")));
+        let stray_legacy = write(&thumbs.join(format!("{gone}.jpg")));
+        let half_poster = old(&thumbs.join(format!("{m}-720.part.jpg")));
+        let scratch = old(&project.tmp_dir().join("index-1-1.txt"));
+        let kept = [
+            write(&faces.join(m.to_string()).join("1.jpg")),
+            write(&thumbs.join(format!("{m}-720.jpg"))),
+            write(&faces.join("notes").join("mine.txt")),
+            write(&thumbs.join("cover.jpg")),
+            // Being written by an app beside it (not this process).
+            write(&project.tmp_dir().join("index-2-1.txt")),
+        ];
+
+        // A clip of an export cut short, and one that finished.
+        let out = dir.path().join("Exports");
+        let preset = as_export::builtin_presets().remove(0);
+        let item =
+            |name: &str| NewExportItem { media_id: m, start: 0, end: 24, name: name.into(), audio_ordinal: None };
+        let ex = ExportId::new();
+        let out_str = out.display().to_string();
+        project.db().insert_export(ex, &preset, &out_str, None, None, &[item("Clip 1"), item("Clip 2")]).unwrap();
+        let done = project.export(ex).unwrap().items[1].id;
+        project.db().update_export_item(done, ExportStatus::Done, None, None).unwrap();
+        let work = out.join(PARTIAL_DIR);
+        let cut_short = [old(&work.join("Clip 1.mov")), old(&work.join("Clip 1.stats.txt"))];
+        // The same name being exported now (by another project), someone
+        // else's, and a finished clip's name: never touched.
+        let live = write(&work.join("Clip 1.mkv"));
+        let others = [old(&work.join("Clip 10.mov")), old(&work.join("Clip 2.mov"))];
+
+        let (id, project_dir) = (project.id, project.dir.clone());
+        drop(project);
+        let project = Project::open(id, project_dir, Arc::new(AtomicBool::new(false))).unwrap();
+        for p in [&stray_faces, &stray_poster, &stray_legacy, &half_poster, &scratch].into_iter().chain(&cut_short) {
+            assert!(!p.exists(), "{} is left over", p.display());
+        }
+        assert!(!faces.join(gone.to_string()).exists());
+        for p in kept.iter().chain(&others).chain([&live]) {
+            assert!(p.exists(), "{} was removed", p.display());
+        }
+        assert_eq!(project.media(m).unwrap().id, m);
     }
 
     #[test]

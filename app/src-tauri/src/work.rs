@@ -6,10 +6,12 @@
 //! exactly what moved.
 
 use std::collections::HashMap;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
 use as_api::{
-    AnalysisStage, CastEdit, ContentKind, ExportSummary, JobKind, JobState, MediaItem, ProxyState, StageState,
+    AnalysisStage, CastEdit, ContentKind, ExportSummary, JobInfo, JobKind, JobState, MediaItem, MediaStatus,
+    ProxyState, StageState,
 };
 use as_core::{MediaId, ProjectId};
 use as_engine::{EngineError, FacesEvent, FacesInput, ShotsEvent};
@@ -99,12 +101,28 @@ pub fn library_changed(app: &AppHandle, project: &Project) {
     let _ = LibraryChanged { project_id: Some(project.id) }.emit(app);
 }
 
+/// Runs `then` when the job it is moved into is dropped without having
+/// started (cancelled while queued, refused as a duplicate, dropped by a
+/// shutdown); [`Unstarted::started`] disarms it.
+struct Unstarted<F: FnOnce()>(Option<F>);
+
+impl<F: FnOnce()> Unstarted<F> {
+    fn started(mut self) {
+        self.0 = None;
+    }
+}
+
+impl<F: FnOnce()> Drop for Unstarted<F> {
+    fn drop(&mut self) {
+        if let Some(then) = self.0.take() {
+            then();
+        }
+    }
+}
+
 /// Index a media (probe, frame index, poster). Queues its preview proxy if it needs one.
 pub fn queue_ingest(app: &AppHandle, project: &Arc<Project>, media_id: MediaId) {
     let state = app.state::<AppState>();
-    if state.jobs.is_active(|j| j.kind == JobKind::Ingest && j.media_id == Some(media_id)) {
-        return;
-    }
     let Ok(m) = project.media(media_id) else { return };
     let spec = JobSpec {
         kind: JobKind::Ingest,
@@ -115,8 +133,14 @@ pub fn queue_ingest(app: &AppHandle, project: &Arc<Project>, media_id: MediaId) 
         media_id: Some(media_id),
         export_id: None,
     };
+    let unstarted = {
+        let (app, project) = (app.clone(), project.clone());
+        Unstarted(Some(move || ingest_dropped(&app, &project, media_id)))
+    };
     let (app2, project) = (app.clone(), project.clone());
-    state.jobs.submit(spec, move |ctx| {
+    let indexing = move |j: &JobInfo| j.kind == JobKind::Ingest && j.media_id == Some(media_id);
+    state.jobs.submit_unless(indexing, spec, move |ctx| {
+        unstarted.started();
         let state = app2.state::<AppState>();
         let tools = state.tools().map_err(|e| JobError::Failed(e.message))?;
         let language = state.library.audio_language().unwrap_or_else(|e| {
@@ -147,6 +171,25 @@ pub fn queue_ingest(app: &AppHandle, project: &Arc<Project>, media_id: MediaId) 
     });
 }
 
+/// An ingest dropped before it started. Cancelled (from Activity), the
+/// media says so and offers Retry, as when it is stopped while indexing —
+/// not "Queued" with nothing to index it, and not indexed anyway on the
+/// next launch. A shutdown leaves it queued for the next launch, and a
+/// duplicate refused leaves it to the job that is there.
+fn ingest_dropped(app: &AppHandle, project: &Project, media_id: MediaId) {
+    let state = app.state::<AppState>();
+    if state.jobs.is_shutting_down()
+        || state.jobs.is_active(|j| j.kind == JobKind::Ingest && j.media_id == Some(media_id))
+        || !project.media(media_id).is_ok_and(|m| m.status == MediaStatus::Queued)
+    {
+        return;
+    }
+    match project.set_media_failed(media_id, "Indexing was cancelled.") {
+        Ok(()) => media_changed(app, project, Some(media_id)),
+        Err(e) => log::warn!("marking a cancelled ingest: {}", e.detail()),
+    }
+}
+
 /// Why an analysis stage stopped.
 enum StageError {
     Cancelled,
@@ -155,15 +198,38 @@ enum StageError {
     /// The environment (offline model download, an engine that can't start):
     /// the stage waits as pending and runs again on the next launch.
     Later(String),
+    /// A panic while the stage wasn't recorded running (before it started,
+    /// or once it was done, grouping the cast): the stage stays as it is
+    /// recorded, the job fails.
+    Bug(String),
 }
 
 impl From<StageError> for JobError {
     fn from(e: StageError) -> Self {
         match e {
             StageError::Cancelled => JobError::Cancelled,
-            StageError::Failed(m) | StageError::Later(m) => JobError::Failed(m),
+            StageError::Failed(m) | StageError::Later(m) | StageError::Bug(m) => JobError::Failed(m),
         }
     }
+}
+
+/// Run an analysis stage; a panic in it (a bug in the app's own code: the
+/// engine runs in a process of its own) ends it like a failure. A stage
+/// recorded running (`recorded`) is recorded failed with what the panic
+/// said: the job's own catch would leave it "running" until the next launch,
+/// re-run it on every launch, and drop a restart asked for meanwhile.
+fn guarded(
+    recorded: impl FnOnce() -> Option<StageState>,
+    run: impl FnOnce() -> Result<(), StageError>,
+) -> Result<(), StageError> {
+    catch_unwind(AssertUnwindSafe(run)).unwrap_or_else(|panic| {
+        let msg = as_jobs::panic_message(&*panic);
+        log::error!("analysis panicked: {msg}");
+        match recorded() {
+            Some(StageState::Running) => Err(StageError::Failed(msg)),
+            _ => Err(StageError::Bug(msg)),
+        }
+    })
 }
 
 fn stage_error(e: ProjectError) -> StageError {
@@ -195,7 +261,7 @@ fn record_stage(
     set: impl FnOnce(StageState, Option<&str>) -> as_project::ProjectResult<()>,
 ) {
     let outcome = match r {
-        Ok(()) => return,
+        Ok(()) | Err(StageError::Bug(_)) => return,
         Err(StageError::Cancelled) if state.jobs.is_shutting_down() => return,
         // Stopped by the user: stays stopped (not resumed on the next launch).
         Err(StageError::Cancelled) => set(StageState::Stopped, None),
@@ -248,7 +314,7 @@ pub fn queue_outdated_faces(app: &AppHandle, project: &Arc<Project>) {
     match project.faces_by_other_model(project.face_embedder()) {
         Ok(ids) => {
             for id in ids {
-                if project.media(id).is_ok_and(|m| m.status != as_api::MediaStatus::Missing) {
+                if project.media(id).is_ok_and(|m| m.status != MediaStatus::Missing) {
                     queue_analysis(app, project, id);
                 }
             }
@@ -258,15 +324,12 @@ pub fn queue_outdated_faces(app: &AppHandle, project: &Arc<Project>) {
 }
 
 pub fn queue_analysis(app: &AppHandle, project: &Arc<Project>, media_id: MediaId) {
-    let state = app.state::<AppState>();
-    if state.jobs.is_active(|j| j.kind == JobKind::Analyze && j.media_id == Some(media_id)) {
-        return;
-    }
-    submit_analysis(app, project, media_id);
+    submit_analysis(app, project, media_id, true);
 }
 
-/// Unregisters a running analysis however its job ends (a panic drops the
-/// restart it owed: the stage stays as it was and can be retried).
+/// Unregisters a running analysis however its job ends (a panic in a stage
+/// ends that stage as failed, and the restart owed is made; one anywhere
+/// else drops it: the stages stay as they were and can be retried).
 struct Running<'a> {
     state: &'a AppState,
     media: MediaId,
@@ -292,9 +355,10 @@ impl Drop for Running<'_> {
     }
 }
 
-/// Queue an analysis job for a media unconditionally (a duplicate finds
-/// its stages done and ends at once: one analysis runs at a time).
-fn submit_analysis(app: &AppHandle, project: &Arc<Project>, media_id: MediaId) {
+/// Queue an analysis job for a media; `only_one`: unless one is queued or
+/// running already. (A duplicate finds its stages done and ends at once:
+/// one analysis runs at a time.)
+fn submit_analysis(app: &AppHandle, project: &Arc<Project>, media_id: MediaId, only_one: bool) {
     let state = app.state::<AppState>();
     let Ok(m) = project.media(media_id) else { return };
     let spec = JobSpec {
@@ -307,7 +371,8 @@ fn submit_analysis(app: &AppHandle, project: &Arc<Project>, media_id: MediaId) {
         export_id: None,
     };
     let (app2, project) = (app.clone(), project.clone());
-    state.jobs.submit(spec, move |ctx| {
+    let analysing = move |j: &JobInfo| only_one && j.kind == JobKind::Analyze && j.media_id == Some(media_id);
+    state.jobs.submit_unless(analysing, spec, move |ctx| {
         let state = app2.state::<AppState>();
         state.analysis.lock().running.insert(media_id);
         let running = Running { state: &state, media: media_id };
@@ -316,21 +381,22 @@ fn submit_analysis(app: &AppHandle, project: &Arc<Project>, media_id: MediaId) {
             let _ = AnalysisChanged { project_id: project.id, media_id }.emit(&app2);
             media_changed(&app2, &project, Some(media_id));
         };
-        let shots = run_shots(&app2, &state, &project, media_id, ctx);
+        let recorded = |stage: fn(&MediaItem) -> StageState| project.media(media_id).ok().map(|m| stage(&m));
+        let shots = guarded(|| recorded(|m| m.shots), || run_shots(&app2, &state, &project, media_id, ctx));
         record_stage(&state, &shots, |s, e| project.set_shots_state(media_id, s, e));
         notify();
         let result = shots.and_then(|()| {
             if !finds_faces(&project) {
                 return Ok(());
             }
-            let faces = run_faces(&app2, &state, &project, media_id, ctx);
+            let faces = guarded(|| recorded(|m| m.faces), || run_faces(&app2, &state, &project, media_id, ctx));
             record_stage(&state, &faces, |s, e| project.set_faces_state(media_id, s, e));
             notify();
             faces?;
             if !project.finds_bodies() {
                 return Ok(());
             }
-            let bodies = run_bodies(&app2, &state, &project, media_id, ctx);
+            let bodies = guarded(|| recorded(|m| m.bodies), || run_bodies(&app2, &state, &project, media_id, ctx));
             record_stage(&state, &bodies, |s, e| project.set_bodies_state(media_id, s, e));
             notify();
             bodies
@@ -361,7 +427,7 @@ pub fn restart_analysis(app: &AppHandle, project: &Arc<Project>, media_id: Media
     cast_changed(app, project);
     let _ = AnalysisChanged { project_id: project.id, media_id }.emit(app);
     media_changed(app, project, Some(media_id));
-    submit_analysis(app, project, media_id);
+    submit_analysis(app, project, media_id, false);
 }
 
 fn run_shots(
@@ -587,11 +653,23 @@ pub fn bodies_setting_changed(app: &AppHandle, on: bool) {
             }
             cast_changed(&app, &project);
             if on {
-                match project.waiting_bodies() {
+                // A people pass left "running" with nothing running it (a
+                // quit or failed update install mid-way) waits too; one
+                // under way isn't queued again (see `queue_analysis`).
+                let waiting = project.waiting_bodies().and_then(|mut ids| {
+                    for m in project.media_list_uncounted()? {
+                        let stuck = m.bodies == StageState::Running && m.faces == StageState::Ready;
+                        if stuck && m.status == MediaStatus::Ready && !ids.contains(&m.id) {
+                            ids.push(m.id);
+                        }
+                    }
+                    Ok(ids)
+                });
+                match waiting {
                     Ok(ids) => {
                         let ids: Vec<MediaId> = ids
                             .into_iter()
-                            .filter(|&id| project.media(id).is_ok_and(|m| m.status != as_api::MediaStatus::Missing))
+                            .filter(|&id| project.media(id).is_ok_and(|m| m.status != MediaStatus::Missing))
                             .collect();
                         if !ids.is_empty() {
                             log::info!("'{}': {} media get their people found", summary.title, ids.len());
@@ -664,7 +742,7 @@ pub fn queue_proxy(app: &AppHandle, project: &Arc<Project>, media_id: MediaId) {
 /// the new pictures as soon as they exist; until then the old ones stay.
 pub fn queue_posters(app: &AppHandle, project: &Arc<Project>, ids: Vec<MediaId>) {
     let state = app.state::<AppState>();
-    if ids.is_empty() || state.jobs.is_active(|j| j.kind == JobKind::Posters && j.project_id == Some(project.id)) {
+    if ids.is_empty() {
         return;
     }
     let spec = JobSpec {
@@ -677,7 +755,9 @@ pub fn queue_posters(app: &AppHandle, project: &Arc<Project>, ids: Vec<MediaId>)
         export_id: None,
     };
     let (app2, project) = (app.clone(), project.clone());
-    state.jobs.submit(spec, move |ctx| {
+    let pid = project.id;
+    let sharpening = move |j: &JobInfo| j.kind == JobKind::Posters && j.project_id == Some(pid);
+    state.jobs.submit_unless(sharpening, spec, move |ctx| {
         let state = app2.state::<AppState>();
         let tools = state.tools().map_err(|e| JobError::Failed(e.message))?;
         for (i, &id) in ids.iter().enumerate() {
@@ -708,14 +788,6 @@ pub fn queue_posters(app: &AppHandle, project: &Arc<Project>, ids: Vec<MediaId>)
 /// character, not the face in front of them.
 pub fn queue_regroup(app: &AppHandle, project: &Arc<Project>) {
     let state = app.state::<AppState>();
-    // One waiting is enough; one already running may have read the cast
-    // (or footage) before the change that queues this.
-    if state
-        .jobs
-        .is_active(|j| j.kind == JobKind::Regroup && j.project_id == Some(project.id) && j.state == JobState::Queued)
-    {
-        return;
-    }
     let spec = JobSpec {
         kind: JobKind::Regroup,
         class: Class::Upkeep,
@@ -726,7 +798,12 @@ pub fn queue_regroup(app: &AppHandle, project: &Arc<Project>) {
         export_id: None,
     };
     let (app2, project) = (app.clone(), project.clone());
-    state.jobs.submit(spec, move |ctx| {
+    // One waiting is enough; one already running may have read the cast
+    // (or footage) before the change that queues this.
+    let pid = project.id;
+    let waiting =
+        move |j: &JobInfo| j.kind == JobKind::Regroup && j.project_id == Some(pid) && j.state == JobState::Queued;
+    state.jobs.submit_unless(waiting, spec, move |ctx| {
         ctx.stage("Grouping characters");
         if let Some(characters) = project.cast_upkeep(&ctx.cancel).map_err(job_error)? {
             log::info!("characters grouped again; the cast has {characters} characters");
@@ -902,7 +979,14 @@ pub fn queue_export(app: &AppHandle, project: &Arc<Project>, export: &ExportSumm
             }
         };
         notify();
-        let result = project.run_export(&tools, export_id, &ctx.cancel, &|stage, p| ctx.report(stage, p), &notify);
+        let run = || project.run_export(&tools, export_id, &ctx.cancel, &|stage, p| ctx.report(stage, p), &notify);
+        // A bug in it fails it like an error of its own: it doesn't show
+        // "Exporting" until the next launch.
+        let result = catch_unwind(AssertUnwindSafe(run)).unwrap_or_else(|panic| {
+            let msg = as_jobs::panic_message(&*panic);
+            log::error!("export {export_id} panicked: {msg}");
+            Err(ProjectError::Invalid(msg))
+        });
         if let Err(e) = &result
             && !matches!(e, ProjectError::Cancelled)
             && let Err(fail) = project.abandon_export(export_id, &e.to_string())
@@ -1014,7 +1098,7 @@ pub fn recover_all(app: &AppHandle) {
         // Files that aren't there wait (pending) instead of failing.
         let pending = pending.map(|ids| {
             ids.into_iter()
-                .filter(|&id| project.media(id).is_ok_and(|m| m.status != as_api::MediaStatus::Missing))
+                .filter(|&id| project.media(id).is_ok_and(|m| m.status != MediaStatus::Missing))
                 .collect::<Vec<_>>()
         });
         match pending {
@@ -1033,7 +1117,30 @@ pub fn recover_all(app: &AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::failed_message;
+    use std::cell::Cell;
+
+    use as_api::StageState;
+
+    use super::{StageError, Unstarted, failed_message, guarded};
+
+    #[test]
+    fn a_stage_that_panics_fails_only_while_it_runs() {
+        let breaks = || -> Result<(), StageError> { panic!("grouping broke") };
+        let r = guarded(|| Some(StageState::Running), breaks);
+        assert!(matches!(r, Err(StageError::Failed(m)) if m == "grouping broke"), "recorded failed");
+        // Done before it broke (or not begun): it stays as it is recorded.
+        let r = guarded(|| Some(StageState::Ready), breaks);
+        assert!(matches!(r, Err(StageError::Bug(m)) if m == "grouping broke"));
+        assert!(matches!(guarded(|| unreachable!(), || Err(StageError::Cancelled)), Err(StageError::Cancelled)));
+    }
+
+    #[test]
+    fn work_dropped_unstarted_says_so() {
+        let told = Cell::new(0);
+        drop(Unstarted(Some(|| told.set(told.get() + 1))));
+        Unstarted(Some(|| told.set(told.get() + 10))).started();
+        assert_eq!(told.get(), 1, "only the work that never started");
+    }
 
     #[test]
     fn failures_say_what_the_file_still_has() {

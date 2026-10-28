@@ -973,14 +973,25 @@ impl ProjectDb {
         })
     }
 
-    /// Newest first.
+    /// Newest first. An export whose id can't be read (edited by hand, a
+    /// damaged file) is left out with a warning rather than hiding every
+    /// other export (or blocking new ones, which check their names here).
     pub fn exports(&self, project_id: ProjectId) -> DbResult<Vec<ExportSummary>> {
         let ids: Vec<String> = self.0.read(|c| {
             let mut st = c.prepare("SELECT id FROM exports ORDER BY created_at DESC, id DESC")?;
             let ids = st.query_map([], |r| r.get(0))?.collect::<Result<Vec<String>, _>>()?;
             Ok(ids)
         })?;
-        ids.iter().filter_map(|id| self.export(project_id, parse_id(id).ok()?).transpose()).collect()
+        ids.iter()
+            .filter_map(|id| match parse_id(id) {
+                // One deleted since the ids were read is gone too.
+                Ok(id) => self.export(project_id, id).transpose(),
+                Err(e) => {
+                    tracing::warn!(id, error = %e, "export with an unreadable id left out");
+                    None
+                }
+            })
+            .collect()
     }
 
     pub fn export(&self, project_id: ProjectId, id: ExportId) -> DbResult<Option<ExportSummary>> {
@@ -1420,6 +1431,19 @@ pub(crate) mod tests {
         assert_eq!(ex.items[1].error.as_deref(), Some("disk full"));
         assert_eq!(ex.status, ExportStatus::Failed);
         assert_eq!(ex.merged, None);
+
+        // A row whose id isn't one (edited by hand) is left out; the rest stay.
+        db.0.write(|tx| {
+            tx.execute(
+                "INSERT INTO exports (id, created_at, preset, out_dir, status)
+                 SELECT 'x', created_at + 1, preset, out_dir, status FROM exports",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let listed = db.exports(pid).unwrap();
+        assert_eq!(listed.iter().map(|e| e.id).collect::<Vec<_>>(), [eid]);
     }
 
     #[test]

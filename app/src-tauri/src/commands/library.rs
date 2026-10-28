@@ -2,11 +2,12 @@
 
 use std::path::Path;
 
-use as_api::{AppSettings, ContentKind, ImportCandidate, NewProject, ProjectKind, ProjectSummary};
+use as_api::{AppSettings, ContentKind, ImportCandidate, JobInfo, NewProject, ProjectKind, ProjectSummary};
 use as_core::ProjectId;
 use tauri::{AppHandle, State};
 use tauri_specta::Event;
 
+use crate::commands::media::stop_jobs;
 use crate::error::AppResult;
 use crate::events::LibraryChanged;
 use crate::state::{AppState, allow_asset_dir, blocking};
@@ -118,19 +119,14 @@ pub async fn project_delete(
     project_id: ProjectId,
     delete_files: bool,
 ) -> AppResult<()> {
-    state.jobs.cancel_where(|j| j.project_id == Some(project_id));
-    // Give cancelled ffmpeg runs a moment to release their files.
-    let (lib, jobs) = (state.library.clone(), state.jobs.clone());
-    let result = blocking(move || {
-        for _ in 0..50 {
-            if !jobs.is_active(|j| j.project_id == Some(project_id)) {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(40));
-        }
-        Ok(lib.delete_project(project_id, delete_files)?)
-    })
-    .await;
+    // Its work stops first, also what it queues while stopping: nothing may
+    // go on writing into its folder or hold its database open. When that
+    // takes too long, the project stays as it was.
+    let of = move |j: &JobInfo| j.project_id == Some(project_id);
+    let still = "The work on this project is still stopping. Try again in a moment.";
+    stop_jobs(&state, of, || false, still).await?;
+    let lib = state.library.clone();
+    let result = blocking(move || Ok(lib.delete_project(project_id, delete_files)?)).await;
     // Even when removing the folder failed half-way, the list may have changed.
     let _ = LibraryChanged { project_id: None }.emit(&app);
     result

@@ -231,13 +231,28 @@ impl Library {
 
     /// Remove a project from the library. With `delete_files`, also delete its
     /// `.autoscene` folder (database, posters, proxies). Source media and
-    /// exported clips are never touched. Cancel the project's jobs first.
+    /// exported clips are never touched. Stop the project's jobs first.
     pub fn delete_project(&self, id: ProjectId, delete_files: bool) -> ProjectResult<()> {
         let summary = self.summary(id)?;
-        // Drop our handle so the database file is closed before deleting the folder.
-        self.open.lock().remove(&id);
-        self.db.delete_project(id)?;
+        // The row goes while the cache is locked: a lookup can't find the
+        // project in between and open its database again (which would keep
+        // it open for the rest of the session).
+        let project = {
+            let mut open = self.open.lock();
+            self.db.delete_project(id)?;
+            open.remove(&id)
+        };
         if delete_files {
+            // Whatever still holds the project (a command finishing, work
+            // letting go) closes its database before the folder goes.
+            if let Some(project) = project {
+                let held = Arc::downgrade(&project);
+                drop(project);
+                let until = std::time::Instant::now() + RELEASE_WAIT;
+                while held.strong_count() > 0 && std::time::Instant::now() < until {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+            }
             let dir = PathBuf::from(&summary.dir);
             // Only ever delete what is recognisably this project's folder.
             if is_project_dir(&dir, id) {
@@ -343,6 +358,10 @@ fn is_project_dir(dir: &Path, id: ProjectId) -> bool {
     }
     theirs
 }
+
+/// How long deleting a project's folder waits for others still holding the
+/// project to let go of it (its jobs have stopped by then).
+const RELEASE_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Windows keeps files locked for a moment after handles close (antivirus,
 /// the indexer, a just-closed SQLite WAL); retry briefly before giving up.
@@ -598,6 +617,31 @@ mod tests {
             asks.into_iter().map(|t| t.join().unwrap()).collect()
         });
         assert!(all.iter().all(|p| Arc::ptr_eq(p, &all[0])));
+    }
+
+    #[test]
+    fn a_deleted_project_is_let_go_of_before_its_folder_goes() {
+        let (_dir, lib) = lib();
+        let req =
+            NewProject { title: "Held".into(), kind: ProjectKind::Movie, content: ContentKind::Live, files: vec![] };
+        let (summary, project, _) = lib.create_project(&req).unwrap();
+        // Work still finishing with it (its database open) when it is deleted.
+        let released = Arc::new(AtomicBool::new(false));
+        let holder = {
+            let released = released.clone();
+            std::thread::spawn(move || {
+                // Longer than removing the folder keeps trying.
+                std::thread::sleep(std::time::Duration::from_millis(1800));
+                released.store(true, Ordering::SeqCst);
+                drop(project);
+            })
+        };
+        lib.delete_project(summary.id, true).unwrap();
+        assert!(released.load(Ordering::SeqCst), "the folder went while the project was still held");
+        assert!(!Path::new(&summary.dir).exists());
+        assert!(lib.open_projects().is_empty());
+        assert!(matches!(lib.project(summary.id), Err(ProjectError::NotFound(_))));
+        holder.join().unwrap();
     }
 
     #[test]

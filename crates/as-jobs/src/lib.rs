@@ -2,6 +2,9 @@
 //!
 //! Work is grouped into resource classes, each with its own worker threads,
 //! so a long export never blocks indexing a new episode (and vice versa).
+//! Within a class, projects take turns: a big import in one project never
+//! holds up another project's work by more than the jobs already running,
+//! while each project's own jobs keep the order they were queued in.
 //! Every state change and (throttled) progress sample is reported through
 //! one listener, which the app forwards to the UI as `job:*` events — the UI
 //! never polls.
@@ -11,6 +14,7 @@
 //! indexing, a preview or analysis (with checkpoints) — and the app re-queues
 //! it on launch, so nothing is lost when the app stops or crashes.
 
+use std::any::Any;
 use std::collections::{HashMap, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
@@ -110,13 +114,17 @@ struct Entry {
 
 #[derive(Default)]
 struct State {
-    /// Oldest first.
+    /// Oldest first (each project's jobs run in this order; projects take
+    /// turns, see [`next_job`]).
     jobs: VecDeque<Entry>,
     shutting_down: bool,
     /// Last revision handed out; bumped under the lock on every change.
     rev: u64,
     /// Worker threads alive per class (they exit during a shutdown).
     live: HashMap<Class, usize>,
+    /// When each project last had a job of a class started (the revision
+    /// of that claim): the one served longest ago goes next.
+    served: HashMap<(Class, Option<ProjectId>), u64>,
 }
 
 impl State {
@@ -139,6 +147,16 @@ const KEEP_FINISHED: usize = 100;
 const PARTS: u64 = 1_000_000;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
 
+/// What a panic said (its `&str` or `String` message), for the log and the
+/// error a job shows.
+pub fn panic_message(panic: &(dyn Any + Send)) -> String {
+    panic
+        .downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| panic.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unexpected error".into())
+}
+
 #[derive(Clone)]
 pub struct JobRunner {
     inner: Arc<Inner>,
@@ -150,7 +168,13 @@ impl JobRunner {
         let inner = Arc::new(Inner {
             state: Mutex::new(State::default()),
             wake: Condvar::new(),
-            listener: Box::new(listener),
+            // It only tells the UI: a panic in it must never take a worker
+            // (and every job of its class after it) along.
+            listener: Box::new(move |e| {
+                if let Err(panic) = catch_unwind(AssertUnwindSafe(|| listener(e))) {
+                    tracing::error!(msg = %panic_message(&*panic), "job listener panicked");
+                }
+            }),
             limits: limits.iter().map(|&(c, n)| (c, n.max(1))).collect(),
         });
         spawn_missing_workers(&inner, &mut inner.state.lock());
@@ -185,9 +209,30 @@ impl JobRunner {
     }
 
     /// Queue `work`. Returns immediately.
+    ///
+    /// During a [`shutdown`](Self::shutdown) nothing is queued any more: the
+    /// job is recorded as cancelled at once and `work` dropped, like the work
+    /// the shutdown dropped. What it stood for is in the projects' databases
+    /// and queued again on the next launch.
     pub fn submit(&self, spec: JobSpec, work: impl FnOnce(&JobCtx) -> JobResult + Send + 'static) -> JobId {
+        self.enqueue(spec, Box::new(work), |_| false).expect("nothing is a duplicate")
+    }
+
+    /// Queue `work` unless a queued or running job matching `dup` is already
+    /// there (`None`, and `work` is dropped). Checked and queued under one
+    /// lock, so two callers can't both find none and queue it twice.
+    pub fn submit_unless(
+        &self,
+        dup: impl Fn(&JobInfo) -> bool,
+        spec: JobSpec,
+        work: impl FnOnce(&JobCtx) -> JobResult + Send + 'static,
+    ) -> Option<JobId> {
+        self.enqueue(spec, Box::new(work), dup)
+    }
+
+    fn enqueue(&self, spec: JobSpec, work: Work, dup: impl Fn(&JobInfo) -> bool) -> Option<JobId> {
         let id = JobId::new();
-        let info = JobInfo {
+        let mut info = JobInfo {
             id,
             kind: spec.kind,
             title: spec.title,
@@ -204,21 +249,30 @@ impl JobRunner {
             finished_at: None,
             rev: 0,
         };
-        let info = {
+        // Work that doesn't run is dropped after the lock is released: what
+        // it owns may look at the jobs as it goes (see `cancel_where`).
+        let (info, refused) = {
             let mut st = self.inner.state.lock();
-            let mut info = info;
-            info.rev = st.next_rev();
-            st.jobs.push_back(Entry {
-                info: info.clone(),
-                class: spec.class,
-                cancel: CancelToken::new(),
-                work: Some(Box::new(work)),
-            });
-            info
+            if st.jobs.iter().any(|e| !e.info.state.is_finished() && dup(&e.info)) {
+                (None, Some(work))
+            } else {
+                info.rev = st.next_rev();
+                let (work, refused) = if st.shutting_down {
+                    info.state = JobState::Cancelled;
+                    info.finished_at = Some(now_ms());
+                    (None, Some(work))
+                } else {
+                    (Some(work), None)
+                };
+                st.jobs.push_back(Entry { info: info.clone(), class: spec.class, cancel: CancelToken::new(), work });
+                (Some(info), refused)
+            }
         };
+        drop(refused);
+        let info = info?;
         (self.inner.listener)(JobEvent::Changed(info));
         self.inner.wake.notify_all();
-        id
+        Some(id)
     }
 
     /// Newest first.
@@ -238,15 +292,20 @@ impl JobRunner {
     }
 
     /// Cancel every unfinished job matching `pred` (e.g. all jobs of a project being deleted).
+    ///
+    /// The work of queued jobs is dropped once the lock is released, so what
+    /// it owns can act on being dropped unstarted (and look at the jobs while
+    /// it does).
     pub fn cancel_where(&self, pred: impl Fn(&JobInfo) -> bool) {
         let mut changed = Vec::new();
+        let mut dropped = Vec::new();
         {
             let mut st = self.inner.state.lock();
             let mut rev = st.rev;
             for e in st.jobs.iter_mut().filter(|e| !e.info.state.is_finished() && pred(&e.info)) {
                 e.cancel.cancel();
                 if e.info.state == JobState::Queued {
-                    e.work = None;
+                    dropped.extend(e.work.take());
                     e.info.state = JobState::Cancelled;
                     e.info.finished_at = Some(now_ms());
                     rev += 1;
@@ -259,6 +318,7 @@ impl JobRunner {
         for info in changed {
             (self.inner.listener)(JobEvent::Changed(info));
         }
+        drop(dropped);
     }
 
     /// The app is quitting: running work is being cancelled to exit, not
@@ -275,14 +335,18 @@ impl JobRunner {
     /// Cancel everything and wait up to `grace` for running work to stop, so
     /// no ffmpeg process outlives the app.
     pub fn shutdown(&self, grace: Duration) {
-        {
+        let dropped: Vec<Work> = {
             let mut st = self.inner.state.lock();
             st.shutting_down = true;
-            for e in st.jobs.iter_mut() {
-                e.cancel.cancel();
-                e.work = None;
-            }
-        }
+            st.jobs
+                .iter_mut()
+                .filter_map(|e| {
+                    e.cancel.cancel();
+                    e.work.take()
+                })
+                .collect()
+        };
+        drop(dropped);
         self.inner.wake.notify_all();
         let deadline = std::time::Instant::now() + grace;
         while std::time::Instant::now() < deadline {
@@ -299,42 +363,100 @@ impl JobRunner {
 fn spawn_missing_workers(inner: &Arc<Inner>, st: &mut State) {
     for &(class, n) in &inner.limits {
         let live = st.live.entry(class).or_insert(0);
-        for i in *live..n {
-            let inner = inner.clone();
-            std::thread::Builder::new()
-                .name(format!("jobs-{class:?}-{i}").to_lowercase())
-                .spawn(move || worker(&inner, class))
-                .expect("spawn job worker");
+        while *live < n {
+            let worker = inner.clone();
+            let spawned = std::thread::Builder::new()
+                .name(format!("jobs-{class:?}-{}", *live).to_lowercase())
+                .spawn(move || run_worker(&worker, class));
+            if let Err(e) = spawned {
+                tracing::error!(?class, error = %e, "couldn't start a job worker");
+                break;
+            }
+            *live += 1;
         }
-        *live = (*live).max(n);
     }
 }
 
-fn worker(inner: &Arc<Inner>, class: Class) {
+/// The next job a worker of `class` takes: projects take turns — the one
+/// with the fewest jobs of the class running, then the one served longest
+/// ago — and each project's jobs go oldest first. (A plain "not the project
+/// served last" would let two projects take turns and starve a third.)
+fn next_job(st: &State, class: Class) -> Option<usize> {
+    let mut running: HashMap<Option<ProjectId>, usize> = HashMap::new();
+    for e in st.jobs.iter().filter(|e| e.class == class && e.info.state == JobState::Running) {
+        *running.entry(e.info.project_id).or_default() += 1;
+    }
+    st.jobs
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.class == class && e.info.state == JobState::Queued && e.work.is_some())
+        .min_by_key(|&(i, e)| {
+            let project = e.info.project_id;
+            (running.get(&project).copied().unwrap_or(0), st.served.get(&(class, project)).copied().unwrap_or(0), i)
+        })
+        .map(|(i, _)| i)
+}
+
+/// A worker thread as `live` counts it: however the thread ends (a shutdown
+/// asks it to; a panic outside its jobs' own catch), it stops counting. A
+/// panic brings its class back to its limit and fails the job it held, so
+/// nothing waits for a thread that is gone. (No event is sent from there: a
+/// panic while unwinding would abort the app.)
+struct Alive<'a> {
+    inner: &'a Arc<Inner>,
+    class: Class,
+    holding: Option<JobId>,
+}
+
+impl Drop for Alive<'_> {
+    fn drop(&mut self) {
+        let mut st = self.inner.state.lock();
+        if let Some(live) = st.live.get_mut(&self.class) {
+            *live = live.saturating_sub(1);
+        }
+        if !std::thread::panicking() {
+            return;
+        }
+        tracing::error!(class = ?self.class, job = ?self.holding, "a job worker panicked");
+        let rev = st.next_rev();
+        if let Some(e) = st.jobs.iter_mut().find(|e| Some(e.info.id) == self.holding && !e.info.state.is_finished()) {
+            e.info.state = JobState::Failed;
+            e.info.error = Some("unexpected error".into());
+            e.info.eta_ms = None;
+            e.info.finished_at = Some(now_ms());
+            e.info.rev = rev;
+        }
+        if !st.shutting_down {
+            spawn_missing_workers(self.inner, &mut st);
+        }
+    }
+}
+
+fn run_worker(inner: &Arc<Inner>, class: Class) {
+    let mut alive = Alive { inner, class, holding: None };
     loop {
-        // Claim the oldest queued job of our class.
+        // Claim the next queued job of our class.
         let (id, work, cancel, info) = {
             let mut st = inner.state.lock();
             loop {
                 if st.shutting_down {
-                    *st.live.entry(class).or_insert(1) -= 1;
+                    drop(st);
                     return;
                 }
                 let rev = st.rev + 1;
-                let next = st
-                    .jobs
-                    .iter_mut()
-                    .find(|e| e.class == class && e.info.state == JobState::Queued && e.work.is_some());
-                if let Some(e) = next {
+                if let Some(i) = next_job(&st, class) {
+                    let e = &mut st.jobs[i];
                     e.info.state = JobState::Running;
                     e.info.rev = rev;
                     let claimed = (e.info.id, e.work.take().expect("checked"), e.cancel.clone(), e.info.clone());
                     st.rev = rev;
+                    st.served.insert((class, claimed.3.project_id), rev);
                     break claimed;
                 }
                 inner.wake.wait(&mut st);
             }
         };
+        alive.holding = Some(id);
         (inner.listener)(JobEvent::Changed(info));
 
         let sink = {
@@ -362,17 +484,14 @@ fn worker(inner: &Arc<Inner>, class: Class) {
         };
         let ctx = JobCtx { id, cancel: cancel.clone(), sink };
         let result = catch_unwind(AssertUnwindSafe(|| work(&ctx))).unwrap_or_else(|panic| {
-            let msg = panic
-                .downcast_ref::<&str>()
-                .map(|s| s.to_string())
-                .or_else(|| panic.downcast_ref::<String>().cloned())
-                .unwrap_or_else(|| "unexpected error".into());
+            let msg = panic_message(&*panic);
             tracing::error!(%id, %msg, "job panicked");
             Err(JobError::Failed(msg))
         });
 
         let info = {
             let mut st = inner.state.lock();
+            alive.holding = None;
             let rev = st.next_rev();
             let Some(e) = st.jobs.iter_mut().find(|e| e.info.id == id) else { continue };
             e.info.rev = rev;
@@ -417,6 +536,7 @@ fn trim_finished(st: &mut State) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc;
 
     fn spec(title: &str, class: Class) -> JobSpec {
@@ -516,6 +636,15 @@ mod tests {
         }
         r.submit(spec("never ran", Class::Media), |_| Ok(()));
         r.shutdown(Duration::from_secs(2));
+        // Nothing is queued while the app shuts down: it ends at once.
+        let ran = Arc::new(AtomicBool::new(false));
+        let r2 = ran.clone();
+        let refused = r.submit(spec("too late", Class::Media), move |_| {
+            r2.store(true, Ordering::SeqCst);
+            Ok(())
+        });
+        assert_eq!(finished(&rx, refused).state, JobState::Cancelled);
+        assert!(!r.is_active(|j| j.id == refused));
         r.resume();
         let after = r.submit(spec("after", Class::Media), |_| Ok(()));
         assert_eq!(finished(&rx, after).state, JobState::Done, "work runs again after resume");
@@ -524,6 +653,191 @@ mod tests {
         assert!(jobs.iter().any(|j| j.id == blocker && j.state == JobState::Cancelled));
         // Workers came back up to the limit, not beyond it.
         assert_eq!(r.inner.state.lock().live[&Class::Media], 2);
+        assert!(!ran.load(Ordering::SeqCst), "work refused during the shutdown never runs");
+    }
+
+    /// Work that records `title` in `ran` when it runs.
+    fn recorder(ran: &Arc<Mutex<Vec<String>>>, title: &str) -> impl FnOnce(&JobCtx) -> JobResult + Send + 'static {
+        let (ran, title) = (ran.clone(), title.to_string());
+        move |_| {
+            ran.lock().push(title);
+            Ok(())
+        }
+    }
+
+    fn of(title: &str, class: Class, project: Option<ProjectId>) -> JobSpec {
+        JobSpec { project_id: project, ..spec(title, class) }
+    }
+
+    /// Hold the only worker of `class` until the returned sender is used.
+    fn hold(
+        r: &JobRunner,
+        rx: &mpsc::Receiver<JobEvent>,
+        class: Class,
+        project: Option<ProjectId>,
+    ) -> (JobId, mpsc::Sender<()>) {
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let id = r.submit(of("blocker", class, project), move |_| {
+            release_rx.recv().ok();
+            Ok(())
+        });
+        loop {
+            match rx.recv_timeout(Duration::from_secs(10)).expect("job event") {
+                JobEvent::Changed(i) if i.id == id && i.state == JobState::Running => return (id, release_tx),
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn projects_take_turns() {
+        let (r, rx) = runner(&[(Class::Media, 1)]);
+        let (a, b, c) = (Some(ProjectId::new()), Some(ProjectId::new()), Some(ProjectId::new()));
+        let ran = Arc::new(Mutex::new(Vec::new()));
+        // A big import in A, then two files in B and one in C.
+        let (_, release) = hold(&r, &rx, Class::Media, a);
+        let mut last = None;
+        for i in 1..=4 {
+            last = Some(r.submit(of("a", Class::Media, a), recorder(&ran, &format!("a{i}"))));
+        }
+        r.submit(of("b", Class::Media, b), recorder(&ran, "b1"));
+        r.submit(of("b", Class::Media, b), recorder(&ran, "b2"));
+        r.submit(of("c", Class::Media, c), recorder(&ran, "c1"));
+        release.send(()).unwrap();
+        finished(&rx, last.unwrap());
+        // B and C wait for no more than the job of A that ran; nobody is
+        // starved, and A's jobs keep their order.
+        assert_eq!(*ran.lock(), ["b1", "c1", "a1", "b2", "a2", "a3", "a4"]);
+    }
+
+    #[test]
+    fn a_project_keeps_its_order() {
+        let (r, rx) = runner(&[(Class::Analysis, 1)]);
+        let p = Some(ProjectId::new());
+        let ran = Arc::new(Mutex::new(Vec::new()));
+        let (_, release) = hold(&r, &rx, Class::Analysis, p);
+        let mut last = None;
+        for i in 1..=5 {
+            last = Some(r.submit(of("x", Class::Analysis, p), recorder(&ran, &i.to_string())));
+        }
+        release.send(()).unwrap();
+        finished(&rx, last.unwrap());
+        assert_eq!(*ran.lock(), ["1", "2", "3", "4", "5"]);
+    }
+
+    #[test]
+    fn a_duplicate_is_never_queued_twice() {
+        let (r, rx) = runner(&[(Class::Media, 1)]);
+        let (_, release) = hold(&r, &rx, Class::Media, None);
+        let start = Arc::new(std::sync::Barrier::new(8));
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let (r, start) = (r.clone(), start.clone());
+                std::thread::spawn(move || {
+                    start.wait();
+                    r.submit_unless(|j| j.title == "index e1", spec("index e1", Class::Media), |_| Ok(()))
+                })
+            })
+            .collect();
+        let queued: Vec<JobId> = threads.into_iter().filter_map(|t| t.join().unwrap()).collect();
+        assert_eq!(queued.len(), 1, "exactly one of the racing submits queues it");
+        assert_eq!(r.jobs().iter().filter(|j| j.title == "index e1").count(), 1);
+        release.send(()).unwrap();
+        assert_eq!(finished(&rx, queued[0]).state, JobState::Done);
+        // Once it has finished, it can be queued again.
+        assert!(r.submit_unless(|j| j.title == "index e1", spec("index e1", Class::Media), |_| Ok(())).is_some());
+    }
+
+    #[test]
+    fn a_panicking_listener_stops_nothing() {
+        let (tx, rx) = mpsc::channel();
+        let tx = Mutex::new(tx);
+        // Panics whenever a job starts or finishes: the worker carries on.
+        let r = JobRunner::new(&[(Class::Export, 1)], move |e| {
+            if let JobEvent::Changed(i) = &e
+                && matches!(i.state, JobState::Running | JobState::Done)
+            {
+                drop(tx.lock().send(i.clone()));
+                panic!("the UI is gone");
+            }
+        });
+        let first = r.submit(spec("first", Class::Export), |_| Ok(()));
+        let second = r.submit(spec("second", Class::Export), |_| Ok(()));
+        let done = |id: JobId| loop {
+            let i = rx.recv_timeout(Duration::from_secs(10)).expect("job event");
+            if i.id == id && i.state == JobState::Done {
+                return;
+            }
+        };
+        done(first);
+        done(second);
+        assert_eq!(r.inner.state.lock().live[&Class::Export], 1);
+    }
+
+    #[test]
+    fn a_worker_that_panics_is_replaced() {
+        let (r, rx) = runner(&[(Class::Upkeep, 1)]);
+        // Stand in for the one worker: it panics holding a job.
+        let held = {
+            let mut st = r.inner.state.lock();
+            let id = JobId::new();
+            let rev = st.next_rev();
+            let info = JobInfo {
+                id,
+                kind: JobKind::Regroup,
+                title: "held".into(),
+                subtitle: None,
+                project_id: None,
+                media_id: None,
+                export_id: None,
+                state: JobState::Running,
+                progress: None,
+                stage: None,
+                eta_ms: None,
+                error: None,
+                created_at: now_ms(),
+                finished_at: None,
+                rev,
+            };
+            st.jobs.push_back(Entry { info, class: Class::Upkeep, cancel: CancelToken::new(), work: None });
+            id
+        };
+        let inner = r.inner.clone();
+        let worker = std::thread::spawn(move || {
+            let _alive = Alive { inner: &inner, class: Class::Upkeep, holding: Some(held) };
+            panic!("a bug outside the job");
+        });
+        assert!(worker.join().is_err());
+        let st = r.inner.state.lock();
+        assert_eq!(st.live[&Class::Upkeep], 1, "back to its limit, not beyond");
+        let e = st.jobs.iter().find(|e| e.info.id == held).unwrap();
+        assert_eq!((e.info.state, e.info.error.as_deref()), (JobState::Failed, Some("unexpected error")));
+        drop(st);
+        let after = r.submit(spec("after", Class::Upkeep), |_| Ok(()));
+        assert_eq!(finished(&rx, after).state, JobState::Done);
+    }
+
+    #[test]
+    fn dropped_work_can_look_at_the_jobs() {
+        /// Asks the runner about itself when dropped unstarted.
+        struct Unstarted(JobRunner, Arc<AtomicBool>);
+        impl Drop for Unstarted {
+            fn drop(&mut self) {
+                self.1.store(!self.0.is_shutting_down(), Ordering::SeqCst);
+            }
+        }
+        let (r, rx) = runner(&[(Class::Media, 1)]);
+        let (_, release) = hold(&r, &rx, Class::Media, None);
+        let told = Arc::new(AtomicBool::new(false));
+        let guard = Unstarted(r.clone(), told.clone());
+        let queued = r.submit(spec("queued", Class::Media), move |_| {
+            drop(guard);
+            Ok(())
+        });
+        // Under the runner's lock this would deadlock.
+        r.cancel(queued);
+        assert!(told.load(Ordering::SeqCst), "dropped as a cancel, not as a shutdown");
+        release.send(()).unwrap();
     }
 
     #[test]

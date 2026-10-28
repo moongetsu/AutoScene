@@ -1,10 +1,11 @@
-import { ArrowCounterClockwise, Check, Clock, FileX, Scissors, UserFocus, Warning } from "@/components/icons"
+import { ArrowCounterClockwise, Check, Clock, FileX, Scissors, User, UserFocus, Warning } from "@/components/icons"
 import { toast } from "sonner"
 import type { JobInfo, MediaItem } from "@/bindings"
 import { Progress } from "@/components/ui/progress"
 import { Tooltip } from "@/components/ui/tooltip"
 import { formatPercent } from "@/lib/format"
 import { commands, errorMessage } from "@/lib/ipc"
+import { useProject, useSettings } from "@/lib/queries"
 import { useMediaJob } from "@/state/activity"
 
 function runningLabel(job: JobInfo): string {
@@ -23,6 +24,10 @@ function queuedLabel(m: MediaItem, job?: JobInfo): string {
 /** Indexing, preview and analysis state of one media, with live progress from its job. */
 export function StatusCell({ media: m, projectId, faces }: { media: MediaItem; projectId: string; faces: boolean }) {
   const job = useMediaJob(m.id)
+  // People are found by their bodies too (the setting; never with Fast Scan).
+  const { data: settings } = useSettings()
+  const { data: project } = useProject(projectId)
+  const people = faces && (settings?.findBodies ?? false) && !(project?.fastScan ?? false)
   const retry = (e: React.MouseEvent) => {
     e.stopPropagation()
     commands.mediaRetry(projectId, m.id).catch((err) => toast.error("Couldn't retry", { description: errorMessage(err) }))
@@ -115,6 +120,7 @@ export function StatusCell({ media: m, projectId, faces }: { media: MediaItem; p
             <span className="timecode">{(m.faceCount ?? 0).toLocaleString("en-GB")}</span> faces
           </span>
         )}
+        {people && m.bodies && m.bodies !== "ready" && <PeopleLine media={m} onContinue={analyze} />}
       </span>
     )
   }
@@ -140,6 +146,30 @@ export function StatusCell({ media: m, projectId, faces }: { media: MediaItem; p
       {shots}
       <button onClick={analyze} className="inline-flex items-center gap-1 rounded-xs pl-5 text-left text-xs text-fg-3 hover:text-fg-1">
         <UserFocus className="size-3" /> {m.faces === "stopped" ? "Stopped · continue" : "Find characters"}
+      </button>
+    </span>
+  )
+}
+
+/**
+ * The people pass of a media whose faces are found, when it didn't finish
+ * and nothing runs it (it failed, was stopped, or was cut short): it goes on
+ * from where it was.
+ */
+function PeopleLine({ media: m, onContinue }: { media: MediaItem; onContinue: (e: React.MouseEvent) => void }) {
+  const failed = m.bodies === "failed"
+  return (
+    <span className="inline-flex items-center gap-2 pl-5 text-xs">
+      {failed && (
+        <Tooltip label={m.bodiesError ?? "Finding people failed"}>
+          <span className="inline-flex items-center gap-1 text-danger">
+            <Warning className="size-3" /> People failed
+          </span>
+        </Tooltip>
+      )}
+      <button onClick={onContinue} className="inline-flex items-center gap-1 rounded-xs px-1 text-fg-3 hover:text-fg-1">
+        {failed ? <ArrowCounterClockwise className="size-3" /> : <User className="size-3" />}
+        {failed ? "Retry" : m.bodies === "stopped" ? "People stopped · continue" : "Find people"}
       </button>
     </span>
   )

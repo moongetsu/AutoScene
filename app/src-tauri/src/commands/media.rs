@@ -3,8 +3,8 @@
 use std::path::Path;
 
 use as_api::{
-    AnalysisStage, FrameMap, JobKind, JobState, MediaItem, MediaStatus, ProxyState, Relink, RelinkSummary, Segment,
-    StageState,
+    AnalysisStage, FrameMap, JobInfo, JobKind, JobState, MediaItem, MediaStatus, ProxyState, Relink, RelinkSummary,
+    Segment, StageState,
 };
 use as_core::{MediaId, ProjectId};
 use tauri::{AppHandle, State};
@@ -71,7 +71,10 @@ pub async fn media_remove(
     project_id: ProjectId,
     media_id: MediaId,
 ) -> AppResult<()> {
-    state.jobs.cancel_where(|j| j.media_id == Some(media_id));
+    // Its work stops first: nothing may go on writing its posters, preview
+    // or faces once it is gone (and a relink of it waits).
+    let _one_at_a_time = RELINKING.lock().await;
+    stop_work_on(&state, &[media_id]).await?;
     let lib = state.library.clone();
     let project = blocking(move || {
         let p = lib.project(project_id)?;
@@ -150,41 +153,61 @@ pub async fn media_relink(
     Ok(relink)
 }
 
-/// How long a relink waits for the work on the old path to stop.
+/// How long a relink or a removal waits for the work it stops: longer than
+/// a cancelled analysis may take to let go of the engine (10 s).
 const STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
 
-/// One relink (of a file or a folder) at a time: one deciding which files
-/// are missing while another is queueing work for one it found would stop
-/// that work again.
+/// One relink (of a file or a folder) or removal at a time: one deciding
+/// which files are missing while another is queueing work for one it found
+/// would stop that work again.
 static RELINKING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+/// Cancel the jobs `of` matches and wait until they have ended and `busy`
+/// is false, for up to [`STOP_WAIT`]; `still` says what is still stopping
+/// when it takes longer (and nothing has been changed). Work queued for them
+/// meanwhile (a restart a stopped analysis owed, a new face model's pass,
+/// portraits) is cancelled too.
+pub(crate) async fn stop_jobs(
+    state: &AppState,
+    of: impl Fn(&JobInfo) -> bool + Clone + Send + 'static,
+    busy: impl Fn() -> bool,
+    still: &str,
+) -> AppResult<()> {
+    let until = std::time::Instant::now() + STOP_WAIT;
+    loop {
+        // Off the async runtime: a cancelled ingest records that it was
+        // (see `work::queue_ingest`).
+        let (jobs, of) = (state.jobs.clone(), of.clone());
+        let active = blocking(move || {
+            jobs.cancel_where(&of);
+            Ok(jobs.is_active(&of))
+        })
+        .await?;
+        if !active && !busy() {
+            return Ok(());
+        }
+        if std::time::Instant::now() > until {
+            return Err(AppError::new(ErrorCode::NotReady, still));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
 /// Stop every job of `media` and wait until they have ended: nothing may go
-/// on reading the old path, or record its outcome over what the relink sets.
-/// Work queued for them meanwhile (a restart the stopped analysis owed, a
-/// new face model's pass) is stopped too. Returns the media whose analysis
+/// on reading the old path, or record its outcome over what the relink sets
+/// (or write into a removed media's files). Returns the media whose analysis
 /// was under way (see `resume_interrupted`).
 async fn stop_work_on(state: &AppState, media: &[MediaId]) -> AppResult<Vec<MediaId>> {
-    let of = |j: &as_api::JobInfo| j.media_id.is_some_and(|m| media.contains(&m));
     let interrupted: Vec<MediaId> = media
         .iter()
         .copied()
         .filter(|&m| state.jobs.is_active(|j| j.kind == JobKind::Analyze && j.media_id == Some(m)))
         .collect();
-    let until = std::time::Instant::now() + STOP_WAIT;
-    loop {
-        state.jobs.cancel_where(of);
-        let running = state.jobs.is_active(of) || media.iter().any(|m| state.analysis.lock().running.contains(m));
-        if !running {
-            break;
-        }
-        if std::time::Instant::now() > until {
-            return Err(AppError::new(
-                ErrorCode::NotReady,
-                "The work on this episode is still stopping. Try again in a moment.",
-            ));
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
+    let ids = media.to_vec();
+    let of = move |j: &JobInfo| j.media_id.is_some_and(|m| ids.contains(&m));
+    let analysing = || media.iter().any(|m| state.analysis.lock().running.contains(m));
+    let still = "The work on this episode is still stopping. Try again in a moment.";
+    stop_jobs(state, of, analysing, still).await?;
     Ok(interrupted)
 }
 
@@ -395,7 +418,7 @@ pub async fn media_analyze(
         Ok(p)
     })
     .await?;
-    let analysis = |j: &as_api::JobInfo| j.kind == JobKind::Analyze && j.media_id == Some(media_id);
+    let analysis = |j: &JobInfo| j.kind == JobKind::Analyze && j.media_id == Some(media_id);
     match redo {
         Some(stage) => {
             // A running job restarts the analysis once it has stopped; with
