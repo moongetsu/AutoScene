@@ -253,7 +253,12 @@ export type AppSettings = {
 
 export type AudioCodec = { codec: "none" } | 
 /**  24-bit PCM (MOV only) — what NLEs prefer. */
-{ codec: "pcm24" } | { codec: "aac"; kbps: number };
+{ codec: "pcm24" } | { codec: "aac"; kbps: number } | 
+/**
+ *  The source's samples as they are: PCM at its rate, in its channels
+ *  and its sample format.
+ */
+{ codec: "lossless" };
 
 export type AudioStream = {
 	index: number,
@@ -459,8 +464,8 @@ export type ExportPlan = {
 	/**  Roughly how big it would be with each preset. */
 	sizes: PresetSize[],
 	/**
-	 *  The folder the files go into inside the destination (a scenepack's
-	 *  folder named after its character), as it will be named.
+	 *  The folder a file per clip goes into inside the destination (a
+	 *  scenepack's folder named after its character), as it will be named.
 	 */
 	folder: string | null,
 	/**
@@ -948,6 +953,18 @@ export type Presence = {
 export type PresetSize = {
 	presetId: string,
 	bytes: number | null,
+	/**
+	 *  Why this preset makes a file per clip of what was to be one file
+	 *  (Bit-Perfect can't join episodes whose pictures or sound differ).
+	 */
+	apart?: string | null,
+	/**
+	 *  The files' extension when it isn't the preset's container's
+	 *  (Bit-Perfect keeps some pictures as FFV1 in an MKV).
+	 */
+	ext?: string | null,
+	/**  What people should know about this preset for these clips. */
+	note?: string | null,
 };
 
 export type ProResProfile = "proxy" | "lt" | "standard" | "hq" | "p4444";
@@ -1111,7 +1128,12 @@ export type UpdateStatus = {
 
 export type VideoCodec = { codec: "prores"; profile: ProResProfile } | { codec: "dnxhr"; profile: DnxProfile } | 
 /**  `quality`: 0 (lossless-ish) … 51 (worst), CRF-like. 16 is visually lossless. */
-{ codec: "h264"; quality: number; gop: Gop; encoder: EncoderPref } | { codec: "hevc"; quality: number; gop: Gop; encoder: EncoderPref; ten_bit: boolean };
+{ codec: "h264"; quality: number; gop: Gop; encoder: EncoderPref } | { codec: "hevc"; quality: number; gop: Gop; encoder: EncoderPref; ten_bit: boolean } | 
+/**
+ *  Bit-Perfect: every frame exactly as the source decodes to, without
+ *  loss (see `as_export::lossless`).
+ */
+{ codec: "lossless" };
 
 export type VideoStream = {
 	/**  Absolute stream index in the container. */

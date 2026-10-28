@@ -10,10 +10,12 @@ use as_api::{
 };
 use as_core::{CancelToken, ExportId, FrameIndex, FrameRange, MediaId, ProjectId};
 use as_db::{IngestRecord, NewExportItem, ProjectDb};
+use as_export::LosslessCodec;
 use as_export::clip::PARTIAL_DIR;
+use as_export::preset::VideoCodec;
 use as_export::{
-    ClipJob, EstimateClip, ExportPreset, JoinJob, JoinPart, MergeSource, Part, estimate_bytes, export_clip, join_parts,
-    plan_merge,
+    ClipJob, EstimateClip, ExportPreset, JoinJob, JoinPart, MergeSource, Part, estimate_bytes, exact_format,
+    export_clip, join_parts, lossless_merge_blocker, plan_lossless_merge, plan_merge,
 };
 use as_media::poster::{StillSize, extract_frame_jpegs};
 use as_media::{Caps, MediaInfo, MediaResult, Source, Tools, build_frame_index, idet, probe, proxy};
@@ -822,10 +824,13 @@ impl Project {
                 None => promised.extend(e.items.iter().filter(|i| live(i.status)).map(|i| i.name.to_lowercase())),
             }
         }
+        // A Bit-Perfect clip is a .mov, or an .mkv where FFV1 keeps it.
+        let exts: &[&str] = if preset.video == VideoCodec::Lossless { &["mov", "mkv"] } else { &[ext] };
         let taken = |n: &str, promised: &HashSet<String>| {
-            promised.contains(&n.to_lowercase()) || out_dir.join(format!("{n}.{ext}")).exists()
+            promised.contains(&n.to_lowercase()) || exts.iter().any(|e| out_dir.join(format!("{n}.{e}")).exists())
         };
-        let merged = match req.merge.as_deref().map(str::trim) {
+        let apart = req.merge.is_some() && self.apart_reason(&preset, &req.clips)?.is_some();
+        let merged = match req.merge.as_deref().map(str::trim).filter(|_| !apart) {
             Some("") => return Err(ProjectError::Invalid("The file needs a name.".into())),
             Some(name) => {
                 let name = unique_name(&safe_component(name, " ", 120), |n| taken(n, &promised));
@@ -926,9 +931,42 @@ impl Project {
             .collect();
         let sizes = presets
             .iter()
-            .map(|p| PresetSize { preset_id: p.id.clone(), bytes: estimate_bytes(p, caps, &sized, false) })
+            .map(|p| {
+                let (ext, note) = lossless_note(p, sized.iter().map(|c| c.info));
+                PresetSize {
+                    preset_id: p.id.clone(),
+                    bytes: estimate_bytes(p, caps, &sized, false),
+                    apart: None,
+                    ext,
+                    note,
+                }
+            })
             .collect();
         Ok(ExportPlan { names, sizes, folder: None, file: None })
+    }
+
+    /// Why a Bit-Perfect file of `clips` is made a file per clip instead
+    /// (their episodes' pictures or sound differ); `None` for other presets,
+    /// or when they can share one.
+    pub(crate) fn apart_reason(&self, preset: &ExportPreset, clips: &[ClipRequest]) -> ProjectResult<Option<String>> {
+        if preset.video != VideoCodec::Lossless {
+            return Ok(None);
+        }
+        let mut sources: HashMap<MediaId, (MediaItem, MediaInfo, Arc<FrameIndex>)> = HashMap::new();
+        for c in clips {
+            if let std::collections::hash_map::Entry::Vacant(e) = sources.entry(c.media_id) {
+                e.insert(self.ready_source(c.media_id)?);
+            }
+        }
+        let merge: Vec<MergeSource> = clips
+            .iter()
+            .filter(|c| c.start < c.end)
+            .map(|c| {
+                let (m, info, index) = &sources[&c.media_id];
+                MergeSource { info, index, range: FrameRange::new(c.start, c.end), audio_ordinal: m.audio_ordinal }
+            })
+            .collect();
+        Ok(lossless_merge_blocker(&merge).map(|why| apart_sentence(&why)))
     }
 
     /// Mark an export failed before it could start (e.g. ffmpeg missing).
@@ -1087,7 +1125,17 @@ impl Project {
                 audio_ordinal: *audio,
             })
             .collect();
-        let plan = match plan_merge(tools.caps(), &ex.preset, &merge_sources) {
+        let planned = if ex.preset.video == VideoCodec::Lossless {
+            // What every episode decodes to, exactly: only alike ones join.
+            sources
+                .iter()
+                .map(|(_, e, _)| exact_format(tools, &e.0, e.1.video.index))
+                .collect::<Result<Vec<_>, _>>()
+                .and_then(|exact| plan_lossless_merge(tools.caps(), &merge_sources, &exact))
+        } else {
+            plan_merge(tools.caps(), &ex.preset, &merge_sources)
+        };
+        let plan = match planned {
             Ok(plan) => plan,
             Err(e) => {
                 let e = ProjectError::from(e);
@@ -1220,6 +1268,36 @@ impl Project {
 /// Where a merged export renders its parts: a folder of its own in the
 /// destination's hidden work folder (on the same drive as the file, so it
 /// is moved into place, not copied).
+/// For a Bit-Perfect export of clips of `infos`, the extension when it
+/// isn't the preset's (`mkv`: every clip FFV1) and a note when FFV1 keeps
+/// some: After Effects can't open those.
+pub(crate) fn lossless_note<'a>(
+    preset: &ExportPreset,
+    infos: impl Iterator<Item = &'a MediaInfo>,
+) -> (Option<String>, Option<String>) {
+    if preset.video != VideoCodec::Lossless {
+        return (None, None);
+    }
+    let codecs: Vec<LosslessCodec> =
+        infos.map(|i| as_export::lossless::codec_for(&i.video.pix_fmt, (i.video.width, i.video.height))).collect();
+    let ffv1 = codecs.iter().filter(|c| **c == LosslessCodec::Ffv1).count();
+    if ffv1 == 0 {
+        return (None, None);
+    }
+    let all = ffv1 == codecs.len();
+    let ext = all.then(|| "mkv".to_string());
+    let whose = if all { "These pictures" } else { "Some of these pictures" };
+    let note = format!(
+        "{whose} can't be stored exactly as HEVC, so they're kept as FFV1 in an MKV: DaVinci Resolve and VLC open it, After Effects doesn't."
+    );
+    (ext, Some(note))
+}
+
+/// What the export dialog says when Bit-Perfect makes a file per clip.
+pub(crate) fn apart_sentence(why: &str) -> String {
+    format!("Bit-Perfect makes a file per shot here: {why}.")
+}
+
 fn merge_work_dir(out_dir: &Path, id: ExportId) -> PathBuf {
     out_dir.join(PARTIAL_DIR).join(id.to_string())
 }

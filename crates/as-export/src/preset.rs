@@ -79,6 +79,9 @@ pub enum VideoCodec {
         encoder: EncoderPref,
         ten_bit: bool,
     },
+    /// Bit-Perfect: every frame exactly as the source decodes to, without
+    /// loss (see `as_export::lossless`).
+    Lossless,
 }
 
 impl VideoCodec {
@@ -86,6 +89,7 @@ impl VideoCodec {
         match self {
             Self::Prores { .. } | Self::Dnxhr { .. } => true,
             Self::H264 { gop, .. } | Self::Hevc { gop, .. } => *gop == Gop::AllIntra,
+            Self::Lossless => false,
         }
     }
 
@@ -96,6 +100,7 @@ impl VideoCodec {
             Self::Dnxhr { profile } => *profile == DnxProfile::Hqx,
             Self::Hevc { ten_bit, .. } => *ten_bit,
             Self::H264 { .. } => false,
+            Self::Lossless => true,
         }
     }
 }
@@ -109,6 +114,9 @@ pub enum AudioCodec {
     Aac {
         kbps: u32,
     },
+    /// The source's samples as they are: PCM at its rate, in its channels
+    /// and its sample format.
+    Lossless,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -208,6 +216,19 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
             container: Container::Mp4,
             video: VideoCodec::Hevc { quality: 18, gop: Gop::Editing, encoder: EncoderPref::Auto, ten_bit: true },
             audio: AudioCodec::Aac { kbps: 320 },
+            max_height: None,
+            hdr: HdrMode::Auto,
+            stereo: false,
+            builtin: true,
+        },
+        ExportPreset {
+            id: "bit-perfect".into(),
+            name: "Bit-Perfect (lossless)".into(),
+            description: "Every frame exactly as in the episode: the same pixels, colour and HDR, and its own sound. Stored without loss as HEVC, which After Effects and other editors open (FFV1 for the rare pictures HEVC can't hold). Very large files."
+                .into(),
+            container: Container::Mov,
+            video: VideoCodec::Lossless,
+            audio: AudioCodec::Lossless,
             max_height: None,
             hdr: HdrMode::Auto,
             stereo: false,

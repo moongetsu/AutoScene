@@ -175,7 +175,8 @@ function FileRow({ ex, file }: { ex: ExportSummary; file: MergedFile }) {
         <div className="min-w-0 flex-1">
           <Tooltip label={file.path} side="top" delay={600} disabled={!file.path}>
             <div className="truncate text-md font-medium text-fg-1" data-selectable>
-              {file.name}.{ex.preset.container}
+              {/* The file as written (Bit-Perfect may make an .mkv), else as planned. */}
+              {file.path ? file.path.split(/[\\/]/).pop() : `${file.name}.${ex.preset.container}`}
             </div>
           </Tooltip>
           <div className="mt-0.5 truncate text-xs text-fg-3">{what}</div>

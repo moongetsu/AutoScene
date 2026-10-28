@@ -13,11 +13,15 @@
 //!   export gives it.
 //! - Other hardware encoders are counted like the software ones.
 //!
+//! - Bit-Perfect stores what the picture needs without loss: a share of its
+//!   raw size, from a sixth (clean) to two fifths (film grain); the figure
+//!   is in between (see [`LOSSLESS_SHARE`]).
+//!
 //! Every clip is counted as the export makes it: upright, in square pixels,
 //! under the preset's height cap — in a file joined from the clips, at the
-//! size of that file.
+//! size of that file. Bit-Perfect clips keep the source's own picture.
 
-use as_media::{Caps, CodecFamily, MediaInfo, Vendor};
+use as_media::{AudioStream, Caps, CodecFamily, MediaInfo, Vendor};
 
 use crate::clip::{AUDIO_RATE, encoder_fps, nvenc_cq, nvenc_maxrate};
 use crate::merge::{audio_stream, file_size, natural_size};
@@ -35,6 +39,65 @@ pub struct EstimateClip<'a> {
     pub fps: f64,
 }
 
+/// The share of the raw picture Bit-Perfect stores, in lossless HEVC: 1080p
+/// in 8 bits, 4:2:0 (12 bits a pixel raw) took 2.0 (NVENC) and 2.3 (x265)
+/// bits a pixel of a clean web release, 4.8 of Breaking Bad's grain; a clean
+/// 4K CGI film in 10 bits (15 raw) 2.5 (NVENC).
+const LOSSLESS_SHARE: f64 = 0.25;
+/// FFV1's share: about two thirds of HEVC's on a clean picture (1.3 to 1.4
+/// bits a pixel of the same web release), as much on grain (4.7).
+const FFV1_SHARE: f64 = 0.18;
+
+/// Raw bits a pixel of `info`'s picture: its samples a pixel (luma, the
+/// chroma its subsampling leaves, alpha) times their depth.
+fn raw_bits(info: &MediaInfo) -> f64 {
+    let v = &info.video;
+    let f = v.pix_fmt.as_str();
+    let (sx, sy) = crate::lossless::chroma_step(f);
+    let alpha = ["yuva", "gbrap", "ya", "rgba", "bgra", "argb", "abgr"].iter().any(|a| f.starts_with(a));
+    let colour = if f.starts_with("gray") { 1.0 } else { 1.0 + 2.0 / f64::from(sx * sy) };
+    (colour + if alpha { 1.0 } else { 0.0 }) * f64::from(v.bit_depth.max(8))
+}
+
+/// Bytes a second of `a`'s sound takes as Bit-Perfect stores it: PCM in its
+/// own sample format (lossy codecs decode to 32-bit floats; lossless ones
+/// are counted at 24 bits unless they say 16).
+fn lossless_audio_rate(a: &AudioStream) -> f64 {
+    let c = a.codec.as_str();
+    let bytes = if c.starts_with("pcm_u8") || c.starts_with("pcm_s8") {
+        1.0
+    } else if c.starts_with("pcm_s16") {
+        2.0
+    } else if c.starts_with("pcm_s24") || matches!(c, "flac" | "alac" | "truehd" | "mlp") {
+        3.0
+    } else if c.starts_with("pcm_s32") || c.starts_with("pcm_f32") {
+        4.0
+    } else if c.starts_with("pcm_f64") {
+        8.0
+    } else {
+        4.0
+    };
+    f64::from(a.sample_rate) * f64::from(a.channels) * bytes
+}
+
+/// Bytes a Bit-Perfect export of `clips` makes (joined or not: every part
+/// keeps its own picture and sound).
+fn lossless_bytes(clips: &[EstimateClip<'_>]) -> f64 {
+    clips
+        .iter()
+        .map(|c| {
+            let v = &c.info.video;
+            let pixels = f64::from(v.width) * f64::from(v.height) * c.frames as f64;
+            let sound = audio_stream(c.info, c.audio_ordinal).map_or(0.0, |a| lossless_audio_rate(a) * c.seconds);
+            let share = match crate::lossless::codec_for(&v.pix_fmt, (v.width, v.height)) {
+                crate::lossless::LosslessCodec::Hevc => LOSSLESS_SHARE,
+                crate::lossless::LosslessCodec::Ffv1 => FFV1_SHARE,
+            };
+            share * raw_bits(c.info) * pixels / 8.0 + sound
+        })
+        .sum()
+}
+
 /// Bits per pixel and frame of the intra codecs.
 fn intra_bpp(v: &VideoCodec) -> Option<f64> {
     Some(match v {
@@ -49,7 +112,7 @@ fn intra_bpp(v: &VideoCodec) -> Option<f64> {
         },
         // Avid's DNxHR HQ/HQX at 1080p30 run at about ProRes HQ's rate (3.54 measured).
         VideoCodec::Dnxhr { profile: DnxProfile::Hq | DnxProfile::Hqx } => 3.5,
-        VideoCodec::H264 { .. } | VideoCodec::Hevc { .. } => return None,
+        VideoCodec::H264 { .. } | VideoCodec::Hevc { .. } | VideoCodec::Lossless => return None,
     })
 }
 
@@ -121,7 +184,8 @@ fn video_bytes(preset: &ExportPreset, caps: &Caps, size: (u32, u32), fastest: f6
 /// (resampled to 48 kHz).
 fn audio_bytes(preset: &ExportPreset, channels: u32, seconds: f64) -> f64 {
     match preset.audio {
-        AudioCodec::None => 0.0,
+        // Bit-Perfect is counted by `lossless_bytes`.
+        AudioCodec::None | AudioCodec::Lossless => 0.0,
         AudioCodec::Pcm24 => f64::from(AUDIO_RATE) * 3.0 * f64::from(channels) * seconds,
         AudioCodec::Aac { kbps } => f64::from(kbps) * 1000.0 / 8.0 * seconds,
     }
@@ -130,6 +194,9 @@ fn audio_bytes(preset: &ExportPreset, channels: u32, seconds: f64) -> f64 {
 /// Bytes `clips` make with `preset` on a machine with `caps`: a file each,
 /// or `merged` into one file (as `merge::plan_merge` shapes it).
 pub fn estimate_bytes(preset: &ExportPreset, caps: &Caps, clips: &[EstimateClip<'_>], merged: bool) -> f64 {
+    if preset.video == VideoCodec::Lossless {
+        return lossless_bytes(clips);
+    }
     let size = |c: &EstimateClip<'_>| natural_size(c.info, preset.max_height);
     let rate = |c: &EstimateClip<'_>| encoder_fps(c.info, c.fps);
     let channels = |c: &EstimateClip<'_>| {

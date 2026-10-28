@@ -118,6 +118,11 @@ const presets: ExportPreset[] = [
   preset("h264-mobile", "H.264 · Mobile (CapCut, Alight Motion)", "1080p H.264 with stereo sound that imports cleanly into phone editors.", "mp4"),
   preset("h264-intra", "H.264 · All-Intra (Twixtor)", "Every frame a keyframe — ideal for Twixtor and frame-by-frame work.", "mp4"),
   preset("hevc10", "HEVC 10-bit (keeps HDR)", "Smaller files that preserve 10-bit colour and HDR.", "mp4"),
+  {
+    ...preset("bit-perfect", "Bit-Perfect (lossless)", "Every frame exactly as in the episode: the same pixels, colour and HDR, and its own sound. Stored without loss as HEVC, which After Effects and other editors open (FFV1 for the rare pictures HEVC can't hold). Very large files.", "mov"),
+    video: { codec: "lossless" },
+    audio: { codec: "lossless" },
+  },
 ]
 
 function preset(id: string, name: string, description: string, container: "mov" | "mp4"): ExportPreset {
@@ -415,13 +420,14 @@ const BYTES_PER_FRAME: Record<string, number> = {
   "h264-mobile": 6.0e4,
   "h264-intra": 2.6e5,
   hevc10: 6.0e4,
+  "bit-perfect": 9.3e5,
 }
 
 function exportPlan(p: MockProject, clips: ClipRequest[]): ExportPlan {
   const frames = clips.reduce((sum, c) => sum + (c.end - c.start), 0)
   return {
     names: clips.map((c) => clipName(p, c)),
-    sizes: presets.map((pr) => ({ presetId: pr.id, bytes: frames * (BYTES_PER_FRAME[pr.id] ?? 2e5) })),
+    sizes: presets.map((pr) => ({ presetId: pr.id, bytes: frames * (BYTES_PER_FRAME[pr.id] ?? 2e5), apart: null, ext: null, note: null })),
     folder: null,
     file: null,
   }

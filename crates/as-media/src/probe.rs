@@ -199,6 +199,133 @@ fn fill_colour_from_first_frame(tools: &Tools, path: &Path, video: &mut VideoStr
     apply_frame_colour(video, frame);
 }
 
+/// What a source's streams decode to, exactly as the decoder hands them
+/// over: what a lossless copy has to keep (see [`probe_exact`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ExactFormat {
+    /// The decoded frames' pixel format (`yuvj420p` for a full-range
+    /// picture, as the decoder names it).
+    pub pix_fmt: String,
+    pub color_range: Option<String>,
+    pub color_primaries: Option<String>,
+    pub color_transfer: Option<String>,
+    pub color_space: Option<String>,
+    /// Where chroma samples sit (`left`, `topleft`, …).
+    pub chroma_location: Option<String>,
+    /// `Some(top field first)` when the first frame is interlaced.
+    pub interlaced: Option<bool>,
+    /// The HDR metadata the stream or its first frame carries, by ffprobe's
+    /// name (`Mastering display metadata`, `Content light level metadata`,
+    /// `DOVI configuration record`, `HDR Dynamic Metadata SMPTE2094-40
+    /// (HDR10+)`); a light level of 0/0 (unknown) isn't counted.
+    pub hdr_metadata: Vec<String>,
+    pub audio: Vec<ExactAudio>,
+}
+
+/// An audio stream's decoded samples.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ExactAudio {
+    /// Position among audio streams (`0:a:N`).
+    pub ordinal: u32,
+    /// `fltp`, `s16`, `s32p`…
+    pub sample_fmt: String,
+    /// Significant bits of an integer sample (24 in an `s32` of a 24-bit
+    /// source); 0 when unknown.
+    pub bits: u32,
+    pub sample_rate: u32,
+    pub channels: u32,
+    pub channel_layout: Option<String>,
+}
+
+/// The exact decoded formats of `path`'s video stream `video_index` and its
+/// audio streams: the stream's word, the first frame's where the stream has
+/// none (colour) or where only frames know (interlacing).
+pub fn probe_exact(tools: &Tools, path: &Path, video_index: u32) -> MediaResult<ExactFormat> {
+    let err = |message: String| MediaError::Probe { path: path.display().to_string(), message };
+    let json = |cmd: &mut std::process::Command| -> MediaResult<Value> {
+        let out = crate::proc::output(cmd.args(["-of", "json"]).arg(path))?;
+        if !out.status.success() {
+            return Err(err(String::from_utf8_lossy(&out.stderr).trim().to_string()));
+        }
+        serde_json::from_slice(&out.stdout).map_err(|e| err(e.to_string()))
+    };
+    let streams = json(tools.ffprobe().args([
+        "-show_entries",
+        "stream=index,codec_type,pix_fmt,color_range,color_primaries,color_transfer,color_space,chroma_location,\
+         sample_fmt,bits_per_raw_sample,sample_rate,channels,channel_layout:stream_disposition=attached_pic:\
+         stream_side_data",
+    ]))?;
+    // A few packets: a recording that starts between keyframes decodes no
+    // frame from its first ones.
+    let frame = json(tools.ffprobe().args(["-select_streams", &video_index.to_string(), "-read_intervals", "%+#64"]).args([
+        "-show_entries",
+        "frame=pix_fmt,color_range,color_primaries,color_transfer,color_space,chroma_location,interlaced_frame,top_field_first:frame_side_data",
+    ]))?;
+    let frame = frame.get("frames").and_then(Value::as_array).and_then(|f| f.first()).cloned().unwrap_or_default();
+    let list = streams.get("streams").and_then(Value::as_array).cloned().unwrap_or_default();
+    let is = |st: &Value, ty: &str| st.get("codec_type").and_then(Value::as_str) == Some(ty);
+    let video = list
+        .iter()
+        .find(|st| is(st, "video") && num::<u32>(st, "index") == Some(video_index))
+        .ok_or_else(|| MediaError::NoVideo(path.display().to_string()))?;
+    let either = |k: &str| s(video, k).or_else(|| s(&frame, k));
+    let interlaced =
+        (num::<i64>(&frame, "interlaced_frame") == Some(1)).then(|| num::<i64>(&frame, "top_field_first") == Some(1));
+    let audio = list
+        .iter()
+        .filter(|st| is(st, "audio"))
+        .enumerate()
+        .map(|(i, st)| ExactAudio {
+            ordinal: i as u32,
+            sample_fmt: s(st, "sample_fmt").unwrap_or_default(),
+            bits: num(st, "bits_per_raw_sample").unwrap_or(0),
+            sample_rate: num(st, "sample_rate").unwrap_or(0),
+            channels: num(st, "channels").unwrap_or(0),
+            channel_layout: s(st, "channel_layout"),
+        })
+        .collect();
+    Ok(ExactFormat {
+        // The frame's word first: a stream may name the coded format.
+        pix_fmt: s(&frame, "pix_fmt").or_else(|| s(video, "pix_fmt")).unwrap_or_default(),
+        color_range: either("color_range"),
+        color_primaries: either("color_primaries"),
+        color_transfer: either("color_transfer"),
+        color_space: either("color_space"),
+        chroma_location: either("chroma_location").filter(|c| c != "unspecified"),
+        interlaced,
+        hdr_metadata: hdr_metadata([video, &frame]),
+        audio,
+    })
+}
+
+/// The kinds of HDR metadata in `sides` (streams' or frames' side data), as
+/// [`ExactFormat::hdr_metadata`] lists them.
+pub fn hdr_metadata<'a>(sides: impl IntoIterator<Item = &'a Value>) -> Vec<String> {
+    const KINDS: [&str; 4] = [
+        "Mastering display metadata",
+        "Content light level metadata",
+        "DOVI configuration record",
+        "HDR Dynamic Metadata SMPTE2094-40 (HDR10+)",
+    ];
+    let mut kinds: Vec<String> = sides
+        .into_iter()
+        .filter_map(|v| v.get("side_data_list").and_then(Value::as_array))
+        .flatten()
+        .filter(|sd| {
+            // A light level of 0/0 says nothing (muxers and encoders drop it).
+            let unknown = sd.get("max_content").and_then(Value::as_i64) == Some(0)
+                && sd.get("max_average").and_then(Value::as_i64) == Some(0);
+            !unknown
+        })
+        .filter_map(|sd| sd.get("side_data_type").and_then(Value::as_str))
+        .filter(|k| KINDS.contains(k))
+        .map(str::to_owned)
+        .collect();
+    kinds.sort();
+    kinds.dedup();
+    kinds
+}
+
 fn apply_frame_colour(video: &mut VideoStream, frame: &Value) {
     video.color_transfer = video.color_transfer.take().or_else(|| s(frame, "color_transfer"));
     video.color_primaries = video.color_primaries.take().or_else(|| s(frame, "color_primaries"));

@@ -22,10 +22,18 @@ const prores: ExportPreset = {
   stereo: false,
   builtin: true,
 }
+const bitPerfect: ExportPreset = {
+  ...prores,
+  id: "bit-perfect",
+  name: "Bit-Perfect (lossless)",
+  description: "Every frame exactly as in the episode.",
+  video: { codec: "lossless" },
+  audio: { codec: "lossless" },
+}
 
 vi.mock("@/lib/ipc", () => ({
   commands: {
-    exportPresets: vi.fn(() => Promise.resolve([prores])),
+    exportPresets: vi.fn(() => Promise.resolve([prores, bitPerfect])),
     settingsGet: vi.fn(() =>
       Promise.resolve({ libraryRoot: "C:\\Library", exportPresetId: "prores-hq", audioLanguage: "eng" }),
     ),
@@ -47,8 +55,15 @@ function pack(naming: PackNaming): Pack {
     plan: {
       data: {
         names: ["Show_Walter_E01_00-00-00-00", "Show_Walter_E01_00-00-02-02", "Show_Walter_E01_00-00-12-02"],
-        sizes: [{ presetId: "prores-hq", bytes: 3e8 }],
-        folder: naming.folder && !naming.merge ? "Walter" : null,
+        sizes: [
+          { presetId: "prores-hq", bytes: 3e8 },
+          {
+            presetId: "bit-perfect",
+            bytes: 9e8,
+            apart: naming.merge ? "Bit-Perfect makes a file per shot here: their episodes' pictures differ in size or format." : null,
+          },
+        ],
+        folder: naming.folder ? "Walter" : null,
         file: naming.merge ? "Show_Walter_scenepack" : null,
       },
       isError: false,
@@ -103,6 +118,23 @@ describe("PackExportDialog", () => {
     render(<PackExportDialog pid="p" character={walter} pack={p} open onOpenChange={() => {}} />, { wrapper })
     fireEvent.click(await screen.findByRole("switch"))
     expect(p.setNaming).toHaveBeenCalledWith({ ...naming(true), merge: false })
+  })
+
+  it("says why Bit-Perfect makes a file per shot of episodes that differ", async () => {
+    vi.mocked(commands.settingsGet).mockResolvedValueOnce({
+      libraryRoot: "C:\\Library",
+      exportPresetId: "bit-perfect",
+      audioLanguage: "eng",
+    })
+    const p = pack(naming(true))
+    render(<PackExportDialog pid="p" character={walter} pack={p} open onOpenChange={() => {}} />, { wrapper })
+    await waitFor(() => expect(screen.getByText(/makes a file per shot here: their episodes' pictures differ/)).toBeTruthy())
+    expect(screen.queryByText(/needs extra free space/)).toBeNull()
+    // Named, foldered and exported like a file per shot.
+    expect(screen.queryByLabelText("File name")).toBeNull()
+    expect(screen.getByLabelText("File names")).toBeTruthy()
+    expect(screen.getByText("C:\\Library\\Exports\\Show\\Walter")).toBeTruthy()
+    expect(screen.getByRole("button", { name: "Export 3 shots" })).toBeTruthy()
   })
 
   it("names a file per shot, in the character's folder", async () => {

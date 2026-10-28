@@ -22,15 +22,16 @@ use as_api::{
     PackExportRequest, PackKey, PackNaming, PackOrder, PackPreview, PackReason, PackSpec, PackState, PackTotals,
     PresetSize, ShotSize,
 };
-use as_core::{CharacterId, FrameIdx, FrameIndex, MediaId, Rational};
+use as_core::{CharacterId, FrameIdx, FrameIndex, FrameRange, MediaId, Rational};
 use as_db::{PackBodyRow, PackRow};
-use as_export::{EstimateClip, ExportPreset, estimate_bytes};
+use as_export::preset::VideoCodec;
+use as_export::{EstimateClip, ExportPreset, MergeSource, estimate_bytes, lossless_merge_blocker};
 use as_media::Caps;
 
 use crate::bodies::{showing_of, spans_of};
 use crate::cast::track_id;
 use crate::naming::{NameParts, check_template, clip_timecode, render_file_name, render_name, safe_component};
-use crate::project::episode_name;
+use crate::project::{apart_sentence, episode_name, lossless_note};
 use crate::{Project, ProjectError, ProjectResult};
 
 // What makes a good clip, for "best first" and the limit. The weights add up
@@ -138,6 +139,7 @@ impl Project {
         let made = self.make_pack(c, spec)?;
         let clips = self.named_clips(c, &made, naming)?;
         let mut sized = Vec::with_capacity(clips.len());
+        let mut joined = Vec::with_capacity(clips.len());
         for clip in &clips {
             let Some(Source { media, index: Some(index) }) = made.sources.get(&clip.media_id) else { continue };
             let Some(info) = &media.info else { continue };
@@ -148,12 +150,30 @@ impl Project {
                 seconds: index.t(clip.end) - index.t(clip.start),
                 fps: index.nominal_fps.to_f64(),
             });
+            joined.push(MergeSource {
+                info,
+                index,
+                range: FrameRange::new(clip.start, clip.end),
+                audio_ordinal: media.audio_ordinal,
+            });
         }
+        // Bit-Perfect joins only episodes alike; others make a file per clip.
+        let apart = |p: &ExportPreset| {
+            (file.is_some() && p.video == VideoCodec::Lossless)
+                .then(|| lossless_merge_blocker(&joined).map(|why| apart_sentence(&why)))
+                .flatten()
+        };
         let sizes = presets
             .iter()
-            .map(|p| PresetSize { preset_id: p.id.clone(), bytes: estimate_bytes(p, caps, &sized, file.is_some()) })
+            .map(|p| {
+                let apart = apart(p);
+                let merged = file.is_some() && apart.is_none();
+                let (ext, note) = lossless_note(p, sized.iter().map(|c| c.info));
+                PresetSize { preset_id: p.id.clone(), bytes: estimate_bytes(p, caps, &sized, merged), apart, ext, note }
+            })
             .collect();
-        let folder = (naming.folder && file.is_none()).then(|| safe_component(&label, " ", 80));
+        // Named for a file per clip (Bit-Perfect may make one of a file).
+        let folder = naming.folder.then(|| safe_component(&label, " ", 80));
         Ok(ExportPlan {
             names: clips.into_iter().filter_map(|c| c.name).take(PLAN_NAMES).collect(),
             sizes,
@@ -183,8 +203,16 @@ impl Project {
             return Err(ProjectError::Invalid("There's nothing in the pack to export.".into()));
         }
         let label = self.db().character_label(c)?.ok_or_else(gone)?;
-        let merge = self.pack_file_name(&label, &req.naming)?;
+        let mut merge = self.pack_file_name(&label, &req.naming)?;
         let clips = self.named_clips(c, &made, &req.naming)?;
+        // A Bit-Perfect file of episodes that differ: a file per clip, as
+        // the dialog said (in the character's folder, if asked for one).
+        let preset = as_export::builtin_presets().into_iter().find(|p| p.id == req.preset_id);
+        if let Some(preset) = preset.filter(|_| merge.is_some())
+            && self.apart_reason(&preset, &clips)?.is_some()
+        {
+            merge = None;
+        }
         let base = req
             .out_dir
             .as_deref()
@@ -1004,7 +1032,7 @@ mod tests {
             .project
             .pack_plan(p.walter, &req.spec, &req.naming, &as_export::builtin_presets(), &Caps::default())
             .unwrap();
-        assert_eq!((plan.file.as_deref(), plan.folder), (Some("Show_Walter_scenepack"), None));
+        assert_eq!((plan.file.as_deref(), plan.folder.as_deref()), (Some("Show_Walter_scenepack"), Some("Walter")));
         assert_eq!(plan.names.len(), 3);
         // A file name can't use what only names a shot.
         req.naming.file = "{series} {tc}".into();

@@ -640,8 +640,8 @@ pub struct ExportPlan {
     pub names: Vec<String>,
     /// Roughly how big it would be with each preset.
     pub sizes: Vec<PresetSize>,
-    /// The folder the files go into inside the destination (a scenepack's
-    /// folder named after its character), as it will be named.
+    /// The folder a file per clip goes into inside the destination (a
+    /// scenepack's folder named after its character), as it will be named.
     pub folder: Option<String>,
     /// The one file's name (without extension) when the clips are joined
     /// into one; `names` are then its chapters.
@@ -653,6 +653,17 @@ pub struct ExportPlan {
 pub struct PresetSize {
     pub preset_id: String,
     pub bytes: f64,
+    /// Why this preset makes a file per clip of what was to be one file
+    /// (Bit-Perfect can't join episodes whose pictures or sound differ).
+    #[serde(default)]
+    pub apart: Option<String>,
+    /// The files' extension when it isn't the preset's container's
+    /// (Bit-Perfect keeps some pictures as FFV1 in an MKV).
+    #[serde(default)]
+    pub ext: Option<String>,
+    /// What people should know about this preset for these clips.
+    #[serde(default)]
+    pub note: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]

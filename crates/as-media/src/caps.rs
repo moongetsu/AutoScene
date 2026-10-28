@@ -52,6 +52,10 @@ pub struct Caps {
     pub hw_encoders: Vec<HwEncoder>,
     /// Software encoders present in this build (libx264, libx265, prores_ks, …).
     pub sw_encoders: Vec<String>,
+    /// Pixel formats `hevc_nvenc` encodes without loss on this card
+    /// (`-tune lossless`; older cards lack it, or 10 bits, or 4:4:4).
+    #[serde(default)]
+    pub nvenc_lossless: Vec<String>,
 }
 
 const HW_ENCODERS: &[(&str, CodecFamily, Vendor)] = &[
@@ -69,7 +73,21 @@ const HW_ENCODERS: &[(&str, CodecFamily, Vendor)] = &[
     ("prores_videotoolbox", CodecFamily::Prores, Vendor::Apple),
 ];
 
-const SW_ENCODERS: &[&str] = &["libx264", "libx265", "libsvtav1", "prores_ks", "dnxhd", "aac", "pcm_s24le"];
+const SW_ENCODERS: &[&str] = &[
+    "libx264",
+    "libx265",
+    "libsvtav1",
+    "prores_ks",
+    "dnxhd",
+    "ffv1",
+    "aac",
+    "pcm_s16le",
+    "pcm_s24le",
+    "pcm_s32le",
+    "pcm_f32le",
+    "pcm_f64le",
+    "pcm_u8",
+];
 
 /// Decode accelerators in preference order: (hwaccel, device type, GPU-resident format).
 const DECODERS: &[(&str, &str, &str)] = if cfg!(target_os = "macos") {
@@ -109,7 +127,18 @@ impl Caps {
             .map(|(accel, _, fmt)| HwDecode { hwaccel: (*accel).into(), output_format: (*fmt).into() });
 
         let sw_encoders = SW_ENCODERS.iter().filter(|n| present.contains(*n)).map(|n| (*n).to_string()).collect();
-        let caps = Self { decode, hw_encoders, sw_encoders };
+        let nvenc_lossless = if hw_encoders.iter().any(|e| e.name == "hevc_nvenc") {
+            thread::scope(|s| {
+                let handles: Vec<_> = NVENC_LOSSLESS
+                    .iter()
+                    .map(|&fmt| s.spawn(move || smoke_lossless(tools, fmt).then(|| fmt.to_string())))
+                    .collect();
+                handles.into_iter().filter_map(|h| h.join().ok().flatten()).collect()
+            })
+        } else {
+            Vec::new()
+        };
+        let caps = Self { decode, hw_encoders, sw_encoders, nvenc_lossless };
         tracing::info!(?caps, "media capabilities");
         caps
     }
@@ -131,6 +160,20 @@ fn smoke_encode(tools: &Tools, encoder: &str) -> bool {
             .args(["-v", "error", "-f", "lavfi", "-i", "color=c=gray:s=320x240:r=24", "-frames:v", "3"])
             .args(["-pix_fmt", if encoder.contains("videotoolbox") { "nv12" } else { "yuv420p" }])
             .args(["-c:v", encoder, "-f", "null", "-"]),
+    )
+    .is_ok_and(|o| o.status.success())
+}
+
+/// The layouts lossless HEVC NVENC is asked to take (as `as_export::lossless`
+/// hands frames to it).
+const NVENC_LOSSLESS: &[&str] = &["yuv420p", "p010le", "yuv444p", "yuv444p16le"];
+
+fn smoke_lossless(tools: &Tools, pix_fmt: &str) -> bool {
+    crate::proc::output(
+        tools
+            .ffmpeg()
+            .args(["-v", "error", "-f", "lavfi", "-i", "color=c=gray:s=320x240:r=24", "-frames:v", "3"])
+            .args(["-pix_fmt", pix_fmt, "-c:v", "hevc_nvenc", "-preset", "p4", "-tune", "lossless", "-f", "null", "-"]),
     )
     .is_ok_and(|o| o.status.success())
 }

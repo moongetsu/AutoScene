@@ -226,7 +226,13 @@ export function packPlan(
 ): ExportPlan {
   return {
     names,
-    sizes: Object.entries(sizes).map(([presetId, perFrame]) => ({ presetId, bytes: (preview.totals.frames ?? 0) * perFrame })),
+    sizes: Object.entries(sizes).map(([presetId, perFrame]) => ({
+      presetId,
+      bytes: (preview.totals.frames ?? 0) * perFrame,
+      apart: null,
+      ext: null,
+      note: null,
+    })),
     folder,
     file,
   }

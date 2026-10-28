@@ -80,7 +80,8 @@ function ExportForm({
     retry: false,
   })
   const suggested = plan.data?.names[0] ?? ""
-  const bytes = plan.data?.sizes.find((s) => s.presetId === presetId)?.bytes
+  const size = plan.data?.sizes.find((s) => s.presetId === presetId)
+  const bytes = size?.bytes
 
   const start = async () => {
     if (!presetId) return
@@ -149,6 +150,7 @@ function ExportForm({
                     About {formatBytes(bytes)} in all as {shortFormatName(preset.name)}.
                   </span>
                 )}
+                {size?.note && <span className="block pt-1 text-fg-2">{size.note}</span>}
               </>
             )
           }

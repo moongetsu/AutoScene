@@ -26,10 +26,11 @@ use std::path::{Path, PathBuf};
 
 use as_core::{CancelToken, FrameIndex, FrameRange, Rational};
 use as_media::filters::TONEMAP_SDR;
-use as_media::{AudioStream, Caps, HdrKind, MediaError, MediaInfo, Tools, run_ffmpeg};
+use as_media::{AudioStream, Caps, ExactFormat, HdrKind, MediaError, MediaInfo, Tools, run_ffmpeg};
 use serde_json::Value;
 
 use crate::clip::{AUDIO_RATE, ClipOutcome, Encoding, encoder_fps, resolve_encoding, with_suffix};
+use crate::lossless::{self, LosslessCodec};
 use crate::preset::{AudioCodec, Container, ExportPreset, HdrMode, VideoCodec};
 use crate::{ExportError, ExportResult};
 
@@ -100,6 +101,22 @@ pub struct MergeShape {
     /// The sound's language, when every part with sound agrees.
     pub language: Option<String>,
     pub(crate) encoding: Encoding,
+    /// Bit-Perfect: how the parts keep their sources exactly (`encoding` is
+    /// then the lossless one, the picture each part's own).
+    pub(crate) lossless: Option<LosslessShape>,
+}
+
+/// How every part of a Bit-Perfect file keeps its source exactly.
+#[derive(Clone, Debug)]
+pub struct LosslessShape {
+    pub codec: LosslessCodec,
+    /// The sound's PCM codec and sample rate (`None`: no sound in the file).
+    pub audio: Option<(&'static str, u32)>,
+    /// The frames' colour tags and the encoder's layout (`lossless::Keeper`).
+    pub(crate) tag: String,
+    pub(crate) repack: Option<String>,
+    /// The HDR metadata every part (and the file) must carry.
+    pub(crate) hdr: Vec<String>,
 }
 
 /// Where a part is in the file, in whole ticks and samples.
@@ -107,8 +124,9 @@ pub struct MergeShape {
 pub struct PartTiming {
     /// How long it lasts, in [`MergeShape::timescale`] ticks.
     pub ticks: u64,
-    /// Its sound in 48 kHz samples: the parts' samples add up to the file's
-    /// length rounded once, so sound never drifts from the picture.
+    /// Its sound in samples (48 kHz; Bit-Perfect: the sources' rate): the
+    /// parts' samples add up to the file's length rounded once, so sound
+    /// never drifts from the picture.
     pub samples: u64,
 }
 
@@ -190,9 +208,14 @@ pub(crate) fn audio_stream(info: &MediaInfo, ordinal: Option<u32>) -> Option<&Au
 }
 
 /// Work out the shape and timing of a merged export of `sources`.
+/// Bit-Perfect files are planned from what the sources decode to, with
+/// [`plan_lossless_merge`].
 pub fn plan_merge(caps: &Caps, preset: &ExportPreset, sources: &[MergeSource]) -> ExportResult<MergePlan> {
     if sources.is_empty() {
         return Err(ExportError::Join("nothing to join".into()));
+    }
+    if preset.video == VideoCodec::Lossless {
+        return Err(ExportError::BadPreset("a Bit-Perfect file is planned from its sources' exact formats".into()));
     }
     if preset.container == Container::Mp4 && preset.audio == AudioCodec::Pcm24 {
         return Err(ExportError::BadPreset("uncompressed audio needs a MOV file".into()));
@@ -224,7 +247,7 @@ pub fn plan_merge(caps: &Caps, preset: &ExportPreset, sources: &[MergeSource]) -
     let grids: Vec<Rational> = sources.iter().map(|s| grid(s.index)).collect();
     let t = timescale(&grids);
     let ticks: Vec<u64> = sources.iter().map(|s| part_ticks(s.index, s.range, t)).collect();
-    let parts = timings(&ticks, t);
+    let parts = timings(&ticks, t, AUDIO_RATE);
     let shape = MergeShape {
         width,
         height,
@@ -236,13 +259,134 @@ pub fn plan_merge(caps: &Caps, preset: &ExportPreset, sources: &[MergeSource]) -
         audio,
         language,
         encoding,
+        lossless: None,
+    };
+    Ok(MergePlan { shape, parts })
+}
+
+/// Why clips like `sources` can't share one Bit-Perfect file, as far as
+/// their probes tell (`None`: they can, unless what they decode to differs;
+/// see [`plan_lossless_merge`]).
+pub fn lossless_merge_blocker(sources: &[MergeSource]) -> Option<String> {
+    let first = sources.first()?;
+    let picture = |s: &MergeSource| {
+        let v = &s.info.video;
+        (v.width, v.height, v.sar, v.pix_fmt.clone(), v.rotation, v.field_order.clone())
+    };
+    if sources.iter().any(|s| picture(s) != picture(first)) {
+        return Some("their episodes' pictures differ in size or format".into());
+    }
+    // The colour each copy would be tagged with (untagged sources get what
+    // editors assume for their codec).
+    let colour = |s: &MergeSource| lossless::assumed_colour(s.info);
+    if sources.iter().any(|s| colour(s) != colour(first)) {
+        return Some("their episodes' colours are tagged differently".into());
+    }
+    let sounds: Vec<&AudioStream> = sources.iter().filter_map(|s| audio_stream(s.info, s.audio_ordinal)).collect();
+    if sounds.iter().any(|a| (a.sample_rate, a.channels) != (sounds[0].sample_rate, sounds[0].channels)) {
+        return Some("their episodes' sound differs in its rate or channels".into());
+    }
+    None
+}
+
+/// Work out the shape and timing of a Bit-Perfect file of `sources`, which
+/// decode to `exact` (one each): only clips whose frames and sound are
+/// alike can share one, as they are.
+pub fn plan_lossless_merge(caps: &Caps, sources: &[MergeSource], exact: &[ExactFormat]) -> ExportResult<MergePlan> {
+    if sources.is_empty() || sources.len() != exact.len() {
+        return Err(ExportError::Join("nothing to join".into()));
+    }
+    let unlike = |why: &str| Err(ExportError::Inexact(format!("its clips can't share one file: {why}")));
+    if let Some(why) = lossless_merge_blocker(sources) {
+        return unlike(&why);
+    }
+    let keepers = sources
+        .iter()
+        .zip(exact)
+        .map(|(s, e)| lossless::keeper(caps, e, &s.info.video.codec, (s.info.video.width, s.info.video.height)))
+        .collect::<ExportResult<Vec<_>>>()?;
+    let keeper = keepers[0].clone();
+    let alike = |k: &lossless::Keeper| {
+        (k.codec, &k.encoding.args, &k.tag, &k.repack)
+            == (keeper.codec, &keeper.encoding.args, &keeper.tag, &keeper.repack)
+    };
+    if !keepers.iter().all(alike) {
+        return unlike("their episodes decode to different picture formats or colours");
+    }
+    if exact.iter().any(|e| e.interlaced != exact[0].interlaced) {
+        return unlike("their episodes' fields come in a different order");
+    }
+    if exact.iter().any(|e| e.hdr_metadata != exact[0].hdr_metadata) {
+        return unlike("their episodes' HDR metadata differs");
+    }
+    // The sound of every clip that has one, as stored: alike, or all held
+    // exactly by 32-bit float (16- and 24-bit samples are).
+    let sounds: Vec<(&'static str, u32, u32)> = sources
+        .iter()
+        .zip(exact)
+        .filter_map(|(s, e)| {
+            let ord = s.audio_ordinal.or_else(|| s.info.default_audio().map(|a| a.ordinal))?;
+            e.audio.iter().find(|a| a.ordinal == ord)
+        })
+        .map(|a| lossless::pcm_codec(a).map(|c| (c, a.sample_rate.max(1), a.channels)))
+        .collect::<ExportResult<_>>()?;
+    let audio = match sounds.first() {
+        None => None,
+        // Layouts of as many channels ("5.1", "5.1(side)") hold the same
+        // samples: the file is tagged with the first one's.
+        Some((codec, rate, channels)) => {
+            if sounds.iter().any(|(_, r, c)| (r, c) != (rate, channels)) {
+                return unlike("their episodes' sound differs in its rate or channels");
+            }
+            let codec = if sounds.iter().all(|(c, ..)| c == codec) {
+                *codec
+            } else if sounds.iter().all(|(c, ..)| matches!(*c, "pcm_f32le" | "pcm_s16le" | "pcm_s24le")) {
+                "pcm_f32le"
+            } else {
+                return unlike("their episodes' sound is stored in different sample formats");
+            };
+            Some((codec, *rate))
+        }
+    };
+    let layout = audio
+        .map(|_| sources.iter().find_map(|s| audio_stream(s.info, s.audio_ordinal)).map(layout_of).unwrap_or_default());
+    let langs: Vec<Option<String>> = sources
+        .iter()
+        .filter_map(|s| audio_stream(s.info, s.audio_ordinal))
+        .map(|a| a.language.as_deref().and_then(as_media::lang::canonical))
+        .collect();
+    let language = langs.first().cloned().flatten().filter(|l| langs.iter().all(|x| x.as_ref() == Some(l)));
+
+    let grids: Vec<Rational> = sources.iter().map(|s| grid(s.index)).collect();
+    let t = timescale(&grids);
+    let ticks: Vec<u64> = sources.iter().map(|s| part_ticks(s.index, s.range, t)).collect();
+    let parts = timings(&ticks, t, audio.map_or(AUDIO_RATE, |(_, rate)| rate));
+    let v = &sources[0].info.video;
+    let shape = MergeShape {
+        width: v.width,
+        height: v.height,
+        max_height: None,
+        timescale: t as u32,
+        tonemap: false,
+        color: ColorTags::of(sources[0].info),
+        to_bt709: false,
+        audio: layout,
+        language,
+        encoding: keeper.encoding,
+        lossless: Some(LosslessShape {
+            codec: keeper.codec,
+            audio,
+            tag: keeper.tag,
+            repack: keeper.repack,
+            hdr: exact[0].hdr_metadata.clone(),
+        }),
     };
     Ok(MergePlan { shape, parts })
 }
 
 /// The time base a part's frames are on: its frame grid, or its own time
 /// base when it has a variable frame rate.
-fn grid(index: &FrameIndex) -> Rational {
+pub(crate) fn grid(index: &FrameIndex) -> Rational {
     if index.is_vfr() { index.tb } else { index.nominal_fps.recip() }
 }
 
@@ -284,10 +428,11 @@ fn part_ticks(index: &FrameIndex, range: FrameRange, t: u64) -> u64 {
     ((num * i128::from(t) * 2 + den) / (2 * den)).max(1) as u64
 }
 
-/// The parts' timing: each one's samples are the file's sound up to its end,
-/// rounded, minus what came before (so the rounding never adds up).
-fn timings(ticks: &[u64], t: u64) -> Vec<PartTiming> {
-    let samples_at = |c: u128| ((c * u128::from(AUDIO_RATE) * 2 + u128::from(t)) / (2 * u128::from(t))) as u64;
+/// The parts' timing: each one's samples (at `rate`) are the file's sound up
+/// to its end, rounded, minus what came before (so the rounding never adds
+/// up).
+fn timings(ticks: &[u64], t: u64, rate: u32) -> Vec<PartTiming> {
+    let samples_at = |c: u128| ((c * u128::from(rate) * 2 + u128::from(t)) / (2 * u128::from(t))) as u64;
     let mut at = 0u128;
     ticks
         .iter()
@@ -452,16 +597,23 @@ pub fn join_parts(
     if parts.is_empty() {
         return Err(ExportError::Join("nothing to join".into()));
     }
-    // Checking the parts takes a moment for each: a fifth of the way.
-    const PROBING: f64 = 0.2;
-    let same_headers = probe_parts(tools, parts, cancel, |p| progress(p * PROBING))?;
+    let keep = shape.lossless.as_ref();
+    // Checking the parts takes a moment for each: a fifth of the way. A
+    // Bit-Perfect file is decoded and checked after it is written: half.
+    let (probing, copied) = if keep.is_some() { (0.1, 0.5) } else { (0.2, 1.0) };
+    let same_headers = probe_parts(tools, parts, cancel, |p| progress(p * probing))?;
     let t = shape.timescale;
     let list = work_dir.join(LIST);
     let chapters = work_dir.join(CHAPTERS);
     std::fs::write(&list, concat_script(parts, t)?)?;
     std::fs::write(&chapters, chapters_meta(parts, t, job.title.as_deref()))?;
 
-    let ext = preset.container.ext();
+    let ext = keep.map_or(preset.container.ext(), |k| k.codec.ext());
+    let mov = keep.map_or(preset.container == Container::Mov, |k| k.codec == LosslessCodec::Hevc);
+    if keep.is_some_and(|k| k.codec == LosslessCodec::Ffv1) && !same_headers {
+        // FFV1 can't carry another part's stream header along.
+        return Err(ExportError::Join("the parts' FFV1 stream headers differ".into()));
+    }
     let joined = work_dir.join(format!("joined.{ext}"));
     // Full paths in the list (see `concat_script`).
     let mut a: Vec<String> = ["-v", "error", "-y", "-f", "concat", "-safe", "0"].map(String::from).to_vec();
@@ -480,11 +632,11 @@ pub fn join_parts(
         a.extend(["-map".into(), "0:a:0".into()]);
     }
     a.extend(["-map_metadata", "1", "-map_chapters", "1", "-c:v", "copy"].map(String::from));
-    if matches!(preset.video, VideoCodec::Hevc { .. }) {
+    if matches!(preset.video, VideoCodec::Hevc { .. }) || keep.is_some_and(|k| k.codec == LosslessCodec::Hevc) {
         a.extend(["-tag:v".into(), "hvc1".into()]);
     }
     match preset.audio {
-        AudioCodec::Pcm24 if audio => a.extend(["-c:a", "copy"].map(String::from)),
+        AudioCodec::Pcm24 | AudioCodec::Lossless if audio => a.extend(["-c:a", "copy"].map(String::from)),
         // Encoded once over the whole file: no encoder delay between parts.
         AudioCodec::Aac { kbps } if audio => a.extend([
             "-filter:a".into(),
@@ -499,9 +651,20 @@ pub fn join_parts(
     if let Some(lang) = shape.language.as_ref().filter(|_| audio) {
         a.extend(["-metadata:s:a:0".into(), format!("language={lang}")]);
     }
-    a.extend(["-video_track_timescale".into(), t.to_string(), "-movflags".into()]);
-    a.push(if preset.container == Container::Mov { "+write_colr" } else { "+faststart" }.into());
-    a.extend(["-f".into(), if preset.container == Container::Mov { "mov" } else { "mp4" }.into()]);
+    match keep {
+        // An MKV times frames in milliseconds of its own.
+        Some(k) if k.codec == LosslessCodec::Ffv1 => {}
+        _ => {
+            a.extend(["-video_track_timescale".into(), t.to_string(), "-movflags".into()]);
+            a.push(if mov { "+write_colr" } else { "+faststart" }.into());
+        }
+    }
+    let format = match keep {
+        Some(k) => k.codec.format(),
+        None if mov => "mov",
+        None => "mp4",
+    };
+    a.extend(["-f".into(), format.into()]);
     a.push(joined.display().to_string());
 
     let total: u64 = parts.iter().map(|p| p.timing.ticks).sum();
@@ -510,14 +673,32 @@ pub fn join_parts(
         let _ = std::fs::remove_file(&list);
         let _ = std::fs::remove_file(&chapters);
     };
-    let mut copying = |p: f64| progress(PROBING + (1.0 - PROBING) * p);
+    let mut copying = |p: f64| progress(probing + (copied - probing) * p);
     run_ffmpeg(tools, &a, cancel, |p| copying((p.out_time / seconds).clamp(0.0, 1.0))).inspect_err(|_| {
         let _ = std::fs::remove_file(&joined);
         tidy();
     })?;
     tidy();
-    let verified = match check_joined(tools, &joined, parts, preset, audio) {
+    let mut checked = check_joined(tools, &joined, parts, preset, audio, keep.is_some());
+    if let Some(k) = keep.filter(|_| checked.is_ok()) {
+        let checking = |p: f64| progress(copied + (1.0 - copied) * p);
+        checked = check_joined_frames(tools, &joined, parts, cancel, checking)
+            .and_then(|()| lossless::keeps_hdr(tools, &joined, &k.hdr))
+            .map_err(|e| match e {
+                Ok(why) => why,
+                Err(e) => format!("{e:?}"),
+            });
+    }
+    let verified = match checked {
         Ok(()) => true,
+        // Bit-Perfect promises the sources: a file that isn't them isn't kept.
+        Err(why) if keep.is_some() => {
+            let _ = std::fs::remove_file(&joined);
+            if cancel.is_cancelled() {
+                return Err(MediaError::Cancelled.into());
+            }
+            return Err(ExportError::Inexact(format!("the joined file isn't its parts exactly ({why})")));
+        }
         Err(why) => {
             tracing::error!(file = %joined.display(), reason = %why, "the joined file could not be verified");
             false
@@ -536,7 +717,7 @@ pub fn join_parts(
 }
 
 /// `stem.ext`, or `stem_2.ext`… when that is taken (a rename would replace it).
-fn free_path(stem: &Path, ext: &str) -> PathBuf {
+pub(crate) fn free_path(stem: &Path, ext: &str) -> PathBuf {
     let first = with_suffix(stem, &format!(".{ext}"));
     if !first.exists() {
         return first;
@@ -654,14 +835,43 @@ fn escape_meta(s: &str) -> String {
     out
 }
 
+/// Does a Bit-Perfect file decode to its parts' frames, as each was checked
+/// against its source (`lossless::checked_frames`)?
+fn check_joined_frames(
+    tools: &Tools,
+    file: &Path,
+    parts: &[JoinPart],
+    cancel: &CancelToken,
+    progress: impl FnMut(f64),
+) -> Result<(), Result<String, ExportError>> {
+    let mut want = lossless::FrameHashes::default();
+    for p in parts {
+        let text = std::fs::read_to_string(lossless::checked_frames(&p.path)).map_err(|e| Err(e.into()))?;
+        let part = lossless::read_framemd5(&text);
+        if want.hashes.is_empty() {
+            (want.dimensions, want.sar) = (part.dimensions, part.sar);
+        }
+        want.hashes.extend(part.hashes);
+    }
+    let frames = with_suffix(file, ".frames.txt");
+    let n = u32::try_from(want.hashes.len()).unwrap_or(u32::MAX);
+    lossless::decode_hashes(tools, file, &frames, None, n, cancel, progress).map_err(Err)?;
+    let got = std::fs::read_to_string(&frames).map(|t| lossless::read_framemd5(&t));
+    let _ = std::fs::remove_file(&frames);
+    lossless::compare(&want, &got.map_err(|e| Err(e.into()))?, None).map_err(Ok)
+}
+
 /// Does the joined file have every part's frames, a chapter each and all
-/// their sound?
+/// their sound? A Bit-Perfect file's frames are checked one by one
+/// ([`check_joined_frames`]); its sound is counted by its frames' samples
+/// (an MKV keeps no count of its own).
 fn check_joined(
     tools: &Tools,
     file: &Path,
     parts: &[JoinPart],
     preset: &ExportPreset,
     audio: bool,
+    lossless: bool,
 ) -> Result<(), String> {
     let v = ffprobe_json(tools, file, &["-show_entries", "stream=codec_type,nb_frames,duration_ts:chapter=id"])
         .map_err(|e| format!("{e:?}"))?;
@@ -676,7 +886,7 @@ fn check_joined(
     };
     let frames: u64 = parts.iter().map(|p| u64::from(p.frames)).sum();
     let got = stream("video").and_then(|s| number(s, "nb_frames"));
-    if got != Some(frames) {
+    if !lossless && got != Some(frames) {
         return Err(format!("{got:?} frames, expected {frames}"));
     }
     let chapters = v.get("chapters").and_then(Value::as_array).map_or(0, Vec::len);
@@ -685,14 +895,33 @@ fn check_joined(
     }
     if audio {
         let samples: u64 = parts.iter().map(|p| p.timing.samples).sum();
-        let got = stream("audio").and_then(|s| number(s, "duration_ts")).ok_or("no sound")?;
+        let got = if lossless {
+            sound_samples(tools, file).ok_or("no sound")?
+        } else {
+            stream("audio").and_then(|s| number(s, "duration_ts")).ok_or("no sound")?
+        };
         // AAC adds its encoder delay at the start and pads its last frame.
-        let slack = if preset.audio == AudioCodec::Pcm24 { 0 } else { 2048 };
+        let slack = if matches!(preset.audio, AudioCodec::Pcm24 | AudioCodec::Lossless) { 0 } else { 2048 };
         if got.abs_diff(samples) > slack {
             return Err(format!("{got} audio samples, expected {samples}"));
         }
     }
     Ok(())
+}
+
+/// How many samples `file`'s first sound track holds, frame by frame.
+fn sound_samples(tools: &Tools, file: &Path) -> Option<u64> {
+    let out = as_media::proc::output(
+        tools
+            .ffprobe()
+            .args(["-select_streams", "a:0", "-show_entries", "frame=nb_samples", "-of", "csv=p=0"])
+            .arg(file),
+    )
+    .ok()
+    .filter(|o| o.status.success())?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let samples = text.lines().filter_map(|l| l.trim().trim_end_matches(',').parse::<u64>().ok());
+    Some(samples.sum())
 }
 
 #[cfg(test)]
@@ -721,7 +950,7 @@ mod tests {
         let t = 24_000;
         // 23.976 fps: 1001 ticks a frame; 1, 7 and 1000 frames.
         let ticks = [1001, 7 * 1001, 1000 * 1001];
-        let parts = timings(&ticks, t);
+        let parts = timings(&ticks, t, AUDIO_RATE);
         let all: u64 = parts.iter().map(|p| p.samples).sum();
         let total: u64 = ticks.iter().sum();
         assert_eq!(all, (total as f64 * 48_000.0 / t as f64).round() as u64);
@@ -732,7 +961,10 @@ mod tests {
             assert!((p.samples as f64 - exact).abs() <= 1.0);
         }
         // 25 fps in 19200 ticks a second: 768 ticks a frame, 1920 samples.
-        assert_eq!(timings(&[768, 768], 19_200).iter().map(|p| p.samples).collect::<Vec<_>>(), [1920, 1920]);
+        assert_eq!(
+            timings(&[768, 768], 19_200, AUDIO_RATE).iter().map(|p| p.samples).collect::<Vec<_>>(),
+            [1920, 1920]
+        );
     }
 
     #[test]

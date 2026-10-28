@@ -66,8 +66,12 @@ function ExportForm({ pid, character, pack, onDone }: { pid: string; character: 
   const preset = presets?.find((p) => p.id === presetId)
   const clips = pack.preview.data?.totals.clips ?? 0
   const names = pack.plan.data?.names ?? []
-  const file = merge ? pack.plan.data?.file : null
-  const bytes = pack.plan.data?.sizes.find((s) => s.presetId === presetId)?.bytes
+  const size = pack.plan.data?.sizes.find((s) => s.presetId === presetId)
+  const bytes = size?.bytes
+  // Bit-Perfect joins only episodes alike: otherwise a file per shot, and why.
+  const apart = merge ? (size?.apart ?? null) : null
+  const oneFile = merge && apart == null
+  const file = oneFile ? pack.plan.data?.file : null
   // A template that doesn't work: the backend says why, under the field it's about.
   const problem = pack.plan.isError ? errorMessage(pack.plan.error) : null
   const fileProblem = merge && fileNameIsWrong(naming.file) ? problem : null
@@ -75,7 +79,7 @@ function ExportForm({ pid, character, pack, onDone }: { pid: string; character: 
   const base = dir ?? defaultDir ?? ""
   const sep = base.includes("\\") ? "\\" : "/"
   // The character's folder as the backend names it (a file per shot only).
-  const folder = naming.folder && !merge ? pack.plan.data?.folder : null
+  const folder = naming.folder && !oneFile ? pack.plan.data?.folder : null
   const outDir = folder && base ? `${base.replace(/[\\/]+$/, "")}${sep}${folder}` : base
   const shots = plural(clips, "shot")
 
@@ -89,7 +93,7 @@ function ExportForm({ pid, character, pack, onDone }: { pid: string; character: 
         void commands.settingsUpdate({ ...settings, exportPresetId: presetId }).then((s) => queryClient.setQueryData(qk.settings, s))
       }
       onDone()
-      toast(merge ? `Exporting ${shots} of ${character.label} into one file` : `Exporting ${shots} of ${character.label}`, {
+      toast(oneFile ? `Exporting ${shots} of ${character.label} into one file` : `Exporting ${shots} of ${character.label}`, {
         action: { label: "Show", onClick: () => useUi.getState().setActivityOpen(true) },
       })
     } catch (e) {
@@ -117,7 +121,7 @@ function ExportForm({ pid, character, pack, onDone }: { pid: string; character: 
     <DialogContent
       title={`Export ${character.label}'s scenepack`}
       description={
-        merge
+        oneFile
           ? `${shots} in one video, each cut frame-exact and checked against the source.`
           : `${shots}, each cut frame-exact and checked against the source.`
       }
@@ -137,7 +141,7 @@ function ExportForm({ pid, character, pack, onDone }: { pid: string; character: 
           </span>
           <Switch checked={merge} onCheckedChange={(merge) => pack.setNaming({ ...naming, merge })} />
         </label>
-        {merge && (
+        {oneFile && (
           <Field
             label="File name"
             htmlFor="pack-file"
@@ -148,7 +152,7 @@ function ExportForm({ pid, character, pack, onDone }: { pid: string; character: 
                 file &&
                 preset && (
                   <span className="block truncate pt-0.5 font-mono text-xs text-fg-2" data-selectable>
-                    {file}.{preset.container}
+                    {file}.{size?.ext ?? preset.container}
                   </span>
                 )
               )
@@ -166,7 +170,7 @@ function ExportForm({ pid, character, pack, onDone }: { pid: string; character: 
           </Field>
         )}
         <Field
-          label={merge ? "Chapter names" : "File names"}
+          label={oneFile ? "Chapter names" : "File names"}
           htmlFor="pack-template"
           hint={namesProblem ? <span className="text-danger">{namesProblem}</span> : nameList}
         >
@@ -176,7 +180,7 @@ function ExportForm({ pid, character, pack, onDone }: { pid: string; character: 
             onChange={(template) => pack.setNaming({ ...naming, template })}
             tokens={TOKENS}
             invalid={namesProblem != null}
-            autoFocus={!merge}
+            autoFocus={!oneFile}
           />
         </Field>
         <Field
@@ -191,7 +195,9 @@ function ExportForm({ pid, character, pack, onDone }: { pid: string; character: 
                     About {formatBytes(bytes)} in all as {shortFormatName(preset.name)}.
                   </span>
                 )}
-                {merge && bytes != null && bytes > 0 && " The shots are rendered first, so it needs extra free space for a while."}
+                {oneFile && bytes != null && bytes > 0 && " The shots are rendered first, so it needs extra free space for a while."}
+                {apart && <span className="block pt-1 text-fg-2">{apart}</span>}
+                {size?.note && <span className="block pt-1 text-fg-2">{size.note}</span>}
               </>
             )
           }
@@ -216,7 +222,7 @@ function ExportForm({ pid, character, pack, onDone }: { pid: string; character: 
               <FolderOpen /> Change…
             </Button>
           </div>
-          {!merge && (
+          {!oneFile && (
             <label className="mt-3 flex items-center gap-3 text-md text-fg-2">
               <Switch checked={naming.folder} onCheckedChange={(folder) => pack.setNaming({ ...naming, folder })} />
               In a folder named after {character.label}
@@ -234,7 +240,7 @@ function ExportForm({ pid, character, pack, onDone }: { pid: string; character: 
             disabled={!presetId || busy || clips === 0 || problem != null || !pack.current}
           >
             {busy && <CircleNotch className="animate-spin" />}
-            {merge ? `Export ${shots} into one file` : `Export ${shots}`}
+            {oneFile ? `Export ${shots} into one file` : `Export ${shots}`}
           </Button>
         </DialogFooter>
       </form>

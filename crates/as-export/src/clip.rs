@@ -29,7 +29,8 @@ use as_media::{Caps, CodecFamily, HdrKind, MediaInfo, Source, Tools, Vendor, run
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
-use crate::merge::{MergeShape, natural_size};
+use crate::lossless::{self, LosslessCodec, Reference};
+use crate::merge::{LosslessShape, MergeShape, natural_size};
 use crate::preset::{
     AudioCodec, Container, DnxProfile, EncoderPref, ExportPreset, Gop, HdrMode, ProResProfile, VideoCodec,
 };
@@ -77,7 +78,7 @@ pub struct ClipOutcome {
 pub(crate) struct Encoding {
     pub(crate) encoder: String,
     pub(crate) args: Vec<String>,
-    pub(crate) pix_fmt: &'static str,
+    pub(crate) pix_fmt: String,
 }
 
 /// NVENC's constant quality for a preset's CRF-like `quality`. The scales
@@ -157,7 +158,7 @@ pub(crate) fn resolve_encoding(
             Encoding {
                 encoder: sw("prores_ks")?,
                 args: ["-c:v", "prores_ks", "-profile:v", p, "-vendor", "apl0"].map(String::from).to_vec(),
-                pix_fmt: pix,
+                pix_fmt: pix.into(),
             }
         }
         VideoCodec::Dnxhr { profile } => {
@@ -168,7 +169,7 @@ pub(crate) fn resolve_encoding(
             Encoding {
                 encoder: sw("dnxhd")?,
                 args: ["-c:v", "dnxhd", "-profile:v", p].map(String::from).to_vec(),
-                pix_fmt: pix,
+                pix_fmt: pix.into(),
             }
         }
         VideoCodec::H264 { quality, gop, encoder } | VideoCodec::Hevc { quality, gop, encoder, .. } => {
@@ -227,8 +228,10 @@ pub(crate) fn resolve_encoding(
                 // Apple/QuickTime-compatible HEVC sample entry.
                 args.extend(["-tag:v".into(), "hvc1".into()]);
             }
-            Encoding { encoder: name, args, pix_fmt }
+            Encoding { encoder: name, args, pix_fmt: pix_fmt.into() }
         }
+        // Chosen per source, by what it decodes to (`crate::lossless::keeper`).
+        VideoCodec::Lossless => return Err(ExportError::BadPreset("lossless encoding follows each source".into())),
     })
 }
 
@@ -263,16 +266,99 @@ fn source_timecode(index: &FrameIndex, f: u32) -> String {
 /// The ffmpeg recipe of a clip: what is filtered and encoded how.
 struct Recipe {
     encoder: String,
+    /// Options for the source (before `-i`).
+    input: Vec<String>,
     graph: String,
+    /// The sound's own filter graph (Bit-Perfect): a graph fed by the
+    /// picture alone hands the picture's rotation on to the file.
+    audio_graph: Option<String>,
     audio: bool,
     /// Everything between the maps and the stats file: timing, codecs, tags, metadata.
     args: Vec<String>,
     format: &'static str,
     ext: &'static str,
+    /// Bit-Perfect: the graph also hands the frames (`[vref]`) and sound
+    /// (`[aref]`) to hashes, and the file is checked against them.
+    reference: Option<Reference>,
+}
+
+/// The sound's language tag, when the track has a known one.
+fn audio_language(info: &MediaInfo, ordinal: Option<u32>) -> Option<String> {
+    ordinal
+        .and_then(|ord| info.audio.iter().find(|a| a.ordinal == ord))
+        .and_then(|a| a.language.as_deref())
+        .and_then(as_media::lang::canonical)
+}
+
+/// A Bit-Perfect clip as a file of its own: the source's frames and samples
+/// as they are, in the codec that keeps them (see [`crate::lossless`]).
+fn lossless_recipe(tools: &Tools, job: &ClipJob) -> ExportResult<Recipe> {
+    let ClipJob { src: Source { path, info, index }, range, .. } = job;
+    let exact = lossless::exact_format(tools, path, info.video.index)?;
+    let v = &info.video;
+    let keeper = lossless::keeper(tools.caps(), &exact, &v.codec, (v.width, v.height))?;
+    let (s, e) = (range.start, range.end);
+    let (trim_start, trim_end) = index.trim_us(*range);
+    let cut = [format!("trim=start={trim_start}us:end={trim_end}us"), "setpts=PTS-STARTPTS".to_string()];
+    let graph = lossless::picture_graph(v.index, &cut, &keeper.tag, keeper.repack.as_deref());
+    let ordinal = job.audio_ordinal.or_else(|| info.default_audio().map(|a| a.ordinal));
+    let audio = match ordinal {
+        Some(ord) => {
+            let a = exact
+                .audio
+                .iter()
+                .find(|a| a.ordinal == ord)
+                .ok_or_else(|| ExportError::Inexact(format!("its sound track {} can't be read", ord + 1)))?;
+            Some((ord, a.sample_rate.max(1), lossless::pcm_codec(a)?))
+        }
+        None => None,
+    };
+    // As a clip of any preset, at the source's own rate: gaps in the source's
+    // sound become silence, every sample there stays as it is.
+    let audio_graph = audio.map(|(ord, rate, _)| {
+        let samples = ((index.t(e) - index.t(s)) * f64::from(rate)).round() as u64;
+        format!(
+            "[0:a:{ord}]atrim=start={ts:.9}:end={te:.9},asetpts=PTS-{ts:.9}/TB,aresample={rate}:{fill}:first_pts=0,apad=whole_len={samples},atrim=end_sample={samples},asplit[a][aref]",
+            fill = as_media::proxy::AUDIO_GAP_FILL,
+            ts = index.t(s),
+            te = index.t(e),
+        )
+    });
+    let mut a: Vec<String> = vec!["-fps_mode".into(), "passthrough".into()];
+    a.extend(as_media::proxy::timing_args(index));
+    a.extend(keeper.encoding.args.iter().cloned());
+    if let Some((_, _, codec)) = audio {
+        a.extend(["-c:a".into(), codec.into()]);
+    }
+    a.extend(["-map_metadata", "-1", "-map_chapters", "-1"].map(String::from));
+    if let Some(lang) = audio_language(info, ordinal).filter(|_| audio.is_some()) {
+        a.extend(["-metadata:s:a:0".into(), format!("language={lang}")]);
+    }
+    if keeper.codec == LosslessCodec::Hevc {
+        a.extend(["-timecode".into(), source_timecode(index, s), "-movflags".into(), "+write_colr".into()]);
+    }
+    if let Some(t) = &job.title {
+        a.extend(["-metadata".into(), format!("title={t}")]);
+    }
+    Ok(Recipe {
+        encoder: keeper.encoding.encoder,
+        // The picture as stored: a rotation stays a tag of the file.
+        input: vec!["-noautorotate".into()],
+        graph,
+        audio_graph,
+        audio: audio.is_some(),
+        args: a,
+        format: keeper.codec.format(),
+        ext: keeper.codec.ext(),
+        reference: Some(Reference { audio: audio.map(|(.., codec)| codec), hdr: exact.hdr_metadata }),
+    })
 }
 
 /// A clip as a file of its own, in the preset's container.
 fn clip_recipe(tools: &Tools, job: &ClipJob) -> ExportResult<Recipe> {
+    if job.preset.video == VideoCodec::Lossless {
+        return lossless_recipe(tools, job);
+    }
     let ClipJob { src: Source { info, index, .. }, range, preset, .. } = job;
     let (s, e) = (range.start, range.end);
     let fps = index.nominal_fps.to_f64();
@@ -310,10 +396,7 @@ fn clip_recipe(tools: &Tools, job: &ClipJob) -> ExportResult<Recipe> {
             downmix = if preset.stereo { ",aformat=channel_layouts=stereo" } else { "" },
         );
     }
-    let audio_language = audio
-        .and_then(|(ord, _)| info.audio.iter().find(|a| a.ordinal == ord))
-        .and_then(|a| a.language.as_deref())
-        .and_then(as_media::lang::canonical);
+    let audio_language = audio_language(info, audio.map(|(ord, _)| ord));
 
     // No `-frames:v`: it ends the mux as soon as video is done and clips the
     // interleaved audio tail. `trim` bounds the frames; `verify` proves it.
@@ -340,17 +423,78 @@ fn clip_recipe(tools: &Tools, job: &ClipJob) -> ExportResult<Recipe> {
     }
     Ok(Recipe {
         encoder: enc.encoder,
+        input: Vec::new(),
         graph,
+        audio_graph: None,
         audio: audio.is_some(),
         args: a,
         format: if preset.container == Container::Mov { "mov" } else { "mp4" },
         ext: preset.container.ext(),
+        reference: None,
     })
+}
+
+/// A Bit-Perfect clip as a part of a merged file: its frames and samples as
+/// they are (every part's are alike, see `crate::merge::plan_merge`), on the
+/// file's time base, silence when its episode has no sound.
+fn lossless_part_recipe(job: &ClipJob, part: Part, keep: &LosslessShape) -> Recipe {
+    let ClipJob { src: Source { info, index, .. }, range, .. } = job;
+    let Part { shape, samples } = part;
+    let (s, e) = (range.start, range.end);
+    let (trim_start, trim_end) = index.trim_us(*range);
+    let mut vchain = vec![format!("trim=start={trim_start}us:end={trim_end}us"), "setpts=PTS-STARTPTS".to_string()];
+    if !index.is_vfr() {
+        let g = crate::merge::grid(index);
+        vchain.push(format!("settb={}/{}", g.num, g.den));
+    }
+    let graph = lossless::picture_graph(info.video.index, &vchain, &keep.tag, keep.repack.as_deref());
+    let audio_graph = match (&shape.audio, keep.audio) {
+        (Some(layout), Some((_, rate))) => Some(match crate::merge::audio_stream(info, job.audio_ordinal) {
+            Some(stream) => format!(
+                "[0:a:{ord}]atrim=start={ts:.9}:end={te:.9},asetpts=PTS-{ts:.9}/TB,aresample={rate}:{fill}:first_pts=0,apad=whole_len={samples},atrim=end_sample={samples},asplit[a][aref]",
+                ord = stream.ordinal,
+                fill = as_media::proxy::AUDIO_GAP_FILL,
+                ts = index.t(s),
+                te = index.t(e),
+            ),
+            None => format!("anullsrc=r={rate}:cl={layout},atrim=end_sample={samples},asplit[a][aref]"),
+        }),
+        _ => None,
+    };
+    let mut a: Vec<String> = vec!["-fps_mode".into(), "passthrough".into()];
+    a.extend(["-enc_time_base:v".into(), format!("1/{}", shape.timescale)]);
+    a.extend(shape.encoding.args.iter().cloned());
+    if let Some((codec, _)) = keep.audio.filter(|_| shape.audio.is_some()) {
+        a.extend(["-c:a".into(), codec.into()]);
+    }
+    a.extend(["-map_metadata", "-1", "-map_chapters", "-1"].map(String::from));
+    if keep.codec == LosslessCodec::Hevc {
+        a.extend(["-video_track_timescale".into(), shape.timescale.to_string()]);
+        a.extend(["-movflags", "+write_colr"].map(String::from));
+    }
+    let audio = shape.audio.is_some() && keep.audio.is_some();
+    Recipe {
+        encoder: shape.encoding.encoder.clone(),
+        input: vec!["-noautorotate".into()],
+        graph,
+        audio_graph,
+        audio,
+        args: a,
+        format: keep.codec.format(),
+        ext: keep.codec.ext(),
+        reference: Some(Reference {
+            audio: keep.audio.map(|(codec, _)| codec).filter(|_| audio),
+            hdr: keep.hdr.clone(),
+        }),
+    }
 }
 
 /// A clip as a part of a merged file: in the shape every part shares, with
 /// PCM sound (silence when its episode has none), no timecode and no names.
 fn part_recipe(job: &ClipJob, part: Part) -> Recipe {
+    if let Some(keep) = &part.shape.lossless {
+        return lossless_part_recipe(job, part, keep);
+    }
     let ClipJob { src: Source { info, index, .. }, range, .. } = job;
     let Part { shape, samples } = part;
     let (s, e) = (range.start, range.end);
@@ -390,11 +534,14 @@ fn part_recipe(job: &ClipJob, part: Part) -> Recipe {
     a.extend(["-movflags", "+write_colr"].map(String::from));
     Recipe {
         encoder: shape.encoding.encoder.clone(),
+        input: Vec::new(),
         graph,
+        audio_graph: None,
         audio: shape.audio.is_some(),
         args: a,
         format: "mov",
         ext: "mov",
+        reference: None,
     }
 }
 
@@ -428,13 +575,28 @@ pub fn export_clip(
     let part = with_suffix(&work.join(&stem_name), &format!(".{}", recipe.ext));
     let stats = with_suffix(&work.join(&stem_name), ".stats.txt");
 
+    let (ref_frames, ref_sound) = lossless::reference_paths(&part);
+    // A clip of its own never replaces a file that came there meanwhile: it
+    // takes a free name (`_2`…), as a joined file does. A part is named by
+    // its export.
+    let place = |part: &Path| -> ExportResult<PathBuf> {
+        let to = if job.part.is_none() { crate::merge::free_path(&job.out_stem, recipe.ext) } else { out.clone() };
+        std::fs::rename(part, &to)?;
+        Ok(to)
+    };
+    let checked = with_suffix(&part, ".frames.txt");
+    let checked_sound = lossless::sound_hashes(&checked);
     let build = |preroll: Option<f64>| -> Vec<String> {
         let mut a: Vec<String> = ["-v", "error", "-y", "-copyts"].map(String::from).to_vec();
+        a.extend(recipe.input.iter().cloned());
         if let Some(pre) = preroll {
             let seek = (index.t(s) - index.t0() - pre).max(0.0);
             a.extend(["-noaccurate_seek".into(), "-ss".into(), format!("{seek:.6}")]);
         }
         a.extend(["-i".into(), src.display().to_string(), "-filter_complex".into(), recipe.graph.clone()]);
+        if let Some(g) = &recipe.audio_graph {
+            a.extend(["-filter_complex".into(), g.clone()]);
+        }
         a.extend(["-map".into(), "[v]".into()]);
         if recipe.audio {
             a.extend(["-map".into(), "[a]".into()]);
@@ -449,6 +611,16 @@ pub fn export_clip(
             recipe.format.into(),
             part.display().to_string(),
         ]);
+        // What the encoder got, hashed as it goes: the frames, and the sound
+        // as the file stores it.
+        if let Some(reference) = &recipe.reference {
+            a.extend(["-map", "[vref]", "-fps_mode", "passthrough", "-f", "framemd5"].map(String::from));
+            a.push(ref_frames.display().to_string());
+            if let Some(codec) = reference.audio {
+                a.extend(["-map", "[aref]", "-c:a", codec, "-f", "md5"].map(String::from));
+                a.push(ref_sound.display().to_string());
+            }
+        }
         a
     };
 
@@ -456,43 +628,81 @@ pub fn export_clip(
     let tidy = || {
         let _ = std::fs::remove_dir(&work);
     };
+    let scratch = || {
+        for f in [&stats, &ref_frames, &ref_sound, &checked, &checked_sound] {
+            let _ = std::fs::remove_file(f);
+        }
+    };
+    // A Bit-Perfect clip is checked frame by frame after it is made: a fifth
+    // of the way.
+    let encoding = if recipe.reference.is_some() { 0.8 } else { 1.0 };
     let mut last_err = String::new();
     // A retry starts its frames again; what was shown holds until it passes.
     let mut shown = 0.0f64;
     for preroll in [Some(3.0), Some(10.0), None] {
-        let _ = std::fs::remove_file(&stats);
+        scratch();
         run_ffmpeg(tools, build(preroll), cancel, |p| {
-            shown = shown.max((p.frame as f64 / n as f64).clamp(0.0, 1.0));
+            shown = shown.max(encoding * (p.frame as f64 / n as f64).clamp(0.0, 1.0));
             progress(shown)
         })
         .inspect_err(|_| {
             let _ = std::fs::remove_file(&part);
-            let _ = std::fs::remove_file(&stats);
+            scratch();
             tidy();
         })?;
-        match verify(&stats, index, *range) {
-            Ok(()) => {
-                let _ = std::fs::remove_file(&stats);
-                std::fs::rename(&part, &out)?;
-                tidy();
-                let bytes = std::fs::metadata(&out).map(|m| m.len() as f64).unwrap_or(0.0);
-                return Ok(ClipOutcome {
-                    path: out.display().to_string(),
-                    frames: n,
-                    verified: true,
-                    encoder: recipe.encoder,
-                    bytes,
-                });
-            }
-            Err(why) => {
-                tracing::warn!(?preroll, %why, clip = %out.display(), "export verification failed; retrying");
-                last_err = why;
+        if let Err(why) = verify(&stats, index, *range) {
+            tracing::warn!(?preroll, %why, clip = %out.display(), "export verification failed; retrying");
+            last_err = why;
+            continue;
+        }
+        if let Some(reference) = &recipe.reference {
+            let check = lossless::check_file(tools, &part, reference, &checked, n, cancel, |p| {
+                shown = shown.max(encoding + (1.0 - encoding) * p);
+                progress(shown)
+            });
+            match check {
+                Ok(()) => {}
+                // The hashes are of the very frames the encoder got: another
+                // seek can't change what it made of them.
+                Err(Ok(why)) => {
+                    tracing::warn!(?preroll, %why, clip = %out.display(), "the clip isn't the source exactly");
+                    last_err = why;
+                    break;
+                }
+                Err(Err(e)) => {
+                    let _ = std::fs::remove_file(&part);
+                    scratch();
+                    tidy();
+                    return Err(e);
+                }
             }
         }
+        let out = place(&part)?;
+        // A part's frames, as checked, for the check of the file it joins.
+        if recipe.reference.is_some() && job.part.is_some() {
+            std::fs::rename(&checked, lossless::checked_frames(&out))?;
+        }
+        scratch();
+        tidy();
+        let bytes = std::fs::metadata(&out).map(|m| m.len() as f64).unwrap_or(0.0);
+        return Ok(ClipOutcome {
+            path: out.display().to_string(),
+            frames: n,
+            verified: true,
+            encoder: recipe.encoder,
+            bytes,
+        });
+    }
+    scratch();
+    if recipe.reference.is_some() {
+        // Bit-Perfect promises the source: nothing else is kept.
+        let _ = std::fs::remove_file(&part);
+        tidy();
+        tracing::error!(clip = %out.display(), reason = %last_err, "clip isn't the source exactly");
+        return Err(ExportError::Inexact(format!("it didn't come out exactly as the source ({last_err})")));
     }
     // Keep the best effort but say so: the UI marks it "unverified".
-    let _ = std::fs::remove_file(&stats);
-    std::fs::rename(&part, &out)?;
+    let out = place(&part)?;
     tidy();
     tracing::error!(clip = %out.display(), reason = %last_err, "clip could not be verified");
     let bytes = std::fs::metadata(&out).map(|m| m.len() as f64).unwrap_or(0.0);
