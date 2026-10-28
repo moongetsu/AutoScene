@@ -93,14 +93,20 @@ pub enum Decoder {
     /// On an NVIDIA GPU (NVDEC), scaled there; only the samples come down.
     /// Every 6th frame of a 4K HEVC film: 500 fps on an RTX 3060 Ti, 230 in
     /// software on 16 threads (which a busy CPU slows down further). Sources
-    /// it doesn't suit (interlaced, HDR, rotated) are decoded in software.
+    /// it doesn't suit (interlaced, HDR, rotated, neither H.264 nor HEVC)
+    /// are decoded in software.
     Nvdec,
 }
 
 /// Whether NVDEC can decode `info` the way [`decode_samples`] would: its
-/// deinterlacing, tone mapping and rotation run in software.
+/// deinterlacing, tone mapping and rotation run in software. Only H.264 and
+/// HEVC: on others (AV1, VP9) it can drop a picture without an error, and
+/// every sample after it would then be taken for the frame before it.
 fn nvdec_suits(info: &MediaInfo) -> bool {
-    !info.is_interlaced() && info.video.hdr == HdrKind::None && info.video.rotation == 0
+    matches!(info.video.codec.as_str(), "h264" | "hevc")
+        && !info.is_interlaced()
+        && info.video.hdr == HdrKind::None
+        && info.video.rotation == 0
 }
 
 /// [`decode_samples`] with `decoder`. When NVDEC can't be used or fails
@@ -280,5 +286,19 @@ mod tests {
         assert_eq!(sample_size(&crafted, (1280, 720), 4), (1280, 4));
         // A stored shape that isn't positive: square pixels.
         assert_eq!(sample_size(&info(1920, 1080, r(0, 1), 0), all, 2), (1920, 1080));
+    }
+
+    #[test]
+    fn the_gpu_decodes_only_h264_and_hevc() {
+        let coded = |codec: &str| {
+            let mut i = info(1920, 1080, Rational::new(1, 1), 0);
+            i.video.codec = codec.into();
+            nvdec_suits(&i)
+        };
+        assert!(coded("h264") && coded("hevc"));
+        for codec in ["av1", "vp9", "vp8", "mpeg2video", "vc1"] {
+            assert!(!coded(codec), "{codec} is decoded in software");
+        }
+        assert!(!nvdec_suits(&info(1920, 1080, Rational::new(1, 1), 90)), "rotated");
     }
 }

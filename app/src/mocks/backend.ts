@@ -527,7 +527,7 @@ function scan(paths: string[], kind: ProjectKind): ImportCandidate[] {
     const season = m && m.length === 3 ? Number(m[1]) : null
     const episode = m ? Number(m[m.length - 1]) : null
     const label = episode == null ? "" : season == null ? `E${String(episode).padStart(2, "0")}` : `S${String(season).padStart(2, "0")}E${String(episode).padStart(2, "0")}`
-    return { path, fileName, season, episode, label, sizeBytes: 1.1e9 + Math.random() * 3e8, duplicate: false }
+    return { path, fileName, season, episode, label, sizeBytes: 1.1e9 + Math.random() * 3e8, duplicate: false, refused: null }
   })
 }
 

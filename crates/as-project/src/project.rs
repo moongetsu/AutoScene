@@ -438,10 +438,11 @@ impl Project {
                     None
                 }
             };
-            // Files in the project already (another episode's) aren't candidates.
+            // Files in the project already (another episode's) aren't
+            // candidates, nor files that can't be imported.
             let mut tried: Vec<(u8, &ImportCandidate)> = found
                 .iter()
-                .filter(|c| !c.duplicate && !used.contains(&c.path))
+                .filter(|c| !c.duplicate && c.refused.is_none() && !used.contains(&c.path))
                 .filter_map(|c| Some((rank(c)?, c)))
                 .collect();
             tried.sort_by_key(|(r, _)| *r);

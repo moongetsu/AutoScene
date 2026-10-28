@@ -119,6 +119,8 @@ impl Library {
         if title.is_empty() {
             return Err(ProjectError::Invalid("Give the project a name.".into()));
         }
+        // Before anything is made: a file that can't be imported stops it.
+        let found = importable(&req.files, req.kind)?;
         let root = self.library_root()?;
         std::fs::create_dir_all(&root)?;
         let dir = unique_dir(&root, &safe_component(title, " ", 80));
@@ -144,7 +146,7 @@ impl Library {
         let project = Arc::new(Project::create(&summary, self.find_bodies.clone())?);
         self.db.insert_project(&summary)?;
         self.open.lock().insert(summary.id, project.clone());
-        let added = self.add_media(&project, &req.files, req.kind)?;
+        let added = self.add_found(&project, found)?;
         Ok((self.refresh_stats(&project)?, project, added))
     }
 
@@ -297,9 +299,13 @@ impl Library {
         Ok(scan_paths(paths, kind, &known))
     }
 
-    /// Add files to a project (skipping ones already there). Returns the new media ids.
+    /// Add files to a project (skipping ones already there). Returns the new
+    /// media ids. Nothing is added when one of them can't be imported.
     pub fn add_media(&self, project: &Project, files: &[String], kind: ProjectKind) -> ProjectResult<Vec<MediaId>> {
-        let candidates = scan_paths(files, kind, &HashSet::new());
+        self.add_found(project, importable(files, kind)?)
+    }
+
+    fn add_found(&self, project: &Project, candidates: Vec<ImportCandidate>) -> ProjectResult<Vec<MediaId>> {
         let new: Vec<NewMedia> = candidates
             .into_iter()
             .map(|c| {
@@ -378,6 +384,30 @@ fn remove_dir_with_retry(dir: &Path) -> std::io::Result<()> {
     Err(last.expect("loop ran"))
 }
 
+/// Why a file whose path isn't valid Unicode can't be imported: media keep
+/// their path as text, and such a path, turned into text, names no file.
+const NOT_UNICODE: &str = "Its name, or the name of a folder it's in, isn't valid Unicode. Rename it to import it.";
+
+/// The videos `files` (files and folders) hold, in episode order — none
+/// when one of them can't be imported, with an error that names it.
+fn importable(files: &[String], kind: ProjectKind) -> ProjectResult<Vec<ImportCandidate>> {
+    let found = scan_paths(files, kind, &HashSet::new());
+    let refused: Vec<&str> = found.iter().filter(|c| c.refused.is_some()).map(|c| c.file_name.as_str()).collect();
+    let why = match refused[..] {
+        [] => return Ok(found),
+        [one] => format!(
+            "{one} can't be imported: its name, or the name of a folder it's in, isn't valid Unicode. \
+             Rename it and add it again."
+        ),
+        [first, ref rest @ ..] => format!(
+            "{first} and {} more can't be imported: their names, or the names of folders they're in, aren't \
+             valid Unicode. Rename them and add them again.",
+            rest.len()
+        ),
+    };
+    Err(ProjectError::Invalid(why))
+}
+
 pub(crate) fn scan_paths(paths: &[String], kind: ProjectKind, known: &HashSet<String>) -> Vec<ImportCandidate> {
     let mut files: Vec<PathBuf> = Vec::new();
     for p in paths {
@@ -393,7 +423,7 @@ pub(crate) fn scan_paths(paths: &[String], kind: ProjectKind, known: &HashSet<St
         .into_iter()
         .filter(|f| seen.insert(f.clone()))
         .map(|f| {
-            let file_name = f.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
+            let file_name = f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             let parent = f.parent().and_then(|d| d.file_name()).and_then(|d| d.to_str());
             let (season, episode) =
                 if kind == ProjectKind::Series { parse_episode(&file_name, parent) } else { (None, None) };
@@ -402,6 +432,7 @@ pub(crate) fn scan_paths(paths: &[String], kind: ProjectKind, known: &HashSet<St
                 duplicate: known.contains(&path),
                 size_bytes: std::fs::metadata(&f).map(|m| m.len() as f64).unwrap_or(0.0),
                 label: as_db::episode_label(season, episode),
+                refused: f.to_str().is_none().then(|| NOT_UNICODE.into()),
                 path,
                 file_name,
                 season,
@@ -479,6 +510,57 @@ mod tests {
         let movie = touch(&dir.path().join("Blade Runner 2049.mkv"));
         let found = lib.scan(&[movie], ProjectKind::Movie, None).unwrap();
         assert_eq!((found[0].season, found[0].episode), (None, None));
+    }
+
+    /// `before`, a character no Unicode text holds (an unpaired surrogate on
+    /// Windows, a stray byte elsewhere), then `after`.
+    fn not_unicode(dir: &Path, before: &str, after: &str) -> PathBuf {
+        #[cfg(windows)]
+        let name = {
+            use std::os::windows::ffi::OsStringExt;
+            let wide: Vec<u16> = before.encode_utf16().chain([0xD800]).chain(after.encode_utf16()).collect();
+            std::ffi::OsString::from_wide(&wide)
+        };
+        #[cfg(unix)]
+        let name = {
+            use std::os::unix::ffi::OsStringExt;
+            std::ffi::OsString::from_vec([before.as_bytes(), b"\xff", after.as_bytes()].concat())
+        };
+        dir.join(name)
+    }
+
+    #[test]
+    fn a_file_whose_name_isnt_unicode_is_refused_with_a_reason() {
+        let (dir, lib) = lib();
+        let show = dir.path().join("Show");
+        let good = touch(&show.join("Show - 01.mkv"));
+        let bad = not_unicode(&show, "Show", " - 02.mkv");
+        if std::fs::write(&bad, b"x").is_err() {
+            return; // a file system that never has such names (APFS)
+        }
+        // Listed with why, not as a file that is missing later.
+        let found = lib.scan(&[show.display().to_string()], ProjectKind::Series, None).unwrap();
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].refused, None);
+        assert!(found[1].refused.as_deref().is_some_and(|r| r.contains("Unicode")), "{:?}", found[1]);
+        assert_eq!((found[1].episode, found[1].label.as_str()), (Some(2), "E02"), "named for the list");
+
+        // Nothing is made or added while one is among them.
+        let req = NewProject {
+            title: "Show".into(),
+            kind: ProjectKind::Series,
+            content: ContentKind::Live,
+            files: vec![show.display().to_string()],
+        };
+        let Err(ProjectError::Invalid(why)) = lib.create_project(&req) else { panic!("created") };
+        assert!(why.starts_with("Show\u{FFFD} - 02.mkv can't") && why.contains("Rename it"), "{why}");
+        assert!(lib.projects().unwrap().is_empty());
+        let (_, project, added) = lib.create_project(&NewProject { files: vec![good], ..req.clone() }).unwrap();
+        assert_eq!(added.len(), 1);
+        std::fs::write(not_unicode(&show, "Show", " - 03.mkv"), b"x").unwrap();
+        let more = lib.add_media(&project, &[show.display().to_string()], ProjectKind::Series);
+        assert!(matches!(&more, Err(ProjectError::Invalid(why)) if why.contains("and 1 more")), "{more:?}");
+        assert_eq!(project.media_list_uncounted().unwrap().len(), 1);
     }
 
     #[test]

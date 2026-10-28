@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useNavigate } from "@tanstack/react-router"
-import { CircleNotch, FilePlus, FilmSlate, FilmStrip, FolderPlus, Television, X } from "@/components/icons"
+import { CircleNotch, FilePlus, FilmSlate, FilmStrip, FolderPlus, Television, Warning, X } from "@/components/icons"
 import { toast } from "sonner"
 import type { ContentKind, ImportCandidate, ProjectKind } from "@/bindings"
 import { Button } from "@/components/ui/button"
@@ -55,15 +55,16 @@ function NewProjectForm({ seed, onDone }: { seed: string[]; onDone: () => void }
       .then((found) => {
         if (stale) return
         setScan({ key: JSON.stringify([kind, sources]), found })
+        const usable = found.filter((c) => !c.refused)
         if (!kindTouched.current) {
-          const numbered = found.some((c) => c.episode != null)
-          const next: ProjectKind = numbered || found.length > 1 ? "series" : "movie"
+          const numbered = usable.some((c) => c.episode != null)
+          const next: ProjectKind = numbered || usable.length > 1 ? "series" : "movie"
           if (next !== kind) setKind(next)
         }
-        if (!titleTouched.current && found.length > 0) {
+        if (!titleTouched.current && usable.length > 0) {
           const first = sources[0]
-          const isFile = found.some((c) => c.path === first)
-          setTitle(suggestTitle(first, isFile) || fileStem(found[0].fileName))
+          const isFile = usable.some((c) => c.path === first)
+          setTitle(suggestTitle(first, isFile) || fileStem(usable[0].fileName))
         }
       })
       .catch((e) => {
@@ -76,7 +77,8 @@ function NewProjectForm({ seed, onDone }: { seed: string[]; onDone: () => void }
     }
   }, [sources, kind])
 
-  const chosen = useMemo(() => candidates.filter((c) => !removed.has(c.path)), [candidates, removed])
+  // A file that can't be imported is listed with why, never added.
+  const chosen = useMemo(() => candidates.filter((c) => !c.refused && !removed.has(c.path)), [candidates, removed])
   const totalBytes = chosen.reduce((n, c) => n + (c.sizeBytes ?? 0), 0)
   const addSources = (paths: string[]) => paths.length && setPicked((s) => [...new Set([...s, ...paths])])
 
@@ -159,10 +161,11 @@ function NewProjectForm({ seed, onDone }: { seed: string[]; onDone: () => void }
             <div className="max-h-[320px] overflow-y-auto p-1.5">
               <table className="w-full text-md">
                 <tbody>
-                  {candidates.map((c) => {
+                  {candidates.map((c, i) => {
                     const off = removed.has(c.path)
                     return (
-                      <tr key={c.path} className={cn("group", off && "opacity-40")}>
+                      // Two names that aren't Unicode can read the same.
+                      <tr key={c.refused ? `${i}:${c.path}` : c.path} className={cn("group", off && "opacity-40")}>
                         <td className="w-24 rounded-l-xl py-2 pl-3 group-hover:bg-white/[0.04]">
                           <span className={cn("timecode text-sm", c.label ? "text-fg-1" : "text-fg-3")}>
                             {c.label || "—"}
@@ -170,29 +173,37 @@ function NewProjectForm({ seed, onDone }: { seed: string[]; onDone: () => void }
                         </td>
                         <td className="max-w-0 py-2 group-hover:bg-white/[0.04]">
                           <Tooltip label={c.path} side="top" delay={600}>
-                            <div className="truncate text-fg-2">{c.fileName}</div>
+                            <div className={cn("truncate", c.refused ? "text-fg-3" : "text-fg-2")}>{c.fileName}</div>
                           </Tooltip>
+                          {c.refused && (
+                            <div className="mt-0.5 flex items-start gap-1.5 text-sm text-danger">
+                              <Warning className="mt-0.5 size-3.5 shrink-0" />
+                              <span>{c.refused}</span>
+                            </div>
+                          )}
                         </td>
                         <td className="timecode w-24 py-2 pr-2 text-right text-sm text-fg-3 group-hover:bg-white/[0.04]">
                           {formatBytes(c.sizeBytes ?? 0)}
                         </td>
                         <td className="w-10 rounded-r-xl py-1 pr-1.5 group-hover:bg-white/[0.04]">
-                          <Tooltip label={off ? "Include it" : "Skip it"} side="left">
-                            <button
-                              aria-label={off ? `Include ${c.fileName}` : `Skip ${c.fileName}`}
-                              onClick={() =>
-                                setRemoved((r) => {
-                                  const n = new Set(r)
-                                  if (n.has(c.path)) n.delete(c.path)
-                                  else n.add(c.path)
-                                  return n
-                                })
-                              }
-                              className="flex size-7 items-center justify-center rounded-full text-fg-3 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-white/[0.1] hover:text-fg-1 focus-visible:opacity-100"
-                            >
-                              <X className="size-3.5" />
-                            </button>
-                          </Tooltip>
+                          {!c.refused && (
+                            <Tooltip label={off ? "Include it" : "Skip it"} side="left">
+                              <button
+                                aria-label={off ? `Include ${c.fileName}` : `Skip ${c.fileName}`}
+                                onClick={() =>
+                                  setRemoved((r) => {
+                                    const n = new Set(r)
+                                    if (n.has(c.path)) n.delete(c.path)
+                                    else n.add(c.path)
+                                    return n
+                                  })
+                                }
+                                className="flex size-7 items-center justify-center rounded-full text-fg-3 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-white/[0.1] hover:text-fg-1 focus-visible:opacity-100"
+                              >
+                                <X className="size-3.5" />
+                              </button>
+                            </Tooltip>
+                          )}
                         </td>
                       </tr>
                     )

@@ -604,6 +604,12 @@ export type ImportCandidate = {
 	sizeBytes: number | null,
 	/**  Already part of the project (only when scanning into an existing one). */
 	duplicate: boolean,
+	/**
+	 *  Why it can't be imported: a path (its name or a folder's) that isn't
+	 *  valid Unicode, which media can't keep as the text they keep their
+	 *  path in. Such a file is listed, never added.
+	 */
+	refused: string | null,
 };
 
 /**  A job was queued, started or finished. */

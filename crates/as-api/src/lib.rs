@@ -168,6 +168,10 @@ pub struct ImportCandidate {
     pub size_bytes: f64,
     /// Already part of the project (only when scanning into an existing one).
     pub duplicate: bool,
+    /// Why it can't be imported: a path (its name or a folder's) that isn't
+    /// valid Unicode, which media can't keep as the text they keep their
+    /// path in. Such a file is listed, never added.
+    pub refused: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
