@@ -98,10 +98,12 @@ export function usePlayer(clock: FrameClock | null) {
     const onReady = () => setReady(true)
     const onSeeked = () => {
       // rVFC may not fire for a seek that lands on the frame already shown.
-      if (target.current != null && clock) {
-        store.set(target.current)
-        target.current = null
-      }
+      // One that ended just as the next began reports while the next is
+      // still on its way: that one's gate stays, or a frame from before it
+      // would show for a moment (and a step taken then would start there).
+      if (!clock || target.current == null || v.seeking) return
+      store.set(target.current)
+      target.current = null
     }
     v.addEventListener("play", onPlay)
     v.addEventListener("pause", onPause)
@@ -124,7 +126,9 @@ export function usePlayer(clock: FrameClock | null) {
     if (rate >= 0 || !clock) return
     const v = videoRef.current
     if (!v) return
-    const fps = 1 / Math.max(1e-6, clock.duration(store.get()))
+    // The media's rate, not the frame's under the playhead: one long frame
+    // of a variable-rate file would hold the shuttle still, a short one race it.
+    const fps = clock.fps
     backwards.current = { frame: store.get(), carry: 0 }
     let last = performance.now()
     let raf = 0

@@ -1,5 +1,8 @@
 // Fails when a package that keeps module-level state is installed more than
-// once, or when an `overrides` pin no longer matches the radix-ui release.
+// once, when an `overrides` pin no longer matches the radix-ui release, or
+// when a dependency asks for a range instead of one version: the versions
+// are the newest, chosen on purpose, not whatever a range resolves to on the
+// next install.
 //
 // Radix primitives remember which layers are open (and the `<body>`
 // pointer-events they borrowed) per copy of the module; the scroll lock
@@ -59,12 +62,17 @@ for (const [name, version, dir] of copies(join(app, "node_modules"))) {
 
 const radixManifest = join(app, "node_modules", "radix-ui", "package.json")
 const pinned = existsSync(radixManifest) ? (readJson(radixManifest).dependencies ?? {}) : {}
-const overrides = readJson(join(app, "package.json")).overrides ?? {}
+const manifest = readJson(join(app, "package.json"))
+const overrides = manifest.overrides ?? {}
 
 const doubled = [...byName].filter(([, found]) => found.length > 1)
 const stale = Object.entries(overrides).filter(([name, version]) => pinned[name] && pinned[name] !== version)
+const EXACT = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/
+const ranged = [manifest.dependencies, manifest.devDependencies]
+  .flatMap((deps) => Object.entries(deps ?? {}))
+  .filter(([, version]) => !EXACT.test(version))
 
-if (doubled.length === 0 && stale.length === 0) {
+if (doubled.length === 0 && stale.length === 0 && ranged.length === 0) {
   console.log(`check-deps: ${byName.size} packages with shared state, one copy each`)
   process.exit(0)
 }
@@ -85,5 +93,11 @@ if (stale.length > 0) {
   console.error('check-deps: these "overrides" no longer match the radix-ui release:\n')
   for (const [name, version] of stale) console.error(`  ${name.padEnd(36)} ${version} → ${pinned[name]}`)
   console.error("\nMove them to the versions on the right and run npm install.\n")
+}
+
+if (ranged.length > 0) {
+  console.error("check-deps: these dependencies ask for a range, not one version:\n")
+  for (const [name, version] of ranged) console.error(`  ${name.padEnd(36)} ${version}`)
+  console.error("\nPin each to the version in package-lock.json (npm install --save-exact).\n")
 }
 process.exit(1)

@@ -11,8 +11,9 @@ import { Select } from "@/components/ui/select"
 import { commands, errorMessage } from "@/lib/ipc"
 import { formatBytes, shortFormatName } from "@/lib/format"
 import { pickFolder } from "@/lib/media"
-import { qk, queryClient, useExportDir, usePresets, useSettings } from "@/lib/queries"
+import { useExportDir, usePresets, useSettings } from "@/lib/queries"
 import { useUi } from "@/state/ui"
+import { rememberPreset } from "./export"
 
 export type ExportClip = ClipRequest & {
   /** What the user sees: "S01E03 · 00:12:03:05 – 00:12:07:11". */
@@ -94,10 +95,7 @@ function ExportForm({
         label,
       }
       await commands.exportStart(projectId, req)
-      // Remember the preset for next time.
-      if (settings && settings.exportPresetId !== presetId) {
-        void commands.settingsUpdate({ ...settings, exportPresetId: presetId }).then((s) => queryClient.setQueryData(qk.settings, s))
-      }
+      rememberPreset(settings, presetId)
       onDone()
       toast(single ? `Exporting “${name.trim() || suggested || "the clip"}”` : `Exporting ${clips.length} clips`, {
         action: { label: "Show", onClick: () => useUi.getState().setActivityOpen(true) },

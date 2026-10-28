@@ -9,6 +9,7 @@ import { Field, Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { plural } from "@/features/cast/cast"
+import { rememberPreset } from "@/features/export/export"
 import { formatBytes, shortFormatName } from "@/lib/format"
 import { commands, errorMessage } from "@/lib/ipc"
 import { pickFolder } from "@/lib/media"
@@ -89,9 +90,7 @@ function ExportForm({ pid, character, pack, onDone }: { pid: string; character: 
     setBusy(true)
     try {
       await commands.packExport(pid, character.id, { spec: state.spec, naming, presetId, outDir: dir, stamp })
-      if (settings && settings.exportPresetId !== presetId) {
-        void commands.settingsUpdate({ ...settings, exportPresetId: presetId }).then((s) => queryClient.setQueryData(qk.settings, s))
-      }
+      rememberPreset(settings, presetId)
       onDone()
       toast(oneFile ? `Exporting ${shots} of ${character.label} into one file` : `Exporting ${shots} of ${character.label}`, {
         action: { label: "Show", onClick: () => useUi.getState().setActivityOpen(true) },

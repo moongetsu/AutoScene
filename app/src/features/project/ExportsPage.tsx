@@ -1,5 +1,6 @@
 import { useNavigate, useParams } from "@tanstack/react-router"
 import { Check, CircleNotch, Clock, Copy, FolderOpen, Package, Play, Prohibit, ShieldWarning, Warning } from "@/components/icons"
+import { toast } from "sonner"
 import type { ExportItem, ExportStatus, ExportSummary, MediaItem, MergedFile } from "@/bindings"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -10,7 +11,7 @@ import { Page } from "@/components/ui/page"
 import { Progress } from "@/components/ui/progress"
 import { Tooltip, TruncatedText } from "@/components/ui/tooltip"
 import { formatBytes, formatDateTime, formatPercent } from "@/lib/format"
-import { commands } from "@/lib/ipc"
+import { commands, errorMessage } from "@/lib/ipc"
 import { copyText, reveal } from "@/lib/os"
 import { firstFailure, useExports, useMediaList, useProject } from "@/lib/queries"
 import { isDropFrameRate, timecode } from "@/lib/timecode"
@@ -42,7 +43,14 @@ export function ExportsPage() {
     <Page
       topbar={<TopBar title={project?.title} nav={<ProjectNav pid={pid} />} />}
       menu={
-        <ContextMenuItem onSelect={() => void commands.exportDefaultDir(pid).then(reveal)}>
+        <ContextMenuItem
+          onSelect={() =>
+            void commands
+              .exportDefaultDir(pid)
+              .then(reveal)
+              .catch((e) => toast.error("Couldn't show it", { description: errorMessage(e) }))
+          }
+        >
           <FolderOpen /> Show the exports folder
         </ContextMenuItem>
       }

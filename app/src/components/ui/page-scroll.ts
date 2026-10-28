@@ -14,10 +14,22 @@ export function usePageScrollElement(): HTMLElement | null {
   return useContext(PageScrollElement)
 }
 
-/** Where each visited page was scrolled to, by history entry (for Back). */
+/**
+ * Where each visited page was scrolled to, by history entry (for Back), the
+ * latest visited last. Every visit is a new entry: only the latest are kept.
+ */
 const positions = new Map<string, number>()
+/** More entries than the webview's history goes back. */
+export const REMEMBERED_PAGES = 100
 /** How long a page coming back keeps trying to reach its place while its lists load. */
 const SETTLE_MS = 1000
+
+/** Keep `entry`'s place as the latest, forgetting the oldest beyond the limit. */
+function keep(entry: string, top: number) {
+  positions.delete(entry)
+  positions.set(entry, top)
+  if (positions.size > REMEMBERED_PAGES) positions.delete(positions.keys().next().value!)
+}
 
 /**
  * A page scrolls back to where it was when it is visited again (Back,
@@ -28,7 +40,10 @@ const SETTLE_MS = 1000
 export function useScrollMemory(el: HTMLElement | null, entry: string) {
   useLayoutEffect(() => {
     if (!el) return
-    const target = positions.get(entry) ?? 0
+    const remembered = positions.get(entry)
+    // A page visited again is as recent as a new one.
+    if (remembered != null) keep(entry, remembered)
+    const target = remembered ?? 0
     el.scrollTo({ top: target })
     let frame = 0
     const until = performance.now() + SETTLE_MS
@@ -38,7 +53,7 @@ export function useScrollMemory(el: HTMLElement | null, entry: string) {
     }
     if (Math.abs(el.scrollTop - target) > 1) frame = requestAnimationFrame(settle)
     const stop = () => cancelAnimationFrame(frame)
-    const remember = () => positions.set(entry, el.scrollTop)
+    const remember = () => keep(entry, el.scrollTop)
     el.addEventListener("scroll", remember, { passive: true })
     for (const e of ["wheel", "touchstart", "pointerdown", "keydown"]) el.addEventListener(e, stop, { passive: true })
     return () => {

@@ -23,7 +23,7 @@ describe("timecode", () => {
 describe("FrameClock", () => {
   it("round-trips every frame of a constant-rate map", () => {
     const step = 1001 / 24000
-    const c = new FrameClock({ frames: 1000, offset: 0.021, step, times: null })
+    const c = new FrameClock({ frames: 1000, fps: { num: 24000, den: 1001 }, offset: 0.021, step, times: null })
     for (let f = 0; f < 1000; f++) {
       expect(c.frameAt(c.seekTime(f))).toBe(f)
       // rVFC reports the shown frame's own timestamp.
@@ -33,6 +33,7 @@ describe("FrameClock", () => {
     expect(c.frameAt(-5)).toBe(0)
     expect(c.frameAt(1e9)).toBe(999)
     expect(c.length).toBeCloseTo(1000 * step)
+    expect(c.fps).toBeCloseTo(24000 / 1001)
   })
 
   it("resolves variable-rate maps by search", () => {
@@ -50,12 +51,37 @@ describe("FrameClock", () => {
       }
     }
     times.push(t)
-    const c = new FrameClock({ frames: times.length - 1, offset: 0, step: null, times })
+    const c = new FrameClock({ frames: times.length - 1, fps: { num: 60, den: 1 }, offset: 0, step: null, times })
     for (let f = 0; f < c.frames; f++) {
       expect(c.frameAt(c.seekTime(f))).toBe(f)
       expect(c.frameAt(times[f])).toBe(f)
     }
     expect(c.duration(50)).toBeCloseTo(1 / 60)
+  })
+
+  it("plays variable-rate media at its nominal rate, whatever frame is on screen", () => {
+    // 25 fps with a two-second frame (a gap in a recording) and a frame one
+    // tick of 1/90000 long (a repaired timestamp).
+    const times = [0, 0.04, 2.04, 2.04 + 1 / 90000, 2.08, 2.12]
+    const c = new FrameClock({ frames: times.length - 1, fps: { num: 25, den: 1 }, offset: 0, step: null, times })
+    expect(c.duration(1)).toBeCloseTo(2)
+    expect(c.duration(2)).toBeCloseTo(1 / 90000)
+    expect(c.fps).toBe(25)
+    // A map without a usable rate plays at its frames' average.
+    const unrated = new FrameClock({ frames: 2, fps: { num: 0, den: 1 }, offset: 0, step: null, times: [0, 0.5, 1] })
+    expect(unrated.fps).toBe(2)
+  })
+
+  it("refuses frame times that are missing, out of order or too few", () => {
+    const map = (times: (number | null)[], frames = times.length - 1) =>
+      new FrameClock({ frames, fps: { num: 25, den: 1 }, offset: 0, step: null, times })
+    expect(() => map([0, 0.04, 0.08])).not.toThrow()
+    // JSON carries NaN and infinity as null.
+    expect(() => map([0, null, 0.08])).toThrow(/time 1/)
+    expect(() => map([0, 0.04, 0.04])).toThrow(/time 2/)
+    expect(() => map([0, 0.08, 0.04])).toThrow(/time 2/)
+    expect(() => map([0, Number.NaN, 0.08])).toThrow(/time 1/)
+    expect(() => map([0, 0.04, 0.08], 3)).toThrow(/3 times for 3 frames/)
   })
 })
 

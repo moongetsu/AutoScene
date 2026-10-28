@@ -1,7 +1,9 @@
-import { act, cleanup, render } from "@testing-library/react"
+import { act, cleanup, render, renderHook } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
+import { FrameClock } from "@/lib/frame-clock"
 import { FrameStore, useFrame, useFrameSelector } from "./frame-store"
 import { nextRate, rateLabel, reverseFrames } from "./shuttle"
+import { usePlayer } from "./use-player"
 
 afterEach(cleanup)
 
@@ -87,5 +89,117 @@ describe("the frame store", () => {
     expect(count().frame - before.frame).toBe(50)
     // The shot changed once (47 → 48).
     expect(count().shot - before.shot).toBe(1)
+  })
+})
+
+/**
+ * A `<video>` as far as the player uses it while paused: a seek is on its
+ * way from setting `currentTime` until `land`, and frames are shown when the
+ * test says (`show`, as `requestVideoFrameCallback` reports them).
+ */
+class FakeVideo extends EventTarget {
+  seeking = false
+  paused = true
+  readyState = 4
+  playbackRate = 1
+  private time = 0
+  private callbacks: ((now: number, meta: { mediaTime: number }) => void)[] = []
+  get currentTime() {
+    return this.time
+  }
+  set currentTime(t: number) {
+    this.time = t
+    this.seeking = true
+  }
+  requestVideoFrameCallback(cb: (now: number, meta: { mediaTime: number }) => void) {
+    this.callbacks.push(cb)
+    return this.callbacks.length
+  }
+  cancelVideoFrameCallback() {}
+  pause() {}
+  play() {
+    return Promise.resolve()
+  }
+  show(mediaTime: number) {
+    const due = this.callbacks
+    this.callbacks = []
+    for (const cb of due) cb(0, { mediaTime })
+  }
+  /** The seek ends: `seeking` drops at once, `seeked` comes a task later (`report`). */
+  land() {
+    this.seeking = false
+  }
+  report() {
+    this.dispatchEvent(new Event("seeked"))
+  }
+}
+
+describe("usePlayer", () => {
+  const clock = new FrameClock({ frames: 100, fps: { num: 24, den: 1 }, offset: 0, step: 1 / 24, times: null })
+
+  /** The player on a fake video (attached before the clock arrives, as a `<video>` would be). */
+  function player(on = clock) {
+    const video = new FakeVideo()
+    const hook = renderHook(({ c }) => usePlayer(c), { initialProps: { c: null as FrameClock | null } })
+    hook.result.current.videoRef.current = video as unknown as HTMLVideoElement
+    hook.rerender({ c: on })
+    return { video, hook }
+  }
+
+  it("keeps waiting for a seek when an older one reports it has ended", () => {
+    const { video, hook } = player()
+    const { store } = hook.result.current
+    act(() => hook.result.current.seek(10))
+    video.land()
+    // The next step goes out before the first seek's `seeked` is delivered.
+    act(() => hook.result.current.seek(20))
+    video.report()
+    // The first seek's frame is shown; the playhead stays where it was sent.
+    video.show(clock.start(10))
+    expect(store.get()).toBe(20)
+    // And a step from there starts at 20.
+    act(() => hook.result.current.step(1))
+    expect(store.get()).toBe(21)
+    video.land()
+    video.report()
+    video.show(clock.start(21))
+    expect(store.get()).toBe(21)
+  })
+
+  it("lets frames through again once the last seek has ended", () => {
+    const { video, hook } = player()
+    const { store } = hook.result.current
+    act(() => hook.result.current.seek(20))
+    // Landing on the frame already shown: no new frame, only `seeked`.
+    video.land()
+    video.report()
+    expect(store.get()).toBe(20)
+    video.show(clock.start(30))
+    expect(store.get()).toBe(30)
+  })
+
+  it("plays backwards at the media's rate from a frame that lasts long", () => {
+    vi.useFakeTimers({ toFake: ["requestAnimationFrame", "cancelAnimationFrame", "performance"] })
+    try {
+      // 25 fps; frame 2 stays two seconds (a gap in a recording).
+      const vfr = new FrameClock({
+        frames: 5,
+        fps: { num: 25, den: 1 },
+        offset: 0,
+        step: null,
+        times: [0, 0.04, 0.08, 2.08, 2.12, 2.16],
+      })
+      const { video, hook } = player(vfr)
+      const { store } = hook.result.current
+      act(() => hook.result.current.seek(2))
+      video.land()
+      video.report()
+      act(() => hook.result.current.shuttle("j"))
+      // A frame back after a 25th of a second, not after two seconds.
+      act(() => vi.advanceTimersByTime(100))
+      expect(store.get()).toBe(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
