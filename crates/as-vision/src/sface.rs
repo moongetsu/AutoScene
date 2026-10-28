@@ -75,10 +75,8 @@ impl SFace {
                 )));
             }
             for i in 0..group.len() {
-                let raw = &e[i * DIM..(i + 1) * DIM];
-                let norm = raw.iter().map(|x| x * x).sum::<f32>().sqrt();
-                let k = 1.0 / norm.max(1e-6);
-                out.push(Embedding { v: raw.iter().map(|x| x * k).collect(), norm });
+                // One with no direction (NaN, infinite) matches no one.
+                out.push(crate::arcface::unit(&e[i * DIM..(i + 1) * DIM]));
             }
         }
         Ok(out)

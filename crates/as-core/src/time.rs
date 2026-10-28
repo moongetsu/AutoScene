@@ -441,8 +441,9 @@ impl FrameIndex {
     }
 }
 
-/// `blob` unzstd'ed, as long as it unpacks to at most `max` bytes.
-fn unpack(blob: &[u8], max: u64) -> CoreResult<Vec<u8>> {
+/// `blob` unzstd'ed, as long as it unpacks to at most `max` bytes: a damaged
+/// or crafted blob in a database can't make reading it take gigabytes.
+pub fn unpack(blob: &[u8], max: u64) -> CoreResult<Vec<u8>> {
     let mut raw = Vec::new();
     zstd::stream::read::Decoder::with_buffer(blob)
         .and_then(|d| d.take(max + 1).read_to_end(&mut raw))

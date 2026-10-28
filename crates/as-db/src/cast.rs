@@ -1174,6 +1174,9 @@ impl ProjectDb {
             )?;
             tx.execute("UPDATE tracks SET character_id = ?2 WHERE character_id = ?1", [&f, &i])?;
             tx.execute("UPDATE OR IGNORE track_forbids SET character_id = ?2 WHERE character_id = ?1", [&f, &i])?;
+            // A picture still waiting for `from` was chosen for `from`: `into`
+            // keeps its own.
+            tx.execute("DELETE FROM track_edits WHERE kind = 'cover' AND character_id = ?1", [&f])?;
             tx.execute("UPDATE track_edits SET character_id = ?2 WHERE character_id = ?1", [&f, &i])?;
             // Their bodies: those the user said aren't `into` are no one.
             tx.execute(

@@ -126,6 +126,8 @@ interpolation.
 
 ## Models and licences
 
-The face models come from InsightFace and may only be used non-commercially.
-The shot detector, TransNetV2, is MIT-licensed. `models/manifest.toml` lists
+The full face pass's models (SCRFD and ArcFace, with the people models)
+come from InsightFace and may only be used non-commercially; Fast Scan's
+(YuNet, SFace) are MIT and Apache-2.0. The shot detector, TransNetV2, is
+MIT-licensed. **Settings → About** shows each model's licence. `models/manifest.toml` lists
 the source and licence of each model.

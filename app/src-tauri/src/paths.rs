@@ -33,7 +33,21 @@ pub fn check_all(raw: &[String]) -> AppResult<()> {
 
 /// Absolute, on a drive or a network share, and without `..`.
 pub fn is_plain(path: &Path) -> bool {
-    path.is_absolute() && plain_prefix(path) && !path.components().any(|c| c == Component::ParentDir)
+    path.is_absolute()
+        && plain_prefix(path)
+        && !device_spelling(path)
+        && !path.components().any(|c| c == Component::ParentDir)
+}
+
+/// A device or verbatim prefix spelt with a slash somewhere (`//?/C:/…`,
+/// `\\?/…`, `//./…`): Rust reads those as a share named `?` or `.`, Windows
+/// as the device paths they are.
+fn device_spelling(path: &Path) -> bool {
+    let s = path.as_os_str().to_string_lossy();
+    let mut chars = s.chars();
+    let (a, b, c, d) = (chars.next(), chars.next(), chars.next(), chars.next());
+    let slash = |c: Option<char>| matches!(c, Some('/' | '\\'));
+    slash(a) && slash(b) && matches!(c, Some('?' | '.')) && (slash(d) || d.is_none())
 }
 
 /// A drive (`C:\`) or a share (`\\nas\share`): on Windows every absolute
@@ -72,6 +86,11 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn drives_and_network_shares_are_plain_device_and_verbatim_paths_are_not() {
+        for bad in
+            [r"//?/C:/Videos/x.mkv", r"\\?/C:/x.mkv", "//./PhysicalDrive0", r"//?\GLOBALROOT/Device", r"\\./COM1"]
+        {
+            assert!(!is_plain(Path::new(bad)), "{bad}");
+        }
         for ok in
             [r"C:\Videos\S01E01.mkv", r"d:\Exports", "C:/Videos/S01E01.mkv", r"\\nas\share\x.mkv", "//nas/share/x.mkv"]
         {

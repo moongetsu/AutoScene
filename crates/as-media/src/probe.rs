@@ -158,7 +158,7 @@ pub fn same_source(old: &MediaInfo, new: &MediaInfo) -> Result<(), String> {
     }
     let rate = a.r_frame_rate.to_f64();
     let fps = a.avg_frame_rate.map(Rational::to_f64).filter(|&avg| avg > 0.0 && avg < rate).unwrap_or(rate);
-    let half_frame = if fps > 0.0 { 0.5 / fps.min(MAX_FPS) } else { 0.5 };
+    let half_frame = if fps > 0.0 { 0.5 / fps.clamp(MIN_FPS, MAX_FPS) } else { 0.5 };
     if (old.start_sec - new.start_sec).abs() > half_frame {
         return Err("It starts at another moment.".into());
     }
@@ -177,6 +177,11 @@ pub fn same_source(old: &MediaInfo, new: &MediaInfo) -> Result<(), String> {
 /// The highest rate frames are filmed at (slow-motion phone video): a
 /// higher one is a time base's ticks.
 const MAX_FPS: f64 = 240.0;
+/// The fewest frames a second the window above is worked out at: an average
+/// rate far below the stream's (a screen recording with long still
+/// stretches, a damaged header) mustn't let a file start or end a quarter of
+/// a second off.
+const MIN_FPS: f64 = 12.0;
 
 /// 2531.4 → "42:11"; 3725 → "1:02:05".
 fn clock(sec: f64) -> String {

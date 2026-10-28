@@ -206,22 +206,35 @@ fn decides(k: EditKind) -> bool {
     matches!(k, EditKind::Pin(_) | EditKind::Forbid(_) | EditKind::NotFace)
 }
 
+/// Whether a decision that waited (`old`) says otherwise than one made since
+/// (`new`) on the same face: two answers to who it is, or "not X" against
+/// "this is X". Answers that agree ("not X" and "not Y", "not X" and "this
+/// is Y") both hold.
+fn contradicts(old: EditKind, new: EditKind) -> bool {
+    match (old, new) {
+        (EditKind::Pin(_) | EditKind::NotFace, EditKind::Pin(_) | EditKind::NotFace) => old != new,
+        (EditKind::Pin(c), EditKind::Forbid(f)) | (EditKind::Forbid(f), EditKind::Pin(c)) => c == f,
+        _ => false,
+    }
+}
+
 /// The decisions found again on new tracks (`(frames shared, track,
 /// decision, dormant)`) made consistent, one track at a time: of "this is
 /// X" and "not a face" the one sharing most frames holds — "this is X" only
 /// if no "not X" shares more; the other "not Y"s hold; with neither left,
 /// the track starts out on the character clustering said it was (sharing
 /// most, and not one it is "not"). A decision that waited from an earlier
-/// pass (dormant: no face was found for it then) gives way to any made
-/// since on the same face, whatever it shares.
+/// pass (dormant: no face was found for it then) gives way to one made since
+/// on the same face that says otherwise, whatever it shares.
 fn resolve(mut found: Vec<(u32, i64, EditKind, bool)>) -> Vec<(i64, EditKind)> {
     found.sort_by_key(|&(shared, track, _, _)| (track, std::cmp::Reverse(shared)));
     let mut out = Vec::new();
     for group in found.chunk_by(|a, b| a.1 == b.1) {
-        let current = group.iter().any(|&(_, _, k, dormant)| !dormant && decides(k));
+        let current: Vec<EditKind> =
+            group.iter().filter(|&&(_, _, k, dormant)| !dormant && decides(k)).map(|&(_, _, k, _)| k).collect();
         let group: Vec<(u32, i64, EditKind)> = group
             .iter()
-            .filter(|&&(_, _, k, dormant)| !(current && dormant && decides(k)))
+            .filter(|&&(_, _, k, dormant)| !(dormant && current.iter().any(|&now| contradicts(k, now))))
             .map(|&(s, t, k, _)| (s, t, k))
             .collect();
         let track = group[0].1;
@@ -792,20 +805,24 @@ impl Project {
                     }
                     _ => None,
                 };
-                // Another file, and no face to compare with (another model,
-                // a decision older than kept faces): what the analysis gave
-                // isn't put back by place alone; the user's own answers are.
-                // A chosen picture waits for a pass of the embedder that made
-                // its face, if it kept one.
-                if must_match && face.is_none() && matches!(e.kind, EditKind::Was(_) | EditKind::Cover(_)) {
+                // Another file, and no face to compare with. A decision whose
+                // face another embedder made waits for a pass of that one:
+                // never put on whoever is at its place now. Without a kept
+                // face (a decision older than kept faces), what the analysis
+                // gave isn't put back by place alone; the user's own answers
+                // are.
+                if must_match && face.is_none() {
                     let other_embedder = match (&e.emb, &e.model, &model) {
                         (Some(_), Some(m), Some(now)) => embedder_of(m) != embedder_of(now),
                         _ => false,
                     };
-                    if matches!(e.kind, EditKind::Cover(_)) && other_embedder {
+                    if other_embedder && !matches!(e.kind, EditKind::Was(_)) {
                         unplaced.push((e.id, true));
+                        continue;
                     }
-                    continue;
+                    if matches!(e.kind, EditKind::Was(_) | EditKind::Cover(_)) {
+                        continue;
+                    }
                 }
                 let looks = |emb: &Option<Vec<f32>>| match (&face, emb) {
                     (Some(a), Some(b)) => a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>() >= REANCHOR_MIN_COS,
@@ -1502,7 +1519,8 @@ pub(crate) mod tests {
         assert_eq!(got(vec![(5, 6, EditKind::Was(x)), (50, 6, EditKind::Was(y))]), [(6, EditKind::Was(y))]);
 
         // A decision that waited from an earlier pass gives way to one made
-        // since on the face, however many frames it shares…
+        // since on the face that says otherwise, however many frames it
+        // shares…
         let waited = |found: Vec<(u32, i64, EditKind, bool)>| sorted(resolve(found));
         assert_eq!(
             waited(vec![(90, 7, EditKind::Forbid(x), true), (10, 7, EditKind::Pin(x), false)]),
@@ -1513,8 +1531,17 @@ pub(crate) mod tests {
             [(8, EditKind::Pin(x))]
         );
         assert_eq!(
+            waited(vec![(90, 9, EditKind::Pin(y), true), (10, 9, EditKind::Pin(x), false)]),
+            [(9, EditKind::Pin(x))]
+        );
+        // …and holds beside one that agrees with it: "this is Y" and "not X".
+        assert_eq!(
             waited(vec![(90, 9, EditKind::Pin(y), true), (10, 9, EditKind::Forbid(x), false)]),
-            [(9, EditKind::Forbid(x))]
+            [(9, EditKind::Forbid(x)), (9, EditKind::Pin(y))]
+        );
+        assert_eq!(
+            waited(vec![(90, 9, EditKind::Forbid(y), true), (10, 9, EditKind::Forbid(x), false)]),
+            [(9, EditKind::Forbid(x)), (9, EditKind::Forbid(y))]
         );
         // …but not to clustering's word, and its picture still comes back.
         assert_eq!(
@@ -1970,12 +1997,13 @@ pub(crate) mod tests {
         let (_dir, project, id) = project_with_media(frames);
         let whole = Segment { start: 0, end: frames, kind: SegmentKind::Shot, tiny: false };
         project.db().store_segments(id, &[whole]).unwrap();
-        let pass = |who: usize| {
+        let pass_with = |model: &str, who: usize| {
             project.reset_faces(id).unwrap();
-            project.faces_plan(id, MODEL).unwrap();
+            project.faces_plan(id, model).unwrap();
             project.store_face_chunk(id, 0, frames, &tracks::encode(&[seen(who, 0, 100, 190, 0.1)]), &[], &[]).unwrap();
             project.finish_faces(id).unwrap();
         };
+        let pass = |who: usize| pass_with(MODEL, who);
         pass(1);
         let t = project.cast_tracks(TrackFilter::Unassigned).unwrap()[0].id;
         let walter = project
@@ -1989,6 +2017,10 @@ pub(crate) mod tests {
         assert_eq!((his(), project.cast().unwrap().unplaced), (0, 1));
         // That file analysed again: it is still not put back by place alone.
         pass(2);
+        assert_eq!((his(), project.cast().unwrap().unplaced), (0, 1));
+        // Nor by faces of another embedder (Fast Scan switched), which can't
+        // be compared with his: it waits for one of his own embedder.
+        pass_with("other-embedder", 2);
         assert_eq!((his(), project.cast().unwrap().unplaced), (0, 1));
         // His face again (the first file back): there it lands.
         pass(1);

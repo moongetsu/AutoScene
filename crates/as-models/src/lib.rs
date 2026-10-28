@@ -271,7 +271,12 @@ impl ModelStore {
                     }
                     std::thread::sleep(Duration::from_millis(100));
                 }
-                Err(TryLockError::Error(e)) => return Err(e.into()),
+                // A file system that can't lock (some network or FUSE
+                // mounts): installs there go on as before, unguarded.
+                Err(TryLockError::Error(e)) => {
+                    tracing::warn!(model = %m.id, error = %e, "can't lock the model's install; installing without");
+                    return Ok(file);
+                }
             }
         }
     }

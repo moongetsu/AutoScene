@@ -147,7 +147,9 @@ impl YuNet {
                 for cell in 0..n {
                     let i = f * n + cell;
                     let score = (cls[i].clamp(0.0, 1.0) * obj[i].clamp(0.0, 1.0)).sqrt();
-                    if score < threshold {
+                    // A score that is no number (a faulty execution provider)
+                    // passes no threshold.
+                    if score.is_nan() || score < threshold {
                         continue;
                     }
                     let (c, r) = ((cell % cols) as f32, (cell / cols) as f32);
@@ -158,6 +160,11 @@ impl YuNet {
                     let mut p = [[0f32; 2]; 5];
                     for (j, pt) in p.iter_mut().enumerate() {
                         *pt = [(k[2 * j] + c) * s, (k[2 * j + 1] + r) * s];
+                    }
+                    // Nor does a box or landmark that is no number: clipped
+                    // to the frame it would be a face as big as the frame.
+                    if ![cx, cy, bw, bh].iter().chain(p.iter().flatten()).all(|v| v.is_finite()) {
+                        continue;
                     }
                     let bbox = [
                         (cx - bw / 2.0).max(0.0),

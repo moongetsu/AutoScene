@@ -158,8 +158,12 @@ pub fn encode(signals: &[FrameSignals]) -> Vec<u8> {
     zstd::encode_all(raw.as_slice(), 9).expect("in-memory zstd")
 }
 
+/// The most a stored blob of signals unpacks to: a few dozen bytes a frame
+/// (some MB for a film), 512 MB being days of video.
+const MAX_UNPACKED: u64 = 512 << 20;
+
 pub fn decode(blob: &[u8]) -> Option<Vec<FrameSignals>> {
-    let raw = zstd::decode_all(blob).ok()?;
+    let raw = as_core::time::unpack(blob, MAX_UNPACKED).ok()?;
     let (&format, body) = raw.split_first()?;
     if format != FORMAT || body.len() % RECORD != 0 {
         return None;

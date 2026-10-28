@@ -70,9 +70,10 @@ impl AppState {
         // engine loads (see `sidecar_dir`).
         let resources = app.path().resource_dir().ok();
         let dev = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let bundled_ffmpeg = sidecar_dir(resources.as_deref(), "ffmpeg", RELEASE, dev);
-        let ort_dir =
-            sidecar_dir(resources.as_deref(), "onnxruntime", RELEASE, dev).unwrap_or_else(|| dev.join("onnxruntime"));
+        let named = std::env::var_os("AUTOSCENE_FFMPEG_DIR").is_some_and(|d| !d.is_empty());
+        let bundled_ffmpeg = sidecar_dir(resources.as_deref(), "ffmpeg", RELEASE, dev, named);
+        let ort_dir = sidecar_dir(resources.as_deref(), "onnxruntime", RELEASE, dev, false)
+            .unwrap_or_else(|| dev.join("onnxruntime"));
         let models = ModelStore::new(paths.models());
         let engine_cfg = as_engine::Config {
             ort_dir,
@@ -132,22 +133,26 @@ impl AppState {
 /// Whether this is a release build: it uses only the sidecars it ships with.
 const RELEASE: bool = !cfg!(debug_assertions);
 
-/// Where a sidecar shipped as a resource (`ffmpeg`, `onnxruntime`) is.
+/// Where a sidecar shipped as a resource (`ffmpeg`, `onnxruntime`) is:
+/// `Some` is the only place looked in, `None` leaves ffmpeg to
+/// `AUTOSCENE_FFMPEG_DIR` or PATH.
 ///
-/// A release build uses its own resource folder and nothing else, even when
-/// that's gone: the tools then say they're missing ("reinstall") rather than
-/// run a build found on PATH, named by `AUTOSCENE_FFMPEG_DIR`, or left at the
-/// path the binary was built at. Not knowing its resources (it can't tell
-/// where it runs from) gives an empty path, which finds nothing, never the
-/// working directory. A dev build takes the resource folder when it exists,
-/// else the source tree's copy `cargo xtask fetch-sidecars` made (`dev`),
-/// else `None`: ffmpeg then comes from `AUTOSCENE_FFMPEG_DIR` or PATH.
-fn sidecar_dir(resources: Option<&Path>, name: &str, release: bool, dev: &Path) -> Option<PathBuf> {
-    let shipped = resources.map(|d| d.join(name));
-    if release {
-        return Some(shipped.unwrap_or_default());
+/// An installed app (a release build with its resources) uses its own and
+/// nothing else: never a build found on PATH or named by
+/// `AUTOSCENE_FFMPEG_DIR`. A release binary run from where it was built
+/// (no resources beside it, as the marketing capture runs one) and a dev
+/// build take the folder that variable names (`named`), else the resource
+/// folder when it exists, else the source tree's copy `cargo xtask
+/// fetch-sidecars` made (`dev`), else `None`.
+fn sidecar_dir(resources: Option<&Path>, name: &str, release: bool, dev: &Path, named: bool) -> Option<PathBuf> {
+    let shipped = resources.map(|d| d.join(name)).filter(|d| d.is_dir());
+    if release && let Some(own) = shipped {
+        return Some(own);
     }
-    shipped.filter(|d| d.is_dir()).or_else(|| Some(dev.join(name)).filter(|d| d.is_dir()))
+    if named {
+        return None;
+    }
+    shipped.or_else(|| Some(dev.join(name)).filter(|d| d.is_dir()))
 }
 
 /// The value in `cell`, else `find`'s once it succeeds. A failure isn't
@@ -229,19 +234,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_release_build_uses_only_its_own_sidecars() {
+    fn an_installed_app_uses_only_its_own_sidecars() {
         let tmp = std::env::temp_dir().join(format!("autoscene-sidecars-{}", std::process::id()));
         let (resources, dev) = (tmp.join("resources"), tmp.join("src-tauri"));
         std::fs::create_dir_all(dev.join("ffmpeg")).unwrap();
 
-        // Gone from the install: still only there (the tools say "reinstall").
-        assert_eq!(sidecar_dir(Some(&resources), "ffmpeg", true, &dev), Some(resources.join("ffmpeg")));
-        assert_eq!(sidecar_dir(None, "ffmpeg", true, &dev), Some(PathBuf::new()));
-        // A dev build falls back to the source tree's copy, else to none.
-        assert_eq!(sidecar_dir(Some(&resources), "ffmpeg", false, &dev), Some(dev.join("ffmpeg")));
-        assert_eq!(sidecar_dir(Some(&resources), "onnxruntime", false, &dev), None);
+        // A release binary without resources beside it (run where it was
+        // built): the named folder, else the source tree's copy.
+        assert_eq!(sidecar_dir(Some(&resources), "ffmpeg", true, &dev, true), None);
+        assert_eq!(sidecar_dir(None, "ffmpeg", true, &dev, false), Some(dev.join("ffmpeg")));
+        // A dev build: the named folder first, then the source tree's copy, else none.
+        assert_eq!(sidecar_dir(Some(&resources), "ffmpeg", false, &dev, true), None);
+        assert_eq!(sidecar_dir(Some(&resources), "ffmpeg", false, &dev, false), Some(dev.join("ffmpeg")));
+        assert_eq!(sidecar_dir(Some(&resources), "onnxruntime", false, &dev, false), None);
+        // Installed: its own, whatever the variable names.
         std::fs::create_dir_all(resources.join("ffmpeg")).unwrap();
-        assert_eq!(sidecar_dir(Some(&resources), "ffmpeg", false, &dev), Some(resources.join("ffmpeg")));
+        assert_eq!(sidecar_dir(Some(&resources), "ffmpeg", true, &dev, true), Some(resources.join("ffmpeg")));
+        assert_eq!(sidecar_dir(Some(&resources), "ffmpeg", false, &dev, false), Some(resources.join("ffmpeg")));
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
