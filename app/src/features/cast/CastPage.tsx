@@ -1,7 +1,7 @@
 import type * as React from "react"
 import { useState } from "react"
 import { Link, useNavigate, useParams } from "@tanstack/react-router"
-import { CaretDown, Eye, EyeSlash, User, UserFocus, Users } from "@/components/icons"
+import { CaretDown, Eye, EyeSlash, Info, User, UserFocus, Users } from "@/components/icons"
 import { Button } from "@/components/ui/button"
 import { ContextArea } from "@/components/ui/context-area"
 import { ContextMenuItem } from "@/components/ui/context-menu"
@@ -14,7 +14,7 @@ import { ProjectNav } from "@/features/project/ProjectNav"
 import { firstFailure, useCast, useMediaList, useProject } from "@/lib/queries"
 import { cn } from "@/lib/utils"
 import { CharacterCard } from "./CharacterCard"
-import { plural, splitHidden, useProjectAnalysis } from "./cast"
+import { plural, splitHidden, unplacedNote, useProjectAnalysis } from "./cast"
 
 /** Everyone the analysis found, most screen time first. */
 export function CastPage() {
@@ -30,6 +30,7 @@ export function CastPage() {
   const navigate = useNavigate()
   const { shown, hidden } = splitHidden(cast)
   const anime = project?.content === "anime"
+  const unplaced = anime ? null : unplacedNote(cast?.unplaced ?? 0)
   const failure = firstFailure(projectQuery, castQuery, mediaQuery)
 
   if (failure) {
@@ -85,6 +86,11 @@ export function CastPage() {
 
       <div className="px-10 pb-16">
         <AnalysisStatus pid={pid} className="mb-8" />
+        {unplaced && (
+          <p className="mb-8 flex max-w-2xl items-start gap-2.5 rounded-lg border border-white/10 bg-white/[0.04] px-3.5 py-3 text-sm text-fg-2 [&_svg]:mt-0.5 [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-fg-1">
+            <Info /> {unplaced}
+          </p>
+        )}
         {anime ? (
           <EmptyState
             icon={<UserFocus />}

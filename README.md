@@ -74,7 +74,9 @@ on Windows, this prints `True` for an intact download:
 - **Characters (live action).** Faces are detected, tracked and grouped into
   characters automatically. You name them, and you review the faces the
   analysis wasn't sure about with one key each. Your decisions survive every
-  later analysis. Anime characters come in a later version.
+  later analysis: they go back onto the faces it finds again. One whose face
+  it doesn't find waits for the next analysis, and the cast says how many
+  wait. Anime characters come in a later version.
 - **Scenepacks.** For each character you get their shots, filters and your own
   picks, then one export: a single video with a chapter for each shot, or a
   file per shot, named from a template.

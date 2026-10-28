@@ -293,6 +293,12 @@ export type Cast = {
 	/**  Media whose faces are analysed / all media. */
 	mediaDone: number,
 	mediaTotal: number,
+	/**
+	 *  The user's decisions about faces a later analysis didn't find again
+	 *  (another way of finding faces, another file): they wait, and are
+	 *  tried again at every analysis of their media.
+	 */
+	unplaced: number,
 };
 
 /**  The cast of a project changed (characters found, renamed, merged, tracks moved). */

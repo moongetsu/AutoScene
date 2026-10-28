@@ -307,6 +307,15 @@ const STEPS: &[M<'static>] = &[
     CREATE INDEX tracks_by_shot ON tracks(media_id, shot, id, start, end, quality, face_h, character_id, assign,
                                           not_face);",
     ),
+    // 15: a decision a finished face pass found no face for is kept
+    // (`dormant`) and tried again at every later pass, instead of being
+    // forgotten; `must_match` marks one that waits for faces of another
+    // file than the one it was made on, so it only ever lands on a face
+    // that looks like its own.
+    M::up(
+        "ALTER TABLE track_edits ADD COLUMN dormant INTEGER NOT NULL DEFAULT 0;
+         ALTER TABLE track_edits ADD COLUMN must_match INTEGER NOT NULL DEFAULT 0;",
+    ),
 ];
 const MIGRATIONS: Migrations<'static> = Migrations::from_slice(STEPS);
 

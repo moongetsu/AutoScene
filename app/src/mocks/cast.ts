@@ -153,6 +153,7 @@ export function castGet(projectId: string, media: MediaItem[]): Cast {
     unsure: live.filter((t) => t.assign === "unsure").length,
     mediaDone: media.filter((m) => m.faces === "ready").length,
     mediaTotal: media.length,
+    unplaced: 0,
   }
 }
 

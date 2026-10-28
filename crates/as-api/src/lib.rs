@@ -392,6 +392,10 @@ pub struct Cast {
     /// Media whose faces are analysed / all media.
     pub media_done: u32,
     pub media_total: u32,
+    /// The user's decisions about faces a later analysis didn't find again
+    /// (another way of finding faces, another file): they wait, and are
+    /// tried again at every analysis of their media.
+    pub unplaced: u32,
 }
 
 /// One face followed through one shot.

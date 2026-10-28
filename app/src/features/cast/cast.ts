@@ -27,6 +27,19 @@ export function plural(n: number, one: string, many = `${one}s`): string {
   return `${n.toLocaleString("en-GB")} ${n === 1 ? one : many}`
 }
 
+/**
+ * What the cast says of the user's decisions whose faces a later analysis
+ * didn't find again (`Cast.unplaced`): they wait and are tried again.
+ * Nothing when there are none.
+ */
+export function unplacedNote(n: number): string | null {
+  if (!(n > 0)) return null
+  const count = n.toLocaleString("en-GB")
+  return n === 1
+    ? `${count} of your decisions waits for a face the latest analysis didn't find again. It's tried again at the next analysis.`
+    : `${count} of your decisions wait for faces the latest analysis didn't find again. They're tried again at the next analysis.`
+}
+
 /** Visible characters first (as the backend sorts them), hidden ones apart. */
 export function splitHidden(cast: Cast | undefined): { shown: Character[]; hidden: Character[] } {
   const all = cast?.characters ?? []

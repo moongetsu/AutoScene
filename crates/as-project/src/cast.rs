@@ -201,16 +201,29 @@ fn same_face(old: (FrameRange, &[FaceDet]), new: (FrameRange, &[FaceDet])) -> Op
     (box_iou(&a, &b) >= 0.5).then_some(both.len())
 }
 
+/// Whether an edit is the user's word on who (or what) a face is.
+fn decides(k: EditKind) -> bool {
+    matches!(k, EditKind::Pin(_) | EditKind::Forbid(_) | EditKind::NotFace)
+}
+
 /// The decisions found again on new tracks (`(frames shared, track,
-/// decision)`) made consistent, one track at a time: of "this is X" and
-/// "not a face" the one sharing most frames holds — "this is X" only if no
-/// "not X" shares more; the other "not Y"s hold; with neither left, the
-/// track starts out on the character clustering said it was (sharing most,
-/// and not one it is "not").
-fn resolve(mut found: Vec<(u32, i64, EditKind)>) -> Vec<(i64, EditKind)> {
-    found.sort_by_key(|&(shared, track, _)| (track, std::cmp::Reverse(shared)));
+/// decision, dormant)`) made consistent, one track at a time: of "this is
+/// X" and "not a face" the one sharing most frames holds — "this is X" only
+/// if no "not X" shares more; the other "not Y"s hold; with neither left,
+/// the track starts out on the character clustering said it was (sharing
+/// most, and not one it is "not"). A decision that waited from an earlier
+/// pass (dormant: no face was found for it then) gives way to any made
+/// since on the same face, whatever it shares.
+fn resolve(mut found: Vec<(u32, i64, EditKind, bool)>) -> Vec<(i64, EditKind)> {
+    found.sort_by_key(|&(shared, track, _, _)| (track, std::cmp::Reverse(shared)));
     let mut out = Vec::new();
     for group in found.chunk_by(|a, b| a.1 == b.1) {
+        let current = group.iter().any(|&(_, _, k, dormant)| !dormant && decides(k));
+        let group: Vec<(u32, i64, EditKind)> = group
+            .iter()
+            .filter(|&&(_, _, k, dormant)| !(current && dormant && decides(k)))
+            .map(|&(s, t, k, _)| (s, t, k))
+            .collect();
         let track = group[0].1;
         let forbids: Vec<(u32, CharacterId)> = group
             .iter()
@@ -736,26 +749,40 @@ impl Project {
 
     /// The face pass of `id` is complete: put the user's earlier decisions
     /// back on the new tracks (see [`same_face`] and [`resolve`]), then mark
-    /// the faces ready.
+    /// the faces ready. A decision of the user's that no new track is found
+    /// for isn't forgotten: it waits for the next pass of the media (and the
+    /// one after), counted in [`Cast::unplaced`] meanwhile. What clustering
+    /// said goes either way: the next clustering says it again.
     pub fn finish_faces(&self, id: MediaId) -> ProjectResult<()> {
         let edits = self.db().track_edits(id)?;
         let changed = source_changed_key(id);
-        let must_match = self.db().meta(&changed)?.is_some();
+        let source_changed = self.db().meta(&changed)?.is_some();
         if !edits.is_empty() {
             let model = self.db().faces_model(id)?;
-            let new: Vec<NewFace> = self
-                .db()
-                .media_track_dets(id)?
+            let stored = self.db().media_track_dets(id)?;
+            let tracks_stored = stored.len();
+            let new: Vec<NewFace> = stored
                 .into_iter()
                 .filter_map(|(t, s, e, d, emb)| {
                     Some((t, FrameRange::new(s, e), tracks::dets_from_bytes(&d)?, tracks::embedding_from_bytes(&emb)))
                 })
                 .collect();
-            let mut found: Vec<(u32, i64, EditKind)> = Vec::new();
-            let mut kept = 0;
+            if new.len() < tracks_stored {
+                tracing::warn!(media = %id, tracks = tracks_stored - new.len(), "new face tracks without readable detections take no decision");
+            }
+            let mut found: Vec<(u32, i64, EditKind, bool)> = Vec::new();
+            // The user's decisions no new track was found for: `(edit, must match)`.
+            let mut unplaced: Vec<(i64, bool)> = Vec::new();
+            let mut unreadable = 0;
             for e in &edits {
+                // Made on another file than this one: now, or before it waited.
+                let must_match = source_changed || e.must_match;
+                let Some(dets) = tracks::dets_from_bytes(&e.dets) else {
+                    // Its bytes never change: it could never land.
+                    unreadable += 1;
+                    continue;
+                };
                 let span = FrameRange::new(e.start, e.end);
-                let dets = tracks::dets_from_bytes(&e.dets).unwrap_or_default();
                 let before = found.len();
                 // The face it was about, when the file changed and the same
                 // embedder made both (searched for one way or another).
@@ -768,7 +795,16 @@ impl Project {
                 // Another file, and no face to compare with (another model,
                 // a decision older than kept faces): what the analysis gave
                 // isn't put back by place alone; the user's own answers are.
+                // A chosen picture waits for a pass of the embedder that made
+                // its face, if it kept one.
                 if must_match && face.is_none() && matches!(e.kind, EditKind::Was(_) | EditKind::Cover(_)) {
+                    let other_embedder = match (&e.emb, &e.model, &model) {
+                        (Some(_), Some(m), Some(now)) => embedder_of(m) != embedder_of(now),
+                        _ => false,
+                    };
+                    if matches!(e.kind, EditKind::Cover(_)) && other_embedder {
+                        unplaced.push((e.id, true));
+                    }
                     continue;
                 }
                 let looks = |emb: &Option<Vec<f32>>| match (&face, emb) {
@@ -778,20 +814,30 @@ impl Project {
                 let matches = new
                     .iter()
                     .filter(|(_, _, _, emb)| looks(emb))
-                    .filter_map(|(t, r, d, _)| same_face((span, &dets), (*r, d)).map(|s| (s, *t, e.kind)));
+                    .filter_map(|(t, r, d, _)| same_face((span, &dets), (*r, d)).map(|s| (s, *t, e.kind, e.dormant)));
                 if matches!(e.kind, EditKind::Cover(_)) {
                     // A picture is one face: the new track sharing most of it.
-                    found.extend(matches.max_by_key(|&(s, t, _)| (s, std::cmp::Reverse(t))));
+                    found.extend(matches.max_by_key(|&(s, t, _, _)| (s, std::cmp::Reverse(t))));
                 } else {
                     found.extend(matches);
                 }
-                kept += usize::from(found.len() > before);
+                // Found on a face, it was weighed there (and holds or gives
+                // way); found nowhere, the user's word waits.
+                if found.len() == before && !matches!(e.kind, EditKind::Was(_)) {
+                    unplaced.push((e.id, must_match));
+                }
+            }
+            if unreadable > 0 {
+                tracing::warn!(media = %id, edits = unreadable, "kept decisions without readable detections dropped");
+            }
+            if !unplaced.is_empty() {
+                tracing::warn!(media = %id, decisions = unplaced.len(), "decisions found no face; they wait for the next analysis");
             }
             let matched = resolve(found);
-            tracing::info!(media = %id, edits = edits.len(), kept, tracks = matched.len(), "re-anchored cast edits");
-            self.db().reanchor_edits(id, &matched)?;
+            tracing::info!(media = %id, edits = edits.len(), waiting = unplaced.len(), tracks = matched.len(), "re-anchored cast edits");
+            self.db().reanchor_edits(id, &matched, &unplaced)?;
         }
-        if must_match {
+        if source_changed {
             self.db().delete_meta(&changed)?;
         }
         Ok(self.db().set_faces_state(id, StageState::Ready, None)?)
@@ -1059,7 +1105,8 @@ impl Project {
             })
             .collect();
         let (unassigned, unsure, media_done, media_total) = self.db().cast_counts()?;
-        Ok(Cast { characters, unassigned, unsure, media_done, media_total })
+        let unplaced = self.db().unplaced_decisions()?;
+        Ok(Cast { characters, unassigned, unsure, media_done, media_total, unplaced })
     }
 
     fn track_item(&self, r: TrackRow) -> FaceTrackItem {
@@ -1434,10 +1481,12 @@ pub(crate) mod tests {
     #[test]
     fn decisions_on_one_track_are_made_consistent() {
         let (x, y) = (CharacterId::new(), CharacterId::new());
-        let got = |found: Vec<(u32, i64, EditKind)>| {
-            let mut v = resolve(found);
+        let sorted = |mut v: Vec<(i64, EditKind)>| {
             v.sort_by_key(|(t, k)| (*t, format!("{k:?}")));
             v
+        };
+        let got = |found: Vec<(u32, i64, EditKind)>| {
+            sorted(resolve(found.into_iter().map(|(s, t, k)| (s, t, k, false)).collect()))
         };
         // The decision sharing most frames wins: here "not a face".
         assert_eq!(got(vec![(10, 1, EditKind::Pin(x)), (30, 1, EditKind::NotFace)]), [(1, EditKind::NotFace)]);
@@ -1451,6 +1500,36 @@ pub(crate) mod tests {
         );
         assert_eq!(got(vec![(50, 5, EditKind::Was(y)), (5, 5, EditKind::Pin(x))]), [(5, EditKind::Pin(x))]);
         assert_eq!(got(vec![(5, 6, EditKind::Was(x)), (50, 6, EditKind::Was(y))]), [(6, EditKind::Was(y))]);
+
+        // A decision that waited from an earlier pass gives way to one made
+        // since on the face, however many frames it shares…
+        let waited = |found: Vec<(u32, i64, EditKind, bool)>| sorted(resolve(found));
+        assert_eq!(
+            waited(vec![(90, 7, EditKind::Forbid(x), true), (10, 7, EditKind::Pin(x), false)]),
+            [(7, EditKind::Pin(x))]
+        );
+        assert_eq!(
+            waited(vec![(90, 8, EditKind::NotFace, true), (10, 8, EditKind::Pin(x), false)]),
+            [(8, EditKind::Pin(x))]
+        );
+        assert_eq!(
+            waited(vec![(90, 9, EditKind::Pin(y), true), (10, 9, EditKind::Forbid(x), false)]),
+            [(9, EditKind::Forbid(x))]
+        );
+        // …but not to clustering's word, and its picture still comes back.
+        assert_eq!(
+            waited(vec![(90, 10, EditKind::NotFace, true), (90, 10, EditKind::Was(y), false)]),
+            [(10, EditKind::NotFace)]
+        );
+        assert_eq!(
+            waited(vec![(90, 11, EditKind::Cover(x), true), (10, 11, EditKind::Pin(x), false)]),
+            [(11, EditKind::Cover(x)), (11, EditKind::Pin(x))]
+        );
+        // Among those that waited, as among others.
+        assert_eq!(
+            waited(vec![(10, 12, EditKind::Pin(x), true), (40, 12, EditKind::Forbid(x), true)]),
+            [(12, EditKind::Forbid(x))]
+        );
     }
 
     #[test]
@@ -1819,6 +1898,101 @@ pub(crate) mod tests {
         assert_eq!(project.faces_by_other_model(as_models::ids::ARCFACE).unwrap(), [id]);
         let reopened = Project::open(project.id, project.dir.clone(), Arc::default()).unwrap();
         assert!(!reopened.fast_scan());
+    }
+
+    #[test]
+    fn decisions_fast_scan_doesnt_find_come_back_with_the_full_pass() {
+        let frames = 400;
+        let (_dir, project, id) = project_with_media(frames);
+        let segments: Vec<Segment> = (0..frames)
+            .step_by(100)
+            .map(|s| Segment { start: s, end: s + 100, kind: SegmentKind::Shot, tiny: false })
+            .collect();
+        project.db().store_segments(id, &segments).unwrap();
+        // Walter, something that isn't a face, someone in every pass, and a
+        // face the user moved to a character of its own.
+        let all = [
+            seen(1, 0, 0, 90, 0.1),
+            seen(2, 100, 100, 190, 0.5),
+            seen(3, 200, 200, 290, 0.3),
+            seen(4, 300, 300, 390, 0.2),
+        ];
+        let find = |found: &[FaceTrack]| {
+            let model = project.face_embedder();
+            project.refresh_outdated_faces(model).unwrap();
+            project.faces_plan(id, model).unwrap();
+            project.store_face_chunk(id, 0, frames, &tracks::encode(found), &[], &[]).unwrap();
+            project.finish_faces(id).unwrap();
+        };
+        find(&all);
+        let at = |start| {
+            project.cast_tracks(TrackFilter::Unassigned).unwrap().into_iter().find(|t| t.start == start).unwrap().id
+        };
+        let (face, not_face, moved) = (at(0), at(100), at(300));
+        let walter = project
+            .cast_edit(&CastEdit::NewCharacter { tracks: vec![face], name: Some("Walter".into()) })
+            .unwrap()
+            .unwrap();
+        project.cast_edit(&CastEdit::NotAFace { tracks: vec![not_face] }).unwrap();
+        let unnamed = project.cast_edit(&CastEdit::NewCharacter { tracks: vec![moved], name: None }).unwrap().unwrap();
+        project.recluster().unwrap();
+        assert_eq!(project.cast().unwrap().unplaced, 0);
+
+        // Fast Scan finds only the one in every pass: the decisions on the
+        // others wait. The unnamed character doesn't stay behind, empty.
+        assert!(project.set_fast_scan(true).unwrap());
+        find(&all[2..3]);
+        assert_eq!(project.cast().unwrap().unplaced, 3);
+        project.recluster().unwrap();
+        let cast = project.cast().unwrap();
+        assert!(cast.characters.iter().all(|c| c.id != unnamed));
+        assert_eq!(cast.unplaced, 2);
+        let w = cast.characters.iter().find(|c| c.id == walter).expect("Walter stays");
+        assert_eq!(w.tracks, 0);
+
+        // Back to the full pass: they land again, and nothing waits.
+        assert!(project.set_fast_scan(false).unwrap());
+        project.refresh_outdated_faces(project.face_embedder()).unwrap();
+        assert_eq!(project.cast().unwrap().unplaced, 0, "not counted while the faces are found again");
+        find(&all);
+        project.recluster().unwrap();
+        let theirs = project.cast_tracks(TrackFilter::Character(walter)).unwrap();
+        assert_eq!(theirs.iter().map(|t| (t.start, t.assign)).collect::<Vec<_>>(), [(0, TrackAssign::Pinned)]);
+        let faces: Vec<FrameIdx> = project.db().identity_tracks().unwrap().iter().map(|t| t.start).collect();
+        assert!(!faces.contains(&100), "not a face again: {faces:?}");
+        assert_eq!(project.cast().unwrap().unplaced, 0);
+        assert!(project.db().track_edits(id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_decision_made_on_another_file_never_lands_by_place_alone() {
+        let frames = 400;
+        let (_dir, project, id) = project_with_media(frames);
+        let whole = Segment { start: 0, end: frames, kind: SegmentKind::Shot, tiny: false };
+        project.db().store_segments(id, &[whole]).unwrap();
+        let pass = |who: usize| {
+            project.reset_faces(id).unwrap();
+            project.faces_plan(id, MODEL).unwrap();
+            project.store_face_chunk(id, 0, frames, &tracks::encode(&[seen(who, 0, 100, 190, 0.1)]), &[], &[]).unwrap();
+            project.finish_faces(id).unwrap();
+        };
+        pass(1);
+        let t = project.cast_tracks(TrackFilter::Unassigned).unwrap()[0].id;
+        let walter = project
+            .cast_edit(&CastEdit::NewCharacter { tracks: vec![t], name: Some("Walter".into()) })
+            .unwrap()
+            .unwrap();
+        let his = || project.cast_tracks(TrackFilter::Character(walter)).unwrap().len();
+        // Another cut, someone else where he was: his decision waits for him.
+        project.db().set_meta(&source_changed_key(id), "1").unwrap();
+        pass(2);
+        assert_eq!((his(), project.cast().unwrap().unplaced), (0, 1));
+        // That file analysed again: it is still not put back by place alone.
+        pass(2);
+        assert_eq!((his(), project.cast().unwrap().unplaced), (0, 1));
+        // His face again (the first file back): there it lands.
+        pass(1);
+        assert_eq!((his(), project.cast().unwrap().unplaced), (1, 0));
     }
 
     #[test]

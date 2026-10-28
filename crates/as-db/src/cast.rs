@@ -126,6 +126,15 @@ pub type TrackDets = (i64, FrameIdx, FrameIdx, Vec<u8>, Vec<u8>);
 /// was deleted for a re-analysis.
 #[derive(Clone, Debug)]
 pub struct TrackEdit {
+    /// The row, as [`ProjectDb::reanchor_edits`] names it.
+    pub id: i64,
+    /// A decision an earlier finished pass found no face for: it waits,
+    /// and gives way to any decision made since on the face it lands on.
+    pub dormant: bool,
+    /// It waited for faces of another file than the one it was made on
+    /// (see [`ProjectDb::reanchor_edits`]): it only ever lands on a face
+    /// that looks like its own.
+    pub must_match: bool,
     pub start: FrameIdx,
     pub end: FrameIdx,
     pub dets: Vec<u8>,
@@ -290,11 +299,13 @@ fn insert_character(tx: &Transaction, id: CharacterId, name: Option<&str>) -> Db
 }
 
 /// A character (`characters` row) nobody is any more, that the user neither
-/// named nor hid and no decision waits for: it goes.
+/// named nor hid and no decision waits for: it goes. A decision a finished
+/// pass found no face for (`dormant`) doesn't keep it: an unnamed character
+/// would stay empty for good. It goes with the character.
 const GONE: &str = "characters.name IS NULL AND characters.hidden = 0
            AND NOT EXISTS (SELECT 1 FROM tracks t WHERE t.character_id = characters.id
                              AND t.assign IN ('auto', 'pinned') AND t.not_face = 0 AND t.via_body = 0)
-           AND NOT EXISTS (SELECT 1 FROM track_edits e WHERE e.character_id = characters.id)
+           AND NOT EXISTS (SELECT 1 FROM track_edits e WHERE e.character_id = characters.id AND e.dormant = 0)
            AND NOT EXISTS (SELECT 1 FROM bodies b WHERE b.character_id = characters.id AND b.source = 'pinned')
            AND NOT EXISTS (SELECT 1 FROM body_edits e WHERE e.character_id = characters.id AND e.kind = 'pin')";
 
@@ -525,11 +536,13 @@ impl ProjectDb {
         })
     }
 
-    /// Edits waiting to be re-anchored on the media's new tracks.
+    /// Edits waiting to be re-anchored on the media's new tracks, in the
+    /// order they were kept (decisions alike on one face hold in it).
     pub fn track_edits(&self, id: MediaId) -> DbResult<Vec<TrackEdit>> {
         self.0.read(|c| {
             let mut st = c.prepare(
-                "SELECT start, end, dets, kind, character_id, emb, model FROM track_edits WHERE media_id = ?1",
+                "SELECT start, end, dets, kind, character_id, emb, model, rowid, dormant, must_match
+                   FROM track_edits WHERE media_id = ?1 ORDER BY rowid",
             )?;
             let mut rows = st.query([id.to_string()])?;
             let mut out = Vec::new();
@@ -545,6 +558,9 @@ impl ProjectDb {
                     _ => continue,
                 };
                 out.push(TrackEdit {
+                    id: r.get(7)?,
+                    dormant: r.get(8)?,
+                    must_match: r.get(9)?,
                     start: r.get(0)?,
                     end: r.get(1)?,
                     dets: r.get(2)?,
@@ -558,10 +574,14 @@ impl ProjectDb {
     }
 
     /// Re-apply edits to new tracks (`(track, edit)`, one consistent set per
-    /// track) and forget all of the media's pending edits. Decisions go
-    /// first, each like the user made it; a former character only lands on a
-    /// face nobody decided about and that may be it.
-    pub fn reanchor_edits(&self, id: MediaId, matched: &[(i64, EditKind)]) -> DbResult<()> {
+    /// track) and forget the media's pending edits — but the user's
+    /// decisions in `unplaced` (`(edit, must match)`, see
+    /// [`TrackEdit::id`]): the pass found no face for them, so they wait
+    /// (dormant) for the next one, and when `must match`, only ever for a
+    /// face that looks like theirs. Decisions go first, each like the user
+    /// made it; a former character only lands on a face nobody decided
+    /// about and that may be it.
+    pub fn reanchor_edits(&self, id: MediaId, matched: &[(i64, EditKind)], unplaced: &[(i64, bool)]) -> DbResult<()> {
         self.0.write(|tx| {
             for &(track, kind) in matched {
                 match kind {
@@ -623,8 +643,35 @@ impl ProjectDb {
                     )?;
                 }
             }
-            tx.execute("DELETE FROM track_edits WHERE media_id = ?1", [id.to_string()])?;
+            // What waits is marked afresh; the rest goes, ones that waited
+            // from an earlier pass and were found now included. Clustering's
+            // word never waits: the next clustering says it again.
+            let m = id.to_string();
+            tx.execute("UPDATE track_edits SET dormant = 0 WHERE media_id = ?1 AND dormant = 1", [&m])?;
+            let mut wait = tx.prepare(
+                "UPDATE track_edits SET dormant = 1, must_match = ?3 WHERE rowid = ?2 AND media_id = ?1
+                    AND kind IN ('pin', 'forbid', 'not_face', 'cover')",
+            )?;
+            for &(edit, must_match) in unplaced {
+                wait.execute(params![m, edit, must_match])?;
+            }
+            drop(wait);
+            tx.execute("DELETE FROM track_edits WHERE media_id = ?1 AND dormant = 0", [&m])?;
             bump_rev(tx)
+        })
+    }
+
+    /// The user's decisions a finished face pass found no face for: they
+    /// wait, and are tried again at every later pass of their media (not
+    /// counted while it runs).
+    pub fn unplaced_decisions(&self) -> DbResult<u32> {
+        self.0.read(|c| {
+            Ok(c.query_row(
+                "SELECT COUNT(*) FROM track_edits
+                  WHERE dormant = 1 AND media_id IN (SELECT id FROM media WHERE faces NOT IN ('pending', 'running'))",
+                [],
+                |r| r.get(0),
+            )?)
         })
     }
 
@@ -1094,9 +1141,12 @@ impl ProjectDb {
         })
     }
 
+    /// Choose a character's picture. A picture chosen before that waits for
+    /// its face to be found again is not put back over this one.
     pub fn set_character_cover(&self, c: CharacterId, track: i64) -> DbResult<()> {
         self.0.write(|tx| {
             tx.execute("UPDATE characters SET cover = ?2 WHERE id = ?1", params![c.to_string(), track])?;
+            tx.execute("DELETE FROM track_edits WHERE kind = 'cover' AND character_id = ?1", [c.to_string()])?;
             Ok(())
         })
     }
@@ -1395,8 +1445,8 @@ pub(crate) mod tests {
         let new = db.put_face_chunk(m, 0, 1000, &[track(200, 0.7), track(10, 0.9)], &[], |_| Ok(())).unwrap();
         assert!(new.iter().all(|t| !ids.contains(t)), "track ids are never handed out twice");
         assert_eq!(db.characters().unwrap()[0].cover, None);
-        db.reanchor_edits(m, &[(new[1], EditKind::Pin(a)), (new[1], EditKind::Cover(a)), (new[0], EditKind::NotFace)])
-            .unwrap();
+        let placed = [(new[1], EditKind::Pin(a)), (new[1], EditKind::Cover(a)), (new[0], EditKind::NotFace)];
+        db.reanchor_edits(m, &placed, &[]).unwrap();
         assert_eq!(db.characters().unwrap()[0].cover.map(|c| c.0), Some(new[1]), "the chosen picture is back");
         db.set_faces_state(m, StageState::Ready, None).unwrap();
         assert!(db.track_edits(m).unwrap().is_empty());
@@ -1549,8 +1599,8 @@ pub(crate) mod tests {
         assert!(db.track_edits(m).unwrap().iter().all(|e| e.kind == EditKind::Was(a)));
         // The new tracks start out on it — unless a decision says otherwise.
         let new = db.put_face_chunk(m, 0, 1000, &[track(10, 0.9), track(100, 0.8)], &[], |_| Ok(())).unwrap();
-        db.reanchor_edits(m, &[(new[0], EditKind::Was(a)), (new[1], EditKind::Was(a)), (new[1], EditKind::Forbid(a))])
-            .unwrap();
+        let placed = [(new[0], EditKind::Was(a)), (new[1], EditKind::Was(a)), (new[1], EditKind::Forbid(a))];
+        db.reanchor_edits(m, &placed, &[]).unwrap();
         let t = db.tracks_by_id(&new).unwrap();
         let on = |id| t.iter().find(|r| r.id == id).map(|r| (r.character_id, r.assign)).unwrap();
         assert_eq!(on(new[0]), (Some(a), TrackAssign::Auto));
@@ -1558,9 +1608,134 @@ pub(crate) mod tests {
         assert_eq!(db.characters().unwrap()[0].number, 1);
         // Faces that didn't come back leave the character to the next clustering.
         db.reset_faces(m).unwrap();
-        db.reanchor_edits(m, &[]).unwrap();
+        db.reanchor_edits(m, &[], &[]).unwrap();
         apply(&db, db.cast_rev().unwrap(), &[], &[]).unwrap();
         assert!(!db.character_exists(a).unwrap());
+    }
+
+    #[test]
+    fn decisions_no_face_was_found_for_wait_for_the_next_pass() {
+        let db = ProjectDb::memory();
+        let m = ready_media(&db, "/v/a.mkv");
+        let ids = db
+            .put_face_chunk(
+                m,
+                0,
+                1000,
+                &[track(10, 0.9), track(100, 0.8), track(200, 0.7), track(300, 0.6)],
+                &[],
+                |_| Ok(()),
+            )
+            .unwrap();
+        db.set_faces_state(m, StageState::Ready, None).unwrap();
+        // Walter pinned and pictured, "not Walter", not a face, and someone
+        // only clustering knows.
+        let (walter, b) = (CharacterId::new(), CharacterId::new());
+        db.pin_tracks(&[ids[0]], walter, Some(Some("Walter"))).unwrap();
+        apply(&db, db.cast_rev().unwrap(), &[b], &[(ids[3], Some(b), TrackAssign::Auto, 0.9)]).unwrap();
+        db.forbid_tracks(&[ids[1]], walter).unwrap();
+        db.mark_not_face(&[ids[2]]).unwrap();
+        db.set_character_cover(walter, ids[0]).unwrap();
+
+        // Analysed again: the edits come in the order they were kept.
+        db.reset_faces(m).unwrap();
+        let edits = db.track_edits(m).unwrap();
+        assert_eq!(edits.len(), 5);
+        assert!(edits.windows(2).all(|w| w[0].id < w[1].id), "{edits:?}");
+        assert!(edits.iter().all(|e| !e.dormant && !e.must_match));
+        let edit = |k: EditKind| edits.iter().find(|e| e.kind == k).unwrap().id;
+        let (pin, forbid, not_face, cover, was) = (
+            edit(EditKind::Pin(walter)),
+            edit(EditKind::Forbid(walter)),
+            edit(EditKind::NotFace),
+            edit(EditKind::Cover(walter)),
+            edit(EditKind::Was(b)),
+        );
+        // A pass that finds none of those faces (another way of finding
+        // them): the user's decisions wait, one of them only for a face
+        // that looks like its own; clustering's word never does.
+        db.put_face_chunk(m, 0, 1000, &[track(500, 0.9)], &[], |_| Ok(())).unwrap();
+        let unplaced = [(pin, false), (forbid, true), (not_face, false), (cover, false), (was, false)];
+        db.reanchor_edits(m, &[], &unplaced).unwrap();
+        let waiting = |db: &ProjectDb| -> Vec<(EditKind, bool, bool)> {
+            db.track_edits(m).unwrap().into_iter().map(|e| (e.kind, e.dormant, e.must_match)).collect()
+        };
+        let all_four = [
+            (EditKind::Pin(walter), true, false),
+            (EditKind::Forbid(walter), true, true),
+            (EditKind::NotFace, true, false),
+            (EditKind::Cover(walter), true, false),
+        ];
+        assert_eq!(waiting(&db), all_four);
+        assert_eq!(db.unplaced_decisions().unwrap(), 0, "not counted while the pass runs");
+        db.set_faces_state(m, StageState::Ready, None).unwrap();
+        assert_eq!(db.unplaced_decisions().unwrap(), 4);
+        // Walter is named: he stays. Who only clustering knew goes.
+        apply(&db, db.cast_rev().unwrap(), &[], &[]).unwrap();
+        assert!(db.character_exists(walter).unwrap() && !db.character_exists(b).unwrap());
+        assert_eq!(waiting(&db), all_four);
+
+        // Analysed again; they still wait, behind what is kept now.
+        db.reset_faces(m).unwrap();
+        assert_eq!(waiting(&db), all_four);
+        let again = db.put_face_chunk(m, 0, 1000, &[track(10, 0.9)], &[], |_| Ok(())).unwrap();
+        // Walter's face is found: his pin and picture land, the rest waits on.
+        let placed = [(again[0], EditKind::Pin(walter)), (again[0], EditKind::Cover(walter))];
+        db.reanchor_edits(m, &placed, &[(forbid, true), (not_face, false)]).unwrap();
+        db.set_faces_state(m, StageState::Ready, None).unwrap();
+        assert_eq!(db.tracks(TrackFilter::Character(walter)).unwrap()[0].assign, TrackAssign::Pinned);
+        assert_eq!(db.characters().unwrap()[0].cover.map(|c| c.0), Some(again[0]));
+        assert_eq!(waiting(&db), [(EditKind::Forbid(walter), true, true), (EditKind::NotFace, true, false)]);
+        assert_eq!(db.unplaced_decisions().unwrap(), 2);
+        // Found at last (or given way to a newer decision): gone.
+        db.reset_faces(m).unwrap();
+        db.reanchor_edits(m, &[], &[]).unwrap();
+        assert!(db.track_edits(m).unwrap().is_empty());
+    }
+
+    #[test]
+    fn decisions_that_wait_dont_keep_an_unnamed_character() {
+        let db = ProjectDb::memory();
+        let m = ready_media(&db, "/v/a.mkv");
+        let ids = db.put_face_chunk(m, 0, 1000, &[track(10, 0.9), track(100, 0.8)], &[], |_| Ok(())).unwrap();
+        db.set_faces_state(m, StageState::Ready, None).unwrap();
+        // A character made by moving a face there, and Walter.
+        let (unnamed, walter) = (CharacterId::new(), CharacterId::new());
+        db.pin_tracks(&[ids[0]], unnamed, Some(None)).unwrap();
+        db.pin_tracks(&[ids[1]], walter, Some(Some("Walter"))).unwrap();
+        db.reset_faces(m).unwrap();
+        let unplaced: Vec<(i64, bool)> = db.track_edits(m).unwrap().iter().map(|e| (e.id, false)).collect();
+        assert_eq!(unplaced.len(), 2);
+        // Neither face found: the unnamed character would stay empty for
+        // good, so it goes at the next clustering, its decision with it.
+        db.reanchor_edits(m, &[], &unplaced).unwrap();
+        db.set_faces_state(m, StageState::Ready, None).unwrap();
+        apply(&db, db.cast_rev().unwrap(), &[], &[]).unwrap();
+        assert!(!db.character_exists(unnamed).unwrap() && db.character_exists(walter).unwrap());
+        let left: Vec<EditKind> = db.track_edits(m).unwrap().into_iter().map(|e| e.kind).collect();
+        assert_eq!(left, [EditKind::Pin(walter)]);
+        assert_eq!(db.unplaced_decisions().unwrap(), 1);
+    }
+
+    #[test]
+    fn a_picture_chosen_since_wins_over_one_that_waits() {
+        let db = ProjectDb::memory();
+        let (m, n) = (ready_media(&db, "/v/a.mkv"), add_ready(&db, new_media("/v/b.mkv", Some(1), Some(2))));
+        let here = db.put_face_chunk(m, 0, 1000, &[track(10, 0.9)], &[], |_| Ok(())).unwrap();
+        let there = db.put_face_chunk(n, 0, 1000, &[track(10, 0.5)], &[], |_| Ok(())).unwrap();
+        let walter = CharacterId::new();
+        db.pin_tracks(&[here[0], there[0]], walter, Some(Some("Walter"))).unwrap();
+        db.set_character_cover(walter, here[0]).unwrap();
+        // The chosen face isn't found by a new pass: the choice waits.
+        db.reset_faces(m).unwrap();
+        db.put_face_chunk(m, 0, 1000, &[], &[], |_| Ok(())).unwrap();
+        let unplaced: Vec<(i64, bool)> = db.track_edits(m).unwrap().iter().map(|e| (e.id, false)).collect();
+        db.reanchor_edits(m, &[], &unplaced).unwrap();
+        assert!(db.track_edits(m).unwrap().iter().any(|e| e.kind == EditKind::Cover(walter)));
+        // Another picture chosen meanwhile is the one that holds.
+        db.set_character_cover(walter, there[0]).unwrap();
+        assert!(db.track_edits(m).unwrap().iter().all(|e| e.kind != EditKind::Cover(walter)));
+        assert_eq!(db.characters().unwrap()[0].cover.map(|c| c.0), Some(there[0]));
     }
 
     #[test]
@@ -1806,6 +1981,20 @@ pub(crate) mod tests {
     /// The schema before the faces' indexes carried what is read of them.
     const BEFORE_FACE_INDEXES: usize = 13;
 
+    /// Today's code on a schema from before the decisions that wait (15):
+    /// with the columns it reads and writes of them (`add`), or without
+    /// them again for the migration that brings them.
+    fn waiting_columns(db: &ProjectDb, add: bool) {
+        let sql = if add {
+            "ALTER TABLE track_edits ADD COLUMN dormant INTEGER NOT NULL DEFAULT 0;
+             ALTER TABLE track_edits ADD COLUMN must_match INTEGER NOT NULL DEFAULT 0;"
+        } else {
+            "ALTER TABLE track_edits DROP COLUMN dormant;
+             ALTER TABLE track_edits DROP COLUMN must_match;"
+        };
+        db.0.write(|tx| Ok(tx.execute_batch(sql)?)).unwrap();
+    }
+
     #[test]
     fn a_characters_faces_are_read_from_the_indexes_alone() {
         let db = ProjectDb::memory();
@@ -1880,9 +2069,13 @@ pub(crate) mod tests {
         // A new project, and an older one opened again (its indexes built at once).
         let (before, now, opened) =
             (ProjectDb::memory_at(BEFORE_FACE_INDEXES), ProjectDb::memory(), ProjectDb::memory_at(BEFORE_FACE_INDEXES));
+        for db in [&before, &opened] {
+            waiting_columns(db, true);
+        }
         let (m, ids) = fill(&before);
         assert_eq!(fill(&now), (m, ids.clone()));
         assert_eq!(fill(&opened), (m, ids.clone()));
+        waiting_columns(&opened, false);
         opened.migrate();
         let index = |db: &ProjectDb| {
             db.0.read(|c| {
