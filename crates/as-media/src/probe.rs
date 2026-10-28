@@ -45,6 +45,16 @@ pub struct VideoStream {
     pub hdr: HdrKind,
 }
 
+impl VideoStream {
+    /// How wide a pixel is for its height: the sample aspect ratio, or 1
+    /// (square) when the stored one isn't a positive number (a damaged or
+    /// edited record; a probe never stores one).
+    pub fn pixel_aspect(&self) -> f64 {
+        let Rational { num, den } = self.sar;
+        if num > 0 && den > 0 { self.sar.to_f64() } else { 1.0 }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct AudioStream {
@@ -127,6 +137,11 @@ impl MediaInfo {
 /// copied or remuxed into the same kind of file: the same container,
 /// picture, frame rate, time base, start and length (within half a frame)
 /// and audio tracks. `Err` says, for people, what differs.
+///
+/// Half a frame of the frames' real rate: phone and screen recordings
+/// report their time base's tick rate as `r_frame_rate` (`90000/1`, where
+/// half a tick is microseconds), so a lower average rate wins, and no
+/// window is narrower than half a frame at 240 fps.
 pub fn same_source(old: &MediaInfo, new: &MediaInfo) -> Result<(), String> {
     let (a, b) = (&old.video, &new.video);
     if old.container != new.container {
@@ -141,7 +156,9 @@ pub fn same_source(old: &MediaInfo, new: &MediaInfo) -> Result<(), String> {
     if a.r_frame_rate != b.r_frame_rate || a.time_base != b.time_base {
         return Err("It plays at another frame rate.".into());
     }
-    let half_frame = 0.5 * a.r_frame_rate.den as f64 / a.r_frame_rate.num.max(1) as f64;
+    let rate = a.r_frame_rate.to_f64();
+    let fps = a.avg_frame_rate.map(Rational::to_f64).filter(|&avg| avg > 0.0 && avg < rate).unwrap_or(rate);
+    let half_frame = if fps > 0.0 { 0.5 / fps.min(MAX_FPS) } else { 0.5 };
     if (old.start_sec - new.start_sec).abs() > half_frame {
         return Err("It starts at another moment.".into());
     }
@@ -156,6 +173,10 @@ pub fn same_source(old: &MediaInfo, new: &MediaInfo) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// The highest rate frames are filmed at (slow-motion phone video): a
+/// higher one is a time base's ticks.
+const MAX_FPS: f64 = 240.0;
 
 /// 2531.4 → "42:11"; 3725 → "1:02:05".
 fn clock(sec: f64) -> String {
@@ -348,6 +369,12 @@ fn num<T: std::str::FromStr>(v: &Value, k: &str) -> Option<T> {
     }
 }
 
+/// A number of seconds, bytes or bits, when it is one: Rust reads "nan" and
+/// "inf" as numbers too, and those would pass every comparison silently.
+fn finite(v: &Value, k: &str) -> Option<f64> {
+    num::<f64>(v, k).filter(|x| x.is_finite())
+}
+
 fn rational(v: &Value, k: &str) -> Option<Rational> {
     let r = Rational::parse(v.get(k)?.as_str()?).ok()?;
     (r.num > 0).then_some(r)
@@ -492,10 +519,10 @@ fn parse(v: &Value) -> Option<MediaInfo> {
 
     Some(MediaInfo {
         container: s(format, "format_name").unwrap_or_default(),
-        duration_sec: num(format, "duration"),
-        start_sec: num(format, "start_time").unwrap_or(0.0),
-        size_bytes: num(format, "size"),
-        bit_rate: num(format, "bit_rate"),
+        duration_sec: finite(format, "duration"),
+        start_sec: finite(format, "start_time").unwrap_or(0.0),
+        size_bytes: finite(format, "size"),
+        bit_rate: finite(format, "bit_rate"),
         video,
         audio,
         subtitles,
@@ -553,6 +580,54 @@ mod tests {
             differs(episode("mov,mp4,m4a,3gp,3g2,mj2", 1920, "2531.400", &[("dts", 6), ("ac3", 2)])).contains("kind")
         );
         assert!(differs(episode("matroska,webm", 1920, "2531.400", &[("dts", 6)])).contains("audio"));
+    }
+
+    #[test]
+    fn a_phone_recording_is_judged_by_its_frames_not_its_ticks() {
+        let phone = |duration: &str, avg: Option<&str>| {
+            let mut video = json!({
+                "index": 0, "codec_type": "video", "codec_name": "h264", "pix_fmt": "yuv420p",
+                "width": 1920, "height": 1080, "r_frame_rate": "90000/1", "time_base": "1/90000"
+            });
+            if let Some(avg) = avg {
+                video["avg_frame_rate"] = json!(avg);
+            }
+            let format = json!({ "format_name": "mov,mp4,m4a,3gp,3g2,mj2", "duration": duration, "start_time": "0" });
+            parse(&json!({ "format": format, "streams": [video] })).unwrap()
+        };
+        // A remux 10 ms longer: within half a frame at 30 fps (not half a tick).
+        let old = phone("61.000000", Some("30/1"));
+        assert_eq!(same_source(&old, &phone("61.010000", Some("30/1"))), Ok(()));
+        assert!(same_source(&old, &phone("61.040000", Some("30/1"))).is_err());
+        // Without an average rate: half a frame at 240 fps at least (2.08 ms).
+        let old = phone("61.000000", None);
+        assert_eq!(same_source(&old, &phone("61.002000", None)), Ok(()));
+        assert!(same_source(&old, &phone("61.003000", None)).is_err());
+    }
+
+    #[test]
+    fn numbers_that_are_not_numbers_are_unknown() {
+        let mut v = stream(None);
+        v["format"] = json!({
+            "format_name": "matroska,webm", "duration": "nan", "start_time": "-inf", "size": "infinity",
+            "bit_rate": "NaN"
+        });
+        let info = parse(&v).unwrap();
+        assert_eq!((info.duration_sec, info.start_sec, info.size_bytes, info.bit_rate), (None, 0.0, None, None));
+        v["format"]["duration"] = json!("42.5");
+        assert_eq!(parse(&v).unwrap().duration_sec, Some(42.5));
+    }
+
+    #[test]
+    fn a_pixel_shape_that_is_not_positive_is_square() {
+        let mut video = parse(&stream(None)).unwrap().video;
+        assert_eq!(video.pixel_aspect(), 1.0);
+        video.sar = Rational::new(64, 45);
+        assert!((video.pixel_aspect() - 64.0 / 45.0).abs() < 1e-12);
+        for (num, den) in [(0, 1), (-4, 3)] {
+            video.sar = Rational::new(num, den);
+            assert_eq!(video.pixel_aspect(), 1.0, "{num}/{den}");
+        }
     }
 
     #[test]

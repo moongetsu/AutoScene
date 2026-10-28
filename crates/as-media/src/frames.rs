@@ -36,15 +36,22 @@ pub fn decode_rgb(
     decode_raw(tools, src, from, 1, &[], &chain, (w * h * 3) as usize, cancel, on_frame).map(|(n, _)| n)
 }
 
+/// The longest side a picture is worked out at (16K). Only a damaged or
+/// crafted pixel shape (a sample aspect ratio of 65535:1) gets there: such a
+/// picture is scaled down to fit, instead of being given a size that
+/// overflows or that ffmpeg refuses.
+pub const MAX_SIDE: u32 = 16_384;
+
 /// Size (even, square pixels, upright) at which [`decode_samples`] delivers
-/// `info`'s frames when they must fit `max_w`×`max_h`; never upscaled.
+/// `info`'s frames when they must fit `max_w`×`max_h` (and [`MAX_SIDE`]);
+/// never upscaled.
 pub fn sample_size(info: &MediaInfo, (max_w, max_h): (u32, u32), multiple: u32) -> (u32, u32) {
     let v = &info.video;
-    let sar = if v.sar.num > 0 && v.sar.den > 0 { v.sar.to_f64() } else { 1.0 };
-    let (mut dw, mut dh) = (v.width as f64 * sar, v.height as f64);
+    let (mut dw, mut dh) = (v.width as f64 * v.pixel_aspect(), v.height as f64);
     if v.rotation.rem_euclid(180) == 90 {
         std::mem::swap(&mut dw, &mut dh);
     }
+    let (max_w, max_h) = (max_w.min(MAX_SIDE), max_h.min(MAX_SIDE));
     let k = (max_w as f64 / dw).min(max_h as f64 / dh).min(1.0);
     let round = |x: f64| ((x / multiple as f64).round() as u32).max(1) * multiple;
     (round(dw * k), round(dh * k))
@@ -236,4 +243,42 @@ fn decode_raw(
         return Err(MediaError::Ffmpeg(if tail.is_empty() { format!("exit status {status}") } else { tail }));
     }
     Ok((delivered, f))
+}
+
+#[cfg(test)]
+mod tests {
+    use as_core::Rational;
+
+    use super::*;
+
+    fn info(width: u32, height: u32, sar: Rational, rotation: i32) -> MediaInfo {
+        serde_json::from_value(serde_json::json!({
+            "container": "mov", "durationSec": null, "startSec": 0.0, "sizeBytes": null, "bitRate": null,
+            "video": {
+                "index": 0, "codec": "h264", "profile": null, "pixFmt": "yuv420p", "bitDepth": 8,
+                "width": width, "height": height, "sar": sar, "rFrameRate": Rational::new(24, 1),
+                "avgFrameRate": null, "timeBase": Rational::new(1, 1000), "colorPrimaries": null,
+                "colorTransfer": null, "colorSpace": null, "colorRange": null, "fieldOrder": null,
+                "rotation": rotation, "hdr": "none"
+            },
+            "audio": [], "subtitles": []
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn samples_are_upright_square_and_never_too_big() {
+        let all = (u32::MAX, u32::MAX);
+        let r = Rational::new;
+        assert_eq!(sample_size(&info(1920, 1080, r(1, 1), 0), (1280, 720), 4), (1280, 720));
+        assert_eq!(sample_size(&info(720, 576, r(64, 45), 0), all, 2), (1024, 576));
+        assert_eq!(sample_size(&info(1920, 1080, r(1, 1), 90), all, 2), (1080, 1920));
+        // Pixels 20 and 2147483647 times as wide as tall: scaled down to 16K.
+        assert_eq!(sample_size(&info(1920, 1080, r(20, 1), 0), all, 2), (MAX_SIDE, 460));
+        let crafted = info(1920, 1080, r(i64::from(i32::MAX), 1), 0);
+        assert_eq!(sample_size(&crafted, all, 2), (MAX_SIDE, 2));
+        assert_eq!(sample_size(&crafted, (1280, 720), 4), (1280, 4));
+        // A stored shape that isn't positive: square pixels.
+        assert_eq!(sample_size(&info(1920, 1080, r(0, 1), 0), all, 2), (1920, 1080));
+    }
 }

@@ -7,7 +7,8 @@
 //! `-fps_mode passthrough` stops ffmpeg from duplicating or dropping frames,
 //! so the result is exactly the frame grid that exports will cut on.
 
-use std::path::Path;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use as_core::{CancelToken, FrameIndex, Rational};
@@ -40,45 +41,33 @@ pub fn build_frame_index(
     // Unique per call: several media are indexed in parallel from one process.
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
-    let stats = work_dir.join(format!("index-{}-{n}.txt", std::process::id()));
+    // Gone however indexing ends: done, failed or cancelled, in either pass.
+    let stats = RemovedOnDrop(work_dir.join(format!("index-{}-{n}.txt", std::process::id())));
     let duration = info.duration_sec.unwrap_or(0.0).max(0.001);
 
     // Returns how many pictures the hardware decoder rejected.
     let attempt = |hw: bool, progress: &mut dyn FnMut(f64)| -> MediaResult<usize> {
-        let mut args: Vec<String> =
-            vec!["-v".into(), "error".into(), "-y".into(), "-copyts".into(), "-threads".into(), "0".into()];
+        let mut args: Vec<OsString> = ["-v", "error", "-y", "-copyts", "-threads", "0"].map(OsString::from).to_vec();
         if hw
             && hw_index_ok(&info.video.codec)
             && let Some(d) = &tools.caps().decode
         {
             args.extend([
                 "-hwaccel".into(),
-                d.hwaccel.clone(),
+                d.hwaccel.clone().into(),
                 "-hwaccel_output_format".into(),
-                d.output_format.clone(),
+                d.output_format.clone().into(),
             ]);
         }
-        args.extend(["-i".into(), path.display().to_string()]);
+        // Paths as they are: a file name needn't be valid Unicode.
+        args.extend(["-i".into(), path.into()]);
+        args.extend(["-map".into(), format!("0:{}", info.video.index).into()]);
         args.extend(
-            [
-                "-map",
-                &format!("0:{}", info.video.index),
-                "-fps_mode",
-                "passthrough",
-                "-enc_time_base:v",
-                "demux",
-                "-c:v",
-                "wrapped_avframe",
-                "-stats_enc_pre:v",
-                &stats.display().to_string(),
-                "-stats_enc_pre_fmt:v",
-                "{ptsi} {tbi}",
-                "-f",
-                "null",
-                "-",
-            ]
-            .map(String::from),
+            ["-fps_mode", "passthrough", "-enc_time_base:v", "demux", "-c:v", "wrapped_avframe", "-stats_enc_pre:v"]
+                .map(OsString::from),
         );
+        args.push(stats.0.clone().into());
+        args.extend(["-stats_enc_pre_fmt:v", "{ptsi} {tbi}", "-f", "null", "-"].map(OsString::from));
         let patterns = if hw { HW_PICTURE_FAILED } else { &[] };
         run_ffmpeg_counting(tools, &args, cancel, |p| progress((p.out_time / duration).clamp(0.0, 1.0)), patterns)
     };
@@ -91,10 +80,7 @@ pub fn build_frame_index(
             tracing::warn!(rejected, "hardware decoder rejected pictures; indexing again in software");
             attempt(false, &mut progress)?;
         }
-        Err(e) if e.is_cancelled() => {
-            let _ = std::fs::remove_file(&stats);
-            return Err(e);
-        }
+        Err(e) if e.is_cancelled() => return Err(e),
         Err(e) if tools.caps().decode.is_some() && hw_index_ok(&info.video.codec) => {
             tracing::warn!(error = %e.detail(), "hardware index pass failed; retrying in software");
             attempt(false, &mut progress)?;
@@ -102,11 +88,20 @@ pub fn build_frame_index(
         Err(e) => return Err(e),
     }
 
-    let text = std::fs::read_to_string(&stats)?;
-    let _ = std::fs::remove_file(&stats);
+    let text = std::fs::read_to_string(&stats.0)?;
+    drop(stats);
     let index = parse_stats(&text, info.video.r_frame_rate)?;
     let nominal = nominal_rate(info.video.r_frame_rate, info.video.avg_frame_rate, median_interval(&index));
     Ok(if nominal == index.nominal_fps { index } else { index.with_nominal_fps(nominal) })
+}
+
+/// A work file deleted when it goes out of scope.
+struct RemovedOnDrop(PathBuf);
+
+impl Drop for RemovedOnDrop {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 
 /// Common production rates, for snapping a measured average.
@@ -230,6 +225,20 @@ mod tests {
         let step = median_interval(&idx);
         assert_eq!(step, Some(0.04));
         assert_eq!(nominal_rate(Rational::new(25, 1), Some(Rational::new(25, 1)), step), Rational::new(25, 1));
+    }
+
+    #[test]
+    fn a_work_file_goes_however_the_work_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("index-1-0.txt");
+        // Both passes failed after the decoder had begun writing.
+        let indexing = || -> MediaResult<()> {
+            let stats = RemovedOnDrop(file.clone());
+            std::fs::write(&stats.0, "0 1/1000\n42 1/1000\n")?;
+            Err(MediaError::Ffmpeg("the software pass failed too".into()))
+        };
+        assert!(indexing().is_err());
+        assert!(!file.exists());
     }
 
     #[test]

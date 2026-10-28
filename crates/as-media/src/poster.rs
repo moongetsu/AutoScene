@@ -1,5 +1,6 @@
 //! Exact single-frame stills (posters, portraits, thumbnails).
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use as_core::{CancelToken, FrameIdx, FrameRange};
@@ -74,21 +75,10 @@ pub fn extract_frame_jpegs(
     for (i, (size, _)) in outs.iter().enumerate() {
         graph.push_str(&format!(";[s{i}]{}[o{i}]", size.scale()));
     }
-    let mut args: Vec<String> = [
-        "-v",
-        "error",
-        "-y",
-        "-copyts",
-        "-noaccurate_seek",
-        "-ss",
-        &format!("{seek:.6}"),
-        "-i",
-        &src.display().to_string(),
-        "-filter_complex",
-        &graph,
-    ]
-    .map(String::from)
-    .to_vec();
+    let mut args: Vec<OsString> =
+        ["-v", "error", "-y", "-copyts", "-noaccurate_seek", "-ss"].map(OsString::from).to_vec();
+    // Paths as they are: a file name needn't be valid Unicode.
+    args.extend([format!("{seek:.6}").into(), "-i".into(), src.into(), "-filter_complex".into(), graph.into()]);
     let parts: Vec<PathBuf> = outs.iter().map(|(_, out)| out.with_extension("part.jpg")).collect();
     let remove_parts = || {
         for p in &parts {
@@ -98,8 +88,8 @@ pub fn extract_frame_jpegs(
     // A run that was killed may have left some behind.
     remove_parts();
     for (i, part) in parts.iter().enumerate() {
-        args.extend(["-map".into(), format!("[o{i}]"), "-frames:v".into(), "1".into(), "-q:v".into(), "3".into()]);
-        args.push(part.display().to_string());
+        args.extend(["-map", &format!("[o{i}]"), "-frames:v", "1", "-q:v", "3"].map(OsString::from));
+        args.push(part.into());
     }
     let result = run_ffmpeg(tools, &args, cancel, |_| {}).and_then(|()| {
         // ffmpeg succeeds without writing anything when no frame reaches the trim.

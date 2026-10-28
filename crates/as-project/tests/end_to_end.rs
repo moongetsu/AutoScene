@@ -525,6 +525,76 @@ fn a_moved_episode_keeps_its_analysis() {
     assert_eq!(project.cast().unwrap().characters[0].name.as_deref(), Some("Walter"));
 }
 
+/// A merged export waits while one of its episodes is swapped for a shorter
+/// file and indexed again: the clip now past the episode's end is left out
+/// (and says why), the other clips still make the file.
+#[test]
+fn a_clip_past_a_shortened_episode_is_left_out_of_the_file() {
+    let Some(_truth) = load_truth() else { return };
+    let tools = Tools::locate(None).expect("ffmpeg on PATH");
+    let tmp = tempfile::tempdir().unwrap();
+    let lib = Library::open(&AppPaths::at(tmp.path().join("data"))).unwrap();
+    lib.update_settings(&AppSettings {
+        library_root: tmp.path().join("Library").display().to_string(),
+        export_preset_id: "prores-hq".into(),
+        audio_language: "eng".into(),
+        find_bodies: false,
+        fast_scan: false,
+    })
+    .unwrap();
+    // Variable frame rate: a part's length comes from its frames' own times.
+    let file = tmp.path().join("Show - 01.mkv");
+    std::fs::copy(fixtures_dir().join("vfr_h264.mkv"), &file).unwrap();
+    let (_, project, added) = lib
+        .create_project(&NewProject {
+            title: "Shortened".into(),
+            kind: ProjectKind::Series,
+            content: ContentKind::Live,
+            files: vec![file.display().to_string()],
+        })
+        .unwrap();
+    let id = added[0];
+    let cancel = CancelToken::new();
+    project.ingest(&tools, id, "eng", &cancel, &|_, _| {}).unwrap();
+    let clip = |start, end| ClipRequest { media_id: id, start, end, name: None };
+    let prores = builtin_presets().into_iter().find(|p| p.id == "prores-hq").unwrap();
+    let req = ExportRequest {
+        preset_id: prores.id.clone(),
+        out_dir: None,
+        clips: vec![clip(0, 24), clip(500, 580)],
+        label: None,
+        merge: Some("Both".into()),
+    };
+    let out = tmp.path().join("out");
+    let ex = project.create_export(&req, prores, &out).unwrap();
+
+    // Meanwhile: its first 300 frames, taken anyway, indexed again.
+    let short = tmp.path().join("Show - 01 short.mkv");
+    let cut = tools
+        .ffmpeg()
+        .args(["-v", "error", "-i"])
+        .arg(&file)
+        .args(["-map", "0", "-c", "copy", "-frames:v", "300"])
+        .arg(&short)
+        .status()
+        .unwrap();
+    assert!(cut.success());
+    assert_eq!(project.relink(&tools, id, &short, true).unwrap(), Relink::Reindex);
+    let frames = project.ingest(&tools, id, "eng", &cancel, &|_, _| {}).unwrap().frames.unwrap();
+    assert!(frames < 500, "{frames} frames");
+
+    let ex = project.run_export(&tools, ex.id, &cancel, &|_, _| {}, &|| {}).unwrap();
+    assert_eq!(ex.status, ExportStatus::Failed);
+    assert_eq!((ex.items[0].status, ex.items[1].status), (ExportStatus::Done, ExportStatus::Failed));
+    let why = ex.items[1].error.clone().unwrap_or_default();
+    assert_eq!(why, format!("Frames 500–580 are outside Show - 01 short.mkv (0–{frames})."));
+    let file = ex.merged.unwrap();
+    assert_eq!(file.error, None);
+    let path = file.path.expect("the file, of the other clip");
+    let got: Vec<u32> = frames_with_times(&tools, Path::new(&path)).into_iter().map(|(_, c)| c).collect();
+    assert_eq!(got, (0..24).collect::<Vec<_>>());
+}
+
 /// Names in a folder, sorted (hidden work folders included).
 fn folder_names(dir: &Path) -> Vec<String> {
     let mut names: Vec<String> = std::fs::read_dir(dir)

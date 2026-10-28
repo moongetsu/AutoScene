@@ -9,6 +9,8 @@
 //! timestamps rounded down to the microsecond ([`FrameIndex::trim_us`]),
 //! which land on the right frame in every time base.
 
+use std::io::Read;
+
 use serde::{Deserialize, Serialize};
 
 use crate::{CoreError, CoreResult};
@@ -21,10 +23,33 @@ pub type FrameIdx = u32;
 // ---------------------------------------------------------------------------
 
 /// Exact rational number (time bases, frame rates). Always reduced, `den > 0`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, specta::Type)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, specta::Type)]
 pub struct Rational {
     pub num: i64,
     pub den: i64,
+}
+
+/// Read back as [`Rational::new`] makes them. Stored data (a project's
+/// media records) can hold anything: a zero denominator is refused here, as
+/// damaged data, instead of turning into a division by zero or a panic in
+/// [`Rational::recip`] later. Whether a number may be zero or negative is up
+/// to its user (a pixel shape must be positive, see
+/// `as_media::VideoStream::pixel_aspect`).
+impl<'de> Deserialize<'de> for Rational {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Stored {
+            num: i64,
+            den: i64,
+        }
+        let Stored { num, den } = Stored::deserialize(d)?;
+        // `new` flips both signs to keep `den` positive: the most negative
+        // number has no positive twin.
+        if den == 0 || num == i64::MIN || den == i64::MIN {
+            return Err(serde::de::Error::custom(format!("{num}/{den} isn't a rational number")));
+        }
+        Ok(Self::new(num, den))
+    }
 }
 
 impl Rational {
@@ -89,7 +114,13 @@ pub struct FrameRange {
 }
 
 impl FrameRange {
+    /// `[start, end)`. A range that ends before it starts is a bug of ours
+    /// (debug builds stop on it) or damaged stored data (a clip, a track):
+    /// it is taken as empty, and said in the log so it doesn't pass unseen.
     pub fn new(start: FrameIdx, end: FrameIdx) -> Self {
+        if end < start {
+            tracing::warn!(start, end, "a frame range ends before it starts; it is taken as empty");
+        }
         debug_assert!(start <= end, "FrameRange start {start} > end {end}");
         Self { start, end: end.max(start) }
     }
@@ -304,6 +335,10 @@ impl FrameIndex {
     // -- persistence --------------------------------------------------------
 
     const MAGIC: &'static [u8; 4] = b"ASFI";
+    /// The most a stored index unpacks to. A real one takes about 4 bytes a
+    /// frame (a few MB for a film; 256 MB is some 300 hours at 60 fps), so a
+    /// damaged or crafted blob can't make loading it take gigabytes.
+    const MAX_UNPACKED: u64 = 256 << 20;
 
     /// Compact binary form (zstd) for the `frame_index` table.
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -334,7 +369,7 @@ impl FrameIndex {
 
     pub fn from_bytes(blob: &[u8]) -> CoreResult<Self> {
         let bad = |m: &str| CoreError::CorruptIndex(m.to_owned());
-        let raw = zstd::decode_all(blob).map_err(|e| CoreError::CorruptIndex(e.to_string()))?;
+        let raw = unpack(blob, Self::MAX_UNPACKED)?;
         let mut r = Reader { b: &raw, i: 0 };
         if r.take(4).ok_or_else(|| bad("short"))? != Self::MAGIC {
             return Err(bad("magic"));
@@ -404,6 +439,18 @@ impl FrameIndex {
         let vfr = detect_vfr(&pts, tb, nominal_fps);
         Ok(Self { tb, nominal_fps, pts, last_dur, vfr })
     }
+}
+
+/// `blob` unzstd'ed, as long as it unpacks to at most `max` bytes.
+fn unpack(blob: &[u8], max: u64) -> CoreResult<Vec<u8>> {
+    let mut raw = Vec::new();
+    zstd::stream::read::Decoder::with_buffer(blob)
+        .and_then(|d| d.take(max + 1).read_to_end(&mut raw))
+        .map_err(|e| CoreError::CorruptIndex(e.to_string()))?;
+    if raw.len() as u64 > max {
+        return Err(CoreError::CorruptIndex(format!("unpacks to more than {max} bytes")));
+    }
+    Ok(raw)
 }
 
 /// Does any timestamp sit more than one tick off the ideal nominal-rate grid?
@@ -639,6 +686,62 @@ mod tests {
         // Untouched, both load.
         assert_eq!(FrameIndex::from_bytes(&zstd::encode_all(explicit.as_slice(), 1).unwrap()).unwrap().len(), 5);
         assert_eq!(FrameIndex::from_bytes(&zstd::encode_all(cfr.as_slice(), 1).unwrap()).unwrap().len(), 100);
+    }
+
+    #[test]
+    fn unpacking_stops_at_its_limit() {
+        // A megabyte of zeros packs into a few bytes.
+        let bomb = zstd::encode_all(vec![0u8; 1 << 20].as_slice(), 1).unwrap();
+        assert!(bomb.len() < 1000);
+        assert!(matches!(unpack(&bomb, 1000), Err(CoreError::CorruptIndex(_))));
+        assert_eq!(unpack(&bomb, 1 << 20).unwrap().len(), 1 << 20);
+        assert!(unpack(b"hello", 1 << 20).is_err());
+    }
+
+    #[test]
+    fn rationals_read_back_as_new_makes_them() {
+        let read = |json: &str| serde_json::from_str::<Rational>(json);
+        assert_eq!(read(r#"{"num":24000,"den":1001}"#).unwrap(), Rational::new(24000, 1001));
+        assert_eq!(serde_json::to_string(&Rational::new(24000, 1001)).unwrap(), r#"{"num":24000,"den":1001}"#);
+        // Reduced, the sign on the numerator.
+        assert_eq!(read(r#"{"num":2,"den":-4}"#).unwrap(), Rational { num: -1, den: 2 });
+        assert_eq!(read(r#"{"num":0,"den":7}"#).unwrap(), Rational { num: 0, den: 1 });
+        for bad in [r#"{"num":0,"den":0}"#, r#"{"num":1,"den":0}"#, r#"{"num":-9223372036854775808,"den":1}"#] {
+            assert!(read(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_range_that_ends_before_it_starts_is_empty_and_said_so() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tracing::span::{Attributes, Id, Record};
+        struct Warnings(AtomicUsize);
+        impl tracing::Subscriber for Warnings {
+            fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+                true
+            }
+            fn new_span(&self, _: &Attributes<'_>) -> Id {
+                Id::from_u64(1)
+            }
+            fn record(&self, _: &Id, _: &Record<'_>) {}
+            fn record_follows_from(&self, _: &Id, _: &Id) {}
+            fn event(&self, event: &tracing::Event<'_>) {
+                if *event.metadata().level() == tracing::Level::WARN {
+                    self.0.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            fn enter(&self, _: &Id) {}
+            fn exit(&self, _: &Id) {}
+        }
+        let warnings = std::sync::Arc::new(Warnings(AtomicUsize::new(0)));
+        let made = tracing::subscriber::with_default(warnings.clone(), || {
+            std::panic::catch_unwind(|| FrameRange::new(20, 10))
+        });
+        assert_eq!(warnings.0.load(Ordering::Relaxed), 1);
+        // Debug builds stop there; release builds go on with no frames.
+        assert_eq!(made.ok().map(|r| r.is_empty()), (!cfg!(debug_assertions)).then_some(true));
+        tracing::subscriber::with_default(warnings.clone(), || FrameRange::new(10, 10));
+        assert_eq!(warnings.0.load(Ordering::Relaxed), 1, "an empty range is fine");
     }
 
     #[test]

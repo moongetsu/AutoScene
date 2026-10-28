@@ -208,6 +208,8 @@ struct Colour {
 /// source: BT.709 for H.264, HEVC, AV1 and VP9 pictures (After Effects reads
 /// an untagged H.264 that way at any size) and HD ones, BT.601 for older SD
 /// codecs (525 or 625 lines); limited range unless the format is full range.
+/// A tag that isn't a plain name counts as not said (it would go into the
+/// filter graph, see [`crate::merge::graph_name`]).
 fn colour(exact: &ExactFormat, source_codec: &str, height: u32) -> Colour {
     let modern = matches!(source_codec, "h264" | "hevc" | "av1" | "vp9") || height >= 720;
     let (primaries, transfer, space) = match () {
@@ -216,7 +218,9 @@ fn colour(exact: &ExactFormat, source_codec: &str, height: u32) -> Colour {
         _ => ("smpte170m", "smpte170m", "smpte170m"),
     };
     let full = exact.pix_fmt.starts_with("yuvj");
-    let or = |v: &Option<String>, d: &str| v.clone().unwrap_or_else(|| d.to_string());
+    let or = |v: &Option<String>, d: &str| {
+        v.clone().filter(|v| crate::merge::graph_name(v, false)).unwrap_or_else(|| d.to_string())
+    };
     Colour {
         range: or(&exact.color_range, if full { "pc" } else { "tv" }),
         primaries: or(&exact.color_primaries, primaries),
@@ -706,6 +710,9 @@ mod tests {
         // What the source says, it keeps.
         let partly = ExactFormat { color_primaries: Some("bt2020".into()), ..exact("yuv420p") };
         assert!(keeper(&caps(), &partly, "h264", (720, 360)).unwrap().tag.contains("color_primaries=bt2020:"));
+        // A tag that would reshape the graph isn't one.
+        let odd = ExactFormat { color_primaries: Some("bt2020,movie=x".into()), ..exact("yuv420p") };
+        assert_eq!(keeper(&caps(), &odd, "h264", (720, 360)).unwrap().tag, tags("h264", 360));
     }
 
     #[test]

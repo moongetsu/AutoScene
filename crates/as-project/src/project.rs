@@ -1113,6 +1113,14 @@ impl Project {
         // cut from is asked again for each of its clips, which all fail).
         let mut episodes: HashMap<MediaId, Rc<(PathBuf, MediaInfo, Arc<FrameIndex>)>> = HashMap::new();
         let mut sources = Vec::with_capacity(ex.items.len());
+        // Clips were checked when the export was made, but an episode can be
+        // indexed again while it waits (relinked to a shorter file): a clip
+        // past its end is left out, before the plan would look it up.
+        let outside = |item: &ExportItem, (path, _, index): &(PathBuf, MediaInfo, Arc<FrameIndex>)| {
+            let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into());
+            let (start, end, n) = (item.start, item.end, index.len());
+            ProjectError::Invalid(format!("Frames {start}–{end} are outside {name} (0–{n})."))
+        };
         for item in &ex.items {
             let episode = match episodes.get(&item.media_id) {
                 Some(e) => Ok(e.clone()),
@@ -1123,6 +1131,7 @@ impl Project {
                 }),
             };
             match episode.and_then(|e| Ok((e, self.db.export_item_audio(item.id)?))) {
+                Ok((e, _)) if item.start >= item.end || item.end > e.2.len() => fail(item, &outside(item, &e))?,
                 Ok((e, audio)) => sources.push((item, e, audio)),
                 Err(e) => fail(item, &e)?,
             }

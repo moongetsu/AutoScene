@@ -6,6 +6,7 @@
 //! instant. Proxies keep every frame (passthrough timing), so player time maps
 //! back to source frames through the frame index plus a measured offset.
 
+use std::ffi::OsString;
 use std::path::Path;
 
 use as_core::{CancelToken, FrameIndex};
@@ -64,12 +65,13 @@ pub fn build_proxy(
     // frame-0 time: the proxy starts at 0 with frame f at `t(f) - t(0)` and
     // A/V sync intact. (Letting ffmpeg shift by the container start instead
     // can leave frames on half-frame boundaries that collide when rounded.)
-    let mut args: Vec<String> = vec!["-v".into(), "error".into(), "-y".into(), "-copyts".into()];
+    let mut args: Vec<OsString> = ["-v", "error", "-y", "-copyts"].map(OsString::from).to_vec();
     if let Some(d) = &caps.decode {
         // Decode on the GPU but download: the display filters run on the CPU.
-        args.extend(["-hwaccel".into(), d.hwaccel.clone()]);
+        args.extend(["-hwaccel".into(), d.hwaccel.clone().into()]);
     }
-    args.extend(["-i".into(), src.display().to_string()]);
+    // Paths as they are: a file name needn't be valid Unicode.
+    args.extend(["-i".into(), src.into()]);
     let t0 = index.t0();
     let mut chain = vec!["setpts=PTS-STARTPTS".to_string()];
     chain.extend(display_chain(info, Some(PROXY_HEIGHT), true));
@@ -79,34 +81,34 @@ pub fn build_proxy(
         graph +=
             &format!(";[0:a:{a}]atrim=start={t0:.9},asetpts=PTS-{t0:.9}/TB,aresample={AUDIO_GAP_FILL}:first_pts=0[a]");
     }
-    args.extend(["-filter_complex".into(), graph, "-map".into(), "[v]".into()]);
+    args.extend(["-filter_complex".into(), graph.into(), "-map".into(), "[v]".into()]);
     if audio_ordinal.is_some() {
         args.extend(["-map".into(), "[a]".into()]);
     }
     args.extend(["-fps_mode".into(), "passthrough".into()]);
-    args.extend(timing_args(index));
+    args.extend(timing_args(index).into_iter().map(OsString::from));
 
     // Short GOP, no B-frames: every seek decodes at most 11 frames.
     match caps.hw_encoder(CodecFamily::H264).filter(|e| e.name == "h264_nvenc") {
         Some(_) => args.extend(
             ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", "26", "-b:v", "0", "-g", "12", "-bf", "0"]
-                .map(String::from),
+                .map(OsString::from),
         ),
         None => args.extend(
             ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-g", "12", "-bf", "0", "-tune", "fastdecode"]
-                .map(String::from),
+                .map(OsString::from),
         ),
     }
     if let Some(a) = audio_ordinal {
-        args.extend(["-c:a", "aac", "-b:a", "128k", "-ac", "2"].map(String::from));
+        args.extend(["-c:a", "aac", "-b:a", "128k", "-ac", "2"].map(OsString::from));
         let lang = info.audio.iter().find(|s| s.ordinal == a).and_then(|s| s.language.as_deref());
         if let Some(lang) = lang.and_then(crate::lang::canonical) {
-            args.extend(["-metadata:s:a:0".into(), format!("language={lang}")]);
+            args.extend(["-metadata:s:a:0".into(), format!("language={lang}").into()]);
         }
     }
     // Chapters would become an extra data track; the player needs none of it.
-    args.extend(["-map_chapters", "-1", "-map_metadata", "-1"].map(String::from));
-    args.extend(["-movflags".into(), "+faststart".into(), tmp.display().to_string()]);
+    args.extend(["-map_chapters", "-1", "-map_metadata", "-1"].map(OsString::from));
+    args.extend(["-movflags".into(), "+faststart".into(), tmp.clone().into()]);
 
     let duration = index.duration().max(0.001);
     run_ffmpeg(tools, &args, cancel, |p| progress((p.out_time / duration).clamp(0.0, 1.0))).inspect_err(|_| {

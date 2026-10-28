@@ -21,6 +21,7 @@
 //! sound and time base every part shares, so the parts join without being
 //! encoded again.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use as_core::{CancelToken, FrameIndex, FrameRange, Rational, Timecode};
@@ -586,39 +587,40 @@ pub fn export_clip(
     };
     let checked = with_suffix(&part, ".frames.txt");
     let checked_sound = lossless::sound_hashes(&checked);
-    let build = |preroll: Option<f64>| -> Vec<String> {
-        let mut a: Vec<String> = ["-v", "error", "-y", "-copyts"].map(String::from).to_vec();
-        a.extend(recipe.input.iter().cloned());
+    // Paths go to ffmpeg as they are: a file name needn't be valid Unicode.
+    let build = |preroll: Option<f64>| -> Vec<OsString> {
+        let mut a: Vec<OsString> = ["-v", "error", "-y", "-copyts"].map(OsString::from).to_vec();
+        a.extend(recipe.input.iter().map(OsString::from));
         if let Some(pre) = preroll {
             let seek = (index.t(s) - index.t0() - pre).max(0.0);
-            a.extend(["-noaccurate_seek".into(), "-ss".into(), format!("{seek:.6}")]);
+            a.extend(["-noaccurate_seek".into(), "-ss".into(), format!("{seek:.6}").into()]);
         }
-        a.extend(["-i".into(), src.display().to_string(), "-filter_complex".into(), recipe.graph.clone()]);
+        a.extend(["-i".into(), src.as_os_str().into(), "-filter_complex".into(), (&recipe.graph).into()]);
         if let Some(g) = &recipe.audio_graph {
-            a.extend(["-filter_complex".into(), g.clone()]);
+            a.extend(["-filter_complex".into(), g.into()]);
         }
-        a.extend(["-map".into(), "[v]".into()]);
+        a.extend(["-map", "[v]"].map(OsString::from));
         if recipe.audio {
-            a.extend(["-map".into(), "[a]".into()]);
+            a.extend(["-map", "[a]"].map(OsString::from));
         }
-        a.extend(recipe.args.iter().cloned());
+        a.extend(recipe.args.iter().map(OsString::from));
         a.extend([
             "-stats_enc_pre:v:0".into(),
-            stats.display().to_string(),
+            stats.as_os_str().into(),
             "-stats_enc_pre_fmt:v:0".into(),
             "{ptsi}".into(),
             "-f".into(),
             recipe.format.into(),
-            part.display().to_string(),
+            part.as_os_str().into(),
         ]);
         // What the encoder got, hashed as it goes: the frames, and the sound
         // as the file stores it.
         if let Some(reference) = &recipe.reference {
-            a.extend(["-map", "[vref]", "-fps_mode", "passthrough", "-f", "framemd5"].map(String::from));
-            a.push(ref_frames.display().to_string());
+            a.extend(["-map", "[vref]", "-fps_mode", "passthrough", "-f", "framemd5"].map(OsString::from));
+            a.push(ref_frames.as_os_str().into());
             if let Some(codec) = reference.audio {
-                a.extend(["-map", "[aref]", "-c:a", codec, "-f", "md5"].map(String::from));
-                a.push(ref_sound.display().to_string());
+                a.extend(["-map", "[aref]", "-c:a", codec, "-f", "md5"].map(OsString::from));
+                a.push(ref_sound.as_os_str().into());
             }
         }
         a

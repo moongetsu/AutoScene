@@ -26,6 +26,7 @@ use std::path::{Path, PathBuf};
 
 use as_core::{CancelToken, FrameIndex, FrameRange, Rational};
 use as_media::filters::TONEMAP_SDR;
+use as_media::frames::MAX_SIDE;
 use as_media::{AudioStream, Caps, ExactFormat, HdrKind, MediaError, MediaInfo, Tools, run_ffmpeg};
 use serde_json::Value;
 
@@ -64,13 +65,16 @@ pub struct ColorTags {
 }
 
 impl ColorTags {
+    /// The picture's tags; one that isn't a plain name is left out, as if
+    /// the picture had none (see [`graph_name`]).
     fn of(info: &MediaInfo) -> Self {
         let v = &info.video;
+        let tag = |t: &Option<String>| t.clone().filter(|t| graph_name(t, false));
         Self {
-            primaries: v.color_primaries.clone(),
-            transfer: v.color_transfer.clone(),
-            space: v.color_space.clone(),
-            range: v.color_range.clone(),
+            primaries: tag(&v.color_primaries),
+            transfer: tag(&v.color_transfer),
+            space: tag(&v.color_space),
+            range: tag(&v.color_range),
         }
     }
 
@@ -201,6 +205,29 @@ impl MergeShape {
     }
 }
 
+/// Can a probed name (a colour tag, a channel layout) go into a filter
+/// graph as it is? ffprobe prints names of letters, digits and `_ . ( ) + -`
+/// (layouts with spaces too: "3 channels (FL+FR+TFL)"), but a stored media
+/// record can hold anything, and a `,` `;` `:` `=` `[` or quote in it would
+/// reshape the graph (another filter could read a file). One that isn't is
+/// treated as unknown.
+pub(crate) fn graph_name(name: &str, spaces: bool) -> bool {
+    !name.is_empty()
+        && name.chars().all(|c| {
+            c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '(' | ')' | '+' | '-') || (spaces && c == ' ')
+        })
+}
+
+/// Is every clip within its episode's frames? One cut from an episode
+/// indexed again since (relinked to a shorter file) may not be: looking it
+/// up would go past the index's end.
+fn check_ranges(sources: &[MergeSource]) -> ExportResult<()> {
+    match sources.iter().find(|s| s.range.is_empty() || s.range.end > s.index.len()) {
+        Some(s) => Err(ExportError::BadRange(format!("{:?} outside 0..{}", s.range, s.index.len()))),
+        None => Ok(()),
+    }
+}
+
 /// The audio track a clip takes: the chosen one, else the file's default.
 pub(crate) fn audio_stream(info: &MediaInfo, ordinal: Option<u32>) -> Option<&AudioStream> {
     let ord = ordinal.or_else(|| info.default_audio().map(|a| a.ordinal))?;
@@ -214,6 +241,7 @@ pub fn plan_merge(caps: &Caps, preset: &ExportPreset, sources: &[MergeSource]) -
     if sources.is_empty() {
         return Err(ExportError::Join("nothing to join".into()));
     }
+    check_ranges(sources)?;
     if preset.video == VideoCodec::Lossless {
         return Err(ExportError::BadPreset("a Bit-Perfect file is planned from its sources' exact formats".into()));
     }
@@ -296,6 +324,7 @@ pub fn plan_lossless_merge(caps: &Caps, sources: &[MergeSource], exact: &[ExactF
     if sources.is_empty() || sources.len() != exact.len() {
         return Err(ExportError::Join("nothing to join".into()));
     }
+    check_ranges(sources)?;
     let unlike = |why: &str| Err(ExportError::Inexact(format!("its clips can't share one file: {why}")));
     if let Some(why) = lossless_merge_blocker(sources) {
         return unlike(&why);
@@ -455,18 +484,25 @@ pub(crate) fn file_size(clips: impl IntoIterator<Item = ((u32, u32), u64)>) -> O
 }
 
 /// The picture a clip of `info` shows: upright, square pixels, at most
-/// `max_height` tall, in even numbers.
+/// `max_height` tall and [`MAX_SIDE`] a side, in even numbers.
 pub(crate) fn natural_size(info: &MediaInfo, max_height: Option<u32>) -> (u32, u32) {
     let v = &info.video;
     // ffmpeg turns rotated pictures upright before the filters see them.
     let quarter = matches!(v.rotation, 90 | 270);
-    let (w, h, sar) = if quarter { (v.height, v.width, v.sar.recip()) } else { (v.width, v.height, v.sar) };
-    let (mut w, mut h) = (f64::from(w) * sar.to_f64(), f64::from(h));
+    let (w, h, aspect) =
+        if quarter { (v.height, v.width, v.pixel_aspect().recip()) } else { (v.width, v.height, v.pixel_aspect()) };
+    let (mut w, mut h) = (f64::from(w) * aspect, f64::from(h));
     if let Some(m) = max_height.map(f64::from)
         && h > m
     {
         w *= m / h;
         h = m;
+    }
+    // Only a crafted pixel shape (65535:1) makes a picture wider than that.
+    let side = f64::from(MAX_SIDE);
+    if w.max(h) > side {
+        let k = side / w.max(h);
+        (w, h) = (w * k, h * k);
     }
     (even(w), even(h))
 }
@@ -481,8 +517,10 @@ fn fit(size: (u32, u32), frame: (u32, u32)) -> (u32, u32) {
     (even(w * s).min(frame.0), even(h * s).min(frame.1))
 }
 
+/// The even number of pixels nearest `x`, from 2 to [`MAX_SIDE`] (not a
+/// number: 2).
 fn even(x: f64) -> u32 {
-    (((x / 2.0).round() as u32) * 2).max(2)
+    (((x / 2.0).round().clamp(1.0, f64::from(MAX_SIDE / 2)) as u32) * 2).max(2)
 }
 
 /// Does the picture use the SD colour matrix (tagged, or untagged and SD)?
@@ -545,9 +583,10 @@ fn sound_plan(preset: &ExportPreset, sources: &[MergeSource]) -> (Option<String>
     (Some(layout), language)
 }
 
-/// The track's channel layout, or the usual one for its channel count.
+/// The track's channel layout (when it is a plain name, see
+/// [`graph_name`]), or the usual one for its channel count.
 fn layout_of(a: &AudioStream) -> String {
-    if let Some(l) = a.channel_layout.as_deref().filter(|l| !l.is_empty()) {
+    if let Some(l) = a.channel_layout.as_deref().filter(|l| graph_name(l, true)) {
         return l.to_string();
     }
     match a.channels {
@@ -1034,6 +1073,76 @@ mod tests {
         // Portrait in landscape.
         assert_eq!(fit((1080, 1920), (1920, 1080)), (608, 1080));
         assert_eq!(fit((1920, 1080), (1920, 1080)), (1920, 1080));
+        // A crafted pixel shape is scaled down to 16K a side, whichever way up.
+        assert_eq!(natural_size(&info(1920, 1080, r(i64::from(i32::MAX), 1), 0), None), (MAX_SIDE, 2));
+        assert_eq!(natural_size(&info(1920, 1080, r(65535, 1), 0), Some(1080)), (MAX_SIDE, 2));
+        assert_eq!(natural_size(&info(1920, 1080, r(65535, 1), 90), None), (2, 1920));
+        assert_eq!(natural_size(&info(1920, 1080, r(20, 1), 0), None), (MAX_SIDE, 460));
+        // One that isn't a positive number (an edited record) is square.
+        let mut odd = info(1920, 1080, r(1, 1), 90);
+        for sar in [Rational { num: 0, den: 1 }, Rational { num: 1, den: 0 }] {
+            odd.video.sar = sar;
+            assert_eq!(natural_size(&odd, None), (1080, 1920), "{sar:?}");
+        }
+        assert_eq!([even(f64::NAN), even(f64::INFINITY), even(-4.0), even(1e12)], [2, MAX_SIDE, 2, MAX_SIDE]);
+    }
+
+    #[test]
+    fn a_clip_past_its_episode_is_refused_not_looked_up() {
+        // Variable rate: its length comes from its frames' own times.
+        let vfr = FrameIndex::from_pts(r(1, 1000), r(24, 1), vec![0, 42, 83, 100, 117, 133, 167, 200]).unwrap();
+        assert!(vfr.is_vfr());
+        let film = info(1920, 1080, r(1, 1), 0);
+        let caps = Caps { sw_encoders: vec!["prores_ks".into()], ..Caps::default() };
+        let prores = crate::builtin_presets().remove(0);
+        let sources = |range| [MergeSource { info: &film, index: &vfr, range, audio_ordinal: None }];
+        for range in [FrameRange::new(2, 20), FrameRange::new(8, 9), FrameRange::new(3, 3)] {
+            let refused = |r: ExportResult<MergePlan>| matches!(r, Err(ExportError::BadRange(_)));
+            assert!(refused(plan_merge(&caps, &prores, &sources(range))), "{range:?}");
+            assert!(refused(plan_lossless_merge(&caps, &sources(range), &[ExactFormat::default()])), "{range:?}");
+        }
+        assert!(plan_merge(&caps, &prores, &sources(FrameRange::new(2, 8))).is_ok());
+    }
+
+    #[test]
+    fn only_plain_names_reach_a_filter_graph() {
+        let mut tagged = info(1920, 1080, r(1, 1), 0);
+        tagged.video.color_primaries = Some("bt709[x];movie=a".into());
+        tagged.video.color_transfer = Some("bt709".into());
+        tagged.video.color_range = Some("tv:colorspace=gbr".into());
+        let tags = ColorTags::of(&tagged);
+        assert_eq!(
+            (tags.primaries, tags.transfer.as_deref(), tags.space, tags.range),
+            (None, Some("bt709"), None, None)
+        );
+        let caps = Caps { sw_encoders: vec!["prores_ks".into()], ..Caps::default() };
+        let index = FrameIndex::cfr(r(1, 24), r(24, 1), 0, 100);
+        let sources =
+            [MergeSource { info: &tagged, index: &index, range: FrameRange::new(0, 10), audio_ordinal: None }];
+        let plan = plan_merge(&caps, &crate::builtin_presets().remove(0), &sources).unwrap();
+        let chain = plan.shape.picture(&tagged, &index).join(",");
+        assert!(chain.ends_with(",setparams=color_trc=bt709"), "{chain}");
+
+        let stream = |channels: u32, layout: &str| AudioStream {
+            index: 1,
+            ordinal: 0,
+            codec: "pcm_s16le".into(),
+            profile: None,
+            channels,
+            channel_layout: Some(layout.into()),
+            sample_rate: 48_000,
+            language: None,
+            title: None,
+            default: true,
+            commentary: false,
+        };
+        assert_eq!(layout_of(&stream(2, "stereo[a];movie=x")), "stereo");
+        assert_eq!(layout_of(&stream(6, "5.1:cl=mono")), "5.1");
+        assert_eq!(layout_of(&stream(2, "")), "stereo");
+        // What ffprobe prints passes as it is.
+        for layout in ["3 channels (FL+FR+TFL)", "5.1(side)", "7.1(wide-side)", "ambisonic 1", "22.2"] {
+            assert_eq!(layout_of(&stream(3, layout)), layout);
+        }
     }
 
     #[test]

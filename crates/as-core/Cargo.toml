@@ -13,6 +13,7 @@ serde.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 specta.workspace = true
+tracing.workspace = true
 zstd.workspace = true
 dirs.workspace = true
 
