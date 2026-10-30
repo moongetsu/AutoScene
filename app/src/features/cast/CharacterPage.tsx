@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { AnimatePresence, motion } from "motion/react"
 import { Link, useNavigate, useParams } from "@tanstack/react-router"
 import {
   ArrowLeft,
@@ -553,8 +554,26 @@ function Maybe({
   onOpen: (t: FaceTrackItem) => void
 }) {
   const [all, setAll] = useState(false)
-  const shown = all ? tracks : tracks.slice(0, 12)
+  const [dismissed, setDismissed] = useState<Set<number>>(new Set())
+  const activeTracks = useMemo(() => tracks.filter((t) => !dismissed.has(t.id)), [tracks, dismissed])
+  const shown = all ? activeTracks : activeTracks.slice(0, 12)
   const navigate = useNavigate()
+
+  const handleAction = async (edit: CastEdit, ids: number[]) => {
+    setDismissed((prev) => new Set([...prev, ...ids]))
+    const res = await castEdit(pid, edit)
+    if (res === undefined) {
+      // Revert optimistic dismissal if backend failed
+      setDismissed((prev) => {
+        const next = new Set(prev)
+        for (const id of ids) next.delete(id)
+        return next
+      })
+    }
+  }
+
+  if (activeTracks.length === 0) return null
+
   return (
     <ContextArea
       menu={
@@ -563,7 +582,7 @@ function Maybe({
             <UserFocus /> Review one by one
           </ContextMenuItem>
           <ContextMenuItem
-            onSelect={() => void castEdit(pid, { op: "assign", tracks: tracks.map((t) => t.id), characterId: c.id })}
+            onSelect={() => void handleAction({ op: "assign", tracks: activeTracks.map((t) => t.id), characterId: c.id }, activeTracks.map((t) => t.id))}
           >
             <Check /> All are {c.label}
           </ContextMenuItem>
@@ -575,7 +594,7 @@ function Maybe({
           <div>
             <h2 className="display text-3xl text-fg-1">Maybe {c.label}?</h2>
             <p className="mt-1 text-sm text-fg-2">
-              {plural(tracks.length, "face")} {tracks.length === 1 ? "looks" : "look"} like {c.label}, but not clearly enough to
+              {plural(activeTracks.length, "face")} {activeTracks.length === 1 ? "looks" : "look"} like {c.label}, but not clearly enough to
               decide alone.
             </p>
           </div>
@@ -587,68 +606,78 @@ function Maybe({
             </Button>
             <Button
               variant="accent"
-              onClick={() => void castEdit(pid, { op: "assign", tracks: tracks.map((t) => t.id), characterId: c.id })}
+              onClick={() => void handleAction({ op: "assign", tracks: activeTracks.map((t) => t.id), characterId: c.id }, activeTracks.map((t) => t.id))}
             >
               <Check weight="bold" /> All are {c.label}
             </Button>
           </div>
         </div>
         <div className="grid grid-cols-[repeat(auto-fill,minmax(104px,1fr))] gap-3">
-          {shown.map((t) => (
-            <ContextArea
-              key={t.id}
-              menu={
-                <>
-                  <ContextMenuItem onSelect={() => void castEdit(pid, { op: "assign", tracks: [t.id], characterId: c.id })}>
-                    <Check /> Yes, {c.label}
-                  </ContextMenuItem>
-                  <ContextMenuItem onSelect={() => void castEdit(pid, { op: "not_them", tracks: [t.id], characterId: c.id })}>
-                    <X /> Not {c.label}
-                  </ContextMenuItem>
-                  <ContextMenuSeparator />
-                  <ContextMenuItem onSelect={() => onOpen(t)}>
-                    <Play /> Watch this moment
-                  </ContextMenuItem>
-                </>
-              }
-            >
-              <div className="group relative aspect-square overflow-hidden rounded-xl bg-inset picture-edge">
-                <Tooltip label={media.get(t.mediaId)?.label ?? "This face"} hint="Double-click to watch" side="top" delay={600}>
-                  <img
-                    src={assetUrl(t.thumb)}
-                    alt=""
-                    loading="lazy"
-                    className="size-full object-cover"
-                    onDoubleClick={() => onOpen(t)}
-                  />
-                </Tooltip>
-                <div className="absolute inset-x-1 bottom-1 flex justify-between gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-                  <Tooltip label={`Yes, ${c.label}`} side="top">
-                    <button
-                      onClick={() => void castEdit(pid, { op: "assign", tracks: [t.id], characterId: c.id })}
-                      aria-label={`Yes, ${c.label}`}
-                      className="flex h-7 flex-1 items-center justify-center rounded-lg bg-black/60 text-white backdrop-blur-md hover:bg-accent hover:text-on-accent"
-                    >
-                      <Check className="size-3.5" />
-                    </button>
-                  </Tooltip>
-                  <Tooltip label={`Not ${c.label}`} side="top">
-                    <button
-                      onClick={() => void castEdit(pid, { op: "not_them", tracks: [t.id], characterId: c.id })}
-                      aria-label={`Not ${c.label}`}
-                      className="flex h-7 flex-1 items-center justify-center rounded-lg bg-black/60 text-white backdrop-blur-md hover:bg-danger hover:text-white"
-                    >
-                      <X className="size-3.5" />
-                    </button>
-                  </Tooltip>
-                </div>
-              </div>
-            </ContextArea>
-          ))}
+          <AnimatePresence mode="popLayout">
+            {shown.map((t) => (
+              <motion.div
+                key={t.id}
+                layout
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.8 }}
+                transition={{ duration: 0.15, ease: "easeOut" }}
+              >
+                <ContextArea
+                  menu={
+                    <>
+                      <ContextMenuItem onSelect={() => void handleAction({ op: "assign", tracks: [t.id], characterId: c.id }, [t.id])}>
+                        <Check /> Yes, {c.label}
+                      </ContextMenuItem>
+                      <ContextMenuItem onSelect={() => void handleAction({ op: "not_them", tracks: [t.id], characterId: c.id }, [t.id])}>
+                        <X /> Not {c.label}
+                      </ContextMenuItem>
+                      <ContextMenuSeparator />
+                      <ContextMenuItem onSelect={() => onOpen(t)}>
+                        <Play /> Watch this moment
+                      </ContextMenuItem>
+                    </>
+                  }
+                >
+                  <div className="group relative aspect-square overflow-hidden rounded-xl bg-inset picture-edge transition-transform duration-100 ease-out hover:scale-[1.03]">
+                    <Tooltip label={media.get(t.mediaId)?.label ?? "This face"} hint="Double-click to watch" side="top" delay={600}>
+                      <img
+                        src={assetUrl(t.thumb)}
+                        alt=""
+                        loading="lazy"
+                        className="size-full object-cover"
+                        onDoubleClick={() => onOpen(t)}
+                      />
+                    </Tooltip>
+                    <div className="absolute inset-x-1 bottom-1 flex justify-between gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                      <Tooltip label={`Yes, ${c.label}`} side="top">
+                        <button
+                          onClick={() => void handleAction({ op: "assign", tracks: [t.id], characterId: c.id }, [t.id])}
+                          aria-label={`Yes, ${c.label}`}
+                          className="flex h-7 flex-1 items-center justify-center rounded-lg bg-black/60 text-white backdrop-blur-md hover:bg-accent hover:text-on-accent active:scale-95 transition-transform"
+                        >
+                          <Check className="size-3.5" />
+                        </button>
+                      </Tooltip>
+                      <Tooltip label={`Not ${c.label}`} side="top">
+                        <button
+                          onClick={() => void handleAction({ op: "not_them", tracks: [t.id], characterId: c.id }, [t.id])}
+                          aria-label={`Not ${c.label}`}
+                          className="flex h-7 flex-1 items-center justify-center rounded-lg bg-black/60 text-white backdrop-blur-md hover:bg-danger hover:text-white active:scale-95 transition-transform"
+                        >
+                          <X className="size-3.5" />
+                        </button>
+                      </Tooltip>
+                    </div>
+                  </div>
+                </ContextArea>
+              </motion.div>
+            ))}
+          </AnimatePresence>
         </div>
-        {tracks.length > 12 && (
+        {activeTracks.length > 12 && (
           <button onClick={() => setAll((v) => !v)} className="mt-4 text-sm font-medium text-fg-2 hover:text-fg-1">
-            {all ? "Show fewer" : `Show ${plural(tracks.length - shown.length, "more face")}`}
+            {all ? "Show fewer" : `Show ${plural(activeTracks.length - shown.length, "more face")}`}
           </button>
         )}
       </section>

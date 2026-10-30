@@ -1,4 +1,4 @@
-import { QueryClient, useQuery } from "@tanstack/react-query"
+import { QueryClient, keepPreviousData, useQuery } from "@tanstack/react-query"
 import { commands, type CharacterId, type FaceTrackItem, type MediaId, type ProjectId, type TrackFilter } from "./ipc"
 
 export const queryClient = new QueryClient({
@@ -94,7 +94,12 @@ export function useCast(pid: ProjectId) {
 }
 
 export function useCastTracks(pid: ProjectId, filter: TrackFilter, enabled = true) {
-  return useQuery({ queryKey: qk.tracks(pid, filter), queryFn: () => commands.castTracks(pid, filter), enabled })
+  return useQuery({
+    queryKey: qk.tracks(pid, filter),
+    queryFn: () => commands.castTracks(pid, filter),
+    enabled,
+    placeholderData: keepPreviousData,
+  })
 }
 
 /**
