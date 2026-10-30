@@ -273,10 +273,15 @@ fn record_stage(
     }
 }
 
-/// Faces are found in live action and 3D animation; anime gets its own
-/// detectors later.
-fn finds_faces(project: &Project) -> bool {
-    !matches!(project.content(), Ok(ContentKind::Anime))
+/// Characters are looked for in live action and 3D animation. Anime uses
+/// its own detectors and embedder (as_analysis::anime): enabled by the
+/// `AUTOSCENE_ANIME_FACES` environment switch until the anime benchmark's
+/// sealed test releases the feature (see bench/anime).
+fn finds_characters(project: &Project) -> bool {
+    match project.content() {
+        Ok(ContentKind::Anime) => as_project::anime_faces_enabled(),
+        _ => true,
+    }
 }
 
 /// Media whose faces another embedder found (another model, or the other of
@@ -308,7 +313,7 @@ fn refresh_outdated_faces(
 /// older embedder found them, or another search than its footage's (3D
 /// animation is searched harder). Their old faces stay until then.
 pub fn queue_outdated_faces(app: &AppHandle, project: &Arc<Project>) {
-    if !finds_faces(project) {
+    if !finds_characters(project) {
         return;
     }
     match project.faces_by_other_model(project.face_embedder()) {
@@ -386,7 +391,7 @@ fn submit_analysis(app: &AppHandle, project: &Arc<Project>, media_id: MediaId, o
         record_stage(&state, &shots, |s, e| project.set_shots_state(media_id, s, e));
         notify();
         let result = shots.and_then(|()| {
-            if !finds_faces(&project) {
+            if !finds_characters(&project) {
                 return Ok(());
             }
             let faces = guarded(|| recorded(|m| m.faces), || run_faces(&app2, &state, &project, media_id, ctx));
@@ -660,7 +665,7 @@ pub fn bodies_setting_changed(app: &AppHandle, on: bool) {
                     continue;
                 }
             };
-            if !finds_faces(&project) {
+            if !finds_characters(&project) {
                 continue;
             }
             if let Err(e) = project.reassign() {
@@ -1117,7 +1122,7 @@ pub fn recover_all(app: &AppHandle) {
         }
         queue_portraits(app, &project);
         let pending = project.pending_shots().and_then(|mut ids| {
-            if finds_faces(&project) {
+            if finds_characters(&project) {
                 // Faces of an older embedder: their analysis installs the new
                 // one first, then finds them again (see `run_faces`).
                 for id in project.faces_by_other_model(project.face_embedder())? {

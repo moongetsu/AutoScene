@@ -94,3 +94,44 @@ size = 8440242
 license = "InsightFace non-commercial (cheetah_l-public-v1)"
 non_commercial = true
 source = "InsightFace cheetah_l reid_0265: OpenVINO person-reidentification-retail-0277 (OmniScaleNet)"
+
+# Anime characters (2D): deepghs detectors and a CCIP character-image
+# embedder — the first config's models; the anime benchmark (bench/anime)
+# may re-pick the detector size, which updates these rows. Heads are the
+# trackable unit (anime faces are too often tiny, stylised or turned); the
+# person detector only adds heads the head model missed.
+[[model]]
+id = "anime-head-v2m"
+file = "anime_head_detect_v2m.onnx"
+purpose = "Head detection (anime characters)"
+url = "https://huggingface.co/deepghs/anime_head_detection/resolve/06604feee81983792a57c21081e539c0ae229833/head_detect_v2.0_m/model.onnx"
+sha256 = "2cecb8d89d38d8902b27d232ff3b69b30ce83d8621fa3f80940b89f5c412e3dd"
+size = 103461826
+license = "MIT"
+card = "https://huggingface.co/deepghs/anime_head_detection"
+terms = "Model card licenses the weights MIT. The ONNX was exported with Ultralytics, whose metadata stamps AGPL-3.0; that stamp describes the exporter, not the weights."
+source = "deepghs anime_head_detection head_detect_v2.0_m (YOLOv8m, 79.1 GFLOPS)"
+
+[[model]]
+id = "anime-person-v1m"
+file = "anime_person_detect_v1m.onnx"
+purpose = "Whole-person detection (anime), to catch heads the head model misses"
+url = "https://huggingface.co/deepghs/anime_person_detection/resolve/e39c744c22432ad01f91dd254fe2b02c8d878b8c/person_detect_v1.1_m/model.onnx"
+sha256 = "c80365a98ca8388fd2f01fd5abea0439e92265bceceb048bef38b0849303467c"
+size = 103459671
+license = "MIT"
+card = "https://huggingface.co/deepghs/anime_person_detection"
+terms = "Model card licenses the weights MIT; the ONNX carries no license metadata."
+source = "deepghs anime_person_detection person_detect_v1.1_m (YOLOv8m, 9.53k GFLOPS)"
+
+[[model]]
+id = "anime-ccip-caformer24"
+file = "anime_ccip_caformer24.onnx"
+purpose = "Character identity embeddings (anime), 768-d CCIP vectors"
+url = "https://huggingface.co/deepghs/ccip_onnx/resolve/eb2acdd29af1703388d3d0c04221add322bc9110/ccip-caformer-24-randaug-pruned/model_feat.onnx"
+sha256 = "4ea118d16496274f4f6e08d3afc768cc592389e8f7f32f8732ce2215c228ac5f"
+size = 150248245
+license = "OpenRAIL"
+card = "https://huggingface.co/deepghs/ccip_onnx"
+terms = "The CCIP family ships under the Open Responsible AI License (OpenRAIL): use restrictions apply (no unlawful, harmful or rights-infringing use); commercial use is allowed under its terms."
+source = "deepghs ccip_onnx ccip-caformer-24-randaug-pruned (CAFormer-24, character-image embedding)"

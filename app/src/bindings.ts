@@ -266,6 +266,13 @@ export type AppSettings = {
 	 *  switching it off deletes the images kept.
 	 */
 	anilist?: boolean,
+	/**
+	 *  Whether this process looks for characters in anime too — the
+	 *  `AUTOSCENE_ANIME_FACES` environment switch, until the anime
+	 *  benchmark's sealed test releases the feature. Read-only (a setting
+	 *  can't turn it on or off).
+	 */
+	animeCharacters?: boolean,
 };
 
 export type AudioCodec = { codec: "none" } | 

@@ -94,6 +94,13 @@ pub struct Model {
     /// lists the models and where a setting decides which ones it fetches).
     #[serde(default)]
     pub non_commercial: bool,
+    /// The model's card, shown in About where its terms can be read.
+    #[serde(default)]
+    pub card: Option<String>,
+    /// What the licence means for using the model here, in plain words
+    /// (shown in About when the licence name alone wouldn't say it).
+    #[serde(default)]
+    pub terms: Option<String>,
     pub source: String,
 }
 
@@ -142,6 +149,14 @@ pub mod ids {
     pub const PERSON_REID: &str = "person-reid-0277";
     /// What finding people without a face needs, on top of [`FACES`].
     pub const BODIES: [&str; 2] = [PERSONS, PERSON_REID];
+    /// Anime: heads to follow characters by, people to catch missed heads,
+    /// and the CCIP character-image embedder (the anime embedder; media
+    /// whose characters another one found are found again, as ARCFACE is).
+    pub const ANIME_HEAD: &str = "anime-head-v2m";
+    pub const ANIME_PERSON: &str = "anime-person-v1m";
+    pub const ANIME_CCIP: &str = "anime-ccip-caformer24";
+    /// What the anime character pass needs.
+    pub const ANIME: [&str; 3] = [ANIME_HEAD, ANIME_PERSON, ANIME_CCIP];
 }
 
 /// Name lookup, connecting and the response headers each get this long.
@@ -784,10 +799,27 @@ mod tests {
                 m.id
             );
         }
-        for id in [ids::TRANSNET, ids::SCRFD, ids::ARCFACE, ids::PERSONS, ids::PERSON_REID] {
+        for id in [ids::TRANSNET, ids::SCRFD, ids::ARCFACE, ids::PERSONS, ids::PERSON_REID]
+            .into_iter()
+            .chain(ids::ANIME)
+        {
             assert!(model(id).is_ok(), "{id}");
         }
         assert!(matches!(model("nope"), Err(ModelError::Unknown(_))));
+        // Model files land flat in the models folder: two entries may not
+        // write to the same name, and every id is unique.
+        let mut files: Vec<&str> = manifest().iter().map(|m| m.file.as_str()).collect();
+        files.sort_unstable();
+        assert!(files.windows(2).all(|w| w[0] != w[1]), "duplicate model file names");
+        let mut seen: Vec<&str> = manifest().iter().map(|m| m.id.as_str()).collect();
+        seen.sort_unstable();
+        assert!(seen.windows(2).all(|w| w[0] != w[1]), "duplicate model ids");
+        // A card link, where there is one, is an https page.
+        for m in manifest() {
+            if let Some(card) = &m.card {
+                assert!(card.starts_with("https://"), "{}: card", m.id);
+            }
+        }
         // Files of one archive land as the files they are.
         for id in ids::BODIES {
             let m = model(id).unwrap();

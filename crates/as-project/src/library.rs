@@ -77,6 +77,7 @@ impl Library {
             find_bodies: self.finds_bodies(),
             fast_scan: self.fast_scan()?,
             anilist: self.names_from_anilist(),
+            anime_characters: anime_faces_enabled(),
         })
     }
 
@@ -503,6 +504,7 @@ mod tests {
             find_bodies: false,
             fast_scan: false,
             anilist: false,
+            anime_characters: false,
         })
         .unwrap();
         assert_eq!(lib.audio_language().unwrap(), "deu", "stored as an ISO 639-2 code");

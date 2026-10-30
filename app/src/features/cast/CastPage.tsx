@@ -11,7 +11,7 @@ import { TopBar } from "@/components/ui/topbar"
 import { AnalysisStatus } from "@/features/project/AnalysisStatus"
 import { ProjectLoadError } from "@/features/project/ProjectLoadError"
 import { ProjectNav } from "@/features/project/ProjectNav"
-import { firstFailure, useCast, useMediaList, useProject } from "@/lib/queries"
+import { firstFailure, useCast, useMediaList, useProject, useSettings } from "@/lib/queries"
 import { cn } from "@/lib/utils"
 import { CharacterCard } from "./CharacterCard"
 import { plural, splitHidden, unplacedNote, useProjectAnalysis } from "./cast"
@@ -25,11 +25,14 @@ export function CastPage() {
   const { data: project } = projectQuery
   const { data: cast, isPending } = castQuery
   const { data: media } = mediaQuery
+  const { data: settings } = useSettings()
   const running = useProjectAnalysis(pid)
   const [showHidden, setShowHidden] = useState(false)
   const navigate = useNavigate()
   const { shown, hidden } = splitHidden(cast)
-  const anime = project?.content === "anime"
+  // Anime runs its own character pipeline while the feature stays behind
+  // the AUTOSCENE_ANIME_FACES switch; off means "coming" as before.
+  const anime = project?.content === "anime" && !settings?.animeCharacters
   const unplaced = anime ? null : unplacedNote(cast?.unplaced ?? 0)
   const failure = firstFailure(projectQuery, castQuery, mediaQuery)
 

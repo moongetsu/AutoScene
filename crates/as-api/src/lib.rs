@@ -100,6 +100,12 @@ pub struct AppSettings {
     /// switching it off deletes the images kept.
     #[serde(default)]
     pub anilist: bool,
+    /// Whether this process looks for characters in anime too — the
+    /// `AUTOSCENE_ANIME_FACES` environment switch, until the anime
+    /// benchmark's sealed test releases the feature. Read-only (a setting
+    /// can't turn it on or off).
+    #[serde(default)]
+    pub anime_characters: bool,
 }
 
 // ---------------------------------------------------------------------------

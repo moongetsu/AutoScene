@@ -142,9 +142,11 @@ pub fn embedding_to_bytes(e: &[f32]) -> Vec<u8> {
     e.iter().flat_map(|&v| f16::from_f32(v).to_le_bytes()).collect()
 }
 
-/// Unpack [`embedding_to_bytes`], renormalised to unit length.
+/// Unpack [`embedding_to_bytes`], renormalised to unit length. The length
+/// comes from the blob: an even number of f16 values, more than none, at
+/// most 4096 (any other embedder's dimension reads, a stray blob doesn't).
 pub fn embedding_from_bytes(b: &[u8]) -> Option<Vec<f32>> {
-    if b.len() != DIM * 2 {
+    if !b.len().is_multiple_of(4) || b.is_empty() || b.len() > 4096 * 2 {
         return None;
     }
     let mut v: Vec<f32> = b.as_chunks::<2>().0.iter().map(|c| f16::from_le_bytes(*c).to_f32()).collect();

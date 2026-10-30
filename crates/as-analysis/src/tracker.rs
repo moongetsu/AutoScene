@@ -13,7 +13,7 @@ use as_core::{FrameIdx, FrameRange};
 use as_vision::arcface::cosine;
 use as_vision::scrfd::iou;
 
-use crate::tracks::{DIM, FaceDet, FaceTrack};
+use crate::tracks::{FaceDet, FaceTrack};
 
 /// A face detected and embedded in one sample, before tracking.
 #[derive(Clone, Debug)]
@@ -94,8 +94,10 @@ impl Open {
     fn new(o: Observation) -> Self {
         let mut t = Self {
             obs: Vec::new(),
-            sum: vec![0.0; DIM],
-            mean: vec![0.0; DIM],
+            // The buffers size after the embedding's own length, whatever
+            // embedder made it (ArcFace's 512, CCIP's 768, …).
+            sum: vec![0.0; o.embedding.len()],
+            mean: vec![0.0; o.embedding.len()],
             last_frame: 0,
             last_bbox: [0.0; 4],
             velocity: None,
@@ -154,7 +156,7 @@ impl Open {
         let top = &qs[..qs.len().min(3)];
         let quality = top.iter().sum::<f32>() / top.len() as f32;
         // Embedding: quality² weights, so the clearest views dominate.
-        let mut sum = vec![0f32; DIM];
+        let mut sum = vec![0f32; self.sum.len()];
         let mut total = 0.0;
         for o in &self.obs {
             let w = o.det.quality * o.det.quality;
@@ -197,11 +199,15 @@ fn readable(o: &Observation) -> bool {
 /// ordered by start. Observations a model spoilt (see `readable`) are left
 /// out.
 pub fn track_shot(shot: FrameRange, samples: Vec<(FrameIdx, Vec<Observation>)>, p: &TrackerParams) -> Vec<FaceTrack> {
+    // Every observation of a shot shares the embedder's dimension — the
+    // first readable one sets it; a foreign length is left out like a spoilt
+    // one (it could never compare to the tracks anyway).
+    let dim = samples.iter().flat_map(|(_, o)| o.iter()).find(|o| readable(o)).map(|o| o.embedding.len());
     let mut open: Vec<Open> = Vec::new();
     for (frame, mut obs) in samples {
         debug_assert!(shot.contains(frame));
         debug_assert!(open.iter().all(|t| t.last_frame <= frame), "samples in frame order");
-        obs.retain(readable);
+        obs.retain(|o| readable(o) && Some(o.embedding.len()) == dim);
         // Candidate links, best first: overlap plus identity.
         let mut pairs: Vec<(f32, usize, usize)> = Vec::new();
         for (oi, o) in obs.iter().enumerate() {
@@ -245,6 +251,7 @@ pub fn track_shot(shot: FrameRange, samples: Vec<(FrameIdx, Vec<Observation>)>, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tracks::DIM;
 
     fn emb(axis: usize) -> Vec<f32> {
         let mut v = vec![0f32; DIM];
