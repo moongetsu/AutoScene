@@ -874,6 +874,42 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 
+/// The proposals a per-character best portrait (`best`: cast character →
+/// portrait index and score) makes: each portrait names at most one
+/// character — the strongest hit; a second character at the bar on the
+/// same portrait is its merge candidate.
+fn proposals(
+    portraits: &[(CastMember, Vec<f32>)],
+    best: HashMap<as_core::CharacterId, (usize, f32)>,
+) -> (Vec<NameSuggestion>, Vec<MergeProposal>) {
+    let mut by_portrait: HashMap<usize, Vec<(as_core::CharacterId, f32)>> = HashMap::new();
+    for (c, (p, s)) in best {
+        if s >= SUGGEST_MIN_COS {
+            by_portrait.entry(p).or_default().push((c, s));
+        }
+    }
+    let mut names = Vec::new();
+    let mut merges = Vec::new();
+    for (p, mut hit) in by_portrait {
+        hit.sort_by(|a, b| b.1.total_cmp(&a.1));
+        let (c, score) = hit[0];
+        let (member, _) = &portraits[p];
+        names.push(NameSuggestion {
+            character_id: c,
+            anilist_id: member.character.id,
+            name: member.character.name.clone(),
+            score,
+            image: member.image.clone(),
+        });
+        for &(other, _) in &hit[1..] {
+            merges.push(MergeProposal { from: other, into: c, anilist_id: member.character.id });
+        }
+    }
+    names.sort_by(|a, b| b.score.total_cmp(&a.score));
+    merges.sort_by_key(|m| m.anilist_id);
+    (names, merges)
+}
+
 impl Project {
     /// Match AniList portraits (already embedded — the engine embeds, this
     /// matches) to this project's cast: one name suggestion per cast
@@ -898,37 +934,13 @@ impl Project {
                     .filter_map(|f| as_analysis::tracks::embedding_from_bytes(&f.emb))
                     .map(|e| cosine(&e, emb))
                     .fold(f32::NEG_INFINITY, f32::max);
-                if score >= SUGGEST_MIN_COS {
-                    let keep = best.get(&c.id).is_none_or(|&(_, s)| score > s);
-                    if keep {
-                        best.insert(c.id, (p, score));
-                    }
+                let keep = best.get(&c.id).is_none_or(|&(_, s)| score > s);
+                if keep {
+                    best.insert(c.id, (p, score));
                 }
             }
         }
-        let mut names = Vec::new();
-        let mut merges = Vec::new();
-        // Each portrait names at most one character; a second character at
-        // the bar on the same portrait is its merge candidate.
-        let mut by_portrait: HashMap<usize, Vec<(as_core::CharacterId, f32)>> = HashMap::new();
-        for (c, (p, s)) in &best {
-            by_portrait.entry(*p).or_default().push((*c, *s));
-        }
-        for (p, mut hit) in by_portrait {
-            hit.sort_by(|a, b| b.1.total_cmp(&a.1));
-            let (c, score) = hit[0];
-            let (member, _) = &portraits[p];
-            names.push(NameSuggestion {
-                character_id: c,
-                anilist_id: member.character.id,
-                name: member.character.name.clone(),
-                score,
-                image: member.image.clone(),
-            });
-            for &(other, _) in &hit[1..] {
-                merges.push(MergeProposal { from: other, into: c, anilist_id: member.character.id });
-            }
-        }
+        let (names, merges) = proposals(portraits, best);
         Ok((rev, names, merges))
     }
 
@@ -1558,5 +1570,42 @@ mod tests {
         drop(lib);
         let lib = Library::open(&AppPaths::at(dir.path().join("data"))).unwrap();
         assert!(!lib.settings().unwrap().anilist);
+    }
+
+    fn member(id: u32, name: &str) -> CastMember {
+        CastMember {
+            character: Character {
+                id,
+                role: Role::Main,
+                name: name.into(),
+                native: None,
+                alternative: vec![],
+                image: None,
+            },
+            image: None,
+        }
+    }
+
+    #[test]
+    fn portrait_matches_propose_names_and_merges() {
+        let portraits: Vec<(CastMember, Vec<f32>)> =
+            vec![(member(10, "Frieren"), vec![]), (member(11, "Fern"), vec![])];
+        let (a, b, c, d) = (
+            as_core::CharacterId::new(),
+            as_core::CharacterId::new(),
+            as_core::CharacterId::new(),
+            as_core::CharacterId::new(),
+        );
+        // Two cast characters at the bar on Frieren's portrait: the
+        // stronger is named, the weaker is proposed for merging into it.
+        let (names, merges) = proposals(&portraits, HashMap::from([(a, (0, 0.9)), (b, (0, 0.8)), (c, (1, 0.7))]));
+        assert_eq!(names.len(), 2);
+        let frieren = names.iter().find(|n| n.anilist_id == 10).unwrap();
+        assert_eq!((frieren.character_id, frieren.name.as_str()), (a, "Frieren"));
+        assert_eq!(merges.len(), 1);
+        assert_eq!((merges[0].from, merges[0].into, merges[0].anilist_id), (b, a, 10));
+        // Below the bar: no name, no merge.
+        let (names, merges) = proposals(&portraits, HashMap::from([(d, (0, SUGGEST_MIN_COS - 0.01))]));
+        assert!(names.is_empty() && merges.is_empty());
     }
 }

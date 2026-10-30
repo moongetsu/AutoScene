@@ -104,7 +104,7 @@ impl Ccip {
 
     /// Load the session on the runtime's preferred device, unchecked.
     fn open(rt: &Runtime, model: &Path, batch: usize) -> InferResult<Self> {
-        let (session, device) = rt.session_shaped(model, InputShape::Fixed(&[batch, 3, CROP, CROP]))?;
+        let (session, device) = rt.fp32_sessions().session_shaped(model, InputShape::Fixed(&[batch, 3, CROP, CROP]))?;
         let input = session
             .inputs()
             .first()
@@ -264,8 +264,8 @@ mod tests {
         assert!((t[0][0] + MEAN[0] / STD[0]).abs() < 1e-6);
         assert!((t[2][255] - (1.0 - MEAN[2]) / STD[2]).abs() < 1e-6);
         // The constants are the ones golden.json stores for the model.
-        assert_eq!(MEAN[0], 0.48145467042922974);
-        assert_eq!(STD[2], 0.27577710151672363);
+        assert_eq!(MEAN[0], 0.481_454_66);
+        assert_eq!(STD[2], 0.275_777_1);
     }
 
     #[test]

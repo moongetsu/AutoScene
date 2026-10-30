@@ -34,8 +34,9 @@ const REID_BATCH: usize = 32;
 /// decides from what it found where to look next) and faces per SFace call.
 const FAST_DETECT_BATCH: usize = 1;
 const FAST_EMBED_BATCH: usize = 16;
-/// Anime head crops per CCIP call (a 384² crop is ~12× a face's).
-pub const CCIP_BATCH: usize = 8;
+/// Crops per CCIP call (a 384² crop is ~12× a face's): one session embeds
+/// heads and implied heads alike.
+pub const CCIP_BATCH: usize = 4;
 /// The anime head detector's letterboxed input (the bench's first-config
 /// variant).
 const ANIME_HEAD_INPUT: (usize, usize) = (640, 640);
@@ -254,6 +255,13 @@ struct Models {
     anime_ccip: Option<Ccip>,
 }
 
+/// Which family of models a job keeps loaded; the other family's sessions
+/// are dropped so the two passes never hold the GPU at once.
+enum Family {
+    Live,
+    Anime,
+}
+
 impl Models {
     fn unload(&mut self) {
         (self.transnet, self.arcface) = (None, None);
@@ -261,6 +269,21 @@ impl Models {
         (self.persons, self.person_reid) = (None, None);
         (self.yunet, self.sface) = (None, None);
         (self.anime_heads, self.anime_persons, self.anime_ccip) = (None, None, None);
+    }
+
+    /// Drop the sessions of the other family (TransNet — the shot
+    /// detector — is neither's and stays).
+    fn keep(&mut self, family: Family) {
+        match family {
+            Family::Live => {
+                (self.anime_heads, self.anime_persons, self.anime_ccip) = (None, None, None);
+            }
+            Family::Anime => {
+                self.scrfd.clear();
+                (self.arcface, self.persons, self.person_reid) = (None, None, None);
+                (self.yunet, self.sface) = (None, None);
+            }
+        }
     }
 
     /// The file of model `id`, hashed the first time this engine loads it
@@ -275,6 +298,7 @@ impl Models {
     /// (loaded again when a media needs other sizes; one of a size still
     /// needed stays).
     fn load_faces(&mut self, rt: &Runtime, looks: &[Look]) -> Result<(), AnalysisError> {
+        self.keep(Family::Live);
         if !self.scrfd.iter().map(Scrfd::frame_size).eq(looks.iter().map(|l| l.size)) {
             let mut old = std::mem::take(&mut self.scrfd);
             old.retain(|d| looks.iter().any(|l| l.size == d.frame_size()));
@@ -295,6 +319,7 @@ impl Models {
 
     /// Load Fast Scan's models, the detector planned for `size` frames.
     fn load_fast(&mut self, rt: &Runtime, size: (usize, usize)) -> Result<(), AnalysisError> {
+        self.keep(Family::Live);
         if self.yunet.as_ref().is_none_or(|d| d.frame_size() != size) {
             self.yunet = None;
             let path = self.path(as_models::ids::YUNET)?;
@@ -308,6 +333,7 @@ impl Models {
 
     /// Load the people models, the detector planned for `size` frames.
     fn load_people(&mut self, rt: &Runtime, size: (usize, usize)) -> Result<(), AnalysisError> {
+        self.keep(Family::Live);
         if self.persons.as_ref().is_none_or(|d| d.frame_size() != size) {
             self.persons = None;
             let path = self.path(as_models::ids::PERSONS)?;
@@ -322,6 +348,7 @@ impl Models {
 
     /// The anime character embedder (CCIP) alone — `Embed` jobs on stills.
     fn load_ccip(&mut self, rt: &Runtime) -> Result<(), AnalysisError> {
+        self.keep(Family::Anime);
         if self.anime_ccip.is_none() {
             self.anime_ccip = Some(Ccip::load(rt, &self.path(as_models::ids::ANIME_CCIP)?, CCIP_BATCH)?);
         }
@@ -329,7 +356,11 @@ impl Models {
     }
 
     /// Load the anime models, the detectors planned for `size` frames.
+    /// The embedder loads first: its golden check against the CPU decides
+    /// where everything else lands (a CCIP that fell back means the
+    /// detectors might as well run beside it).
     fn load_anime(&mut self, rt: &Runtime, size: (usize, usize)) -> Result<(), AnalysisError> {
+        self.load_ccip(rt)?;
         if self.anime_heads.as_ref().is_none_or(|d| d.frame_size() != size) {
             self.anime_heads = None;
             let path = self.path(as_models::ids::ANIME_HEAD)?;
@@ -340,7 +371,7 @@ impl Models {
             let path = self.path(as_models::ids::ANIME_PERSON)?;
             self.anime_persons = Some(Yolo::load(rt, &path, size, ANIME_PERSON_INPUT, DETECT_BATCH)?);
         }
-        self.load_ccip(rt)
+        Ok(())
     }
 
     fn transnet(&mut self, rt: &Runtime) -> Result<&mut TransNet, AnalysisError> {

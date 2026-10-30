@@ -19,7 +19,10 @@ impl Rng {
         (-2.0 * u.ln()).sqrt() * (std::f32::consts::TAU * v).cos()
     }
     fn unit(&mut self) -> Vec<f32> {
-        let mut v: Vec<f32> = (0..DIM).map(|_| self.gauss()).collect();
+        self.unit_d(DIM)
+    }
+    fn unit_d(&mut self, dim: usize) -> Vec<f32> {
+        let mut v: Vec<f32> = (0..dim).map(|_| self.gauss()).collect();
         proto_normalize(&mut v);
         v
     }
@@ -32,7 +35,7 @@ fn proto_normalize(v: &mut [f32]) {
 
 /// A track of identity `center` with cosine ≈ `fidelity` to it.
 fn around(rng: &mut Rng, center: &[f32], fidelity: f32) -> Vec<f32> {
-    let noise = rng.unit();
+    let noise = rng.unit_d(center.len());
     let k = (1.0 - fidelity * fidelity).sqrt();
     let mut v: Vec<f32> = center.iter().zip(&noise).map(|(c, n)| fidelity * c + k * n).collect();
     proto_normalize(&mut v);
@@ -88,6 +91,26 @@ fn separate_people_become_separate_characters() {
     let (_, tracks, truth) = cast(&mut rng, 6, 15);
     let o = identify(&tracks, &Params::default());
     assert_eq!(o.characters.len(), 6);
+    let f = bcubed(&chars(&o), &truth);
+    assert!(f > 0.99, "BCubed F {f}");
+}
+
+#[test]
+fn anime_params_group_wide_embeddings() {
+    // CCIP's 768-d vectors under [`Params::anime`]: two well-separated
+    // characters, tracks of each one after another, come out as two.
+    let mut rng = Rng(23);
+    let a = rng.unit_d(768);
+    let b = rng.unit_d(768);
+    let mut tracks = Vec::new();
+    let mut truth = Vec::new();
+    for i in 0..15u32 {
+        tracks.push(track(0, i * 100, around(&mut rng, &a, 0.85), 0.8));
+        tracks.push(track(0, i * 100 + 50, around(&mut rng, &b, 0.85), 0.8));
+        truth.extend([0, 1]);
+    }
+    let o = identify(&tracks, &Params::anime());
+    assert_eq!(o.characters.len(), 2);
     let f = bcubed(&chars(&o), &truth);
     assert!(f > 0.99, "BCubed F {f}");
 }
@@ -1338,7 +1361,7 @@ fn faces_of_another_embedders_dimension_compare_to_no_one() {
     assert!(o.characters.iter().all(|c| c.centroid.len() == DIM));
     // Most tracks of another length: the session is theirs — the odd one out.
     for t in &mut tracks {
-        t.embedding = vec![0.01; 8];
+        t.embedding = vec![8f32.sqrt().recip(); 8];
     }
     tracks[0].embedding = vec![0.01; DIM];
     let o = identify(&tracks, &Params::default());

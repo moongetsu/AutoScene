@@ -310,6 +310,35 @@ mod tests {
     }
 
     #[test]
+    fn embeddings_wider_than_arcface_are_not_truncated() {
+        // CCIP's 768-d vectors: two characters told apart only by axes past
+        // ArcFace's 512 stay two tracks (a truncated mean would merge them).
+        let wide = |axis: usize| {
+            let mut v = vec![0f32; as_vision::ccip::DIM];
+            v[axis] = 1.0;
+            v
+        };
+        let wide_obs = |frame: FrameIdx, x: f32, axis: usize| Observation {
+            det: FaceDet { frame, bbox: [x, 0.2, x + 0.1, 0.4], score: 0.9, norm: 20.0, quality: 0.8 },
+            embedding: wide(axis),
+            thumb: vec![],
+        };
+        let shot = FrameRange::new(0, 30);
+        let samples = (0..5u32)
+            .map(|i| {
+                let f = i * 3;
+                (f, vec![wide_obs(f, 0.1 + 0.05 * i as f32, 600), wide_obs(f, 0.3 - 0.05 * i as f32, 700)])
+            })
+            .collect();
+        let tracks = track_shot(shot, samples, &TrackerParams::anime());
+        assert_eq!(tracks.len(), 2);
+        let mut axes: Vec<usize> =
+            tracks.iter().map(|t| t.embedding.iter().position(|&v| v > 0.5).expect("a direction")).collect();
+        axes.sort_unstable();
+        assert_eq!(axes, [600, 700]);
+    }
+
+    #[test]
     fn the_thumbnail_shows_the_clearest_detection() {
         // One face over 8 samples; ties in quality go to the bigger face, and
         // between equals to the last (what a portrait made later from the

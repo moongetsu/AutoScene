@@ -124,9 +124,17 @@ impl Runtime {
         }
     }
 
+    /// The same runtime, but sessions built so CoreML computes in fp32
+    /// (`MLProgram`, no low-precision accumulation on the GPU): the anime
+    /// models' embeddings bend under fp16 maths. Everywhere else it builds
+    /// exactly like this runtime.
+    pub fn fp32_sessions(&self) -> Fp32<'_> {
+        Fp32 { rt: self }
+    }
+
     /// Load `model`, on the GPU when possible. Returns where it runs.
     pub fn session(&self, model: &Path) -> InferResult<(Session, Device)> {
-        self.session_from(model, None)
+        self.session_from(model, None, false)
     }
 
     /// Like [`Runtime::session`], with the shapes the model declares for its
@@ -138,7 +146,7 @@ impl Runtime {
         let patched = onnx::reshaped(&bytes, input).ok_or_else(|| {
             InferError::Model(format!("{}: not a readable ONNX model, or not shaped like {input:?}", model.display()))
         })?;
-        self.session_from(model, Some(&patched))
+        self.session_from(model, Some(&patched), false)
     }
 
     /// Like [`Runtime::session_shaped`], for an export that pins its batch
@@ -151,23 +159,25 @@ impl Runtime {
             .ok_or_else(|| unreadable("not a readable ONNX model, or a Reshape that takes 0 literally"))?;
         let patched = onnx::reshaped(&free, input).ok_or_else(|| unreadable(&format!("not shaped like {input:?}")))?;
         tracing::debug!(model = %model.display(), targets, "Reshapes copy the batch");
-        self.session_from(model, Some(&patched))
+        self.session_from(model, Some(&patched), false)
     }
 
-    fn session_from(&self, model: &Path, bytes: Option<&[u8]>) -> InferResult<(Session, Device)> {
+    fn session_from(&self, model: &Path, bytes: Option<&[u8]>, fp32: bool) -> InferResult<(Session, Device)> {
         let want = self.preferred_device();
         if want != Device::Cpu {
-            match self.build(model, bytes, want) {
+            match self.build(model, bytes, want, fp32) {
                 Ok(s) => return Ok((s, want)),
                 Err(e) => {
                     tracing::warn!(model = %name(model), device = ?want, error = %e.detail(), "GPU session failed; using the CPU")
                 }
             }
         }
-        Ok((self.build(model, bytes, Device::Cpu)?, Device::Cpu))
+        Ok((self.build(model, bytes, Device::Cpu, fp32)?, Device::Cpu))
     }
 
-    fn build(&self, model: &Path, bytes: Option<&[u8]>, device: Device) -> InferResult<Session> {
+    fn build(&self, model: &Path, bytes: Option<&[u8]>, device: Device, fp32: bool) -> InferResult<Session> {
+        #[cfg(not(target_os = "macos"))]
+        let _ = fp32;
         let err = |e: String| InferError::Model(format!("{}: {e}", model.display()));
         let mut b = Session::builder(&self.env).map_err(|e| err(e.to_string()))?;
         match device {
@@ -184,9 +194,16 @@ impl Runtime {
             }
             #[cfg(target_os = "macos")]
             Device::CoreMl => {
-                b = b
-                    .with_execution_providers([ort::ep::CoreML::default().build().error_on_failure()])
-                    .map_err(|e| err(e.to_string()))?;
+                // fp32 sessions run as an MLProgram without fp16
+                // accumulation on the GPU (the anime models': their
+                // embeddings bend under low-precision maths).
+                let ep = match fp32 {
+                    true => ort::ep::CoreML::default()
+                        .with_model_format(ort::ep::coreml::ModelFormat::MLProgram)
+                        .with_low_precision_accumulation_on_gpu(false),
+                    false => ort::ep::CoreML::default(),
+                };
+                b = b.with_execution_providers([ep.build().error_on_failure()]).map_err(|e| err(e.to_string()))?;
             }
             _ => {}
         }
@@ -194,6 +211,40 @@ impl Runtime {
             Some(bytes) => b.commit_from_memory(bytes).map_err(|e| err(e.to_string())),
             None => b.commit_from_file(model).map_err(|e| err(e.to_string())),
         }
+    }
+}
+
+/// What [`Runtime::fp32_sessions`] returns: the same sessions — same
+/// signatures — but built so CoreML keeps fp32 maths. Off CoreML there is
+/// nothing to build differently.
+pub struct Fp32<'a> {
+    rt: &'a Runtime,
+}
+
+impl Fp32<'_> {
+    /// Like [`Runtime::session`].
+    pub fn session(&self, model: &Path) -> InferResult<(Session, Device)> {
+        self.rt.session_from(model, None, true)
+    }
+
+    /// Like [`Runtime::session_shaped`].
+    pub fn session_shaped(&self, model: &Path, input: onnx::InputShape) -> InferResult<(Session, Device)> {
+        let bytes = std::fs::read(model).map_err(|e| InferError::Model(format!("{}: {e}", model.display())))?;
+        let patched = onnx::reshaped(&bytes, input).ok_or_else(|| {
+            InferError::Model(format!("{}: not a readable ONNX model, or not shaped like {input:?}", model.display()))
+        })?;
+        self.rt.session_from(model, Some(&patched), true)
+    }
+
+    /// Like [`Runtime::session_batched`].
+    pub fn session_batched(&self, model: &Path, input: onnx::InputShape) -> InferResult<(Session, Device)> {
+        let bytes = std::fs::read(model).map_err(|e| InferError::Model(format!("{}: {e}", model.display())))?;
+        let unreadable = |what: &str| InferError::Model(format!("{}: {what}", model.display()));
+        let (free, targets) = onnx::free_reshape_batch(&bytes)
+            .ok_or_else(|| unreadable("not a readable ONNX model, or a Reshape that takes 0 literally"))?;
+        let patched = onnx::reshaped(&free, input).ok_or_else(|| unreadable(&format!("not shaped like {input:?}")))?;
+        tracing::debug!(model = %model.display(), targets, "Reshapes copy the batch");
+        self.rt.session_from(model, Some(&patched), true)
     }
 }
 

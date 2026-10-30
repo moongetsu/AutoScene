@@ -790,6 +790,15 @@ mod tests {
         for m in manifest() {
             assert_eq!(m.sha256.len(), 64, "{}: sha256", m.id);
             assert!(m.url.starts_with("https://"), "{}: url", m.id);
+            // Hugging Face files pin an immutable revision, not a branch.
+            if m.url.contains("huggingface.co") {
+                let rev = m.url.split("/resolve/").nth(1).and_then(|r| r.split('/').next());
+                assert!(
+                    rev.is_some_and(|r| r.len() == 40 && r.chars().all(|c| c.is_ascii_hexdigit())),
+                    "{}: pinned revision",
+                    m.id
+                );
+            }
             assert!(m.size > 0, "{}: size", m.id);
             assert!(!m.license.is_empty(), "{}: license", m.id);
             assert_eq!(
@@ -947,6 +956,8 @@ mod tests {
             license: String::new(),
             non_commercial: false,
             source: String::new(),
+            card: None,
+            terms: None,
         }
     }
 

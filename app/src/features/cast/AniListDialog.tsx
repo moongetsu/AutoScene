@@ -150,7 +150,7 @@ export function AniListDialog({
                   <li key={n.characterId} className="flex items-center justify-between rounded-lg bg-white/[0.04] px-3 py-2">
                     <span className="text-md text-fg-1">{n.name}</span>
                     <span className="text-sm text-fg-3">
-                      {nameOf(n.characterId)} · {Math.round(n.score * 100)}%
+                      {nameOf(n.characterId)} · {Math.round((n.score ?? 0) * 100)}%
                     </span>
                   </li>
                 ))}

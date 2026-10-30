@@ -97,7 +97,7 @@ impl Yolo {
     ) -> InferResult<Self> {
         let ((w, h), (iw, ih)) = (frame, input);
         assert!(w > 0 && h > 0 && iw > 0 && ih > 0 && batch > 0, "YOLO shape {w}×{h} → {iw}×{ih}, batch {batch}");
-        let (session, device) = rt.session_shaped(model, InputShape::Fixed(&[batch, 3, ih, iw]))?;
+        let (session, device) = rt.fp32_sessions().session_shaped(model, InputShape::Fixed(&[batch, 3, ih, iw]))?;
         let input = session
             .inputs()
             .first()
@@ -290,7 +290,7 @@ mod tests {
         let n = 3usize;
         let mut e = vec![0.0f32; 5 * n];
         e[0] = 200.0 * lb.s + lb.ox;
-        e[1 * n] = 125.0 * lb.s + lb.oy;
+        e[n] = 125.0 * lb.s + lb.oy;
         e[2 * n] = 200.0 * lb.s;
         e[3 * n] = 150.0 * lb.s;
         e[4 * n] = 0.9;
@@ -303,7 +303,7 @@ mod tests {
         assert!((found[0].bbox[2] - 300.0).abs() < 1e-3 && (found[0].bbox[3] - 200.0).abs() < 1e-3, "{:?}", found[0]);
         // Boxes outside the frame are clipped to it.
         e[0] = lb.ox;
-        e[1 * n] = lb.oy;
+        e[n] = lb.oy;
         e[2 * n] = 4.0 * iw as f32;
         e[3 * n] = 4.0 * ih as f32;
         e[4 * n] = 0.9;
@@ -319,9 +319,9 @@ mod tests {
         let flat_n: Vec<f32> = want.into_iter().flatten().collect();
         assert_eq!(rows(&[2, 5, 3], 2), Some((3, true)));
         assert_eq!(rows(&[2, 3, 5], 2), Some((3, false)));
-        for i in 0..3 {
-            assert_eq!(row(&flat_t, 0, 3, i, true), want[i]);
-            assert_eq!(row(&flat_n, 0, 3, i, false), want[i]);
+        for (i, w) in want.iter().enumerate() {
+            assert_eq!(row(&flat_t, 0, 3, i, true), *w);
+            assert_eq!(row(&flat_n, 0, 3, i, false), *w);
         }
         // Ambiguous only when N = 5 — where both readings are the same — and
         // shapes that are no detections at all are refused.

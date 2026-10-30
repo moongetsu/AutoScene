@@ -34,6 +34,10 @@ import {
   templateProblem,
 } from "./pack"
 import type {
+  AniListMedia,
+  AniListMerge,
+  AniListSuggestion,
+  AniListSuggestions,
   AppInfo,
   PackExportRequest,
   PackNaming,
@@ -110,7 +114,52 @@ const appInfo: AppInfo = {
 }
 
 let mockClipboard: string | null = null
-let settings: AppSettings = { libraryRoot: ROOT, exportPresetId: "prores-hq", audioLanguage: "eng" }
+let settings: AppSettings = { libraryRoot: ROOT, exportPresetId: "prores-hq", audioLanguage: "eng", animeCharacters: false }
+
+/** Canned AniList answers (no network in the mock). */
+const ANILIST_SERIES: AniListMedia[] = [
+  { id: 21519, title: "Frieren: Beyond Journey's End", format: "TV", episodes: 28, year: 2023 },
+  { id: 172429, title: "Frieren: Beyond Journey's End Season 2", format: "TV", episodes: null, year: null },
+]
+const ANILIST_NAMES = ["Frieren", "Fern", "Stark", "Himmel"]
+
+/** Per-project AniList decisions (the real backend keeps them in project meta). */
+const anilistState = new Map<string, { media: AniListMedia[]; rejected: number[]; auto: boolean; rev: number }>()
+function anilist(projectId: string) {
+  let s = anilistState.get(projectId)
+  if (!s) anilistState.set(projectId, (s = { media: [], rejected: [], auto: false, rev: 1 }))
+  return s
+}
+function anilistAllowed() {
+  if (!settings.anilist) throw { code: "invalid", message: "Turn on names from AniList in Settings first." }
+}
+
+/** Apply suggestions like `Library::anilist_apply`: merges first, then the
+ * surviving characters' names. Returns how many were applied. */
+function applyAnilist(
+  p: MockProject,
+  s: { rev: number },
+  names: AniListSuggestion[],
+  merges: AniListMerge[],
+): number {
+  const gone = new Set<string>()
+  let applied = 0
+  for (const m of merges) {
+    castEdit(String(p.id), { op: "merge", from: m.from, into: m.into })
+    gone.add(m.from)
+    applied += 1
+  }
+  for (const n of names) {
+    if (gone.has(n.characterId)) continue
+    castEdit(String(p.id), { op: "rename", characterId: n.characterId, name: n.name })
+    applied += 1
+  }
+  if (applied > 0) {
+    s.rev += 1
+    void emit("cast:changed", { projectId: p.id })
+  }
+  return applied
+}
 
 const presets: ExportPreset[] = [
   preset("prores-hq", "ProRes 422 HQ", "Edit-grade intra codec for After Effects, Premiere, Final Cut and Resolve. Large files.", "mov"),
@@ -298,7 +347,7 @@ const projects: MockProject[] = [
   ),
 ]
 
-for (const p of projects) if (p.content !== "anime") seedCast(p.id, p.media, SEGMENTS)
+for (const p of projects) seedCast(p.id, p.media, SEGMENTS)
 
 function find(pid: unknown): MockProject {
   const p = projects.find((x) => x.id === pid)
@@ -594,7 +643,7 @@ const handlers: Record<string, Handler> = {
   },
   project_set_fast_scan: ({ projectId, fastScan }) => {
     const p = find(projectId)
-    if (fastScan && p.content === "anime") throw { code: "invalid", message: "Anime has no faces to scan." }
+    if (fastScan && p.content === "anime") throw { code: "invalid", message: "Fast Scan doesn't work on anime." }
     p.fastScan = Boolean(fastScan)
     void emit("library:changed", { projectId: p.id })
     return summary(p)
@@ -674,6 +723,59 @@ const handlers: Record<string, Handler> = {
     if (redo) Object.assign(m, { faces: "pending", faceCount: null })
     analyze(p, m)
     return null
+  },
+  // AniList naming: canned answers, same shapes as the real commands. The
+  // project's title is the suggested search text (nothing is "sent").
+  anilist_search_text: ({ projectId }) => find(projectId).title,
+  anilist_search: ({ projectId, text }) => {
+    anilistAllowed()
+    const s = anilist(String(projectId))
+    const q = String(text).toLowerCase()
+    return ANILIST_SERIES.filter((m) => !s.rejected.includes(m.id) && m.title.toLowerCase().includes(q))
+  },
+  anilist_confirm: ({ projectId, media }) => {
+    anilistAllowed()
+    const s = anilist(String(projectId))
+    const i = ANILIST_SERIES.findIndex((m) => m.id === media)
+    const chain = i < 0 ? [] : ANILIST_SERIES.slice(i)
+    s.media = chain
+    s.rejected = s.rejected.filter((id) => !chain.some((m) => m.id === id))
+    return chain
+  },
+  anilist_reject: ({ projectId, media }) => {
+    const s = anilist(String(projectId))
+    if (!s.rejected.includes(media as number)) s.rejected.push(media as number)
+    if (s.media.some((m) => m.id === media)) s.media = []
+    return null
+  },
+  anilist_suggest: ({ projectId }) => {
+    anilistAllowed()
+    const p = find(projectId)
+    const s = anilist(String(projectId))
+    if (s.media.length === 0) throw { code: "not_ready", message: "Confirm the series on AniList first." }
+    const cast = castGet(String(projectId), p.media)
+    const names: AniListSuggestion[] = cast.characters.slice(0, ANILIST_NAMES.length).map((c, i) => ({
+      characterId: c.id,
+      anilistId: 1000 + i,
+      name: ANILIST_NAMES[i],
+      score: 0.9 - i * 0.1,
+      image: null,
+    }))
+    const result: AniListSuggestions = { rev: s.rev, names, merges: [], auto: s.auto }
+    if (s.auto) applyAnilist(p, s, names, [])
+    return result
+  },
+  anilist_apply: ({ projectId, rev, names, merges }) => {
+    anilistAllowed()
+    const p = find(projectId)
+    const s = anilist(String(projectId))
+    if ((rev as number) !== s.rev) throw { code: "not_ready", message: "The cast changed; match the portraits again." }
+    return applyAnilist(p, s, names as AniListSuggestion[], merges as AniListMerge[])
+  },
+  anilist_auto: ({ projectId, on }) => {
+    const s = anilist(String(projectId))
+    if (on !== null && on !== undefined) s.auto = Boolean(on)
+    return s.auto
   },
   cast_get: ({ projectId }) => castGet(String(projectId), find(projectId).media),
   cast_tracks: ({ projectId, filter }) => castTracks(String(find(projectId).id), filter as TrackFilter),

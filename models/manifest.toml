@@ -100,6 +100,9 @@ source = "InsightFace cheetah_l reid_0265: OpenVINO person-reidentification-reta
 # may re-pick the detector size, which updates these rows. Heads are the
 # trackable unit (anime faces are too often tiny, stylised or turned); the
 # person detector only adds heads the head model missed.
+# metadata_props: Ultralytics YOLOv8 8.0.196 export (author=Ultralytics,
+# batch 1, imgsz 640, stride 32, task=detect, names={0:'head'}); stamped
+# license=AGPL-3.0 by the exporter — see `terms`.
 [[model]]
 id = "anime-head-v2m"
 file = "anime_head_detect_v2m.onnx"
@@ -112,6 +115,8 @@ card = "https://huggingface.co/deepghs/anime_head_detection"
 terms = "Model card licenses the weights MIT. The ONNX was exported with Ultralytics, whose metadata stamps AGPL-3.0; that stamp describes the exporter, not the weights."
 source = "deepghs anime_head_detection head_detect_v2.0_m (YOLOv8m, 79.1 GFLOPS)"
 
+# metadata_props: names={0:'person'}, stride=32 — the graph carries no
+# license or author stamps.
 [[model]]
 id = "anime-person-v1m"
 file = "anime_person_detect_v1m.onnx"
@@ -124,6 +129,8 @@ card = "https://huggingface.co/deepghs/anime_person_detection"
 terms = "Model card licenses the weights MIT; the ONNX carries no license metadata."
 source = "deepghs anime_person_detection person_detect_v1.1_m (YOLOv8m, 9.53k GFLOPS)"
 
+# metadata_props: none — the graph carries no license or author stamps
+# (pytorch 1.13.1 export, opset 14).
 [[model]]
 id = "anime-ccip-caformer24"
 file = "anime_ccip_caformer24.onnx"

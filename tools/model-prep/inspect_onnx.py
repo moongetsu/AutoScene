@@ -71,6 +71,8 @@ def info(path):
     print(f"{path}")
     print(f"  ir {m.ir_version}, producer {m.producer_name} {m.producer_version}")
     print("  opsets: " + ", ".join(f"{o.domain or 'ai.onnx'} {o.version}" for o in m.opset_import))
+    props = {p.key: p.value for p in m.metadata_props}
+    print("  metadata: " + (", ".join(f"{k}={v}" for k, v in sorted(props.items())) if props else "none"))
     inits = {i.name for i in g.initializer}
     for kind, values in (("input", [i for i in g.input if i.name not in inits]), ("output", g.output)):
         for v in values:

@@ -204,6 +204,7 @@ name = "as-identity"
 version = "1.0.3-BETA"
 dependencies = [
  "faer",
+ "tracing",
 ]
 
 [[package]]

@@ -51,6 +51,11 @@ const REANCHOR_MIN_COS: f32 = 0.4;
 /// decision onto lookalikes).
 const REANCHOR_MIN_COS_ANIME: f32 = 0.62;
 
+/// An anime head's face height as a share of the head's (what
+/// `face_height` reports on anime tracks). Provisional — the anime
+/// benchmark's measured median (bench/anime) replaces it.
+const ANIME_FACE_PER_HEAD: f32 = 0.6;
+
 /// The `meta` key of the [`as_identity::VERSION`] the cast was last grouped
 /// with.
 pub(crate) const GROUPED_WITH: &str = "identity_version";
@@ -138,11 +143,22 @@ pub struct FacesPlan {
 /// animated`), as recorded after the embedder in [`faces_key`].
 const SCALES: &str = "+scales";
 
+/// The anime pass's version, recorded after the CCIP id in [`faces_key`]:
+/// bump the number whenever the pass's output changes (new models, new
+/// crops), so faces found by the older pass are found again.
+const ANIME: &str = "+anime1";
+
 /// What a media's faces are recorded as found with: the embedder, and for
 /// 3D animation its search. Faces found one way are found again (their
 /// decisions kept) when the footage moves to or from 3D animation.
 fn faces_key(embedder: &str, animated: bool) -> String {
-    if animated { format!("{embedder}{SCALES}") } else { embedder.to_owned() }
+    if embedder == as_models::ids::ANIME_CCIP {
+        format!("{embedder}{ANIME}")
+    } else if animated {
+        format!("{embedder}{SCALES}")
+    } else {
+        embedder.to_owned()
+    }
 }
 
 /// How a media's faces were looked for, for when they are on screen
@@ -181,7 +197,7 @@ pub fn face_models(embedder: &str) -> &'static [&'static str] {
 
 /// The embedder of a [`faces_key`].
 fn embedder_of(key: &str) -> &str {
-    key.strip_suffix(SCALES).unwrap_or(key)
+    key.strip_suffix(SCALES).or_else(|| key.strip_suffix(ANIME)).unwrap_or(key)
 }
 
 fn mean_box(dets: &[FaceDet]) -> [f32; 4] {
@@ -724,6 +740,9 @@ impl Project {
         let found: Vec<FaceTrack> =
             tracks::decode(blob).ok_or_else(|| ProjectError::Invalid("unreadable face tracks".into()))?;
         let rival = rivals(&found.iter().map(|t| t.dets.as_slice()).collect::<Vec<_>>(), self.frame_size(id)?);
+        // Anime tracks bound heads: the stored face height is the head's
+        // times the provisional face share (see [`ANIME_FACE_PER_HEAD`]).
+        let anime = self.content()? == ContentKind::Anime;
         let rows: Vec<NewTrack> = found
             .iter()
             .zip(rival)
@@ -732,7 +751,7 @@ impl Project {
                 end: t.end,
                 shot: t.shot,
                 quality: t.quality,
-                face_h: t.face_height(),
+                face_h: if anime { t.face_height() * ANIME_FACE_PER_HEAD } else { t.face_height() },
                 dets: tracks::dets_to_bytes(&t.dets),
                 emb: tracks::embedding_to_bytes(&t.embedding),
                 rival,
@@ -1908,6 +1927,18 @@ pub(crate) mod tests {
         // says whether two faces' embeddings compare.
         assert_eq!(faces_key(MODEL, true), "test-embedder+scales");
         assert_eq!((embedder_of("test-embedder+scales"), embedder_of(MODEL)), (MODEL, MODEL));
+    }
+
+    #[test]
+    fn faces_keys_round_trip_to_their_embedder() {
+        for embedder in [as_models::ids::SFACE, as_models::ids::ARCFACE, as_models::ids::ANIME_CCIP, MODEL] {
+            for animated in [false, true] {
+                assert_eq!(embedder_of(&faces_key(embedder, animated)), embedder, "{embedder} animated={animated}");
+            }
+        }
+        // The anime pass's version is its own key, not the bare embedder.
+        assert_ne!(faces_key(as_models::ids::ANIME_CCIP, false), as_models::ids::ANIME_CCIP);
+        assert_eq!(faces_key(as_models::ids::ANIME_CCIP, true), faces_key(as_models::ids::ANIME_CCIP, false));
     }
 
     #[test]

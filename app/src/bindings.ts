@@ -231,44 +231,6 @@ export const events = {
 
 /* Types */
 /**  Analysis results of a media changed (shots or faces found, or reset). */
-/**  An AniList series (a search result or one of a confirmed chain). */
-export type AniListMedia = {
-	id: number;
-	/**  Its best display title (English, else romaji, else native). */
-	title: string;
-	/**  TV, MOVIE, OVA… (AniList's format). */
-	format: string | null;
-	episodes: number | null;
-	year: number | null;
-};
-
-/**  Two cast characters matched the same AniList one: `from` merges `into` the other. */
-export type AniListMerge = { from: CharacterId; into: CharacterId; anilistId: number };
-
-/**
- *  AniList suggests this cast character's name: their portrait matched the
- *  character's faces.
- */
-export type AniListSuggestion = {
-	characterId: CharacterId;
-	anilistId: number;
-	name: string;
-	/**  Cosine of the best portrait ↔ face pair (0..1). */
-	score: number;
-	/**  The portrait file in the image cache (absolute path). */
-	image: string | null;
-};
-
-/**  What `anilist_suggest` made of the confirmed series' cast. */
-export type AniListSuggestions = {
-	/**  The cast revision the match was made on (`anilist_apply` checks it). */
-	rev: number;
-	names: AniListSuggestion[];
-	merges: AniListMerge[];
-	/**  Whether names are given without asking (`anilist.auto`). */
-	auto: boolean;
-};
-
 export type AnalysisChanged = {
 	projectId: ProjectId,
 	mediaId: MediaId,
@@ -280,6 +242,51 @@ export type AnalysisStage =
 "shots" | 
 /**  Faces and characters only. */
 "faces";
+
+/**  An AniList series (a search result or one of a confirmed chain). */
+export type AniListMedia = {
+	id: number,
+	/**  Its best display title (English, else romaji, else native). */
+	title: string,
+	/**  TV, MOVIE, OVA… (AniList's format). */
+	format: string | null,
+	episodes: number | null,
+	year: number | null,
+};
+
+/**
+ *  Two cast characters matched the same AniList one: `from` merges `into`
+ *  the other.
+ */
+export type AniListMerge = {
+	from: CharacterId,
+	into: CharacterId,
+	anilistId: number,
+};
+
+/**
+ *  AniList suggests this cast character's name: their portrait matched the
+ *  character's faces.
+ */
+export type AniListSuggestion = {
+	characterId: CharacterId,
+	anilistId: number,
+	name: string,
+	/**  Cosine of the best portrait ↔ face pair (0..1). */
+	score: number | null,
+	/**  The portrait file in the image cache (absolute path). */
+	image: string | null,
+};
+
+/**  What [`Project::anilist_suggest`] made of the confirmed series' cast. */
+export type AniListSuggestions = {
+	/**  The cast revision the match was made on (`anilist_apply` checks it). */
+	rev: number,
+	names: AniListSuggestion[],
+	merges: AniListMerge[],
+	/**  Whether names are given without asking (`anilist.auto`). */
+	auto: boolean,
+};
 
 /**
  *  Error returned by every command. Serialised as `{ code, message }` and

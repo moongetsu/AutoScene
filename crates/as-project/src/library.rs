@@ -243,7 +243,7 @@ impl Library {
     pub fn set_project_fast_scan(&self, id: ProjectId, on: bool) -> ProjectResult<(ProjectSummary, bool)> {
         let project = self.project(id)?;
         if on && project.content()? == ContentKind::Anime {
-            return Err(ProjectError::Invalid("Anime has no faces to scan.".into()));
+            return Err(ProjectError::Invalid("Fast Scan doesn't work on anime.".into()));
         }
         // The library first: it is what shows, and the project's own word
         // is the one its faces follow.

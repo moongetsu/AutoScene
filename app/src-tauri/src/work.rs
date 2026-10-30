@@ -279,7 +279,15 @@ fn record_stage(
 /// sealed test releases the feature (see bench/anime).
 fn finds_characters(project: &Project) -> bool {
     match project.content() {
-        Ok(ContentKind::Anime) => as_project::anime_faces_enabled(),
+        Ok(content) => finds_characters_of(content, as_project::anime_faces_enabled()),
+        _ => true,
+    }
+}
+
+/// Without the switch, anime gives false.
+fn finds_characters_of(content: ContentKind, anime_switch: bool) -> bool {
+    match content {
+        ContentKind::Anime => anime_switch,
         _ => true,
     }
 }
@@ -1176,9 +1184,20 @@ pub fn recover_all(app: &AppHandle) {
 mod tests {
     use std::cell::Cell;
 
-    use as_api::StageState;
+    use as_api::{ContentKind, StageState};
 
-    use super::{StageError, Unstarted, failed_message, guarded};
+    use super::{StageError, Unstarted, failed_message, finds_characters_of, guarded};
+
+    #[test]
+    fn characters_are_found_unless_the_anime_switch_is_off() {
+        assert!(!finds_characters_of(ContentKind::Anime, false));
+        assert!(finds_characters_of(ContentKind::Anime, true));
+        for content in [ContentKind::Live, ContentKind::Animation, ContentKind::Mixed] {
+            for anime in [false, true] {
+                assert!(finds_characters_of(content, anime), "{content:?} anime={anime}");
+            }
+        }
+    }
 
     #[test]
     fn a_stage_that_panics_fails_only_while_it_runs() {

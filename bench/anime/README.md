@@ -153,3 +153,22 @@ Candidates are loaded from fixed Hugging Face commits (paths and SHA-256 in
 - `deepghs/anime_face_detection` @ `784dc4c0bb692351ddcdbe6131a050b17d3025d5`
 - `deepghs/anime_halfbody_detection` @ `95e21f43f13403930a78a87002f63b6d94c829e8`
 - `deepghs/ccip_onnx` @ `eb2acdd29af1703388d3d0c04221add322bc9110`
+
+## Implementation status
+
+Code-complete behind `AUTOSCENE_ANIME_FACES` (Phase E/F): head/person YOLO
+and CCIP wrappers with the CPU golden self-check, the anime pass, 768-d
+tracking, `Params::anime()`, engine anime jobs and `Embed`, the cast arms
+(`faces_key` `+anime1`), and AniList suggestions behind the opt-in.
+
+Still open — each needs the bench media, a GPU and the labels:
+
+- E0–E6 runs and the frozen config (`DECISIONS.md`); until then the
+  `Params::anime()`/`TrackerParams::anime()` constants and
+  `ANIME_FACE_PER_HEAD` (0.6) are provisional.
+- The sealed test run (Phase C) and the pack acceptance.
+- Engine on real GPUs: mixed live/anime episode, VRAM ≤ 6 GB, CoreML parity.
+- Older anime projects offering "Find characters" instead of re-analysing,
+  and the CPU-only ETA confirmation.
+- Phase G (one commit): open the switch, lift the UI locks, README and
+  release notes. Not before the sealed test passes.
