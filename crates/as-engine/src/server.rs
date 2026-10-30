@@ -21,7 +21,7 @@ use as_core::{CancelToken, FrameIndex, FrameRange};
 use as_infer::{Device, Runtime};
 use as_media::{Source, Tools, frames};
 use as_models::ModelStore;
-use as_vision::{ArcFace, Ccip, Fit, Norm, PersonReid, PpDet, SFace, Scrfd, TransNet, YuNet, Yolo};
+use as_vision::{ArcFace, Ccip, Fit, Norm, PersonReid, PpDet, SFace, Scrfd, TransNet, Yolo, YuNet};
 use parking_lot::Mutex;
 
 use crate::protocol::{Blob, EmbedJob, FacesJob, ModelDevice, Reply, Request, ShotsJob, Sprite};
@@ -35,7 +35,7 @@ const REID_BATCH: usize = 32;
 const FAST_DETECT_BATCH: usize = 1;
 const FAST_EMBED_BATCH: usize = 16;
 /// Anime head crops per CCIP call (a 384² crop is ~12× a face's).
-const CCIP_BATCH: usize = 8;
+pub const CCIP_BATCH: usize = 8;
 /// The anime head detector's letterboxed input (the bench's first-config
 /// variant).
 const ANIME_HEAD_INPUT: (usize, usize) = (640, 640);
@@ -331,11 +331,13 @@ impl Models {
     /// Load the anime models, the detectors planned for `size` frames.
     fn load_anime(&mut self, rt: &Runtime, size: (usize, usize)) -> Result<(), AnalysisError> {
         if self.anime_heads.as_ref().is_none_or(|d| d.frame_size() != size) {
-            let path = self.path(as_models::ids::ANIME_HEADS)?;
+            self.anime_heads = None;
+            let path = self.path(as_models::ids::ANIME_HEAD)?;
             self.anime_heads = Some(Yolo::load(rt, &path, size, ANIME_HEAD_INPUT, DETECT_BATCH)?);
         }
         if self.anime_persons.as_ref().is_none_or(|d| d.frame_size() != size) {
-            let path = self.path(as_models::ids::ANIME_PERSONS)?;
+            self.anime_persons = None;
+            let path = self.path(as_models::ids::ANIME_PERSON)?;
             self.anime_persons = Some(Yolo::load(rt, &path, size, ANIME_PERSON_INPUT, DETECT_BATCH)?);
         }
         self.load_ccip(rt)
@@ -591,8 +593,8 @@ fn run_anime_faces(
         );
     }
     send_devices(out, job.id, rt, &[
-        (as_models::ids::ANIME_HEADS, device),
-        (as_models::ids::ANIME_PERSONS, persons.device()),
+        (as_models::ids::ANIME_HEAD, device),
+        (as_models::ids::ANIME_PERSON, persons.device()),
         (as_models::ids::ANIME_CCIP, ccip.device()),
     ]);
     let index = FrameIndex::from_bytes(&job.index.0).map_err(|e| AnalysisError::Internal(e.to_string()))?;
@@ -635,8 +637,10 @@ fn run_anime_faces(
     Ok(())
 }
 
-/// Embed a still image with the anime embedder: its centre square is the
-/// character art (AniList portraits are square), so no detector runs on it.
+/// Embed a still image with the anime embedder: no detector runs on a
+/// portrait — the whole picture, centred in a square of its longer side
+/// (`ccip::crop` pads the rest with black), is embedded like a head's
+/// context crop.
 fn run_embed(
     tools: &Tools,
     rt: &Runtime,
@@ -648,12 +652,12 @@ fn run_embed(
     models.load_ccip(rt)?;
     let ccip = models.anime_ccip.as_mut().expect("loaded");
     send_devices(out, job.id, rt, &[(as_models::ids::ANIME_CCIP, ccip.device())]);
-    let (w, h, rgb) = frames::decode_still(tools, &job.path, cancel).map_err(AnalysisError::Media)?;
-    let side = w.min(h) as f32;
-    let square = as_vision::ccip::crop(&rgb, w as usize, h as usize, w as f32 / 2.0, h as f32 / 2.0, side);
+    let (w, h, rgb) = frames::decode_still(tools, &job.path, cancel)?;
+    let (w, h) = (w as usize, h as usize);
+    let side = w.max(h) as f32;
+    let square = as_vision::ccip::crop(&rgb, w, h, (w as f32 - side) / 2.0, (h as f32 - side) / 2.0, side);
     let e = ccip
-        .embed(&[&square])
-        .map_err(|e| AnalysisError::Internal(e.to_string()))?
+        .embed(&[square.as_slice()])?
         .into_iter()
         .next()
         .ok_or_else(|| AnalysisError::Internal("the embedder gave no vector".into()))?;

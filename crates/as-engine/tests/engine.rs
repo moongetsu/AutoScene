@@ -173,13 +173,20 @@ fn face_chunks_tile_the_media_even_across_a_kill() {
         eprintln!("Fast Scan models missing; run `cargo xtask fetch-models` (skipping)");
         return;
     }
-    face_chunks_tile(&engine, &m, FacesInput { fast: true, ..faces_input(&m, shots, false, None) });
+    face_chunks_tile(&engine, &m, FacesInput { fast: true, ..faces_input(&m, shots.clone(), false, None) });
+    // Anime (YOLO heads and people, CCIP).
+    if as_models::ids::ANIME.iter().any(|id| store.installed(id).unwrap().is_none()) {
+        assert!(!models_required(), "anime models missing (run `cargo xtask fetch-models`)");
+        eprintln!("anime models missing; run `cargo xtask fetch-models` (skipping)");
+        return;
+    }
+    face_chunks_tile(&engine, &m, FacesInput { anime: true, ..faces_input(&m, shots, false, None) });
 }
 
 fn face_chunks_tile(engine: &Engine, m: &Media, job: FacesInput) {
     let mut chunks: Vec<(u32, u32)> = Vec::new();
     let mut killed = false;
-    let fast = job.fast;
+    let (fast, anime) = (job.fast, job.anime);
     let mut devices = Vec::new();
     let r =
         engine.faces(job, &CancelToken::new(), |e| {
@@ -188,8 +195,10 @@ fn face_chunks_tile(engine: &Engine, m: &Media, job: FacesInput) {
                 devices.push(d.models.iter().map(|(m, _)| m.clone()).collect::<Vec<_>>());
             }
             if let FacesEvent::Chunk { start, end, tracks, sprites, bodies } = e {
-                // The synthetic fixture shows barcodes, not people.
-                assert!(as_analysis::tracks::decode(&tracks).expect("readable tracks").is_empty());
+                // The synthetic fixture shows barcodes, not people (what an
+                // anime detector makes of them is the bench's, not this test's).
+                let found = as_analysis::tracks::decode(&tracks).expect("readable tracks");
+                assert!(anime || found.is_empty());
                 assert!(bodies.is_empty(), "nobody was looked for");
                 // Every shot of the chunk has its sprite.
                 let starts: Vec<u32> = (start..end).step_by(50).collect();
@@ -209,7 +218,9 @@ fn face_chunks_tile(engine: &Engine, m: &Media, job: FacesInput) {
     assert!(killed);
     // Both engines say which models they run: the detector (one per look) and the embedder.
     assert_eq!(devices.len(), 2, "{devices:?}");
-    let (detector, embedder) = if fast {
+    let (detector, embedder) = if anime {
+        (as_models::ids::ANIME_HEAD, as_models::ids::ANIME_CCIP)
+    } else if fast {
         (as_models::ids::YUNET, as_models::ids::SFACE)
     } else {
         (as_models::ids::SCRFD, as_models::ids::ARCFACE)

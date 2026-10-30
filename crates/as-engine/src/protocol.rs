@@ -240,4 +240,75 @@ mod tests {
         let back: Reply = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
         assert!(matches!(back, Reply::FaceChunk { bodies, .. } if bodies.0 == [1, 0]));
     }
+
+    fn info() -> MediaInfo {
+        serde_json::from_value(serde_json::json!({
+            "container": "matroska,webm", "durationSec": null, "startSec": 0.0, "sizeBytes": null, "bitRate": null,
+            "video": {
+                "index": 0, "codec": "h264", "profile": null, "pixFmt": "yuv420p", "bitDepth": 8,
+                "width": 1920, "height": 1080, "sar": as_core::Rational::new(1, 1),
+                "rFrameRate": as_core::Rational::new(24, 1), "avgFrameRate": null,
+                "timeBase": as_core::Rational::new(1, 1000), "colorPrimaries": null,
+                "colorTransfer": null, "colorSpace": null, "colorRange": null, "fieldOrder": null,
+                "rotation": 0, "hdr": "none"
+            },
+            "audio": [], "subtitles": []
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn the_anime_flag_defaults_off_and_travels() {
+        // An app that predates the flags sends none: every one defaults off.
+        let plain = serde_json::json!({
+            "op": "faces", "id": 4, "path": "/show/01.mkv",
+            "info": serde_json::to_value(info()).unwrap(),
+            "index": "AQI=", "shots": [[0, 100]], "resume": 0, "chunk": 100
+        });
+        match serde_json::from_value::<Request>(plain).unwrap() {
+            Request::Faces(j) => {
+                assert!(!j.anime && !j.fast && !j.animated && !j.bodies && j.known.is_none())
+            }
+            other => panic!("{other:?}"),
+        }
+        let job = FacesJob {
+            id: 4,
+            path: PathBuf::from("/show/01.mkv"),
+            info: info(),
+            index: Blob(vec![1, 2]),
+            shots: vec![(0, 100)],
+            resume: 0,
+            chunk: 100,
+            bodies: false,
+            known: None,
+            animated: false,
+            fast: false,
+            anime: true,
+        };
+        let line = serde_json::to_string(&Request::Faces(Box::new(job))).unwrap();
+        assert!(line.contains(r#""anime":true"#), "{line}");
+        match serde_json::from_str::<Request>(&line).unwrap() {
+            Request::Faces(j) => assert!(j.anime && j.id == 4),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn embed_jobs_and_their_vectors_round_trip() {
+        let r = Request::Embed(Box::new(EmbedJob { id: 9, path: PathBuf::from("portrait.jpg") }));
+        let line = serde_json::to_string(&r).unwrap();
+        assert_eq!(line, r#"{"op":"embed","id":9,"path":"portrait.jpg"}"#);
+        assert_eq!(r.id(), Some(9));
+        match serde_json::from_str::<Request>(&line).unwrap() {
+            Request::Embed(j) => assert_eq!(j.id, 9),
+            other => panic!("{other:?}"),
+        }
+        let r = Reply::Embedding { id: 9, embedding: vec![0.5, -1.0] };
+        let line = serde_json::to_string(&r).unwrap();
+        assert_eq!(line, r#"{"event":"embedding","id":9,"embedding":[0.5,-1.0]}"#);
+        match serde_json::from_str::<Reply>(&line).unwrap() {
+            Reply::Embedding { id: 9, embedding } => assert_eq!(embedding, [0.5, -1.0]),
+            other => panic!("{other:?}"),
+        }
+    }
 }
