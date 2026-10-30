@@ -1,9 +1,10 @@
-import { ArrowCounterClockwise, Copy, FolderOpen, MagnifyingGlass, Play, Scissors, Trash, UserFocus } from "@/components/icons"
+import { ArrowCounterClockwise, Copy, FolderOpen, MagnifyingGlass, Play, Scissors, Trash, UserFocus, X } from "@/components/icons"
 import { toast } from "sonner"
 import type { MediaItem } from "@/bindings"
 import type { MenuKit } from "@/components/ui/menu-actions"
 import { commands, errorMessage } from "@/lib/ipc"
 import { copyText, reveal } from "@/lib/os"
+import { useMediaJob } from "@/state/activity"
 import { locateFile } from "./relink"
 
 /**
@@ -30,11 +31,19 @@ export function EpisodeItems({
   openShortcut?: string[]
 }) {
   const { Item, Separator } = kit
+  const job = useMediaJob(m.id)
+  const isWorking = job?.state === "running" || job?.state === "queued"
   const ready = m.status === "ready"
   const redo = (stage: "shots" | "faces") =>
     void commands
       .mediaAnalyze(projectId, m.id, stage)
       .catch((e) => toast.error("Couldn't start the analysis", { description: errorMessage(e) }))
+  const cancelJob = () => {
+    if (!job) return
+    commands
+      .jobCancel(job.id)
+      .catch((e) => toast.error("Couldn't cancel the job", { description: errorMessage(e) }))
+  }
   return (
     <>
       <Item disabled={!ready} onSelect={onOpen} shortcut={openShortcut}>
@@ -51,7 +60,7 @@ export function EpisodeItems({
           <MagnifyingGlass /> Locate file…
         </Item>
       )}
-      {m.status === "failed" && (
+      {m.status === "failed" && !isWorking && (
         <Item
           onSelect={() =>
             void commands
@@ -62,18 +71,23 @@ export function EpisodeItems({
           <ArrowCounterClockwise /> Index again
         </Item>
       )}
-      {ready && (
+      {isWorking && (
+        <Item onSelect={cancelJob}>
+          <X /> Cancel analysis
+        </Item>
+      )}
+      {ready && !isWorking && (
         <Item onSelect={() => redo("shots")}>
           <Scissors /> Find shots again
         </Item>
       )}
-      {ready && faces && m.shots === "ready" && (
+      {ready && faces && m.shots === "ready" && !isWorking && (
         <Item onSelect={() => redo("faces")}>
           <UserFocus /> Find characters again
         </Item>
       )}
       <Separator />
-      <Item destructive onSelect={onRemove}>
+      <Item destructive disabled={isWorking} onSelect={onRemove}>
         <Trash /> Remove from project…
       </Item>
     </>
