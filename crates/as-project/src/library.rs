@@ -77,7 +77,7 @@ impl Library {
             find_bodies: self.finds_bodies(),
             fast_scan: self.fast_scan()?,
             anilist: self.names_from_anilist(),
-            anime_characters: anime_faces_enabled(),
+            anime_characters: crate::anime_faces_enabled(),
         })
     }
 
