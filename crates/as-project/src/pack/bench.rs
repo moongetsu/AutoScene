@@ -55,7 +55,7 @@ fn series(dir: &Path) -> (Arc<Project>, CharacterId) {
         find_bodies: false,
         fast_scan: false,
         anilist: false,
-            anime_characters: false,
+        anime_characters: false,
     })
     .unwrap();
     let files: Vec<String> = (1..=EPISODES)
