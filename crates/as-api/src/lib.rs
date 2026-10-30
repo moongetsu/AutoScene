@@ -414,6 +414,55 @@ pub struct Cast {
     pub unplaced: u32,
 }
 
+/// An AniList series (a search result or one of a confirmed chain).
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AniListMedia {
+    pub id: u32,
+    /// Its best display title (English, else romaji, else native).
+    pub title: String,
+    /// TV, MOVIE, OVA… (AniList's format).
+    pub format: Option<String>,
+    pub episodes: Option<u32>,
+    pub year: Option<u32>,
+}
+
+/// AniList suggests this cast character's name: their portrait matched the
+/// character's faces.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AniListSuggestion {
+    pub character_id: CharacterId,
+    pub anilist_id: u32,
+    pub name: String,
+    /// Cosine of the best portrait ↔ face pair (0..1).
+    pub score: f32,
+    /// The portrait file in the image cache (absolute path).
+    pub image: Option<String>,
+}
+
+/// Two cast characters matched the same AniList one: `from` merges `into`
+/// the other.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AniListMerge {
+    pub from: CharacterId,
+    pub into: CharacterId,
+    pub anilist_id: u32,
+}
+
+/// What [`Project::anilist_suggest`] made of the confirmed series' cast.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AniListSuggestions {
+    /// The cast revision the match was made on (`anilist_apply` checks it).
+    pub rev: i64,
+    pub names: Vec<AniListSuggestion>,
+    pub merges: Vec<AniListMerge>,
+    /// Whether names are given without asking (`anilist.auto`).
+    pub auto: bool,
+}
+
 /// One face followed through one shot.
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]

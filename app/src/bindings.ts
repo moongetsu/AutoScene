@@ -105,6 +105,37 @@ export const commands = {
 "shots" | 
 /**  Faces and characters only. */
 "faces" | null) => __TAURI_INVOKE<null>("media_analyze", { projectId, mediaId, redo }),
+	/**
+	 *  The search text the project's title suggests (nothing is sent to
+	 *  AniList by this call).
+	 */
+	anilistSearchText: (projectId: ProjectId) => __TAURI_INVOKE<string>("anilist_search_text", { projectId }),
+	/**
+	 *  Search AniList for `text` — the text the person confirmed is sent as
+	 *  it is. Series the project rejected aren't among the results.
+	 */
+	anilistSearch: (projectId: ProjectId, text: string) => __TAURI_INVOKE<AniListMedia[]>("anilist_search", { projectId, text }),
+	/**
+	 *  Confirm series `media` for the project: it and its sequel chain are
+	 *  kept; returns the chain, `media` first.
+	 */
+	anilistConfirm: (projectId: ProjectId, media: number) => __TAURI_INVOKE<AniListMedia[]>("anilist_confirm", { projectId, media }),
+	/**  Say series `media` isn't this project's. */
+	anilistReject: (projectId: ProjectId, media: number) => __TAURI_INVOKE<null>("anilist_reject", { projectId, media }),
+	/**
+	 *  Match the confirmed series' cast portraits to the project's
+	 *  characters: every portrait is embedded by the engine (CCIP), then
+	 *  matched against the cast's faces. When `anilist.auto` is on, the names
+	 *  are given at once.
+	 */
+	anilistSuggest: (projectId: ProjectId) => __TAURI_INVOKE<AniListSuggestions>("anilist_suggest", { projectId }),
+	/**
+	 *  Apply suggestions made on cast revision `rev` (a regroup or decision
+	 *  since makes them stale — the suggestions are asked for again).
+	 */
+	anilistApply: (projectId: ProjectId, rev: number, names: AniListSuggestion[], merges: AniListMerge[]) => __TAURI_INVOKE<number>("anilist_apply", { projectId, rev, names, merges }),
+	/**  Whether names are given without asking (`anilist.auto`), or set it. */
+	anilistAuto: (projectId: ProjectId, on: boolean | null) => __TAURI_INVOKE<boolean>("anilist_auto", { projectId, on }),
 	castGet: (projectId: ProjectId) => __TAURI_INVOKE<Cast>("cast_get", { projectId }),
 	castTracks: (projectId: ProjectId, filter: TrackFilter) => __TAURI_INVOKE<FaceTrackItem[]>("cast_tracks", { projectId, filter }),
 	/**  Apply a decision about the cast. Returns the character it created, if any. */
@@ -200,6 +231,44 @@ export const events = {
 
 /* Types */
 /**  Analysis results of a media changed (shots or faces found, or reset). */
+/**  An AniList series (a search result or one of a confirmed chain). */
+export type AniListMedia = {
+	id: number;
+	/**  Its best display title (English, else romaji, else native). */
+	title: string;
+	/**  TV, MOVIE, OVA… (AniList's format). */
+	format: string | null;
+	episodes: number | null;
+	year: number | null;
+};
+
+/**  Two cast characters matched the same AniList one: `from` merges `into` the other. */
+export type AniListMerge = { from: CharacterId; into: CharacterId; anilistId: number };
+
+/**
+ *  AniList suggests this cast character's name: their portrait matched the
+ *  character's faces.
+ */
+export type AniListSuggestion = {
+	characterId: CharacterId;
+	anilistId: number;
+	name: string;
+	/**  Cosine of the best portrait ↔ face pair (0..1). */
+	score: number;
+	/**  The portrait file in the image cache (absolute path). */
+	image: string | null;
+};
+
+/**  What `anilist_suggest` made of the confirmed series' cast. */
+export type AniListSuggestions = {
+	/**  The cast revision the match was made on (`anilist_apply` checks it). */
+	rev: number;
+	names: AniListSuggestion[];
+	merges: AniListMerge[];
+	/**  Whether names are given without asking (`anilist.auto`). */
+	auto: boolean;
+};
+
 export type AnalysisChanged = {
 	projectId: ProjectId,
 	mediaId: MediaId,

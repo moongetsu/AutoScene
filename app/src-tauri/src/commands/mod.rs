@@ -1,3 +1,4 @@
+pub mod anilist;
 pub mod cast;
 pub mod export;
 pub mod jobs;

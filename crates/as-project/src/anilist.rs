@@ -838,6 +838,128 @@ impl Project {
 }
 
 // ---------------------------------------------------------------------------
+// Matching AniList portraits to the cast
+// ---------------------------------------------------------------------------
+
+/// A portrait scoring at least this against one of a character's own faces
+/// suggests the name. Portrait art to a frame crop crosses domains, so the
+/// bar sits under the pipeline's own link bar — E5's bench tunes it.
+const SUGGEST_MIN_COS: f32 = 0.45;
+
+/// AniList says this character's name: the cast character, the match score
+/// (cosine of the best portrait ↔ own-face pair) and the portrait file it
+/// came from.
+#[derive(Clone, Debug)]
+pub struct NameSuggestion {
+    pub character_id: as_core::CharacterId,
+    pub anilist_id: u32,
+    pub name: String,
+    pub score: f32,
+    pub image: Option<PathBuf>,
+}
+
+/// Two cast characters matched the same AniList one: `from` merges `into`
+/// the other (the stronger match keeps its id).
+#[derive(Clone, Copy, Debug)]
+pub struct MergeProposal {
+    pub from: as_core::CharacterId,
+    pub into: as_core::CharacterId,
+    pub anilist_id: u32,
+}
+
+fn cosine(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() {
+        return f32::NEG_INFINITY;
+    }
+    a.iter().zip(b).map(|(x, y)| x * y).sum()
+}
+
+impl Project {
+    /// Match AniList portraits (already embedded — the engine embeds, this
+    /// matches) to this project's cast: one name suggestion per cast
+    /// character, and a merge proposal when two of them land on the same
+    /// AniList character. Returns the cast revision the match was made on:
+    /// [`Self::apply_anilist_suggestions`] only applies it while that holds.
+    pub fn anilist_suggest(
+        &self,
+        portraits: &[(CastMember, Vec<f32>)],
+    ) -> ProjectResult<(i64, Vec<NameSuggestion>, Vec<MergeProposal>)> {
+        let rev = self.db().cast_rev()?;
+        // Per cast character: the best portrait cosine over its own faces.
+        let mut best: HashMap<as_core::CharacterId, (usize, f32)> = HashMap::new();
+        for c in self.db().characters()? {
+            if c.hidden || c.name.is_some() {
+                continue;
+            }
+            let faces = self.db().own_faces(c.id)?;
+            for (p, (_, emb)) in portraits.iter().enumerate() {
+                let score = faces
+                    .iter()
+                    .filter_map(|f| as_analysis::tracks::embedding_from_bytes(&f.emb))
+                    .map(|e| cosine(&e, emb))
+                    .fold(f32::NEG_INFINITY, f32::max);
+                if score >= SUGGEST_MIN_COS {
+                    let keep = best.get(&c.id).is_none_or(|&(_, s)| score > s);
+                    if keep {
+                        best.insert(c.id, (p, score));
+                    }
+                }
+            }
+        }
+        let mut names = Vec::new();
+        let mut merges = Vec::new();
+        // Each portrait names at most one character; a second character at
+        // the bar on the same portrait is its merge candidate.
+        let mut by_portrait: HashMap<usize, Vec<(as_core::CharacterId, f32)>> = HashMap::new();
+        for (c, (p, s)) in &best {
+            by_portrait.entry(*p).or_default().push((*c, *s));
+        }
+        for (p, mut hit) in by_portrait {
+            hit.sort_by(|a, b| b.1.total_cmp(&a.1));
+            let (c, score) = hit[0];
+            let (member, _) = &portraits[p];
+            names.push(NameSuggestion {
+                character_id: c,
+                anilist_id: member.character.id,
+                name: member.character.name.clone(),
+                score,
+                image: member.image.clone(),
+            });
+            for &(other, _) in &hit[1..] {
+                merges.push(MergeProposal { from: other, into: c, anilist_id: member.character.id });
+            }
+        }
+        Ok((rev, names, merges))
+    }
+
+    /// Apply suggestions made on cast revision `rev` (merges first, then
+    /// the surviving characters' names). A regroup or decision since makes
+    /// them stale: nothing is applied.
+    pub fn apply_anilist_suggestions(
+        &self,
+        rev: i64,
+        names: &[NameSuggestion],
+        merges: &[MergeProposal],
+    ) -> ProjectResult<usize> {
+        if self.db().cast_rev()? != rev {
+            return Err(ProjectError::NotReady("The cast changed; match the portraits again.".into()));
+        }
+        let mut applied = 0;
+        for m in merges {
+            self.cast_edit(&as_api::CastEdit::Merge { from: m.from, into: m.into })?;
+            applied += 1;
+        }
+        for n in names {
+            if matches!(self.db().character_exists(n.character_id), Ok(true)) {
+                self.cast_edit(&as_api::CastEdit::Rename { character_id: n.character_id, name: Some(n.name.clone()) })?;
+                applied += 1;
+            }
+        }
+        Ok(applied)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The library's per-project actions
 // ---------------------------------------------------------------------------
 
@@ -878,6 +1000,21 @@ impl Library {
     /// Say series `media` isn't project `id`'s.
     pub fn anilist_reject(&self, id: ProjectId, media: u32) -> ProjectResult<()> {
         self.project(id)?.reject_anilist_media(media)
+    }
+
+    /// Give project `id`'s characters the suggested names (see
+    /// [`Project::anilist_suggest`]): `rev` must still be the cast's — one
+    /// made stale by a regroup or a decision is not applied. Returns whose
+    /// names were given (merges first, then names).
+    pub fn anilist_apply(
+        &self,
+        id: ProjectId,
+        rev: i64,
+        names: &[NameSuggestion],
+        merges: &[MergeProposal],
+    ) -> ProjectResult<usize> {
+        self.anilist_allowed()?;
+        self.project(id)?.apply_anilist_suggestions(rev, names, merges)
     }
 
     /// The main and supporting cast of project `id`'s confirmed series, their
