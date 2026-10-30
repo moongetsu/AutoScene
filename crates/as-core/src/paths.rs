@@ -46,6 +46,11 @@ impl AppPaths {
     pub fn cache(&self) -> PathBuf {
         self.data.join("cache")
     }
+    /// Character images from AniList, by AniList character id (only while
+    /// names from AniList are on).
+    pub fn anilist(&self) -> PathBuf {
+        self.data.join("anilist")
+    }
 
     /// Where new projects go unless the user picks another folder.
     pub fn default_library_root() -> PathBuf {

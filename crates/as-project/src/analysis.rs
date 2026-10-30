@@ -238,6 +238,7 @@ pub(crate) mod tests {
             audio_language: String::new(),
             find_bodies: false,
             fast_scan: false,
+            anilist: false,
         })
         .unwrap();
         let file = dir.path().join("Show - 01.mkv");

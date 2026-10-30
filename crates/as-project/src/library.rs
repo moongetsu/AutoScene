@@ -8,6 +8,7 @@ use as_core::{AppPaths, MediaId, ProjectId};
 use as_db::{LibraryDb, NewMedia, ProjectDb};
 use parking_lot::Mutex;
 
+use crate::anilist::AniList;
 use crate::naming::{episode_cmp, is_video, parse_episode, safe_component};
 use crate::project::{PROJECT_DB, Project};
 use crate::{ProjectError, ProjectResult};
@@ -18,6 +19,7 @@ const DEFAULT_EXPORT_PRESET: &str = "prores-hq";
 const KEY_AUDIO_LANGUAGE: &str = "audio_language";
 const KEY_FIND_BODIES: &str = "find_bodies";
 const KEY_FAST_SCAN: &str = "fast_scan";
+const KEY_ANILIST: &str = "anilist";
 /// Most series and films people cut are watched in their original English
 /// track; dubbed tracks are often flagged "default" too, so a language
 /// preference beats the file's flag.
@@ -36,6 +38,9 @@ pub struct Library {
     /// Whether people are followed by their bodies too (a setting every
     /// open project reads).
     find_bodies: Arc<AtomicBool>,
+    /// Whether projects may ask AniList for names (checked between images).
+    anilist_on: AtomicBool,
+    anilist: AniList,
 }
 
 impl Library {
@@ -43,7 +48,18 @@ impl Library {
         std::fs::create_dir_all(&paths.data)?;
         let db = LibraryDb::open(&paths.library_db())?;
         let find_bodies = Arc::new(AtomicBool::new(db.setting(KEY_FIND_BODIES)?.as_deref() == Some("1")));
-        Ok(Self { db, open: Mutex::default(), opening: Mutex::default(), find_bodies })
+        let anilist_on = AtomicBool::new(db.setting(KEY_ANILIST)?.as_deref() == Some("1"));
+        let anilist = AniList::new(paths.anilist());
+        Ok(Self { db, open: Mutex::default(), opening: Mutex::default(), find_bodies, anilist_on, anilist })
+    }
+
+    /// Whether projects may ask AniList for names.
+    pub fn names_from_anilist(&self) -> bool {
+        self.anilist_on.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn anilist(&self) -> &AniList {
+        &self.anilist
     }
 
     /// Whether characters are looked for by their bodies too.
@@ -60,6 +76,7 @@ impl Library {
             audio_language: self.audio_language()?,
             find_bodies: self.finds_bodies(),
             fast_scan: self.fast_scan()?,
+            anilist: self.names_from_anilist(),
         })
     }
 
@@ -84,6 +101,12 @@ impl Library {
         self.db.set_setting(KEY_FIND_BODIES, if s.find_bodies { "1" } else { "0" })?;
         self.find_bodies.store(s.find_bodies, Ordering::Relaxed);
         self.db.set_setting(KEY_FAST_SCAN, if s.fast_scan { "1" } else { "0" })?;
+        self.db.set_setting(KEY_ANILIST, if s.anilist { "1" } else { "0" })?;
+        self.anilist_on.store(s.anilist, Ordering::Relaxed);
+        // Off: nothing from AniList stays (also what an earlier attempt left).
+        if !s.anilist {
+            self.anilist.forget()?;
+        }
         self.settings()
     }
 
@@ -479,6 +502,7 @@ mod tests {
             audio_language: "German".into(),
             find_bodies: false,
             fast_scan: false,
+            anilist: false,
         })
         .unwrap();
         assert_eq!(lib.audio_language().unwrap(), "deu", "stored as an ISO 639-2 code");
@@ -793,6 +817,7 @@ mod tests {
             audio_language: "eng".into(),
             find_bodies: false,
             fast_scan: false,
+            anilist: false,
         };
         assert!(matches!(lib.update_settings(&bad), Err(ProjectError::Invalid(_))));
         assert_eq!(lib.settings().unwrap().export_preset_id, "h264-edit");

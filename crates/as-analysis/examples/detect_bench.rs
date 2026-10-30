@@ -320,9 +320,18 @@ fn character(h: &Head) -> Option<&'static str> {
     HEADS.iter().copied().find(|c| *c == h.class)
 }
 
-/// A class FORMATS.md knows: a character's head, `O`, `N` or `S:<id>`.
+/// A class FORMATS.md knows: a character's head, `O`, `N`, `I` or `S:<id>`.
 fn known_class(c: &str) -> bool {
-    HEADS.contains(&c) || c == "O" || c == "N" || c.strip_prefix("S:").is_some_and(|id| !id.is_empty())
+    HEADS.contains(&c) || ["O", "N", IGNORE].contains(&c) || c.strip_prefix("S:").is_some_and(|id| !id.is_empty())
+}
+
+/// An ignore region (an unnamed swarm creature): a detection on it is neither
+/// found nor a false alarm, and it is no head to find.
+const IGNORE: &str = "I";
+
+/// Whether `hit` landed on an ignore region of `f`.
+fn ignored(f: &Frame, hit: Hit) -> bool {
+    matches!(hit, Hit::Head(i) | Hit::Duplicate(i) if f.heads[i].class == IGNORE)
 }
 
 /// Panics unless `b` is `x0, y0, x1, y1` as shares of the frame, within
@@ -503,7 +512,7 @@ fn tally(frames: &[Frame], hits: &[Vec<(f64, Hit)>], threshold: f64) -> Tally {
                 *n = (n.0 + got, n.1 + 1);
             }
         }
-        for hit in kept {
+        for hit in kept.into_iter().filter(|&h| !ignored(f, h)) {
             match hit {
                 Hit::Head(i) if character(&f.heads[i]).is_none() => {
                     let class = &f.heads[i].class;
@@ -526,6 +535,7 @@ fn ranked(frames: &[Frame], hits: &[Vec<(f64, Hit)>]) -> Vec<(f64, usize, bool)>
         .enumerate()
         .flat_map(|(f, hits)| {
             hits.iter()
+                .filter(move |&&(_, hit)| !ignored(&frames[f], hit))
                 .map(move |&(s, hit)| (s, f, matches!(hit, Hit::Head(i) if character(&frames[f].heads[i]).is_some())))
         })
         .collect();
@@ -1094,5 +1104,17 @@ mod tests {
     #[should_panic(expected = "same frame grid")]
     fn load_refuses_detections_on_another_frame_grid() {
         load_json(ONE, r#"{"frames": {"1005": [[0.1, 0.2, 0.2, 0.4, 0.9]]}}"#, Spans::default());
+    }
+    #[test]
+    fn ignore_regions_count_neither_way() {
+        let f = frame(
+            &[head([0.0, 0.0, 0.1, 0.1], "I", &[]), head([0.5, 0.5, 0.6, 0.6], "H", &[])],
+            &[[0.0, 0.0, 0.1, 0.1, 0.9], [0.0, 0.0, 0.1, 0.1, 0.8], [0.5, 0.5, 0.6, 0.6, 0.7]],
+        );
+        let hits = vec![match_frame(&f.heads, &f.dets)];
+        let frames = [f];
+        let t = tally(&frames, &hits, 0.0);
+        assert_eq!((t.all, t.false_alarms()), ((1, 1), 0));
+        assert_eq!(ranked(&frames, &hits).len(), 1);
     }
 }

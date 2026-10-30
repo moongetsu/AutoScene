@@ -54,6 +54,7 @@ fn series(dir: &Path) -> (Arc<Project>, CharacterId) {
         audio_language: String::new(),
         find_bodies: false,
         fast_scan: false,
+        anilist: false,
     })
     .unwrap();
     let files: Vec<String> = (1..=EPISODES)

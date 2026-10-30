@@ -78,6 +78,7 @@ fn import_preview_and_export_three_episodes() {
         audio_language: "eng".into(),
         find_bodies: false,
         fast_scan: false,
+        anilist: false,
     })
     .unwrap();
 
@@ -252,6 +253,7 @@ fn bad_ranges_and_missing_files_are_refused() {
         audio_language: "eng".into(),
         find_bodies: false,
         fast_scan: false,
+        anilist: false,
     })
     .unwrap();
     // A copy we can delete to simulate a disconnected drive.
@@ -315,6 +317,7 @@ fn covers_get_portraits_from_the_exact_frame() {
         audio_language: "eng".into(),
         find_bodies: false,
         fast_scan: false,
+        anilist: false,
     })
     .unwrap();
     // A copy we can delete to simulate a disconnected drive.
@@ -405,6 +408,7 @@ fn a_moved_episode_keeps_its_analysis() {
         audio_language: "eng".into(),
         find_bodies: false,
         fast_scan: false,
+        anilist: false,
     })
     .unwrap();
     let file = tmp.path().join("Show - 01.mp4");
@@ -540,6 +544,7 @@ fn a_clip_past_a_shortened_episode_is_left_out_of_the_file() {
         audio_language: "eng".into(),
         find_bodies: false,
         fast_scan: false,
+        anilist: false,
     })
     .unwrap();
     // Variable frame rate: a part's length comes from its frames' own times.
@@ -622,6 +627,7 @@ fn a_merged_export_is_one_file_with_every_clip() {
         audio_language: "eng".into(),
         find_bodies: false,
         fast_scan: false,
+        anilist: false,
     })
     .unwrap();
     // Copies, so one can go missing.

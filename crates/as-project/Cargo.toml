@@ -23,6 +23,8 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+# AniList's API and image server (names from AniList, opt-in); as-models' pin.
+ureq = "=3.4.2"
 
 [dev-dependencies]
 as-testkit.workspace = true

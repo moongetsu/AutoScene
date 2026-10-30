@@ -61,7 +61,7 @@ start	end	kind
 
 `class` is `H`, `Hm`, `Hk`, `Hb` or `Hn` for a character's head, `O` for a
 head that is not a character in the scene (poster, screen, statue), `N` for a
-candidate box on no head, and `S:<id>` for a second box on head `<id>`. Every
+candidate box on no head, `S:<id>` for a second box on head `<id>`, and `I` for an ignore region: an unnamed creature head (swarms, monster mobs; class `Hn` with code `?e`, `?u` or `x`), which is neither a head to find nor a false alarm when detected. Every
 frame lists all heads, including those no candidate found. Flags are those of
 the track labels plus `dark`. Strata come from flags or class (`Hb` = back,
 `Hk` = chibi, `Hn` = creature; `Hm` covers transformations too, so `mask` is

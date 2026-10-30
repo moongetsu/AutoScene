@@ -259,6 +259,13 @@ export type AppSettings = {
 	 *  with (see [`ProjectSummary::fast_scan`]); off by default.
 	 */
 	fastScan?: boolean,
+	/**
+	 *  Anime projects may ask AniList for their series' cast, to name
+	 *  their characters: only the search text the person confirmed, and
+	 *  requests for that series' cast and images, are sent. Off by default;
+	 *  switching it off deletes the images kept.
+	 */
+	anilist?: boolean,
 };
 
 export type AudioCodec = { codec: "none" } | 
