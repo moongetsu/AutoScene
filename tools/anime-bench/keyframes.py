@@ -7,6 +7,7 @@ Frames are decoded like the app's face pass (fit into 1280x720, sides a
 multiple of 4) by frame index on the decoded grid.
 """
 import json
+import os
 import random
 import subprocess
 import sys
@@ -31,7 +32,6 @@ VARIANTS = [  # (model folder, input modes)
     ("anime_person_detection/person_detect_v1.3_s", ["letterbox640"]),
     ("anime_halfbody_detection/halfbody_detect_v1.0_s", ["letterbox640"]),
 ]
-HEADS = "head_detect"
 COLORS = ["#ff3b30", "#34c759", "#0a84ff", "#ffcc00", "#bf5af2", "#ff9f0a", "#64d2ff", "#ff375f"]
 
 
@@ -65,11 +65,10 @@ def extract(path: str, frames: list[int], out: Path) -> None:
 
 
 def merge_heads(dets: dict[str, np.ndarray]) -> list[dict]:
-    """Union of every head variant's boxes, merged at IoU 0.5 into one id."""
+    """Union of every variant's boxes — head, face, person, halfbody and any
+    `EXTRA_MODEL` lineage — merged at IoU 0.5 into one id (README "Labels")."""
     cands: list[dict] = []
     for name, d in dets.items():
-        if HEADS not in name:
-            continue
         for row in d:
             box, score = row[:4], float(row[4])
             if cands:
@@ -123,11 +122,26 @@ def main() -> None:
     total = probe(media)[2]
     rng = random.Random(f"{key}:{seed}")
     frames = sorted(rng.sample(range(int(total * 0.01), int(total * 0.99)), n))
+    # TARGETED=<file>: extra frame numbers (one per line or space-separated),
+    # chosen to fill rare strata; they are recorded for `"targeted": true`.
+    targeted: list[int] = []
+    if (t := os.environ.get("TARGETED")) and Path(t).exists():
+        targeted = sorted({int(x) for x in Path(t).read_text().split()})
+        frames = sorted(set(frames) | set(targeted))
     if not (out / "frames").exists():
         extract(media, frames, out / "frames")
+    (out / "targeted.txt").write_text("\n".join(str(f) for f in targeted) + "\n")
     all_dets: dict[str, dict] = {}
-    for folder, modes in VARIANTS:
-        det = Detector.load(str(Path(models) / folder / "model.onnx"), folder.split("/")[1])
+    variants = list(VARIANTS)
+    # EXTRA_MODEL=<onnx>: a second source of another lineage (same
+    # Ultralytics-style [5,N] output) so labellers see its misses too.
+    if e := os.environ.get("EXTRA_MODEL"):
+        variants.append((e, ["letterbox640"]))
+    for folder, modes in variants:
+        # VARIANTS entries name a folder under the models dir; EXTRA_MODEL
+        # names the .onnx itself.
+        model = Path(folder) if Path(folder).is_file() else Path(models) / folder / "model.onnx"
+        det = Detector.load(str(model), Path(folder).stem)
         for mode in modes:
             name = f"{det.name}@{mode}"
             res = {}

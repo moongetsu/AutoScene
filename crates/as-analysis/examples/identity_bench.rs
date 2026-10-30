@@ -648,14 +648,16 @@ impl Report {
             let [all, held, theirs] = row.cover;
             let pack = row.pack.map_or(String::new(), |p| {
                 // A pack shorter than 10 (25) shots: over all of them.
-                let at = |(right, n): (usize, usize)| scoring::ratio(right as f64, n as f64);
+                let f = |a: usize, b: usize, p_: usize| {
+                    if b > 0 { format!("{:.*}", p_, a as f64 / b as f64) } else { "–".to_string() }
+                };
                 format!(
-                    " | clips {}: P {:.3} R {:.3} P@10 {:.2} P@25 {:.2}",
+                    " | clips {}: P {} R {} P@10 {} P@25 {}",
                     p.shots,
-                    scoring::ratio(p.right as f64, p.shots as f64),
-                    scoring::ratio(p.right as f64, p.truth as f64),
-                    at(p.at10),
-                    at(p.at25)
+                    f(p.right, p.shots, 3),
+                    f(p.right, p.truth, 3),
+                    f(p.at10.0, p.at10.1, 2),
+                    f(p.at25.0, p.at25.1, 2)
                 )
             });
             let per_episode = if row.per_episode.len() > 1 {
@@ -1348,6 +1350,7 @@ fn stress(tracks: &[FaceTrack], labels_path: &str) {
         let (mut ins, mut nm, mut fr) = (base.clone(), names.clone(), frames.clone());
         let theirs: Vec<usize> =
             (0..base.len()).filter(|&i| names[i] == Some(lead) && base[i].quality >= 0.6).skip(10).take(8).collect();
+        assert!(!theirs.is_empty(), "stress: the lead figure {lead} needs more than 10 tracks at quality ≥ 0.6");
         let mirror: Vec<f32> = copy_of(&mut rng, &base[theirs[0]].embedding, 0.0);
         // Own face, glass and noise are orthogonal unit parts: with more than
         // the whole in the first two, the reflection's likeness to its face
@@ -1655,7 +1658,7 @@ fn env_params() -> Params {
             *f = v;
         }
     }
-    p.animated = std::env::var_os("ANIMATED").is_some();
+    p.animated = std::env::var_os("ANIMATED").is_some_and(|v| v == "1");
     p.adapt = std::env::var_os("ADAPT").is_none_or(|v| v != "0");
     if let Some(v) = var("CORE_QUALITY") {
         p.core_quality = v;

@@ -75,6 +75,16 @@ def main() -> None:
                 heads.append(ignore_unnamed_creature(h))
                 stats["missed"] += 1
             frames[ep][frame] = {"heads": heads}
+    # Frames sampled to fill a rare stratum (`<ep>/targeted.txt`, one number
+    # per line) count in their strata only, never in overall recall,
+    # precision or the threshold pick (FORMATS.md).
+    for ep in frames:
+        t = root / ep / "targeted.txt"
+        if not t.exists():
+            continue
+        for f in t.read_text().split():
+            if f in frames[ep]:
+                frames[ep][f]["targeted"] = True
     for ep, fr in frames.items():
         json.dump({"frames": fr}, open(out / f"{ep}.keyframes.json", "w", encoding="utf-8"), indent=0)
         print(ep, len(fr), "frames", sum(len(v["heads"]) for v in fr.values()), "boxes")

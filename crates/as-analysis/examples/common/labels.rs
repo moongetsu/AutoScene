@@ -15,10 +15,23 @@ pub const MAX_GAP: u32 = 8;
 pub const FPS: f64 = 24000.0 / 1001.0;
 
 /// Frames per second of the labelled media: `FPS=<num>/<den>` (or a plain
-/// number), [`FPS`] by default.
+/// number) first, then `INFO=<bb.info.json>` (the media probe), [`FPS`] by
+/// default.
 pub fn fps() -> f64 {
     static F: OnceLock<f64> = OnceLock::new();
-    *F.get_or_init(|| std::env::var("FPS").ok().map_or(FPS, |v| parse_fps(&v)))
+    *F.get_or_init(|| {
+        if let Ok(v) = std::env::var("FPS") {
+            return parse_fps(&v);
+        }
+        if let Some(info) = std::env::var_os("INFO") {
+            let info: as_media::MediaInfo = serde_json::from_str(
+                &std::fs::read_to_string(&info).unwrap_or_else(|e| panic!("INFO: {e}")),
+            )
+            .expect("INFO: media info");
+            return info.video.avg_frame_rate.unwrap_or(info.video.r_frame_rate).to_f64();
+        }
+        FPS
+    })
 }
 
 /// `<num>/<den>` or a plain number, as frames per second (above 0).
@@ -265,6 +278,7 @@ pub fn pair_boxes(
 /// The box of `dets` (in frame order) at `frame`: the detection there, or
 /// the nearest one.
 pub fn box_near(dets: &[FaceDet], frame: u32) -> Option<[f32; 4]> {
+    debug_assert!(dets.is_sorted_by_key(|d| d.frame), "box_near needs frame-sorted dets");
     let k = dets.partition_point(|d| d.frame < frame);
     let after = dets.get(k);
     let before = k.checked_sub(1).map(|i| &dets[i]);
@@ -355,17 +369,6 @@ pub struct Label {
     pub name: String,
     /// `back`, `chibi`, `mask`, … (the optional fifth column).
     pub flags: Vec<String>,
-}
-
-/// The mean box of `boxes` in `from..to`, or the one nearest to it.
-pub fn box_in(boxes: &[(u32, [f32; 4])], from: u32, to: u32) -> Option<[f32; 4]> {
-    let inside: Vec<[f32; 4]> = boxes.iter().filter(|(f, _)| (from..to).contains(f)).map(|b| b.1).collect();
-    if inside.is_empty() {
-        let mid = from + (to - from) / 2;
-        return boxes.iter().min_by_key(|(f, _)| f.abs_diff(mid)).map(|b| b.1);
-    }
-    let n = inside.len() as f32;
-    Some(std::array::from_fn(|i| inside.iter().map(|b| b[i]).sum::<f32>() / n))
 }
 
 /// The rows of a tab-separated file after its header line (`#` comment

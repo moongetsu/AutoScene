@@ -52,8 +52,8 @@ Kinds of ground truth:
 
 1. **Keyframes**: 150 random shot frames per episode, plus targeted frames
    until each stratum (dark, smear/impact, crowd of 5 or more, chibi,
-   creature, back of head) holds 50 heads; recall is reweighted by stratum
-   frequency. Candidates are the union of all detector variants (merged at
+   creature, back of head) holds 50 heads; overall numbers use random
+   keyframes only, strata report on random + targeted (DECISIONS #2). Candidates are the union of all detector variants (merged at
    IoU 0.5) plus one source of another lineage; missed heads are boxed on
    3×3 zoomed tiles. Classes H, Hm (mask/helmet/transformation), Hk (chibi),
    Hb (back of head), Hn (creature/mascot), N, O (poster/screen/statue), S:id

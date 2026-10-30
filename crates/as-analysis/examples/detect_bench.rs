@@ -4,7 +4,7 @@
 //! bb.index/bb.info.json/bb.path> <frames.txt> <out_dir>`
 //! `frames.txt` holds one frame number per line. Each frame is decoded as
 //! the face pass decodes its samples and saved as `<out_dir>/frames/<frame>.jpg`;
-//! `<out_dir>/dets.json` lists, per frame, every face found down to score
+//! `<out_dir>/px_dets.json` lists, per frame, every face found down to score
 //! `LOW` (default 0.2) at the decoded size (`"1"`), half of it (`"2"`) and a
 //! quarter (`"4"`), as `[x1, y1, x2, y2, score]` in decoded pixels.
 //! Then each size is timed over all frames (`REPEAT` rounds, default 3), and
@@ -179,7 +179,9 @@ fn main() {
         json.push('}');
     }
     json.push(']');
-    std::fs::write(out.join("dets.json"), json).unwrap();
+    // Pixel-space probe output, not the FORMATS.md `dets.json` the scorer
+    // reads — a different name so the two never collide.
+    std::fs::write(out.join("px_dets.json"), json).unwrap();
 
     // Cost of each size alone (detector only), at the live-action threshold.
     let n = frames.len();

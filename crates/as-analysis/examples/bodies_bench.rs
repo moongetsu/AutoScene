@@ -32,7 +32,9 @@ use as_core::FrameRange;
 use as_identity::bodies::{BodyAssign, BodyIn, BodyOutcome, BodyParams, FaceOn, propagate};
 use as_identity::metrics::bcubed;
 use as_identity::{Outcome, Params, TrackIn, identify};
-use labels::{FPS, Label, STRIDE, character_names, found_faces, input, label_screen, members, names_of};
+use labels::{
+    Kind, Label, STRIDE, character_names, found_faces, fps, input, kind, label_screen, members, named, names_of,
+};
 
 fn env<T: std::str::FromStr>(name: &str, default: T) -> T {
     std::env::var(name).ok().map_or(default, |v| v.parse().ok().unwrap_or_else(|| panic!("{name}")))
@@ -117,7 +119,7 @@ fn build<'a>(tracks_path: &str, bodies_path: &str, dir: &Path, labels: &'a [Labe
     let char_name = character_names(&tracks, &truth, &got);
     let screen = label_screen(labels);
     let main: HashSet<&str> =
-        screen.iter().filter(|(n, f)| **n != "?" && **n != "x" && **f as f64 / FPS >= 30.0).map(|(n, _)| *n).collect();
+        screen.iter().filter(|(n, f)| named(n).is_some() && **f as f64 / fps() >= 30.0).map(|(n, _)| *n).collect();
     let shots = read_shots(dir);
     if bodies_path.ends_with(".found") {
         // The app's own: tracked, tied and embedded in the face pass.
@@ -140,7 +142,7 @@ fn build<'a>(tracks_path: &str, bodies_path: &str, dir: &Path, labels: &'a [Labe
             .zip(&bodies)
             .map(|(f, b)| BodyIn {
                 media: 0,
-                fps: FPS as f32,
+                fps: fps() as f32,
                 spans: b.spans(people.stride, people.span_gap()),
                 faces: f.faces.iter().map(|&(track, samples)| FaceOn { track: track as usize, samples }).collect(),
                 reid: f.reid.clone(),
@@ -261,7 +263,7 @@ fn build<'a>(tracks_path: &str, bodies_path: &str, dir: &Path, labels: &'a [Labe
             let has_face = |d: &BodyDet| face_spans.iter().any(|&(a, e)| a <= d.frame && d.frame < e);
             BodyIn {
                 media: 0,
-                fps: FPS as f32,
+                fps: fps() as f32,
                 spans: b.spans(body_stride, gap),
                 faces: fo.iter().map(|&(track, samples)| FaceOn { track, samples }).collect(),
                 reid: b.appearance(|_| true),
@@ -371,7 +373,7 @@ fn recall(w: &World, labels: &[Label]) {
     }
     // Backs of heads and gas masks the face detector found: on a body?
     let (mut xs, mut xon) = (0, 0);
-    for l in labels.iter().filter(|l| l.name == "x") {
+    for l in labels.iter().filter(|l| matches!(kind(&l.name), Kind::Excluded)) {
         for (frame, fb) in &l.boxes {
             if let Some(s) = at.get(frame) {
                 xs += 1;
@@ -407,7 +409,7 @@ fn recall(w: &World, labels: &[Label]) {
     println!(
         "shots without any face track: {}; with a body track: {bodied} ({:.0} s of body tracks there)",
         bare.len(),
-        secs as f64 / FPS
+        secs as f64 / fps()
     );
 }
 
@@ -415,7 +417,7 @@ fn recall(w: &World, labels: &[Label]) {
 fn tracks_cmd(w: &World) {
     let n = w.bodies.len();
     let linked = w.faces_on.iter().filter(|f| !f.is_empty()).count();
-    let named = |f: usize| w.truth[f].filter(|n| *n != "?" && *n != "x");
+    let named = |f: usize| w.truth[f].and_then(named);
     let (mut one, mut two, mut impure, mut links, mut wrong) = (0, 0, 0, 0, 0);
     let mut list = Vec::new();
     for (b, fo) in w.faces_on.iter().enumerate() {
@@ -514,12 +516,14 @@ fn tracks_cmd(w: &World) {
 
 /// BCubed of the main cast per track and per screen time.
 fn bcubed_main(w: &World, got: &[Option<usize>]) -> (f32, f32, f32, f32) {
-    let keep: Vec<usize> = (0..w.tracks.len()).filter(|&i| w.truth[i].is_some_and(|n| n != "x")).collect();
+    let keep: Vec<usize> = (0..w.tracks.len())
+        .filter(|&i| w.truth[i].is_some_and(|n| !matches!(kind(n), Kind::Excluded)))
+        .collect();
     let mut ids: HashMap<&str, usize> = HashMap::new();
     let truth: Vec<usize> = keep
         .iter()
         .map(|&i| match w.truth[i] {
-            Some(n) if n != "?" => {
+            Some(n) if named(n).is_some() => {
                 let k = ids.len();
                 *ids.entry(n).or_insert(k)
             }
@@ -553,7 +557,7 @@ fn score(w: &World, labels: &[Label]) {
         let wrong: Vec<String> = res
             .promoted
             .iter()
-            .filter(|&&(t, c)| w.truth[t].is_some_and(|n| n != "?" && n != "x" && n != w.name(c)))
+            .filter(|&&(t, c)| w.truth[t].is_some_and(|n| named(n).is_some() && n != w.name(c)))
             .map(|&(t, c)| {
                 format!("{}@{}-{} -> {}", w.truth[t].unwrap(), w.tracks[t].start, w.tracks[t].end, w.name(c))
             })
@@ -674,9 +678,9 @@ fn reid(w: &World) {
                     q2.push((b, n, v));
                 }
             }
-            (BodyAssign::None, Some("?")) => {
+            (BodyAssign::None, Some(n)) if matches!(kind(n), Kind::OwnPerson) => {
                 if let Some(v) = w.body_in[b].reid.as_ref() {
-                    neg.push((b, "?", v));
+                    neg.push((b, n, v));
                 }
             }
             _ => {}
@@ -692,7 +696,7 @@ fn reid(w: &World) {
     );
     let skip_shot = std::env::var_os("SKIP_SHOT").is_some();
     for window_s in [60.0, 180.0, 600.0, 1e6] {
-        let window = (window_s * FPS) as u32;
+        let window = (window_s * fps()) as u32;
         let ranked = |qs: &[(usize, &str, &Vec<f32>)]| -> Vec<Ranked> {
             qs.iter()
                 .map(|&(b, n, v)| {
@@ -854,11 +858,11 @@ fn presence(w: &World, out: Option<&Path>) {
         tot_new += new_shots.len();
         println!(
             "{n:10} {:9.1} {:6} | {:8.1} {:8.1} {:8.1} | {:9} {:>9} | {:?} fg {fg} dark {dark} clips {clips}",
-            base as f64 / FPS,
+            base as f64 / fps(),
             face_shots.len(),
-            (with_a - base) as f64 / FPS,
-            (with_b - with_a) as f64 / FPS,
-            (with_c - with_b) as f64 / FPS,
+            (with_a - base) as f64 / fps(),
+            (with_b - with_a) as f64 / fps(),
+            (with_c - with_b) as f64 / fps(),
             new_shots.len(),
             pct(new_shots.len(), face_shots.len()),
             hb
