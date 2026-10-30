@@ -46,6 +46,10 @@ type NewFace = (i64, FrameRange, Vec<FaceDet>, Option<Vec<f32>>);
 /// same file goes by place alone (a blurry face the tracker cut differently
 /// keeps its decision).
 const REANCHOR_MIN_COS: f32 = 0.4;
+/// The same for anime characters (CCIP vectors; same-character pairs sit
+/// higher than same-face ArcFace ones, so a shared bar would re-anchor a
+/// decision onto lookalikes).
+const REANCHOR_MIN_COS_ANIME: f32 = 0.62;
 
 /// The `meta` key of the [`as_identity::VERSION`] the cast was last grouped
 /// with.
@@ -125,6 +129,9 @@ pub struct FacesPlan {
     pub animated: bool,
     /// Fast Scan finds the faces (`as_analysis::fast`).
     pub fast: bool,
+    /// Anime footage: the character pass (`as_analysis::anime`) finds heads
+    /// and embeds them with CCIP — `fast` and `animated` don't apply.
+    pub anime: bool,
 }
 
 /// How 3D animation's faces are searched for (`as_analysis::FaceParams::
@@ -155,9 +162,21 @@ fn fast_grid(fps: f64) -> Grid {
     (t.stride, t.max_gap)
 }
 
+/// The anime pass's [`Grid`].
+fn anime_grid() -> Grid {
+    let t = TrackerParams::anime();
+    (t.stride, t.max_gap)
+}
+
 /// The models a face pass with `embedder` (see [`Project::face_embedder`]) needs.
 pub fn face_models(embedder: &str) -> &'static [&'static str] {
-    if embedder == as_models::ids::SFACE { &as_models::ids::FAST_FACES } else { &as_models::ids::FACES }
+    if embedder == as_models::ids::SFACE {
+        &as_models::ids::FAST_FACES
+    } else if embedder == as_models::ids::ANIME_CCIP {
+        &as_models::ids::ANIME
+    } else {
+        &as_models::ids::FACES
+    }
 }
 
 /// The embedder of a [`faces_key`].
@@ -344,6 +363,7 @@ impl IdentityInput {
                 embedding,
                 quality: r.quality,
                 dets: r.dets,
+                weight: 1.0,
                 pin: (r.assign == TrackAssign::Pinned).then_some(assigned).flatten(),
                 forbid: r.forbids.iter().filter_map(|c| key.get(c).copied()).collect(),
                 // A face named by its body isn't who clustering saw in it.
@@ -613,9 +633,14 @@ impl Project {
     // -- face pass ----------------------------------------------------------
 
     /// The embedder this project's faces are to be found with (its key in
-    /// [`faces_key`]): Fast Scan's or the full pass's.
+    /// [`faces_key`]): Fast Scan's, the full pass's, or — anime — the
+    /// anime character embedder (CCIP).
     pub fn face_embedder(&self) -> &'static str {
-        if self.fast_scan() { as_models::ids::SFACE } else { as_models::ids::ARCFACE }
+        match self.content() {
+            Ok(ContentKind::Anime) => as_models::ids::ANIME_CCIP,
+            _ if self.fast_scan() => as_models::ids::SFACE,
+            _ => as_models::ids::ARCFACE,
+        }
     }
 
     /// Whether faces found with `model` are searched for harder: 3D
@@ -678,6 +703,7 @@ impl Project {
             chunk: FACE_CHUNK,
             animated,
             fast: model == as_models::ids::SFACE,
+            anime: model == as_models::ids::ANIME_CCIP,
         })
     }
 
@@ -824,8 +850,14 @@ impl Project {
                         continue;
                     }
                 }
+                // The bar is the embedder's: same-character CCIP cosines sit
+                // well above same-face ArcFace ones.
+                let min_cos = match model.as_deref().map(embedder_of) {
+                    Some(m) if m == as_models::ids::ANIME_CCIP => REANCHOR_MIN_COS_ANIME,
+                    _ => REANCHOR_MIN_COS,
+                };
                 let looks = |emb: &Option<Vec<f32>>| match (&face, emb) {
-                    (Some(a), Some(b)) => a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>() >= REANCHOR_MIN_COS,
+                    (Some(a), Some(b)) => a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>() >= min_cos,
                     _ => true,
                 };
                 let matches = new
@@ -919,7 +951,7 @@ impl Project {
         let out = identify(&cast.tracks, &self.identity_params()?);
         let people = self.people_outcome(&rows, &cast, &out)?;
         // With it, what it was made with: decisions place faces in its space.
-        let (space, version) = (hex(&out.space.to_bytes()), as_identity::VERSION.to_string());
+        let (space, version) = (hex(&out.space.to_bytes()), self.cast_version()?.to_string());
         let made_with = [(GROUPED_IN, space.as_str()), (GROUPED_WITH, version.as_str())];
         let Some(characters) = self.store_identity(rev, &rows, &cast, &out, people, &made_with)? else {
             return Ok(None);
@@ -936,7 +968,13 @@ impl Project {
         // Unknown (grouped before versions were kept): the first version. A
         // newer version's grouping is never undone by an older one.
         let grouped = self.db().meta(GROUPED_WITH)?.and_then(|v| v.parse::<u32>().ok()).unwrap_or(1);
-        Ok(media_with_faces > 0 && grouped < as_identity::VERSION)
+        Ok(media_with_faces > 0 && grouped < self.cast_version()?)
+    }
+
+    /// The `as_identity` version this project's cast groups at (anime's
+    /// pipeline versions on its own).
+    fn cast_version(&self) -> ProjectResult<u32> {
+        Ok(if self.content()? == ContentKind::Anime { as_identity::ANIME_VERSION } else { as_identity::VERSION })
     }
 
     /// The cast was grouped for other footage (the user said what it is
@@ -947,9 +985,16 @@ impl Project {
     }
 
     /// The grouping's parameters for this project's footage, and for the
-    /// embedder its faces come from: SFace (Fast Scan) sees faces otherwise.
+    /// embedder its faces come from: SFace (Fast Scan) sees faces otherwise,
+    /// the anime embedder gets its own bars (`Params::anime`).
     fn identity_params(&self) -> ProjectResult<Params> {
-        let base = if self.faces_found_fast()? { Params::sface() } else { Params::default() };
+        let base = if self.content()? == ContentKind::Anime {
+            Params::anime()
+        } else if self.faces_found_fast()? {
+            Params::sface()
+        } else {
+            Params::default()
+        };
         Ok(Params { animated: self.content()? == ContentKind::Animation, ..base })
     }
 
@@ -968,6 +1013,8 @@ impl Project {
             if model.as_deref().is_some_and(|m| embedder_of(m) == as_models::ids::SFACE) {
                 let fps = self.db().media(id)?.and_then(|m| m.fps).map_or(24.0, |r| r.to_f64());
                 out.insert(id, fast_grid(fps));
+            } else if model.as_deref().is_some_and(|m| embedder_of(m) == as_models::ids::ANIME_CCIP) {
+                out.insert(id, anime_grid());
             }
         }
         Ok(out)

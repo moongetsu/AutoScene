@@ -33,6 +33,10 @@ pub enum Request {
     Shots(Box<ShotsJob>),
     /// Find, embed and track the faces of a media's shots from `resume` on.
     Faces(Box<FacesJob>),
+    /// Embed a still image (a character portrait, say) with the anime
+    /// embedder (`as_vision::ccip`) for matching against grouped
+    /// characters; `Reply::Embedding` then `Done`.
+    Embed(Box<EmbedJob>),
     /// Stop job `id` as soon as possible (it then fails with `cancelled`).
     Cancel { id: u64 },
     /// Finish the current job's cancellation and exit.
@@ -80,6 +84,18 @@ pub struct FacesJob {
     /// for by their body.
     #[serde(default)]
     pub fast: bool,
+    /// Anime footage: heads are found and embedded as `as_analysis::anime`
+    /// does (anime head/person detectors, CCIP); `bodies`, `known`,
+    /// `animated` and `fast` don't apply.
+    #[serde(default)]
+    pub anime: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EmbedJob {
+    pub id: u64,
+    /// The still image file to embed (any format ffmpeg reads).
+    pub path: PathBuf,
 }
 
 /// A shot's sprite (`as_analysis::ShotSprite`).
@@ -96,6 +112,7 @@ impl Request {
         match self {
             Self::Shots(j) => Some(j.id),
             Self::Faces(j) => Some(j.id),
+            Self::Embed(j) => Some(j.id),
             Self::Cancel { .. } | Self::Shutdown => None,
         }
     }
@@ -147,6 +164,12 @@ pub enum Reply {
         sprites: Vec<Sprite>,
         #[serde(default)]
         bodies: Blob,
+    },
+    /// The vector an `Embed` job got from the still, unit-normalised (768
+    /// floats); `Done` follows it.
+    Embedding {
+        id: u64,
+        embedding: Vec<f32>,
     },
     Done {
         id: u64,

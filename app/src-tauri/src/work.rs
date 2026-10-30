@@ -514,7 +514,9 @@ fn run_faces(
     }
     // People are found in the same pass when their models are here; when
     // they can't be downloaded now, the people pass finds them later.
+    // Neither the fast pass nor the anime pass look for anyone by their body.
     let mut people = model != as_models::ids::SFACE
+        && model != as_models::ids::ANIME_CCIP
         && project.finds_bodies()
         && match install_models(state, &as_models::ids::BODIES, ctx) {
             Ok(()) => true,
@@ -541,6 +543,7 @@ fn run_faces(
             known: None,
             animated: plan.animated,
             fast: plan.fast,
+            anime: plan.anime,
         };
         let mut stage = STAGE.to_owned();
         let found = state.engine.faces(job, &ctx.cancel, |e| match e {
@@ -616,6 +619,7 @@ fn run_bodies(
             known: Some(plan.known),
             animated: false,
             fast: false,
+            anime: false,
         };
         let mut stage = STAGE.to_owned();
         state

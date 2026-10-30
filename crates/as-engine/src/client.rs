@@ -17,7 +17,7 @@ use as_media::MediaInfo;
 use parking_lot::Mutex;
 use thiserror::Error;
 
-use crate::protocol::{Blob, FacesJob, ModelDevice, Reply, Request, ShotsJob};
+use crate::protocol::{Blob, EmbedJob, FacesJob, ModelDevice, Reply, Request, ShotsJob};
 
 #[derive(Debug, Error)]
 pub enum EngineError {
@@ -155,6 +155,10 @@ pub struct FacesInput {
     /// Fast Scan: faces are found the way the Scener app finds them
     /// (`as_analysis::fast`); `bodies` and `animated` don't apply.
     pub fast: bool,
+    /// Anime footage: heads are found and embedded the way
+    /// `as_analysis::anime` does; `bodies`, `known`, `animated` and `fast`
+    /// don't apply.
+    pub anime: bool,
 }
 
 enum Msg {
@@ -301,6 +305,7 @@ impl Engine {
                     known: known.clone(),
                     animated: job.animated,
                     fast: job.fast,
+                    anime: job.anime,
                 }))
             },
             |reply| match reply {
@@ -320,6 +325,27 @@ impl Engine {
                 _ => Ok(()),
             },
         )
+    }
+
+    /// Embed a still image (a character portrait) with the anime embedder —
+    /// the direction AniList art points in is matched against grouped
+    /// characters. Blocks until the vector arrives.
+    pub fn embed(&self, path: PathBuf, cancel: &CancelToken) -> Result<Vec<f32>, EngineError> {
+        let mut got = None;
+        self.with_retries(
+            cancel,
+            |id| Request::Embed(Box::new(EmbedJob { id, path: path.clone() })),
+            |reply| {
+                if let Reply::Embedding { embedding, .. } = reply {
+                    got = Some(embedding);
+                }
+                Ok(())
+            },
+        )?;
+        got.ok_or(EngineError::Failed {
+            message: "The engine gave no embedding.".into(),
+            detail: "an Embed job ended without a vector".into(),
+        })
     }
 
     /// Run a job, giving it a fresh engine (and a fresh request, built from
@@ -430,7 +456,8 @@ impl Engine {
                     r @ (Reply::Devices { id: rid, .. }
                     | Reply::Progress { id: rid, .. }
                     | Reply::ShotChunk { id: rid, .. }
-                    | Reply::FaceChunk { id: rid, .. })
+                    | Reply::FaceChunk { id: rid, .. }
+                    | Reply::Embedding { id: rid, .. })
                         if rid == id =>
                     {
                         if handler_error.is_none()

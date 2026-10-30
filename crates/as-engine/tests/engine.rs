@@ -238,6 +238,7 @@ fn faces_input(m: &Media, shots: Vec<(u32, u32)>, bodies: bool, known: Option<Ve
         known,
         animated: false,
         fast: false,
+        anime: false,
     }
 }
 

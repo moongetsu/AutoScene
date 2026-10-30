@@ -14,17 +14,17 @@ use std::time::{Duration, Instant};
 
 use as_analysis::{
     AnalysisError, BodyModels, DETECT_BATCH, FaceParams, Faces, FastModels, FastParams, Look, PERSON_INPUT,
-    PeopleParams, Search, bodies, detect_looks, face_tracks, fast, fast_face_tracks, frame_sizes, shot_signals,
-    signals, tracks,
+    PeopleParams, Search, anime, bodies, detect_looks, face_tracks, fast, fast_face_tracks, frame_sizes,
+    shot_signals, signals, tracks,
 };
 use as_core::{CancelToken, FrameIndex, FrameRange};
 use as_infer::{Device, Runtime};
-use as_media::{Source, Tools};
+use as_media::{Source, Tools, frames};
 use as_models::ModelStore;
-use as_vision::{ArcFace, Fit, Norm, PersonReid, PpDet, SFace, Scrfd, TransNet, YuNet};
+use as_vision::{ArcFace, Ccip, Fit, Norm, PersonReid, PpDet, SFace, Scrfd, TransNet, YuNet, Yolo};
 use parking_lot::Mutex;
 
-use crate::protocol::{Blob, FacesJob, ModelDevice, Reply, Request, ShotsJob, Sprite};
+use crate::protocol::{Blob, EmbedJob, FacesJob, ModelDevice, Reply, Request, ShotsJob, Sprite};
 
 /// Faces per embedding call.
 const EMBED_BATCH: usize = 32;
@@ -34,6 +34,14 @@ const REID_BATCH: usize = 32;
 /// decides from what it found where to look next) and faces per SFace call.
 const FAST_DETECT_BATCH: usize = 1;
 const FAST_EMBED_BATCH: usize = 16;
+/// Anime head crops per CCIP call (a 384² crop is ~12× a face's).
+const CCIP_BATCH: usize = 8;
+/// The anime head detector's letterboxed input (the bench's first-config
+/// variant).
+const ANIME_HEAD_INPUT: (usize, usize) = (640, 640);
+/// The anime person detector's input: it looks at a bigger picture to find
+/// characters whose heads are too small for the head detector.
+const ANIME_PERSON_INPUT: (usize, usize) = (960, 544);
 
 /// How the engine finds its runtime, models and tools.
 #[derive(Clone, Debug)]
@@ -119,6 +127,9 @@ pub fn serve(cfg: Config, input: impl BufRead + Send + 'static, output: impl Wri
         person_reid: None,
         yunet: None,
         sface: None,
+        anime_heads: None,
+        anime_persons: None,
+        anime_ccip: None,
     };
     loop {
         let next = match cfg.idle_exit {
@@ -137,6 +148,7 @@ pub fn serve(cfg: Config, input: impl BufRead + Send + 'static, output: impl Wri
         let run = guarded(|| match job {
             Request::Shots(j) => run_shots(&tools, &rt, &mut models, *j, &cancel, &out),
             Request::Faces(j) => run_faces(&tools, &rt, &mut models, *j, &cancel, &out),
+            Request::Embed(j) => run_embed(&tools, &rt, &mut models, *j, &cancel, &out),
             Request::Cancel { .. } | Request::Shutdown => Ok(()),
         });
         let result = run.unwrap_or_else(|panic| {
@@ -190,7 +202,7 @@ fn read_requests(
             continue;
         }
         match serde_json::from_str::<Request>(&line) {
-            Ok(job @ (Request::Shots(_) | Request::Faces(_))) => {
+            Ok(job @ (Request::Shots(_) | Request::Faces(_) | Request::Embed(_))) => {
                 let id = job.id().expect("a job");
                 let cancel = CancelToken::new();
                 if early.remove(&id) {
@@ -234,6 +246,12 @@ struct Models {
     /// Fast Scan's detector, planned for the last media's frame size, and embedder.
     yunet: Option<YuNet>,
     sface: Option<SFace>,
+    /// The anime models: head and person detectors planned for the last
+    /// media's frame size, and the character embedder (also serves `Embed`
+    /// jobs on stills).
+    anime_heads: Option<Yolo>,
+    anime_persons: Option<Yolo>,
+    anime_ccip: Option<Ccip>,
 }
 
 impl Models {
@@ -242,6 +260,7 @@ impl Models {
         self.scrfd.clear();
         (self.persons, self.person_reid) = (None, None);
         (self.yunet, self.sface) = (None, None);
+        (self.anime_heads, self.anime_persons, self.anime_ccip) = (None, None, None);
     }
 
     /// The file of model `id`, hashed the first time this engine loads it
@@ -301,6 +320,27 @@ impl Models {
         Ok(())
     }
 
+    /// The anime character embedder (CCIP) alone — `Embed` jobs on stills.
+    fn load_ccip(&mut self, rt: &Runtime) -> Result<(), AnalysisError> {
+        if self.anime_ccip.is_none() {
+            self.anime_ccip = Some(Ccip::load(rt, &self.path(as_models::ids::ANIME_CCIP)?, CCIP_BATCH)?);
+        }
+        Ok(())
+    }
+
+    /// Load the anime models, the detectors planned for `size` frames.
+    fn load_anime(&mut self, rt: &Runtime, size: (usize, usize)) -> Result<(), AnalysisError> {
+        if self.anime_heads.as_ref().is_none_or(|d| d.frame_size() != size) {
+            let path = self.path(as_models::ids::ANIME_HEADS)?;
+            self.anime_heads = Some(Yolo::load(rt, &path, size, ANIME_HEAD_INPUT, DETECT_BATCH)?);
+        }
+        if self.anime_persons.as_ref().is_none_or(|d| d.frame_size() != size) {
+            let path = self.path(as_models::ids::ANIME_PERSONS)?;
+            self.anime_persons = Some(Yolo::load(rt, &path, size, ANIME_PERSON_INPUT, DETECT_BATCH)?);
+        }
+        self.load_ccip(rt)
+    }
+
     fn transnet(&mut self, rt: &Runtime) -> Result<&mut TransNet, AnalysisError> {
         if self.transnet.is_none() {
             let path = self.path(as_models::ids::TRANSNET)?;
@@ -351,6 +391,9 @@ fn run_faces(
     cancel: &CancelToken,
     out: &Out,
 ) -> Result<(), AnalysisError> {
+    if job.anime {
+        return run_anime_faces(tools, rt, models, job, cancel, out);
+    }
     if job.fast {
         return run_fast_faces(tools, rt, models, job, cancel, out);
     }
@@ -513,6 +556,108 @@ fn run_fast_faces(
     let frames = index.len().saturating_sub(job.resume);
     let secs = started.elapsed().as_secs_f64();
     tracing::info!(id, frames, tracks = found, secs, fps = frames as f64 / secs.max(1e-3), "faces found (Fast Scan)");
+    Ok(())
+}
+
+/// A faces job on anime footage: characters only, found as
+/// `as_analysis::anime` does (heads, implied heads of person detections,
+/// CCIP). Nobody is looked for by their body and no faces found before are
+/// carried in — the pass stands alone like Fast Scan.
+fn run_anime_faces(
+    tools: &Tools,
+    rt: &Runtime,
+    models: &mut Models,
+    job: FacesJob,
+    cancel: &CancelToken,
+    out: &Out,
+) -> Result<(), AnalysisError> {
+    if job.known.is_some() || job.bodies || job.animated || job.fast {
+        return Err(AnalysisError::Internal("the anime pass looks for characters alone".into()));
+    }
+    let params = anime::Params::anime();
+    models.load_anime(rt, anime::frame_size(&job.info, &params))?;
+    let (heads, persons, ccip) = (
+        models.anime_heads.as_mut().expect("loaded"),
+        models.anime_persons.as_mut().expect("loaded"),
+        models.anime_ccip.as_mut().expect("loaded"),
+    );
+    let device = heads.device();
+    if persons.device() != device || ccip.device() != device {
+        tracing::warn!(
+            heads = ?device,
+            persons = ?persons.device(),
+            ccip = ?ccip.device(),
+            "the anime models run on different devices"
+        );
+    }
+    send_devices(out, job.id, rt, &[
+        (as_models::ids::ANIME_HEADS, device),
+        (as_models::ids::ANIME_PERSONS, persons.device()),
+        (as_models::ids::ANIME_CCIP, ccip.device()),
+    ]);
+    let index = FrameIndex::from_bytes(&job.index.0).map_err(|e| AnalysisError::Internal(e.to_string()))?;
+    let shots: Vec<FrameRange> = job.shots.iter().map(|&(s, e)| FrameRange::new(s, e)).collect();
+    let started = Instant::now();
+    let (id, file) = (job.id, job.path.file_name().unwrap_or_default());
+    tracing::info!(id, ?file, resume = job.resume, ?device, "finding characters (anime)");
+    let mut found = 0usize;
+    anime::face_tracks(
+        tools,
+        Source { path: Path::new(&job.path), info: &job.info, index: &index },
+        anime::Anime { heads, persons: Some(persons), ccip },
+        &shots,
+        job.resume,
+        job.chunk,
+        &params,
+        cancel,
+        |fraction| out.send(&Reply::Progress { id, fraction }),
+        |c| {
+            found += c.tracks.len();
+            let sprites = c
+                .sprites
+                .iter()
+                .map(|s| Sprite { shot: s.shot, end: s.end, cells: s.cells, jpeg: Blob(s.jpeg.clone()) })
+                .collect();
+            out.send(&Reply::FaceChunk {
+                id,
+                start: c.start,
+                end: c.end,
+                tracks: Blob(tracks::encode(c.tracks)),
+                sprites,
+                bodies: Blob(Vec::new()),
+            });
+            Ok(())
+        },
+    )?;
+    let frames = index.len().saturating_sub(job.resume);
+    let secs = started.elapsed().as_secs_f64();
+    tracing::info!(id, frames, tracks = found, secs, fps = frames as f64 / secs.max(1e-3), "characters found (anime)");
+    Ok(())
+}
+
+/// Embed a still image with the anime embedder: its centre square is the
+/// character art (AniList portraits are square), so no detector runs on it.
+fn run_embed(
+    tools: &Tools,
+    rt: &Runtime,
+    models: &mut Models,
+    job: EmbedJob,
+    cancel: &CancelToken,
+    out: &Out,
+) -> Result<(), AnalysisError> {
+    models.load_ccip(rt)?;
+    let ccip = models.anime_ccip.as_mut().expect("loaded");
+    send_devices(out, job.id, rt, &[(as_models::ids::ANIME_CCIP, ccip.device())]);
+    let (w, h, rgb) = frames::decode_still(tools, &job.path, cancel).map_err(AnalysisError::Media)?;
+    let side = w.min(h) as f32;
+    let square = as_vision::ccip::crop(&rgb, w as usize, h as usize, w as f32 / 2.0, h as f32 / 2.0, side);
+    let e = ccip
+        .embed(&[&square])
+        .map_err(|e| AnalysisError::Internal(e.to_string()))?
+        .into_iter()
+        .next()
+        .ok_or_else(|| AnalysisError::Internal("the embedder gave no vector".into()))?;
+    out.send(&Reply::Embedding { id: job.id, embedding: e.v });
     Ok(())
 }
 
