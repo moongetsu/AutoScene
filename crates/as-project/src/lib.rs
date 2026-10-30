@@ -5,8 +5,8 @@
 //! copied or modified. Everything here is synchronous and Tauri-free; the app
 //! runs the long operations (ingest, proxies, exports) on `as-jobs` workers.
 
-pub mod anilist;
 mod analysis;
+pub mod anilist;
 mod bodies;
 mod cast;
 mod error;
