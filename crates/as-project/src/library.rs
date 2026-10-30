@@ -820,6 +820,7 @@ mod tests {
             find_bodies: false,
             fast_scan: false,
             anilist: false,
+            anime_characters: false,
         };
         assert!(matches!(lib.update_settings(&bad), Err(ProjectError::Invalid(_))));
         assert_eq!(lib.settings().unwrap().export_preset_id, "h264-edit");
