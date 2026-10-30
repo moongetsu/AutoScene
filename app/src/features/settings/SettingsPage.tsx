@@ -1,12 +1,13 @@
 import type * as React from "react"
 import { Link, useNavigate, useParams } from "@tanstack/react-router"
-import { DownloadSimple, Info, Keyboard, SlidersHorizontal } from "@/components/icons"
+import { DownloadSimple, Info, Keyboard, SlidersHorizontal, Users } from "@/components/icons"
 import { ContextArea } from "@/components/ui/context-area"
 import { ContextMenuItem, ContextMenuRadioGroup, ContextMenuRadioItem, ContextMenuSeparator } from "@/components/ui/context-menu"
 import { TopBar } from "@/components/ui/topbar"
 import { SETTINGS_SECTIONS, type SettingsSection, useAppActions } from "@/lib/actions"
 import { cn } from "@/lib/utils"
 import { AboutSection } from "./sections/AboutSection"
+import { ContributorsSection } from "./sections/ContributorsSection"
 import { GeneralSection } from "./sections/GeneralSection"
 import { ShortcutsSection } from "./sections/ShortcutsSection"
 import { UpdatesSection } from "./sections/UpdatesSection"
@@ -17,6 +18,7 @@ const META: Record<SettingsSection, { icon: React.ReactNode; render: () => React
   shortcuts: { icon: <Keyboard />, render: () => <ShortcutsSection /> },
   updates: { icon: <DownloadSimple />, render: () => <UpdatesSection /> },
   about: { icon: <Info />, render: () => <AboutSection /> },
+  contributors: { icon: <Users />, render: () => <ContributorsSection /> },
 }
 
 export function SettingsPage() {
