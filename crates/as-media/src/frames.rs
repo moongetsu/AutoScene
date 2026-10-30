@@ -84,6 +84,45 @@ pub fn decode_samples(
     decode_raw(tools, src, from, step, &[], &chain, (w * h * 3) as usize, cancel, on_frame).map(|(n, _)| n)
 }
 
+/// Decode one picture file — a JPEG, PNG or WebP such as a character
+/// portrait (ffmpeg opens them as a one-frame video) — to upright,
+/// square-pixel RGB24 at its own size, scaled down to fit [`MAX_SIDE`] if
+/// needed. Returns `(w, h, rgb)`.
+pub fn decode_still(tools: &Tools, path: &std::path::Path, cancel: &CancelToken) -> MediaResult<(u32, u32, Vec<u8>)> {
+    let info = crate::probe::probe(tools, path)?;
+    let (w, h) = sample_size(&info, (MAX_SIDE, MAX_SIDE), 1);
+    let mut cmd = tools.ffmpeg();
+    cmd.args(["-v", "error", "-nostdin"]);
+    cmd.arg("-i").arg(path);
+    cmd.args(["-map", "0:v:0", "-frames:v", "1"]);
+    cmd.args(["-filter:v", &format!("scale={w}:{h}:flags=bilinear,setsar=1,format=rgb24"), "-f", "rawvideo", "-"]);
+    tracing::debug!(cmd = ?cmd, "decode a still");
+    let mut child = crate::proc::spawn(cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()))?;
+    let mut stderr = child.stderr.take().expect("piped stderr");
+    let stderr_thread = std::thread::spawn(move || {
+        let mut s = String::new();
+        let _ = stderr.read_to_string(&mut s);
+        s.lines().rev().take(12).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n")
+    });
+    let mut rgb = vec![0u8; (w * h * 3) as usize];
+    let read = {
+        let mut stdout = child.stdout.take().expect("piped stdout");
+        stdout.read_exact(&mut rgb)
+    };
+    let status = child.wait()?;
+    let tail = stderr_thread.join().unwrap_or_default();
+    if cancel.is_cancelled() {
+        return Err(MediaError::Cancelled);
+    }
+    if let Err(e) = read {
+        return Err(MediaError::Ffmpeg(if tail.is_empty() { format!("reading the picture: {e}") } else { tail }));
+    }
+    if !status.success() {
+        return Err(MediaError::Ffmpeg(if tail.is_empty() { format!("exit status {status}") } else { tail }));
+    }
+    Ok((w, h, rgb))
+}
+
 /// Where [`decode_samples_with`] decodes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Decoder {

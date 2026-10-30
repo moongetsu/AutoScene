@@ -50,6 +50,7 @@ fn track(media: u32, start: u32, embedding: Vec<f32>, quality: f32) -> TrackIn {
         embedding,
         quality,
         dets: 10,
+        weight: 1.0,
         pin: None,
         forbid: vec![],
         previous: None,
@@ -1291,4 +1292,117 @@ fn decisions_place_faces_in_the_space_the_cast_was_grouped_in() {
     tracks[target].forbid = vec![1];
     let r = reassign(&tracks, &members, &p, Some(&o.space));
     assert_ne!(r.tracks[target].0.character().and_then(|c| r.characters[c].key), Some(1));
+}
+
+// -- the anime preset ---------------------------------------------------------
+
+#[test]
+fn the_anime_preset_carries_ccips_bars() {
+    let p = Params::anime();
+    assert_eq!((p.link, p.copy_link), (0.55, 0.70));
+    assert_eq!((p.core_quality, p.strangers_alone, p.strangers_style), (0.50, 0.02, 0.25));
+    assert_eq!((p.table_dedup_cos, p.merge_top, p.cl_cap), (0.88, 4, 0.25));
+    assert!(!p.animated && p.adapt);
+    // The rest stays the live-action pass's.
+    let d = Params::default();
+    assert_eq!(
+        (p.assign, p.margin, p.unsure, p.prototypes, p.min_cohesion, p.copy_share),
+        (d.assign, d.margin, d.unsure, d.prototypes, d.min_cohesion, d.copy_share)
+    );
+}
+
+#[test]
+fn the_fitted_spaces_share_in_the_mix_is_capped() {
+    let p = Params::default();
+    let (tracks, _) = cartoon(97, 6, 250, 0.7);
+    // Uncapped (1.0), as ever: the fitted space's share is the mix's.
+    let (full, _) = fit(&tracks, &Params { animated: true, ..p }).unwrap();
+    assert!((full.weight - 0.35).abs() < 1e-6);
+    let (capped, _) = fit(&tracks, &Params { animated: true, cl_cap: 0.25, ..p }).unwrap();
+    assert!((capped.weight - 0.25).abs() < 1e-6);
+    // Same axes, only their share.
+    assert_eq!(capped.projection, full.projection);
+}
+
+#[test]
+fn faces_of_another_embedders_dimension_compare_to_no_one() {
+    let mut rng = Rng(101);
+    let (centers, mut tracks, _) = cast(&mut rng, 3, 10);
+    // A track of another embedder's length among the pass's: it can't
+    // compare to anyone and shapes nothing.
+    let mut foreign = track(0, 9000, around(&mut rng, &centers[0], 0.8), 0.9);
+    foreign.embedding = vec![0.5; 4];
+    tracks.push(foreign);
+    let o = identify(&tracks, &Params::default());
+    assert_eq!(o.tracks.last().unwrap().0, Assign::None);
+    assert!(o.characters.iter().all(|c| c.centroid.len() == DIM));
+    // Most tracks of another length: the session is theirs — the odd one out.
+    for t in &mut tracks {
+        t.embedding = vec![0.01; 8];
+    }
+    tracks[0].embedding = vec![0.01; DIM];
+    let o = identify(&tracks, &Params::default());
+    assert_eq!(o.tracks[0].0, Assign::None);
+    assert!(o.tracks[1..].iter().all(|(a, _)| a.character().is_some()));
+    // Placing faces after a decision leaves it out too.
+    let members = vec![(5, (1..tracks.len()).collect())];
+    assert_eq!(reassign(&tracks, &members, &Params::default(), None).tracks[0].0, Assign::None);
+}
+
+#[test]
+fn stranger_pairs_weigh_by_the_less_seen_face() {
+    let mut rng = Rng(103);
+    let p = Params::default();
+    // One pair of clear tracks on screen at a time, never two pairs at
+    // once: 45 of strangers (~0 alike), 55 of look-alikes (~0.9) nobody
+    // sees much of.
+    let mut tracks = Vec::new();
+    for i in 0..100u32 {
+        let a = rng.unit();
+        let (cos, w) = if i < 45 { (0.02, 1.0) } else { (0.9, 0.01) };
+        let mut ta = track(0, i * 100, a.clone(), 0.8);
+        let mut tb = track(0, i * 100, around(&mut rng, &a, cos), 0.8);
+        ta.weight = w;
+        tb.weight = w;
+        tracks.extend([ta, tb]);
+    }
+    // The little-seen pairs barely count: the median pair is a stranger's.
+    assert!(strangers(&tracks, &p).unwrap() < 0.4, "weighed");
+    // Every pair the same: the median pair is a look-alike's.
+    for t in &mut tracks {
+        t.weight = 1.0;
+    }
+    assert!(strangers(&tracks, &p).unwrap() > 0.6, "unweighed");
+}
+
+#[test]
+fn a_merge_never_sends_more_faces_aside_than_merge_top() {
+    let mut rng = Rng(107);
+    let person = rng.unit();
+    let mut tracks = Vec::new();
+    let [l1, l2] = two_looks(&mut rng, &mut tracks, &person, 0, 20);
+    // The same person seen twice at three moments: the merge asks three
+    // faces to step aside — copy_share of twenty allows it, a top of two
+    // doesn't.
+    for k in [3, 5, 7] {
+        let at = tracks[l1[k]].start;
+        tracks[l2[k]].start = at;
+        tracks[l2[k]].end = at + 48;
+        tracks[l2[k]].seen = tracks[l1[k]].seen.clone();
+    }
+    assert_eq!(identify(&tracks, &Params::default()).characters.len(), 1);
+    let capped = Params { merge_top: 2, ..Params::default() };
+    assert_eq!(identify(&tracks, &capped).characters.len(), 2);
+}
+
+#[test]
+fn a_look_too_alike_gets_no_prototype_of_its_own() {
+    let mut rng = Rng(109);
+    let a = rng.unit();
+    let b = around(&mut rng, &a, 0.93);
+    // Members ~0.93 alike: a second centre at the live bar (0.98), not at
+    // the anime one (0.88) — the same look there.
+    let members: Vec<(&[f32], f32)> = [&a, &b, &a, &b].iter().map(|e| (e.as_slice(), 1.0)).collect();
+    assert_eq!(proto::prototypes(&members, 12, 0.98).len(), 2);
+    assert_eq!(proto::prototypes(&members, 12, 0.88).len(), 1);
 }

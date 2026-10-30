@@ -10,3 +10,4 @@ license.workspace = true
 
 [dependencies]
 faer = { version = "=0.24.4", default-features = false, features = ["std", "linalg"] }
+tracing.workspace = true

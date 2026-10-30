@@ -69,6 +69,28 @@ impl TrackerParams {
             min_track_quality: 0.05,
         }
     }
+
+    /// The anime character pass's link rules (`crate::anime`): samples lie
+    /// further apart and heads — the unit tracked there — move more between
+    /// them than live-action faces do (wider gaps bridged, a lower overlap
+    /// bar), while CCIP identities separate look-alike characters less
+    /// surely than ArcFace's, so identity links need more agreement.
+    /// TUNE/CONFIRMS on the benchmark (`bench/anime`) before release.
+    pub fn anime() -> Self {
+        Self {
+            stride: 6,
+            max_gap: 10,
+            min_iou: 0.20,
+            reach: 1.2,
+            reach_gap: 2,
+            max_size_ratio: 1.6,
+            min_cos_reach: 0.42,
+            min_cos_near: 0.28,
+            min_cos_far: 0.62,
+            min_quality_far: 0.50,
+            min_track_quality: 0.05,
+        }
+    }
 }
 
 struct Open {
@@ -435,6 +457,16 @@ mod tests {
         let shot = FrameRange::new(0, 30);
         let samples = vec![(6, vec![obs(6, 0.3, 1, 0.8)]), (3, vec![obs(3, 0.3, 1, 0.8)])];
         track_shot(shot, samples, &TrackerParams::new(3));
+    }
+
+    #[test]
+    fn the_anime_preset() {
+        let p = TrackerParams::anime();
+        assert_eq!((p.stride, p.max_gap, p.min_iou, p.reach, p.reach_gap), (6, 10, 0.20, 1.2, 2));
+        assert_eq!(
+            (p.max_size_ratio, p.min_cos_reach, p.min_cos_near, p.min_cos_far, p.min_quality_far, p.min_track_quality),
+            (1.6, 0.42, 0.28, 0.62, 0.50, 0.05)
+        );
     }
 
     #[test]

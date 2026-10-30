@@ -26,7 +26,9 @@ pub fn centroid(members: &[(&[f32], f32)]) -> Vec<f32> {
 
 /// Up to `k` prototypes by weighted spherical k-means (farthest-point
 /// initialisation from the heaviest member, so the result is deterministic).
-pub fn prototypes(members: &[(&[f32], f32)], k: usize) -> Vec<Vec<f32>> {
+/// A member at least `dedup` alike to a centre found already is the same
+/// look: no centre of its own.
+pub fn prototypes(members: &[(&[f32], f32)], k: usize, dedup: f32) -> Vec<Vec<f32>> {
     if members.is_empty() {
         return Vec::new();
     }
@@ -40,7 +42,7 @@ pub fn prototypes(members: &[(&[f32], f32)], k: usize) -> Vec<Vec<f32>> {
         let far = (0..members.len())
             .max_by(|&a, &b| ((1.0 - closest[a]) * members[a].1).total_cmp(&((1.0 - closest[b]) * members[b].1)))
             .expect("non-empty");
-        if closest[far] > 0.98 {
+        if closest[far] > dedup {
             break;
         }
         centers.push(members[far].0.to_vec());

@@ -322,7 +322,8 @@ impl Merging<'_> {
         // merged group is decides which ones: the face least like it first
         // (a stranger's, or the less clear copy), then the lighter one.
         let merged: Vec<f32> = self.groups[a].sum.iter().zip(&self.groups[b].sum).map(|(x, y)| x + y).collect();
-        let limit = ((self.p.copy_share * self.groups[small].members.len() as f32) as usize).max(1);
+        let limit =
+            ((self.p.copy_share * self.groups[small].members.len() as f32) as usize).max(1).min(self.p.merge_top);
         self.cover(&pairs, &merged, limit)
     }
 
@@ -582,6 +583,7 @@ mod tests {
             embedding: vec![1.0],
             quality: 1.0,
             dets: 2,
+            weight: 1.0,
             pin: None,
             forbid: vec![],
             previous: None,

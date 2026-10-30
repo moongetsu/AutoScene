@@ -3,6 +3,7 @@
 //! full or, with Fast Scan, the way the Scener app finds them), and the
 //! people around the faces (body tracks tied to them).
 
+pub mod anime;
 pub mod bodies;
 pub mod body_tracker;
 pub mod faces;
@@ -16,6 +17,7 @@ pub mod sprites;
 pub mod tracker;
 pub mod tracks;
 
+pub use anime::{Anime, Params as AnimeParams, face_tracks as anime_face_tracks, frame_size as anime_frame_size};
 pub use faces::{
     BodyModels, CLEAR_FACE, DETECT_BATCH, FaceChunk, FaceParams, Faces, Look, PERSON_INPUT, PeopleParams, Search,
     detect_looks, face_tracks, find_faces, frame_sizes,

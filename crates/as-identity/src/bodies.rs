@@ -319,6 +319,7 @@ mod tests {
             embedding: vec![1.0],
             quality,
             dets: 3,
+            weight: 1.0,
             pin: None,
             forbid: vec![],
             previous: None,

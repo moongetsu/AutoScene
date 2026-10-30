@@ -291,11 +291,44 @@ fn stranger_pairs(tracks: &[TrackIn], ok: &[bool], p: &Params) -> Vec<(usize, us
 }
 
 /// Linear-interpolated quantile of ascending `s`.
+#[cfg(test)]
 pub(crate) fn quantile(s: &[f64], q: f64) -> f64 {
     let h = q * (s.len() - 1) as f64;
     let lo = h.floor() as usize;
     let hi = (lo + 1).min(s.len() - 1);
     s[lo] + (h - lo as f64) * (s[hi] - s[lo])
+}
+
+/// `quantile` of `(value, weight)` pairs, ascending by value: each
+/// value stands at the middle of its share of the total weight (equal
+/// weights: at `(i + 0.5)/n`), linearly interpolated between them.
+pub(crate) fn weighted_quantile(s: &[(f64, f64)], q: f64) -> f64 {
+    debug_assert!(!s.is_empty());
+    let total: f64 = s.iter().map(|&(_, w)| w).sum();
+    if total <= 0.0 {
+        // Nothing counts: the plain median's place.
+        return s[s.len() / 2].0;
+    }
+    let mut at = 0.0;
+    let mut mids: Vec<f64> = Vec::with_capacity(s.len());
+    for &(_, w) in s {
+        mids.push((at + w / 2.0) / total);
+        at += w;
+    }
+    if q <= mids[0] {
+        return s[0].0;
+    }
+    for (i, &m) in mids.iter().enumerate().skip(1) {
+        if q <= m {
+            let span = m - mids[i - 1];
+            // Equal middles (a weight of nothing between them): the later's.
+            if span <= 0.0 {
+                return s[i].0;
+            }
+            return s[i - 1].0 + (q - mids[i - 1]) / span * (s[i].0 - s[i - 1].0);
+        }
+    }
+    s[s.len() - 1].0
 }
 
 /// Pairs of `members` (indices into `tracks`) whose faces were seen at once
@@ -323,7 +356,7 @@ fn seen_together(tracks: &[TrackIn], members: &[usize]) -> Vec<(usize, usize)> {
 /// space suits them — they don't look like animation, or too few faces
 /// were seen at once to tell how.
 pub fn fit(tracks: &[TrackIn], p: &Params) -> Option<(Fit, FitStats)> {
-    let dim = tracks.iter().find(|t| finite(&t.embedding, t.embedding.len()))?.embedding.len();
+    let dim = crate::session_dim(tracks)?;
     let ok: Vec<bool> = tracks.iter().map(|t| finite(&t.embedding, dim)).collect();
     let mut stats = FitStats::default();
 
@@ -332,10 +365,17 @@ pub fn fit(tracks: &[TrackIn], p: &Params) -> Option<(Fit, FitStats)> {
     if pairs.len() < MIN_STRANGERS.max(p.calibrate_from) {
         return None;
     }
-    let raw: Vec<f32> = pairs.iter().map(|&(a, b)| dot(&tracks[a].embedding, &tracks[b].embedding)).collect();
-    let mut sorted = raw.clone();
-    sorted.sort_by(f32::total_cmp);
-    let alike = sorted[sorted.len() / 2];
+    // A pair counts for its less-seen face ([`TrackIn::weight`]).
+    let mut sorted: Vec<(f64, f64)> = pairs
+        .iter()
+        .map(|&(a, b)| (dot(&tracks[a].embedding, &tracks[b].embedding) as f64, crate::pair_weight(tracks, a, b)))
+        .filter(|&(_, w)| w > 0.0)
+        .collect();
+    if sorted.is_empty() {
+        return None;
+    }
+    sorted.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let alike = weighted_quantile(&sorted, 0.5) as f32;
     let share = p.style_share(alike);
     stats.strangers = pairs.len();
     stats.alike = alike;
@@ -346,8 +386,7 @@ pub fn fit(tracks: &[TrackIn], p: &Params) -> Option<(Fit, FitStats)> {
 
     // Seeds: groups of faces clearly one person, at a strict bar, every
     // face alike (the user's decisions don't shape what faces look like).
-    let sorted64: Vec<f64> = sorted.iter().map(|&s| s as f64).collect();
-    let seed_bar = quantile(&sorted64, SEED_QUANTILE) as f32;
+    let seed_bar = weighted_quantile(&sorted, SEED_QUANTILE) as f32;
     let seeds_of: Vec<usize> = (0..tracks.len()).filter(|&i| ok[i] && tracks[i].quality >= p.core_quality).collect();
     let plain: Vec<TrackIn> = tracks
         .iter()
@@ -402,7 +441,7 @@ pub fn fit(tracks: &[TrackIn], p: &Params) -> Option<(Fit, FitStats)> {
         mean: mean.iter().map(|&m| m as f32).collect(),
         projection: (0..dim * k).map(|j| proj[(j / k, j % k)] as f32).collect(),
         k,
-        weight: MIX * share,
+        weight: (MIX * share).min(p.cl_cap),
         link: p.link,
         copy_link: p.copy_link,
         copy_alike: p.copy_alike,
@@ -416,9 +455,13 @@ pub fn fit(tracks: &[TrackIn], p: &Params) -> Option<(Fit, FitStats)> {
         .into_iter()
         .map(|i| (i, fit.embed(&tracks[i].embedding)))
         .collect();
-    let mut mixed: Vec<f64> = pairs.iter().map(|&(a, b)| dot(&z[&a], &z[&b]) as f64).collect();
-    mixed.sort_by(f64::total_cmp);
-    let tail = quantile(&mixed, TAIL) as f32;
+    let mut mixed: Vec<(f64, f64)> = pairs
+        .iter()
+        .map(|&(a, b)| (dot(&z[&a], &z[&b]) as f64, crate::pair_weight(tracks, a, b)))
+        .filter(|&(_, w)| w > 0.0)
+        .collect();
+    mixed.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let tail = weighted_quantile(&mixed, TAIL) as f32;
     let o = (share * ((tail - p.link) / (1.0 - p.link)).max(0.0)).clamp(0.0, SHIFT_CAP);
     let oc = (COPY_REACH * o).min(SHIFT_CAP);
     let up = |t: f32, o: f32| t + o * (1.0 - t);

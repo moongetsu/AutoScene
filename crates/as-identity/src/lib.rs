@@ -48,6 +48,13 @@ pub type CharKey = u32;
 /// animation the face space itself is fitted to the footage.
 pub const VERSION: u32 = 4;
 
+/// [`VERSION`] for a cast grouped from an anime embedder's faces (CCIP's,
+/// with [`Params::anime`]). `identify` groups them the same way — its
+/// outcome and the stored [`Space`] are dimension-agnostic — so a cast of
+/// either kind regroups on the same bumps. Kept apart so an anime-only
+/// change can bump alone.
+pub const ANIME_VERSION: u32 = VERSION;
+
 #[derive(Clone, Debug)]
 pub struct TrackIn {
     /// Media the track belongs to: tracks of one media on screen together can't be one person.
@@ -63,10 +70,15 @@ pub struct TrackIn {
     /// faces at once; a track that only fills another's gap is not. Empty:
     /// unknown, `spans` stand in.
     pub seen: Vec<u32>,
-    /// Unit-length identity embedding.
+    /// Unit-length identity embedding, of the pass's embedder (ArcFace's
+    /// 512, CCIP's 768): one run compares only the most common length.
     pub embedding: Vec<f32>,
     pub quality: f32,
     pub dets: u32,
+    /// How much the track counts in the statistics of its footage — its
+    /// share of the screen; a pair of strangers weighs as its lighter
+    /// face. 1.0 counts like any other.
+    pub weight: f32,
     /// The user put this track on this character.
     pub pin: Option<CharKey>,
     /// The user said this track is not these characters.
@@ -130,6 +142,18 @@ pub struct Params {
     /// its animation.
     pub strangers_alone: f32,
     pub strangers_style: f32,
+    /// A new prototype is made of a member only when it is less than this
+    /// alike to the prototypes found so far: a character's table of looks
+    /// needn't hold the same look twice (see `proto`).
+    pub table_dedup_cos: f32,
+    /// At most this many faces of two groups may step aside for one merge
+    /// (see `ahc`): a merge that needs more is not made.
+    pub merge_top: usize,
+    /// At most this share of the mixed similarity may come from the fitted
+    /// space (see [`fit`]); an embedder that knows the footage itself (an
+    /// anime embedder on anime) trusts its own geometry more. 1.0: as
+    /// fitted.
+    pub cl_cap: f32,
 }
 
 impl Default for Params {
@@ -164,6 +188,9 @@ impl Default for Params {
             adapt: true,
             strangers_alone: 0.05,
             strangers_style: 0.15,
+            table_dedup_cos: 0.98,
+            merge_top: usize::MAX,
+            cl_cap: 1.0,
         }
     }
 }
@@ -190,6 +217,29 @@ impl Params {
             copy_alike: 0.43,
             strangers_alone: 0.15,
             strangers_style: 0.30,
+            ..Self::default()
+        }
+    }
+
+    /// For an anime embedder (CCIP's 768-d faces) on anime footage: it
+    /// learned drawn faces, yet the characters of one show still look much
+    /// alike to it, so the bars sit far above ArcFace's. Its strangers —
+    /// up to `strangers_alone` alike it stands alone like actors, fully
+    /// a style from `strangers_style` on — decide how far the bars and
+    /// the space are fitted (`animated` stays off: this embedder knows
+    /// drawn faces); what the footage's own space may add is capped
+    /// (`cl_cap`), as is the number of faces one merge may send aside
+    /// (`merge_top`).
+    pub fn anime() -> Self {
+        Self {
+            link: 0.55,
+            copy_link: 0.70,
+            core_quality: 0.50,
+            strangers_alone: 0.02,
+            strangers_style: 0.25,
+            table_dedup_cos: 0.88,
+            merge_top: 4,
+            cl_cap: 0.25,
             ..Self::default()
         }
     }
@@ -409,9 +459,11 @@ fn cohesion(tracks: &[TrackIn], g: &[usize]) -> f32 {
 /// animated film (3D or drawn) are first of all faces in one style — 0.22
 /// on a Miraculous film, whose characters resemble each other more than
 /// many actors resemble themselves. `None` with fewer than
-/// `p.calibrate_from` such pairs.
+/// `p.calibrate_from` such pairs. A pair counts for its less-seen face
+/// ([`TrackIn::weight`]).
 pub fn strangers(tracks: &[TrackIn], p: &Params) -> Option<f32> {
-    let clear = |t: &TrackIn| t.quality >= p.core_quality && t.dets >= p.core_dets;
+    let dim = session_dim(tracks)?;
+    let clear = |t: &TrackIn| t.embedding.len() == dim && t.quality >= p.core_quality && t.dets >= p.core_dets;
     let mut at: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
     for (i, t) in tracks.iter().enumerate().filter(|(_, t)| clear(t)) {
         for &f in &t.seen {
@@ -428,16 +480,18 @@ pub fn strangers(tracks: &[TrackIn], p: &Params) -> Option<f32> {
         return None;
     }
     let dot = |a: &[f32], b: &[f32]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>();
-    let mut sims: Vec<f32> = pairs
+    let mut sims: Vec<(f64, f64)> = pairs
         .into_iter()
-        .map(|(a, b)| dot(&tracks[a].embedding, &tracks[b].embedding))
-        .filter(|s| s.is_finite())
+        .filter_map(|(a, b)| {
+            let (s, w) = (dot(&tracks[a].embedding, &tracks[b].embedding), pair_weight(tracks, a, b));
+            (s.is_finite() && w > 0.0).then_some((s as f64, w))
+        })
         .collect();
     if sims.len() < p.calibrate_from.max(1) {
         return None;
     }
-    sims.sort_by(f32::total_cmp);
-    Some(sims[sims.len() / 2])
+    sims.sort_by(|a, b| a.0.total_cmp(&b.0));
+    Some(adapt::weighted_quantile(&sims, 0.5) as f32)
 }
 
 impl Params {
@@ -480,8 +534,69 @@ impl Params {
     }
 }
 
-/// Group `tracks` into characters.
+/// The embedding length this pass compares in: the most common one — the
+/// session's embedder's (ArcFace's 512, CCIP's 768); a tie goes to the
+/// first seen.
+fn session_dim(tracks: &[TrackIn]) -> Option<usize> {
+    let mut count: HashMap<usize, usize> = HashMap::new();
+    for t in tracks {
+        *count.entry(t.embedding.len()).or_default() += 1;
+    }
+    let mut best: Option<usize> = None;
+    for t in tracks {
+        let d = t.embedding.len();
+        if best.is_none_or(|b| count[&d] > count[&b]) {
+            best = Some(d);
+        }
+    }
+    best
+}
+
+/// The tracks sharing [`session_dim`]'s length, in input order; the rest
+/// compare to no one (a face another embedder made waits for a pass of
+/// its own) and are warned about once per pass.
+fn matching_dim(tracks: &[TrackIn]) -> Vec<usize> {
+    let dim = session_dim(tracks);
+    let kept: Vec<usize> = (0..tracks.len()).filter(|&i| Some(tracks[i].embedding.len()) == dim).collect();
+    if kept.len() < tracks.len() {
+        tracing::warn!(
+            tracks = tracks.len(),
+            kept = kept.len(),
+            "faces of another embedder's dimension left out of the cast's grouping"
+        );
+    }
+    kept
+}
+
+/// `out`, computed on `tracks[kept]`, given back for every track: a
+/// left-out one is no one's.
+fn scatter(n: usize, kept: &[usize], out: Outcome) -> Outcome {
+    let mut placed = vec![(Assign::None, 0f32); n];
+    for (k, &i) in kept.iter().enumerate() {
+        placed[i] = out.tracks[k];
+    }
+    Outcome { tracks: placed, ..out }
+}
+
+/// How much a pair of faces counts in the footage's statistics: as its
+/// less-seen face ([`TrackIn::weight`]), never less than nothing.
+fn pair_weight(tracks: &[TrackIn], a: usize, b: usize) -> f64 {
+    let w = tracks[a].weight.min(tracks[b].weight);
+    if w.is_finite() { w.max(0.0) as f64 } else { 0.0 }
+}
+
+/// Group `tracks` into characters. Faces of another embedding length than
+/// the session's stay unassigned (`matching_dim`).
 pub fn identify(tracks: &[TrackIn], p: &Params) -> Outcome {
+    let kept = matching_dim(tracks);
+    if kept.len() == tracks.len() {
+        return identify_run(tracks, p);
+    }
+    let sub: Vec<TrackIn> = kept.iter().map(|&i| tracks[i].clone()).collect();
+    scatter(tracks.len(), &kept, identify_run(&sub, p))
+}
+
+fn identify_run(tracks: &[TrackIn], p: &Params) -> Outcome {
     match p.adapt.then(|| fit(tracks, p)).flatten() {
         Some((f, _)) => Outcome { space: Space::Fitted(f.clone()), ..identify_in(&f.tracks(tracks), &f.params(p)) },
         None => identify_in(tracks, &p.fitted(tracks)),
@@ -588,7 +703,32 @@ fn identify_in(tracks: &[TrackIn], p: &Params) -> Outcome {
 /// said isn't them stops shaping the character, so faces that only
 /// resembled that one leave with it. Faces are compared in the `space` the
 /// grouping used (`None`: unknown, fitted again as [`identify`] does).
+/// Faces of another embedding length than the session's stay unassigned.
 pub fn reassign(tracks: &[TrackIn], members: &[(CharKey, Vec<usize>)], p: &Params, space: Option<&Space>) -> Outcome {
+    let kept = matching_dim(tracks);
+    if kept.len() == tracks.len() {
+        return reassign_run(tracks, members, p, space);
+    }
+    // Member lists index `tracks`; move them to the kept tracks' positions.
+    let mut at = vec![usize::MAX; tracks.len()];
+    kept.iter().enumerate().for_each(|(k, &i)| at[i] = k);
+    let members: Vec<(CharKey, Vec<usize>)> = members
+        .iter()
+        .map(|(k, g)| (*k, g.iter().filter_map(|&i| at.get(i).copied()).filter(|&j| j != usize::MAX).collect()))
+        .collect();
+    let sub: Vec<TrackIn> = kept.iter().map(|&i| tracks[i].clone()).collect();
+    scatter(tracks.len(), &kept, reassign_run(&sub, &members, p, space))
+}
+
+fn reassign_run(tracks: &[TrackIn], members: &[(CharKey, Vec<usize>)], p: &Params, space: Option<&Space>) -> Outcome {
+    // A space fitted on another embedder's faces can't place these.
+    let space = match (space, tracks.first()) {
+        (Some(Space::Fitted(f)), Some(t)) if f.mean.len() != t.embedding.len() => {
+            tracing::warn!("the space the cast was grouped in is another embedder's; fitting again");
+            None
+        }
+        (s, _) => s,
+    };
     let fitted = match space {
         Some(s) => Some(s.clone()),
         None => p.adapt.then(|| fit(tracks, p)).flatten().map(|(f, _)| Space::Fitted(f)),
@@ -641,7 +781,7 @@ fn place(tracks: &[TrackIn], chars: &[(Vec<usize>, Option<CharKey>)], loose: Vec
         let members: Vec<(&[f32], f32)> =
             g.iter().map(|&i| (tracks[i].embedding.as_slice(), tracks[i].quality.max(0.05))).collect();
         characters.push(CharacterOut { key: *key, centroid: proto::centroid(&members) });
-        protos.push(proto::prototypes(&members, p.prototypes));
+        protos.push(proto::prototypes(&members, p.prototypes, p.table_dedup_cos));
         spans.push(sp);
     }
     // Every other track, most similar first: a character already on screen

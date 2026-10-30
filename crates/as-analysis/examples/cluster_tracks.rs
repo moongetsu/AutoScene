@@ -29,6 +29,7 @@ fn main() {
             embedding: t.embedding.clone(),
             quality: t.quality,
             dets: t.dets.len() as u32,
+            weight: 1.0,
             pin: None,
             forbid: vec![],
             previous: None,
