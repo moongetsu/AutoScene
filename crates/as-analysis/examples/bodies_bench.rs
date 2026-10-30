@@ -516,9 +516,8 @@ fn tracks_cmd(w: &World) {
 
 /// BCubed of the main cast per track and per screen time.
 fn bcubed_main(w: &World, got: &[Option<usize>]) -> (f32, f32, f32, f32) {
-    let keep: Vec<usize> = (0..w.tracks.len())
-        .filter(|&i| w.truth[i].is_some_and(|n| !matches!(kind(n), Kind::Excluded)))
-        .collect();
+    let keep: Vec<usize> =
+        (0..w.tracks.len()).filter(|&i| w.truth[i].is_some_and(|n| !matches!(kind(n), Kind::Excluded))).collect();
     let mut ids: HashMap<&str, usize> = HashMap::new();
     let truth: Vec<usize> = keep
         .iter()

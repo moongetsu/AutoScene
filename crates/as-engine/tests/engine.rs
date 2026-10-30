@@ -216,7 +216,7 @@ fn face_chunks_tile(engine: &Engine, m: &Media, job: FacesInput) {
         });
     r.unwrap();
     assert!(killed);
-    // Both engines say which models they run: the detector (one per look) and the embedder.
+    // Both engines say which models they run: their detector(s) and the embedder, last.
     assert_eq!(devices.len(), 2, "{devices:?}");
     let (detector, embedder) = if anime {
         (as_models::ids::ANIME_HEAD, as_models::ids::ANIME_CCIP)

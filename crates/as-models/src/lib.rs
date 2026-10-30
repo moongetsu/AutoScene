@@ -799,9 +799,8 @@ mod tests {
                 m.id
             );
         }
-        for id in [ids::TRANSNET, ids::SCRFD, ids::ARCFACE, ids::PERSONS, ids::PERSON_REID]
-            .into_iter()
-            .chain(ids::ANIME)
+        for id in
+            [ids::TRANSNET, ids::SCRFD, ids::ARCFACE, ids::PERSONS, ids::PERSON_REID].into_iter().chain(ids::ANIME)
         {
             assert!(model(id).is_ok(), "{id}");
         }

@@ -14,8 +14,8 @@ use std::time::{Duration, Instant};
 
 use as_analysis::{
     AnalysisError, BodyModels, DETECT_BATCH, FaceParams, Faces, FastModels, FastParams, Look, PERSON_INPUT,
-    PeopleParams, Search, anime, bodies, detect_looks, face_tracks, fast, fast_face_tracks, frame_sizes,
-    shot_signals, signals, tracks,
+    PeopleParams, Search, anime, bodies, detect_looks, face_tracks, fast, fast_face_tracks, frame_sizes, shot_signals,
+    signals, tracks,
 };
 use as_core::{CancelToken, FrameIndex, FrameRange};
 use as_infer::{Device, Runtime};
@@ -592,11 +592,16 @@ fn run_anime_faces(
             "the anime models run on different devices"
         );
     }
-    send_devices(out, job.id, rt, &[
-        (as_models::ids::ANIME_HEAD, device),
-        (as_models::ids::ANIME_PERSON, persons.device()),
-        (as_models::ids::ANIME_CCIP, ccip.device()),
-    ]);
+    send_devices(
+        out,
+        job.id,
+        rt,
+        &[
+            (as_models::ids::ANIME_HEAD, device),
+            (as_models::ids::ANIME_PERSON, persons.device()),
+            (as_models::ids::ANIME_CCIP, ccip.device()),
+        ],
+    );
     let index = FrameIndex::from_bytes(&job.index.0).map_err(|e| AnalysisError::Internal(e.to_string()))?;
     let shots: Vec<FrameRange> = job.shots.iter().map(|&(s, e)| FrameRange::new(s, e)).collect();
     let started = Instant::now();

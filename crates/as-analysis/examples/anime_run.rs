@@ -87,20 +87,15 @@ fn main() {
     let head_model = model("HEAD", "anime_head_detection/head_detect_v2.0_s/model.onnx");
     let ccip_model = model("CCIP", "ccip_onnx/ccip-caformer-24-randaug-pruned/model_feat.onnx");
     let person_model = std::env::var("PERSON").ok().map(|v| {
-        if v == "1" {
-            models.join("anime_person_detection/person_detect_v1.3_s/model.onnx")
-        } else {
-            PathBuf::from(v)
-        }
+        if v == "1" { models.join("anime_person_detection/person_detect_v1.3_s/model.onnx") } else { PathBuf::from(v) }
     });
     let size = anime::frame_size(&info, &params);
     let mut heads =
         Yolo::load(&rt, &head_model, size, input("HEAD_INPUT", (640, 384)), as_analysis::DETECT_BATCH).unwrap();
     let ccip_batch: usize = std::env::var("CCIP_BATCH").map_or(32, |v| v.parse().unwrap());
     let mut ccip = Ccip::load(&rt, &ccip_model, ccip_batch).unwrap();
-    let mut persons = person_model.map(|m| {
-        Yolo::load(&rt, &m, size, input("PERSON_INPUT", (1280, 736)), as_analysis::DETECT_BATCH).unwrap()
-    });
+    let mut persons = person_model
+        .map(|m| Yolo::load(&rt, &m, size, input("PERSON_INPUT", (1280, 736)), as_analysis::DETECT_BATCH).unwrap());
     println!("anime pass at {size:?}, stride {}, person model {}", params.stride, persons.is_some());
     let t0 = Instant::now();
     let mut all = Vec::new();

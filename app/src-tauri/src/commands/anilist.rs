@@ -45,7 +45,8 @@ pub async fn anilist_search(
     text: String,
 ) -> AppResult<Vec<AniListMedia>> {
     let lib = state.library.clone();
-    blocking(move || Ok(lib.anilist_search(project_id, &text, &CancelToken::new())?)).await
+    blocking(move || Ok(lib.anilist_search(project_id, &text, &CancelToken::new())?))
+        .await
         .map(|v| v.iter().map(media_item).collect())
 }
 
@@ -59,7 +60,8 @@ pub async fn anilist_confirm(
     media: u32,
 ) -> AppResult<Vec<AniListMedia>> {
     let lib = state.library.clone();
-    blocking(move || Ok(lib.anilist_confirm(project_id, media, &CancelToken::new())?)).await
+    blocking(move || Ok(lib.anilist_confirm(project_id, media, &CancelToken::new())?))
+        .await
         .map(|v| v.iter().map(media_item).collect())
 }
 
@@ -86,9 +88,9 @@ pub async fn anilist_suggest(state: State<'_, AppState>, project_id: ProjectId) 
         let mut portraits = Vec::with_capacity(cast.len());
         for member in cast {
             let Some(image) = &member.image else { continue };
-            let emb = engine.embed(image.clone(), &cancel).map_err(|e| {
-                as_project::ProjectError::Invalid(format!("embedding the portrait: {}", e.detail()))
-            })?;
+            let emb = engine
+                .embed(image.clone(), &cancel)
+                .map_err(|e| as_project::ProjectError::Invalid(format!("embedding the portrait: {}", e.detail())))?;
             portraits.push((member, emb));
         }
         let project = lib.project(project_id)?;

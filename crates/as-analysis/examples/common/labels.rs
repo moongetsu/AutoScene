@@ -24,10 +24,9 @@ pub fn fps() -> f64 {
             return parse_fps(&v);
         }
         if let Some(info) = std::env::var_os("INFO") {
-            let info: as_media::MediaInfo = serde_json::from_str(
-                &std::fs::read_to_string(&info).unwrap_or_else(|e| panic!("INFO: {e}")),
-            )
-            .expect("INFO: media info");
+            let info: as_media::MediaInfo =
+                serde_json::from_str(&std::fs::read_to_string(&info).unwrap_or_else(|e| panic!("INFO: {e}")))
+                    .expect("INFO: media info");
             return info.video.avg_frame_rate.unwrap_or(info.video.r_frame_rate).to_f64();
         }
         FPS

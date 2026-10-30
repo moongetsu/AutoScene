@@ -96,10 +96,7 @@ impl Ccip {
             );
             ccip = Self::open(&rt.on_cpu(), model, batch)?;
             if !ccip.matches_goldens() {
-                return Err(InferError::Model(format!(
-                    "{}: embeddings don't match the CPU goldens",
-                    model.display()
-                )));
+                return Err(InferError::Model(format!("{}: embeddings don't match the CPU goldens", model.display())));
             }
         }
         Ok(ccip)
@@ -114,15 +111,7 @@ impl Ccip {
             .map(|i| i.name().to_string())
             .ok_or_else(|| InferError::Model(format!("{}: no input", model.display())))?;
         tracing::info!(device = ?device, batch, "CCIP ready");
-        Ok(Self {
-            session,
-            input,
-            device,
-            batch,
-            tables: tables(),
-            x: vec![0.0; batch * 3 * CROP * CROP],
-            spoilt: 0,
-        })
+        Ok(Self { session, input, device, batch, tables: tables(), x: vec![0.0; batch * 3 * CROP * CROP], spoilt: 0 })
     }
 
     /// Every golden crop embedded within [`GOLDEN_COSINE`] of its stored
@@ -166,11 +155,7 @@ impl Ccip {
             let outs = self.session.run(as_infer::inputs![self.input.as_str() => x])?;
             let (_, e) = outs[0].try_extract_tensor::<f32>()?;
             if e.len() != self.batch * DIM {
-                return Err(InferError::Run(format!(
-                    "CCIP returned {} values for a batch of {}",
-                    e.len(),
-                    self.batch
-                )));
+                return Err(InferError::Run(format!("CCIP returned {} values for a batch of {}", e.len(), self.batch)));
             }
             for i in 0..group.len() {
                 let embedding = unit(&e[i * DIM..(i + 1) * DIM]);

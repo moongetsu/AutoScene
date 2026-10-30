@@ -96,10 +96,7 @@ impl Yolo {
         batch: usize,
     ) -> InferResult<Self> {
         let ((w, h), (iw, ih)) = (frame, input);
-        assert!(
-            w > 0 && h > 0 && iw > 0 && ih > 0 && batch > 0,
-            "YOLO shape {w}×{h} → {iw}×{ih}, batch {batch}"
-        );
+        assert!(w > 0 && h > 0 && iw > 0 && ih > 0 && batch > 0, "YOLO shape {w}×{h} → {iw}×{ih}, batch {batch}");
         let (session, device) = rt.session_shaped(model, InputShape::Fixed(&[batch, 3, ih, iw]))?;
         let input = session
             .inputs()
@@ -114,15 +111,7 @@ impl Yolo {
             )));
         }
         tracing::info!(device = ?device, w, h, iw, ih, batch, "YOLO ready");
-        Ok(Self {
-            session,
-            input,
-            device,
-            frame,
-            input_size: (iw, ih),
-            batch,
-            x: vec![GREY; batch * 3 * iw * ih],
-        })
+        Ok(Self { session, input, device, frame, input_size: (iw, ih), batch, x: vec![GREY; batch * 3 * iw * ih] })
     }
 
     pub fn device(&self) -> Device {
@@ -177,9 +166,8 @@ impl Yolo {
         let t = TensorRef::from_array_view(([batch, 3, ih, iw], &self.x[..]))?;
         let outs = self.session.run(as_infer::inputs![self.input.as_str() => t])?;
         let (shape, e) = outs[0].try_extract_tensor::<f32>()?;
-        let (n, transposed) = rows(&shape[..], batch).ok_or_else(|| {
-            InferError::Run(format!("YOLO returned shape {:?} for a batch of {batch}", &shape[..]))
-        })?;
+        let (n, transposed) = rows(&shape[..], batch)
+            .ok_or_else(|| InferError::Run(format!("YOLO returned shape {:?} for a batch of {batch}", &shape[..])))?;
         if e.len() != n * 5 * batch {
             return Err(InferError::Run(format!(
                 "YOLO returned {} values for shape {:?} × {batch}",
