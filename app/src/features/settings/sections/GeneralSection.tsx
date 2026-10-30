@@ -83,6 +83,17 @@ export function GeneralSection() {
             onCheckedChange={(on) => settings && void save({ ...settings, fastScan: on })}
           />
         </SettingRow>
+        <SettingRow
+          label="Character names from AniList"
+          description="Anime projects can fetch names for their characters from AniList. Sends the search text you confirm, and requests for this series' cast and images, to AniList (API and image server); AniList sees your IP address. Turning it off deletes every image kept from AniList."
+        >
+          <Switch
+            aria-label="Character names from AniList"
+            checked={settings?.anilist ?? false}
+            disabled={!settings}
+            onCheckedChange={(on) => settings && void save({ ...settings, anilist: on })}
+          />
+        </SettingRow>
       </SettingsGroup>
 
       <SettingsGroup title="Audio" description="Many files carry several soundtracks, and dubs are often marked as the default.">

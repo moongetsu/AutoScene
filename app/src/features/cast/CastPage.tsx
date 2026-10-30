@@ -1,7 +1,7 @@
 import type * as React from "react"
 import { useState } from "react"
 import { Link, useNavigate, useParams } from "@tanstack/react-router"
-import { CaretDown, Eye, EyeSlash, Info, User, UserFocus, Users } from "@/components/icons"
+import { CaretDown, Eye, EyeSlash, Info, MagnifyingGlass, User, UserFocus, Users } from "@/components/icons"
 import { Button } from "@/components/ui/button"
 import { ContextArea } from "@/components/ui/context-area"
 import { ContextMenuItem } from "@/components/ui/context-menu"
@@ -14,6 +14,7 @@ import { ProjectNav } from "@/features/project/ProjectNav"
 import { firstFailure, useCast, useMediaList, useProject, useSettings } from "@/lib/queries"
 import { cn } from "@/lib/utils"
 import { CharacterCard } from "./CharacterCard"
+import { AniListDialog } from "./AniListDialog"
 import { plural, splitHidden, unplacedNote, useProjectAnalysis } from "./cast"
 
 /** Everyone the analysis found, most screen time first. */
@@ -28,6 +29,7 @@ export function CastPage() {
   const { data: settings } = useSettings()
   const running = useProjectAnalysis(pid)
   const [showHidden, setShowHidden] = useState(false)
+  const [anilistOpen, setAnilistOpen] = useState(false)
   const navigate = useNavigate()
   const { shown, hidden } = splitHidden(cast)
   // Anime runs its own character pipeline while the feature stays behind
@@ -57,6 +59,11 @@ export function CastPage() {
           {cast && cast.unassigned > 0 && (
             <ContextMenuItem onSelect={() => void navigate({ to: "/p/$pid/cast/$cid", params: { pid, cid: "unassigned" } })}>
               <User /> Everyone else
+            </ContextMenuItem>
+          )}
+          {cast && settings?.anilist && project?.content === "anime" && !anime && (
+            <ContextMenuItem onSelect={() => setAnilistOpen(true)}>
+              <MagnifyingGlass /> Names from AniList
             </ContextMenuItem>
           )}
           {hidden.length > 0 && (
@@ -166,6 +173,9 @@ export function CastPage() {
           </>
         )}
       </div>
+      {cast && (
+        <AniListDialog pid={pid} characters={cast.characters} open={anilistOpen} onOpenChange={setAnilistOpen} />
+      )}
     </Page>
   )
 }

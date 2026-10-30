@@ -398,7 +398,10 @@ fn submit_analysis(app: &AppHandle, project: &Arc<Project>, media_id: MediaId, o
             record_stage(&state, &faces, |s, e| project.set_faces_state(media_id, s, e));
             notify();
             faces?;
-            if !project.finds_bodies() {
+            // Anime finds its characters whole: no one is looked for by
+            // their body, however the setting reads.
+            let anime = project.content().map(|c| c == ContentKind::Anime).unwrap_or(false);
+            if !project.finds_bodies() || anime {
                 return Ok(());
             }
             let bodies = guarded(|| recorded(|m| m.bodies), || run_bodies(&app2, &state, &project, media_id, ctx));
