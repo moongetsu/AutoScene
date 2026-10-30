@@ -1,0 +1,16 @@
+[project]
+name = "autoscene-anime-bench"
+version = "0.1.0"
+description = "Dev-only: accuracy harness for the anime character bench (never shipped; timings come from the Rust examples)."
+requires-python = ">=3.14"
+# Newest releases, pinned exactly.
+dependencies = [
+    "onnxruntime==1.31.1",
+    "numpy==2.5.4",
+    "pillow==13.0.0",
+    "scipy==1.18.1",
+]
+
+[tool.uv]
+package = false
+prerelease = "allow"

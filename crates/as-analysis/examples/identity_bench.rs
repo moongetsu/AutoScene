@@ -44,17 +44,218 @@
 //!   `overlap` the faces seen in the same frames (where, how alike);
 //!   `copresence` characters on screen together (how often, how alike);
 //!   `dets <file.tracks> <track>…` a track's detections.
+//!
+//! The anime bench (`bench/anime/README.md`, files as `FORMATS.md`): label
+//! names are gallery codes, `?e` and `n` (each someone of their own), `?u`
+//! and `x` (left out); older labels' `?` is `?e`. From the environment:
+//! - `GALLERY=<gallery.tsv>` and `LEVEL=look|figure|person` (default
+//!   `look`: names as labelled) map names to the level before every
+//!   subcommand scores them.
+//! - The main cast is fixed once from the labels: figures with at least
+//!   `MAIN_SECS` (30) on screen by shot presence (`PRESENCE=<presence.tsv>`),
+//!   else by the labels' spans. `FPS=<num>/<den>` (24000/1001).
+//! - `SPANS=<spans.tsv>`: tracks mostly inside an OP/ED, eyecatch, recap or
+//!   preview are left out of the numbers and reported apart.
+//! - `SEGMENTS=<bb.segments.tsv>`: each main name's scenepack (the shots
+//!   their character is seen in, ranked as the app does) against the shots
+//!   they are in (by presence, else by their labels): clip precision and
+//!   recall, precision at 10 and 25 (a shorter pack: over all its shots).
+//!   With truth from the labels, a pack's shots where the character holds
+//!   only `x`, `?u` or unlabelled faces are left out (reported).
+//! - `score` also gives each main name's coverage over time (a track holds
+//!   their labelled frames; one of a character named like them does), the
+//!   characters needed for 90 % of their frames in characters ("merges to
+//!   clean"; per episode with `EPISODES=<frame>,…`, the first frame of each
+//!   episode after the first on the project's timeline) and the share of
+//!   their frames in no character.
+//!   `BOOT=<n>` adds 95 % intervals (figures drawn with replacement, the
+//!   looks of a figure together);
+//!   `ITEMS=<file>` writes what each figure adds, and
+//!   `paired <itemsA> <itemsB>` gives the paired-bootstrap interval of B − A.
+//! - `stress`: `STRESS_COPY_LO/HI` (0.5 – 0.75), how alike a mirror copy is;
+//!   `STRESS_REFL_LO/HI` (0.53 – 0.65), the share of a reflection's own face.
 
+#[path = "common/anime.rs"]
+mod anime;
 #[path = "common/labels.rs"]
 mod labels;
+#[path = "common/scoring.rs"]
+mod scoring;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+use anime::{Gallery, Level, Presence, Spans, at_level, read_presence, read_shots};
 use as_analysis::tracks::FaceTrack;
-use as_identity::metrics::bcubed;
-use as_identity::{Assign, Params, identify};
-use labels::{FPS, found_faces, input, members, names_of, read_labels, read_tracks};
+use as_identity::metrics::{BCubed, bcubed};
+use as_identity::{Assign, Params, Space, identify};
+use labels::{
+    Kind, Label, character_names, found_faces_of, fps, input, kind, members, named, names_of, read_labels, read_tracks,
+};
+use scoring::{Item, PackScore};
+
+/// What the bench reads beside the tracks and labels, from the environment
+/// (see the module).
+struct Setup {
+    gallery: Option<Gallery>,
+    level: Level,
+    presence: Option<Vec<Presence>>,
+    spans: Spans,
+    shots: Option<Vec<(u32, u32)>>,
+    main_secs: f64,
+    /// The first frame of each episode after the first, on the project's
+    /// timeline (empty: one episode).
+    episodes: Vec<u32>,
+}
+
+/// The main cast, fixed once from the labels.
+struct Cast {
+    /// Main figures and their seconds on screen, most first.
+    figures: Vec<(String, f64)>,
+    /// Their names at the scoring level (every look of theirs at `look`).
+    names: HashSet<String>,
+    from: &'static str,
+}
+
+impl Cast {
+    fn is_main(&self, name: &str) -> bool {
+        self.names.contains(name)
+    }
+}
+
+impl Setup {
+    fn from_env() -> Self {
+        let path = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+        let level = Level::from_env();
+        let gallery = path("GALLERY").map(|p| Gallery::read(&p));
+        assert!(gallery.is_some() || level == Level::Look, "LEVEL={} needs GALLERY=<gallery.tsv>", level.word());
+        Self {
+            gallery,
+            level,
+            presence: path("PRESENCE").map(|p| read_presence(&p)),
+            spans: path("SPANS").map_or_else(Spans::default, |p| Spans::read(&p)),
+            shots: path("SEGMENTS").map(|p| read_shots(&p)),
+            main_secs: std::env::var("MAIN_SECS").ok().map_or(30.0, |v| v.parse().expect("MAIN_SECS=<seconds>")),
+            episodes: path("EPISODES").map_or(Vec::new(), |v| {
+                let mut at: Vec<u32> = v.split(',').map(|f| f.trim().parse().expect("EPISODES=<frame>,…")).collect();
+                at.sort_unstable();
+                at
+            }),
+        }
+    }
+
+    fn at(&self, name: &str, level: Level) -> String {
+        at_level(name, self.gallery.as_ref(), level)
+    }
+
+    /// The episode `frame` is in (0 the first).
+    fn episode(&self, frame: u32) -> usize {
+        self.episodes.partition_point(|&f| f <= frame)
+    }
+
+    /// The labels of `path` with their names at the scoring level, and the
+    /// main cast (fixed from them first).
+    fn labels(&self, path: &str) -> (Vec<Label>, Cast) {
+        self.name_labels(read_labels(path))
+    }
+
+    /// `labels` with their names at the scoring level, and the main cast.
+    fn name_labels(&self, mut labels: Vec<Label>) -> (Vec<Label>, Cast) {
+        if let Some(g) = &self.gallery {
+            let mut unknown: Vec<&str> =
+                labels.iter().filter_map(|l| named(&l.name)).filter(|n| !g.contains(n)).collect();
+            unknown.sort_unstable();
+            unknown.dedup();
+            if !unknown.is_empty() {
+                eprintln!("not in the gallery (scored as they are): {}", unknown.join(", "));
+            }
+        }
+        let cast = self.cast(&labels);
+        for l in &mut labels {
+            l.name = self.at(&l.name, self.level);
+        }
+        (labels, cast)
+    }
+
+    /// Figures with at least `main_secs` on screen, outside the spans: by
+    /// shot presence, else by the spans of their labels.
+    fn cast(&self, labels: &[Label]) -> Cast {
+        let mut secs: HashMap<String, f64> = HashMap::new();
+        let from = match &self.presence {
+            Some(rows) => {
+                for r in rows.iter().filter(|r| self.spans.mostly_in(r.start, r.end).is_none()) {
+                    let mut figures: Vec<String> =
+                        r.codes.iter().filter(|c| named(c).is_some()).map(|c| self.at(c, Level::Figure)).collect();
+                    figures.sort_unstable();
+                    figures.dedup();
+                    for f in figures {
+                        *secs.entry(f).or_default() += f64::from(r.end - r.start) / fps();
+                    }
+                }
+                "shot presence"
+            }
+            None => {
+                for l in labels.iter().filter(|l| self.spans.mostly_in(l.span.0, l.span.1).is_none()) {
+                    if let Some(n) = named(&l.name) {
+                        *secs.entry(self.at(n, Level::Figure)).or_default() += f64::from(l.span.1 - l.span.0) / fps();
+                    }
+                }
+                "the labels' spans"
+            }
+        };
+        let mut figures: Vec<(String, f64)> = secs.into_iter().filter(|(_, s)| *s >= self.main_secs).collect();
+        figures.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+        let main: HashSet<&str> = figures.iter().map(|f| f.0.as_str()).collect();
+        let codes = labels
+            .iter()
+            .map(|l| l.name.as_str())
+            .chain(self.gallery.iter().flat_map(Gallery::codes))
+            .chain(self.presence.iter().flatten().flat_map(|r| r.codes.iter().map(String::as_str)));
+        let names = codes
+            .filter(|c| named(c).is_some() && main.contains(self.at(c, Level::Figure).as_str()))
+            .map(|c| self.at(c, self.level))
+            .collect();
+        Cast { figures, names, from }
+    }
+
+    /// Shot presence with its codes at the scoring level.
+    fn presence_at_level(&self) -> Option<Vec<(u32, u32, Vec<String>)>> {
+        let rows = self.presence.as_ref()?;
+        Some(rows.iter().map(|r| (r.start, r.end, r.codes.iter().map(|c| self.at(c, self.level)).collect())).collect())
+    }
+}
+
+/// The labels of `path`, names at the scoring level (`GALLERY`, `LEVEL`).
+fn load_labels(path: &str) -> Vec<Label> {
+    Setup::from_env().labels(path).0
+}
+
+/// A person per track: each known name one, everyone else someone of their
+/// own; and the known names by their person.
+fn people<'a>(truth_name: &[Option<&'a str>]) -> (Vec<usize>, HashMap<usize, &'a str>) {
+    let mut ids: HashMap<&str, usize> = HashMap::new();
+    let truth: Vec<usize> = truth_name
+        .iter()
+        .enumerate()
+        .map(|(i, n)| match n.and_then(named) {
+            Some(n) => {
+                let k = ids.len();
+                *ids.entry(n).or_insert(k)
+            }
+            None => 1_000_000 + i,
+        })
+        .collect();
+    (truth, ids.into_iter().map(|(n, k)| (k, n)).collect())
+}
+
+/// The tracks scored: labelled, not left out (`x`, `?u`), not mostly
+/// inside a span.
+fn scored_tracks(tracks: &[FaceTrack], truth_name: &[Option<&str>], spans: &Spans) -> Vec<usize> {
+    (0..tracks.len())
+        .filter(|&i| truth_name[i].is_some_and(|n| kind(n) != Kind::Excluded))
+        .filter(|&i| spans.mostly_in(tracks[i].start, tracks[i].end).is_none())
+        .collect()
+}
 
 fn sheets(tracks: &[FaceTrack], out: &Path) {
     let input = input(tracks);
@@ -67,13 +268,17 @@ fn sheets(tracks: &[FaceTrack], out: &Path) {
     order.sort_by_key(|&c| std::cmp::Reverse(screen(c)));
     let _ = std::fs::remove_dir_all(out);
     let mut tsv = String::from("sheet\tn\ttrack\n");
+    // Faces in the space the centroids are in (the fitted one, for animation).
+    let in_space = |e: &[f32]| match &o.space {
+        Space::Fitted(f) => f.embed(e),
+        Space::Faces => e.to_vec(),
+    };
     let mut write = |name: &str, mut ids: Vec<usize>, centroid: Option<&[f32]>| {
         // Least typical first: that's where mistakes are.
         if let Some(c) = centroid {
-            ids.sort_by(|&a, &b| {
-                as_vision::arcface::cosine(&tracks[a].embedding, c)
-                    .total_cmp(&as_vision::arcface::cosine(&tracks[b].embedding, c))
-            });
+            let cos: HashMap<usize, f32> =
+                ids.iter().map(|&i| (i, as_vision::arcface::cosine(&in_space(&tracks[i].embedding), c))).collect();
+            ids.sort_by(|a, b| cos[a].total_cmp(&cos[b]));
         }
         let dir = out.join(name);
         std::fs::create_dir_all(&dir).unwrap();
@@ -84,7 +289,7 @@ fn sheets(tracks: &[FaceTrack], out: &Path) {
     };
     for (rank, &c) in order.iter().enumerate() {
         let ids: Vec<usize> = (0..tracks.len()).filter(|&i| chars[i] == Some(c)).collect();
-        println!("c{rank:02}: {} tracks, {:.0} s", ids.len(), screen(c) as f64 / FPS);
+        println!("c{rank:02}: {} tracks, {:.0} s", ids.len(), screen(c) as f64 / fps());
         write(&format!("c{rank:02}"), ids, Some(&o.characters[c].centroid));
     }
     let rest: Vec<usize> = (0..tracks.len()).filter(|&i| chars[i].is_none()).collect();
@@ -150,15 +355,15 @@ fn labels(tracks: &[FaceTrack], out: &Path, answers_path: &str, labels_path: &st
     let mut v: Vec<_> = count.into_iter().collect();
     v.sort_by_key(|(_, (_, f))| std::cmp::Reverse(*f));
     for (n, (k, f)) in v {
-        println!("{n:12} {k:5} tracks {:7.1} s", f as f64 / FPS);
+        println!("{n:12} {k:5} tracks {:7.1} s", f as f64 / fps());
     }
 }
 
 /// Embedder alone: same-person vs different-person track similarity.
 fn separation(tracks: &[FaceTrack], labels_path: &str) {
-    let labels = read_labels(labels_path);
+    let labels = load_labels(labels_path);
     let names = names_of(tracks, &labels);
-    let named: Vec<usize> = (0..tracks.len()).filter(|&i| names[i].is_some_and(|n| n != "?" && n != "x")).collect();
+    let named: Vec<usize> = (0..tracks.len()).filter(|&i| names[i].and_then(named).is_some()).collect();
     let mut same: Vec<(f32, f32)> = Vec::new();
     let mut diff: Vec<(f32, f32)> = Vec::new();
     for (k, &i) in named.iter().enumerate() {
@@ -204,43 +409,30 @@ fn separation(tracks: &[FaceTrack], labels_path: &str) {
 }
 
 fn score(tracks: &[FaceTrack], labels_path: &str, p: &Params, detail: bool) {
-    let labels = read_labels(labels_path);
+    let setup = Setup::from_env();
+    let (labels, cast) = setup.labels(labels_path);
     let truth_name = names_of(tracks, &labels);
     let matched = truth_name.iter().filter(|n| n.is_some()).count();
-    // Scored: tracks with a label that isn't "can't tell".
-    let keep: Vec<usize> = (0..tracks.len()).filter(|&i| truth_name[i].is_some_and(|n| n != "x")).collect();
+    let keep = scored_tracks(tracks, &truth_name, &setup.spans);
     // Unnamed faces are each someone of their own.
-    let mut ids: HashMap<&str, usize> = HashMap::new();
-    let truth: Vec<usize> = truth_name
-        .iter()
-        .enumerate()
-        .map(|(i, n)| match n {
-            Some(n) if *n != "?" && *n != "x" => {
-                let k = ids.len();
-                *ids.entry(n).or_insert(k)
-            }
-            _ => 1_000_000 + i,
-        })
-        .collect();
-    let named: HashMap<usize, &str> = ids.iter().map(|(n, &k)| (k, *n)).collect();
-    // The main cast: named people on screen 30 s or more.
+    let (truth, named) = people(&truth_name);
     let mut screen: HashMap<usize, u32> = HashMap::new();
     for (i, t) in tracks.iter().enumerate() {
         *screen.entry(truth[i]).or_default() += t.end - t.start;
     }
-    let main = |k: usize| named.contains_key(&k) && screen[&k] as f64 / FPS >= 30.0;
+    // The main cast, fixed from the labels.
+    let main = |k: usize| named.get(&k).is_some_and(|n| cast.is_main(n));
 
     let t0 = std::time::Instant::now();
     let o = identify(&input(tracks), p);
     let ms = t0.elapsed().as_millis();
     let got = members(&o);
-    let sub_got: Vec<Option<usize>> = keep.iter().map(|&i| got[i]).collect();
-    let sub_truth: Vec<usize> = keep.iter().map(|&i| truth[i]).collect();
-    let frames: Vec<f32> = keep.iter().map(|&i| (tracks[i].end - tracks[i].start) as f32).collect();
-    let ones = vec![1f32; keep.len()];
-    let show = |what: &str, counted: &dyn Fn(usize) -> bool| {
-        let counted = |k: usize| counted(keep[k]);
-        let by_track = bcubed(&sub_got, &sub_truth, &ones, counted);
+    let show = |what: &str, ids: &[usize], counted: &dyn Fn(usize) -> bool| {
+        let sub_got: Vec<Option<usize>> = ids.iter().map(|&i| got[i]).collect();
+        let sub_truth: Vec<usize> = ids.iter().map(|&i| truth[i]).collect();
+        let frames: Vec<f32> = ids.iter().map(|&i| (tracks[i].end - tracks[i].start) as f32).collect();
+        let counted = |k: usize| counted(ids[k]);
+        let by_track = bcubed(&sub_got, &sub_truth, &vec![1f32; ids.len()], counted);
         let by_time = bcubed(&sub_got, &sub_truth, &frames, counted);
         println!(
             "{what:28} tracks P {:.3} R {:.3} F {:.3} | screen time P {:.3} R {:.3} F {:.3}",
@@ -257,12 +449,12 @@ fn score(tracks: &[FaceTrack], labels_path: &str, p: &Params, detail: bool) {
         p.margin,
         p.unsure
     );
-    show("main cast (>= 30 s)", &|i| main(truth[i]));
-    show("everyone named", &|i| named.contains_key(&truth[i]));
-    found_faces(tracks, &labels, &truth_name, &got);
+    show(&format!("main cast (>= {} s)", setup.main_secs), &keep, &|i| main(truth[i]));
+    show("everyone named", &keep, &|i| named.contains_key(&truth[i]));
+    found_faces_of(tracks, &labels, &truth_name, &got, |n| cast.is_main(n), |f| !setup.spans.holds(f));
     // Per main character: where its tracks went.
     let mut mains: Vec<usize> = named.keys().copied().filter(|&k| main(k)).collect();
-    mains.sort_by_key(|k| std::cmp::Reverse(screen[k]));
+    mains.sort_by_key(|k| (std::cmp::Reverse(screen[k]), named[k]));
     for k in mains {
         let mine: Vec<usize> = keep.iter().copied().filter(|&i| truth[i] == k).collect();
         let mut into: HashMap<Option<usize>, usize> = HashMap::new();
@@ -280,7 +472,7 @@ fn score(tracks: &[FaceTrack], labels_path: &str, p: &Params, detail: bool) {
             "  {:12} {:4} tracks {:6.1} s: biggest character has {size} ({:.0}% of it them), {} other characters, {unsure} unsure, {none} unassigned",
             named[&k],
             mine.len(),
-            screen[&k] as f64 / FPS,
+            screen[&k] as f64 / fps(),
             100.0 * pure,
             into.keys().filter(|c| c.is_some()).count().saturating_sub(1),
         );
@@ -306,19 +498,348 @@ fn score(tracks: &[FaceTrack], labels_path: &str, p: &Params, detail: bool) {
             }
         }
     }
+
+    // The anime bench's numbers.
+    let mut flags: HashMap<&str, usize> = HashMap::new();
+    labels.iter().flat_map(|l| &l.flags).for_each(|f| *flags.entry(f.as_str()).or_default() += 1);
+    let mut flags: Vec<String> = flags.into_iter().map(|(f, n)| format!("{f} {n}")).collect();
+    flags.sort();
+    println!(
+        "\nscored at the {} level; left out: {} tracks `x`, {} `?u`{}",
+        setup.level.word(),
+        truth_name.iter().filter(|n| *n == &Some("x")).count(),
+        truth_name.iter().filter(|n| *n == &Some("?u")).count(),
+        if flags.is_empty() { String::new() } else { format!("; labels flagged: {}", flags.join(", ")) }
+    );
+    let figures: Vec<String> = cast.figures.iter().map(|(n, s)| format!("{n} {s:.0} s")).collect();
+    println!(
+        "main cast (figures with >= {} s by {}, frozen): {}",
+        setup.main_secs,
+        cast.from,
+        if figures.is_empty() { "none".into() } else { figures.join(", ") }
+    );
+    if !setup.spans.0.is_empty() {
+        let apart: Vec<usize> = (0..tracks.len())
+            .filter(|&i| truth_name[i].is_some_and(|n| kind(n) != Kind::Excluded))
+            .filter(|&i| setup.spans.mostly_in(tracks[i].start, tracks[i].end).is_some())
+            .collect();
+        let mut by_kind: HashMap<&str, usize> = HashMap::new();
+        for t in tracks {
+            if let Some(k) = setup.spans.mostly_in(t.start, t.end) {
+                *by_kind.entry(k).or_default() += 1;
+            }
+        }
+        let mut by_kind: Vec<String> = by_kind.into_iter().map(|(k, n)| format!("{k} {n}")).collect();
+        by_kind.sort();
+        // Characters made of span tracks alone (OP/ED characters nobody is).
+        let only: usize = (0..o.characters.len())
+            .filter(|&c| {
+                let mut of = (0..tracks.len()).filter(|&i| got[i] == Some(c));
+                of.all(|i| setup.spans.mostly_in(tracks[i].start, tracks[i].end).is_some())
+            })
+            .count();
+        println!(
+            "in OP/ED, eyecatch, recap, preview (left out above): {}; {only} characters only there",
+            by_kind.join(", ")
+        );
+        show("  of them, everyone named", &apart, &|i| named.contains_key(&truth[i]));
+    }
+    let r = report(tracks, &labels, &truth_name, &got, &cast, &setup);
+    r.print(setup.presence.is_some());
+    if let Some(n) = std::env::var("BOOT").ok().map(|v| v.parse::<usize>().expect("BOOT=<resamples>")) {
+        let items: Vec<Item> = r.items.iter().map(|x| x.1).collect();
+        let iv = scoring::bootstrap(&items, n, BOOT_SEED);
+        let clip = r.clips().map_or(f64::NAN, |c| c.0);
+        let at = [f64::from(r.track.f), f64::from(r.time.f), clip];
+        let shown: Vec<String> =
+            (0..3).map(|k| format!("{} {:.3} [{:.3}, {:.3}]", scoring::METRICS[k], at[k], iv[k].0, iv[k].1)).collect();
+        println!("95 % intervals ({n} resamples of {} main figures): {}", items.len(), shown.join(", "));
+    }
+    if let Some(path) = std::env::var_os("ITEMS") {
+        scoring::write_items(&path.to_string_lossy(), &r.items);
+    }
+}
+
+/// Seed of every bootstrap: the same draws on every run.
+const BOOT_SEED: u64 = 0x5eed_2026;
+
+/// One main name's numbers beside BCubed.
+struct Row {
+    name: String,
+    /// Labelled frames, held by a track, held by a track of their character.
+    cover: [f64; 3],
+    /// Characters holding 90 % of their frames in characters, over the
+    /// project and per episode (`EPISODES`).
+    groups: usize,
+    per_episode: Vec<usize>,
+    /// The share of their scored tracks' frames in no character (left out
+    /// of `groups`).
+    unassigned: f64,
+    pack: Option<PackScore>,
+    /// Shots of their pack left out of it: truth from the labels, and only
+    /// `x`, `?u` or unlabelled faces of the character there.
+    unknown: usize,
+}
+
+/// The bench's numbers for one grouping (`got`) beside BCubed.
+struct Report {
+    /// The main cast, BCubed per track and per screen time (as `score`).
+    track: BCubed,
+    time: BCubed,
+    rows: Vec<Row>,
+    /// What each main figure adds (its looks together at `LEVEL=look`), for
+    /// the bootstrap.
+    items: Vec<(String, Item)>,
+}
+
+impl Report {
+    fn held(&self) -> (f64, f64) {
+        let sum = |k: usize| self.rows.iter().map(|r| r.cover[k]).sum::<f64>();
+        (scoring::ratio(sum(1), sum(0)), scoring::ratio(sum(2), sum(0)))
+    }
+
+    fn merges(&self) -> usize {
+        self.rows.iter().map(|r| r.groups.saturating_sub(1)).sum()
+    }
+
+    /// The most merges to clean of one name in one episode.
+    fn worst_episode(&self) -> usize {
+        self.rows.iter().flat_map(|r| &r.per_episode).map(|g| g.saturating_sub(1)).max().unwrap_or(0)
+    }
+
+    /// Clip precision and recall over the main names' packs, the shots in
+    /// them, and the shots of unknown truth left out.
+    fn clips(&self) -> Option<(f64, f64, usize, usize)> {
+        let packs: Vec<PackScore> = self.rows.iter().filter_map(|r| r.pack).collect();
+        if packs.is_empty() {
+            return None;
+        }
+        let sum = |f: fn(&PackScore) -> usize| packs.iter().map(f).sum::<usize>() as f64;
+        Some((
+            scoring::ratio(sum(|p| p.right), sum(|p| p.shots)),
+            scoring::ratio(sum(|p| p.right), sum(|p| p.truth)),
+            sum(|p| p.shots) as usize,
+            self.rows.iter().map(|r| r.unknown).sum(),
+        ))
+    }
+
+    fn print(&self, by_presence: bool) {
+        let (held, theirs) = self.held();
+        let episodes = self.rows.first().map_or(1, |r| r.per_episode.len());
+        println!(
+            "main cast over time           in a track {held:.3} | on their character {theirs:.3} | {} merges to clean{}",
+            self.merges(),
+            if episodes > 1 {
+                format!(" (at most {} per name and episode, {episodes} episodes)", self.worst_episode())
+            } else {
+                String::new()
+            }
+        );
+        if let Some((p, r, n, unknown)) = self.clips() {
+            let from = if by_presence { "shot presence" } else { "labels" };
+            let left = if unknown > 0 {
+                format!("; {unknown} with only `x`, `?u` or unlabelled faces left out")
+            } else {
+                String::new()
+            };
+            println!("main cast clips (truth: {from}) precision {p:.3} recall {r:.3} ({n} shots in their packs{left})");
+        }
+        for row in &self.rows {
+            let [all, held, theirs] = row.cover;
+            let pack = row.pack.map_or(String::new(), |p| {
+                // A pack shorter than 10 (25) shots: over all of them.
+                let at = |(right, n): (usize, usize)| scoring::ratio(right as f64, n as f64);
+                format!(
+                    " | clips {}: P {:.3} R {:.3} P@10 {:.2} P@25 {:.2}",
+                    p.shots,
+                    scoring::ratio(p.right as f64, p.shots as f64),
+                    scoring::ratio(p.right as f64, p.truth as f64),
+                    at(p.at10),
+                    at(p.at25)
+                )
+            });
+            let per_episode = if row.per_episode.len() > 1 {
+                let m: Vec<String> = row.per_episode.iter().map(|g| g.saturating_sub(1).to_string()).collect();
+                format!(" ({} per episode)", m.join("/"))
+            } else {
+                String::new()
+            };
+            println!(
+                "  {:12} {:7.1} s labelled: in a track {:.3} | theirs {:.3} | {} characters for 90 %, {} merges{per_episode}, {:.0} % unassigned{pack}",
+                row.name,
+                all / fps(),
+                scoring::ratio(held, all),
+                scoring::ratio(theirs, all),
+                row.groups,
+                row.groups.saturating_sub(1),
+                100.0 * row.unassigned
+            );
+        }
+    }
+}
+
+/// The bench's numbers beside BCubed for one grouping (`got`, a character
+/// per track) of `tracks` named `truth_name` from `labels`.
+fn report(
+    tracks: &[FaceTrack],
+    labels: &[Label],
+    truth_name: &[Option<&str>],
+    got: &[Option<usize>],
+    cast: &Cast,
+    setup: &Setup,
+) -> Report {
+    let keep = scored_tracks(tracks, truth_name, &setup.spans);
+    let kept: HashSet<usize> = keep.iter().copied().collect();
+    let (truth, _) = people(truth_name);
+    let main_of = |i: usize| truth_name[i].and_then(named).filter(|n| cast.is_main(n));
+    let sub_got: Vec<Option<usize>> = keep.iter().map(|&i| got[i]).collect();
+    let sub_truth: Vec<usize> = keep.iter().map(|&i| truth[i]).collect();
+    let frames: Vec<f32> = keep.iter().map(|&i| (tracks[i].end - tracks[i].start) as f32).collect();
+    let ones = vec![1f32; keep.len()];
+    let counted = |k: usize| main_of(keep[k]).is_some();
+    let (track, time) = (bcubed(&sub_got, &sub_truth, &ones, counted), bcubed(&sub_got, &sub_truth, &frames, counted));
+    let (by_track, by_time) =
+        (scoring::bcubed_terms(&sub_got, &sub_truth, &ones), scoring::bcubed_terms(&sub_got, &sub_truth, &frames));
+
+    let char_name = character_names(tracks, truth_name, got);
+    let cover =
+        scoring::coverage(tracks, labels, got, &char_name, |l| cast.is_main(&l.name), |f| !setup.spans.holds(f));
+    let groups = scoring::groups_for(tracks, truth_name, got, |i| kept.contains(&i), 0.9);
+    // The same per episode (a track is in the one it starts in).
+    let per_episode: Vec<HashMap<&str, usize>> = (0..=setup.episodes.len())
+        .map(|e| {
+            let of_e = |i: usize| kept.contains(&i) && setup.episode(tracks[i].start) == e;
+            scoring::groups_for(tracks, truth_name, got, of_e, 0.9)
+        })
+        .collect();
+    // Each main name's pack: the character named like them holding most of
+    // their frames.
+    let mut frames_in: HashMap<(&str, usize), u32> = HashMap::new();
+    for &i in &keep {
+        if let (Some(n), Some(c)) = (main_of(i), got[i])
+            && char_name.get(&c) == Some(&n)
+        {
+            *frames_in.entry((n, c)).or_default() += tracks[i].end - tracks[i].start;
+        }
+    }
+    let mut pack_of: HashMap<&str, (u32, usize)> = HashMap::new();
+    for (&(n, c), &f) in &frames_in {
+        let e = pack_of.entry(n).or_insert((f, c));
+        if (f, std::cmp::Reverse(c)) > (e.0, std::cmp::Reverse(e.1)) {
+            *e = (f, c);
+        }
+    }
+    let packs = setup.shots.as_ref().map(|shots| {
+        let ok = |s: usize| setup.spans.mostly_in(shots[s].0, shots[s].1).is_none();
+        let packs = scoring::packs(tracks, got, shots, ok, fps());
+        let rows = setup.presence_at_level();
+        let by_presence = rows.is_some();
+        let mut truth = match rows {
+            Some(rows) => scoring::true_shots_presence(&rows, shots),
+            None => scoring::true_shots_labels(labels, shots),
+        };
+        truth.values_mut().for_each(|s| s.retain(|&s| ok(s)));
+        (packs, truth, scoring::in_shots(tracks, got, shots), by_presence)
+    });
+
+    let mut names: Vec<&str> = cast.names.iter().map(String::as_str).collect();
+    let all = |n: &str| cover.get(n).map_or(0.0, |c| c[0]);
+    names.sort_by(|a, b| all(b).total_cmp(&all(a)).then(a.cmp(b)));
+    let none = HashSet::new();
+    let mut rows = Vec::new();
+    let mut items: Vec<(String, Item)> = Vec::new();
+    for n in names {
+        let pack = packs.as_ref().map(|(packs, truth, in_shot, by_presence)| {
+            let truth = truth.get(n).unwrap_or(&none);
+            let c = pack_of.get(n).map(|x| x.1);
+            let mine = c.and_then(|c| packs.get(&c)).map_or(&[][..], Vec::as_slice);
+            // Labels only know the faces they name: a shot where the
+            // character holds only faces nobody could name (`x`, `?u`) or
+            // nobody labelled may still be theirs. It is left out, not
+            // counted wrong.
+            let (known, unknown): (Vec<usize>, Vec<usize>) = mine.iter().partition(|&&s| {
+                *by_presence
+                    || truth.contains(&s)
+                    || in_shot[s]
+                        .iter()
+                        .any(|&i| got[i] == c && truth_name[i].is_some_and(|t| kind(t) != Kind::Excluded))
+            });
+            (PackScore::of(&known, truth), unknown.len())
+        });
+        let mut item = Item::default();
+        let (mut mine, mut unassigned) = (0.0, 0.0);
+        for (k, &i) in keep.iter().enumerate().filter(|&(_, &i)| main_of(i) == Some(n)) {
+            let w = f64::from(frames[k]);
+            item.track[0] += by_track[k].0;
+            item.track[1] += by_track[k].1;
+            item.track[2] += 1.0;
+            item.time[0] += w * by_time[k].0;
+            item.time[1] += w * by_time[k].1;
+            item.time[2] += w;
+            mine += w;
+            if got[i].is_none() {
+                unassigned += w;
+            }
+        }
+        if let Some((p, _)) = pack {
+            item.clip = [p.right as f64, p.shots as f64];
+        }
+        // A look of a main figure nobody labelled or saw.
+        if all(n) == 0.0 && item.track[2] == 0.0 && pack.is_none_or(|(p, _)| p.truth == 0) {
+            continue;
+        }
+        // The bootstrap draws figures: the looks of one figure go together.
+        let figure = setup.at(n, Level::Figure);
+        match items.iter_mut().find(|x| x.0 == figure) {
+            Some(x) => x.1.add(&item),
+            None => items.push((figure, item)),
+        }
+        rows.push(Row {
+            name: n.to_string(),
+            cover: cover.get(n).copied().unwrap_or_default(),
+            groups: groups.get(n).copied().unwrap_or(0),
+            per_episode: per_episode.iter().map(|g| g.get(n).copied().unwrap_or(0)).collect(),
+            unassigned: scoring::ratio(unassigned, mine),
+            pack: pack.map(|x| x.0),
+            unknown: pack.map_or(0, |x| x.1),
+        });
+    }
+    Report { track, time, rows, items }
+}
+
+/// `paired <itemsA> <itemsB>`: per metric, B − A over the figures both
+/// runs have, with its 95 % paired-bootstrap interval (`BOOT`, 2,000
+/// resamples by default).
+fn paired(a_path: &str, b_path: &str) {
+    let (a, b) = (scoring::read_items(a_path), scoring::read_items(b_path));
+    let of_b: HashMap<&str, Item> = b.iter().map(|(n, i)| (n.as_str(), *i)).collect();
+    let both: Vec<(Item, Item)> = a.iter().filter_map(|(n, i)| Some((*i, *of_b.get(n.as_str())?))).collect();
+    let only = a.len() + b.len() - 2 * both.len();
+    if only > 0 {
+        eprintln!("{only} figures in one run only: left out");
+    }
+    let n = std::env::var("BOOT").ok().map_or(2000, |v| v.parse().expect("BOOT=<resamples>"));
+    let (xa, xb): (Vec<Item>, Vec<Item>) = both.into_iter().unzip();
+    let (ma, mb) = (scoring::metrics(&xa), scoring::metrics(&xb));
+    let diff = scoring::paired(&xa, &xb, n, BOOT_SEED);
+    println!("{} figures, {n} paired resamples", xa.len());
+    for (k, m) in scoring::METRICS.iter().enumerate() {
+        let (d, lo, hi) = diff[k];
+        println!("  {m:15} A {:.3} B {:.3}: B − A {d:+.4}, 95 % [{lo:+.4}, {hi:+.4}]", ma[k], mb[k]);
+    }
 }
 
 /// Who is in each character (labels), and how alike characters of the same
 /// person are: their average-linkage similarity and the tracks of theirs on
 /// screen together.
 fn chars(tracks: &[FaceTrack], labels_path: &str) {
-    let labels = read_labels(labels_path);
+    let labels = load_labels(labels_path);
     let truth_name = names_of(tracks, &labels);
     let input = input(tracks);
     let o = identify(&input, &env_params());
     let got = members(&o);
     let n = o.characters.len();
-    let secs = |ids: &[usize]| ids.iter().map(|&i| (tracks[i].end - tracks[i].start) as f64).sum::<f64>() / FPS;
+    let secs = |ids: &[usize]| ids.iter().map(|&i| (tracks[i].end - tracks[i].start) as f64).sum::<f64>() / fps();
     let of: Vec<Vec<usize>> = (0..n).map(|c| (0..tracks.len()).filter(|&i| got[i] == Some(c)).collect()).collect();
     let mut order: Vec<usize> = (0..n).collect();
     order.sort_by(|&a, &b| secs(&of[b]).total_cmp(&secs(&of[a])));
@@ -328,11 +849,11 @@ fn chars(tracks: &[FaceTrack], labels_path: &str) {
         for &i in &of[c] {
             let e = by.entry(truth_name[i].unwrap_or("-")).or_default();
             e.0 += 1;
-            e.1 += (tracks[i].end - tracks[i].start) as f64 / FPS;
+            e.1 += (tracks[i].end - tracks[i].start) as f64 / fps();
         }
         let mut v: Vec<_> = by.into_iter().collect();
         v.sort_by(|a, b| b.1.1.total_cmp(&a.1.1));
-        major[c] = v.iter().find(|(k, _)| *k != "?" && *k != "x" && *k != "-").map_or("?", |x| x.0);
+        major[c] = v.iter().find(|(k, _)| *k != "-" && named(k).is_some()).map_or("?", |x| x.0);
         let what: Vec<String> = v.iter().map(|(k, (t, s))| format!("{k} {t}/{s:.0}s")).collect();
         let core = of[c].iter().filter(|&&i| matches!(o.tracks[i], (Assign::Auto(_), s) if s >= 1.0)).count();
         println!(
@@ -415,7 +936,7 @@ fn chars(tracks: &[FaceTrack], labels_path: &str) {
 /// their average-linkage similarity, centroid similarity, best pairs and
 /// tracks on screen together.
 fn pairs(tracks: &[FaceTrack], labels_path: &str, link: f32) {
-    let labels = read_labels(labels_path);
+    let labels = load_labels(labels_path);
     let truth_name = names_of(tracks, &labels);
     let input = input(tracks);
     let p = Params::default();
@@ -459,7 +980,7 @@ fn pairs(tracks: &[FaceTrack], labels_path: &str, link: f32) {
             G { members: g, name: name.to_string(), purity: f as f32 / total as f32, sum, weight, cen, coh }
         })
         .collect();
-    let named = |g: &G| g.purity >= 0.8 && !matches!(g.name.as_str(), "?" | "x" | "-");
+    let named = |g: &G| g.purity >= 0.8 && g.name != "-" && named(&g.name).is_some();
     println!(
         "link {link}: {} groups of 2+ tracks, {} pure and named",
         gs.len(),
@@ -551,7 +1072,7 @@ fn pairs(tracks: &[FaceTrack], labels_path: &str, link: f32) {
 /// frames both were seen (intersection over the smaller box), with their
 /// labels — duplicates of one face sit at the same place, two people don't.
 fn overlap(tracks: &[FaceTrack], labels_path: &str) {
-    let labels = read_labels(labels_path);
+    let labels = load_labels(labels_path);
     let truth_name = names_of(tracks, &labels);
     let contain = |a: &[f32; 4], b: &[f32; 4]| {
         let iw = (a[2].min(b[2]) - a[0].max(b[0])).max(0.0);
@@ -583,10 +1104,10 @@ fn overlap(tracks: &[FaceTrack], labels_path: &str) {
     // Their identity similarity: copies of one person (same name) vs two people.
     let mut by_cos: Vec<(f32, bool, &str, &str, usize, usize, usize)> = rows
         .iter()
-        .filter(|r| !matches!(r.5, "-" | "x") && !matches!(r.6, "-" | "x"))
+        .filter(|r| [r.5, r.6].iter().all(|n| *n != "-" && kind(n) != Kind::Excluded))
         .map(|r| {
             let cos = as_vision::arcface::cosine(&tracks[r.3].embedding, &tracks[r.4].embedding);
-            (cos, r.5 == r.6 && r.5 != "?", r.5, r.6, r.3, r.4, r.2)
+            (cos, r.5 == r.6 && named(r.5).is_some(), r.5, r.6, r.3, r.4, r.2)
         })
         .collect();
     by_cos.sort_by(|x, y| y.0.total_cmp(&x.0));
@@ -614,7 +1135,7 @@ fn overlap(tracks: &[FaceTrack], labels_path: &str) {
 /// faces are — how far apart copies (a reflection) and people who are
 /// always together are.
 fn copresence(tracks: &[FaceTrack], labels_path: &str) {
-    let labels = read_labels(labels_path);
+    let labels = load_labels(labels_path);
     let names = names_of(tracks, &labels);
     let ins = input(tracks);
     let o = identify(&ins, &Params::default());
@@ -714,11 +1235,11 @@ fn splits_and_merges(o: &as_identity::Outcome, names: &[Option<&str>], frames: &
     let got = members(o);
     let mut person_frames: HashMap<&str, u32> = HashMap::new();
     for (i, n) in names.iter().enumerate() {
-        if let Some(n) = n.filter(|n| !matches!(*n, "?" | "x" | "-")) {
+        if let Some(n) = n.and_then(named) {
             *person_frames.entry(n).or_default() += frames[i];
         }
     }
-    let big = |n: &str| person_frames.get(n).is_some_and(|&f| f as f64 / FPS >= 20.0);
+    let big = |n: &str| person_frames.get(n).is_some_and(|&f| f as f64 / fps() >= 20.0);
     let mut by_char: HashMap<usize, HashMap<&str, u32>> = HashMap::new();
     for (i, c) in got.iter().enumerate() {
         if let (Some(c), Some(n)) = (c, names[i]) {
@@ -755,7 +1276,7 @@ fn splits_and_merges(o: &as_identity::Outcome, names: &[Option<&str>], frames: &
 /// a cast built up episode by episode. Counts people split over characters
 /// and characters holding two people.
 fn stress(tracks: &[FaceTrack], labels_path: &str) {
-    let labels = read_labels(labels_path);
+    let labels = load_labels(labels_path);
     let names = names_of(tracks, &labels);
     let base = input(tracks);
     let frames: Vec<u32> = tracks.iter().map(|t| t.end - t.start).collect();
@@ -774,13 +1295,27 @@ fn stress(tracks: &[FaceTrack], labels_path: &str) {
     let lead: &str = {
         let mut by: HashMap<&str, usize> = HashMap::new();
         for (i, n) in names.iter().enumerate() {
-            if let Some(n) = n.filter(|n| !matches!(*n, "?" | "x"))
+            if let Some(n) = n.and_then(named)
                 && base[i].quality >= 0.6
             {
                 *by.entry(n).or_default() += 1;
             }
         }
         by.into_iter().max_by_key(|&(n, c)| (c, std::cmp::Reverse(n))).map_or("?", |(n, _)| n)
+    };
+
+    // How alike a copy is to its face (`STRESS_COPY_LO/HI`), and the share
+    // of its own face in a reflection (`STRESS_REFL_LO/HI`: the four
+    // reflections below spread over that range as over 0.53 – 0.65).
+    let var = |k: &str, d: f32| std::env::var(k).ok().map_or(d, |v| v.parse().unwrap_or_else(|_| panic!("{k}=<cos>")));
+    let (copy_lo, copy_hi) = (var("STRESS_COPY_LO", 0.5), var("STRESS_COPY_HI", 0.75));
+    let (refl_lo, refl_hi) = (var("STRESS_REFL_LO", 0.53), var("STRESS_REFL_HI", 0.65));
+    // Without either variable the shares are used as they are, not mapped
+    // onto the same range: the mapping's rounding would change the default
+    // output in the last bits.
+    let refl_set = ["STRESS_REFL_LO", "STRESS_REFL_HI"].iter().any(|k| std::env::var_os(k).is_some());
+    let own_share = |own: f32| {
+        if refl_set { refl_lo + (refl_hi - refl_lo) * (own - 0.53) / (0.65 - 0.53) } else { own }
     };
 
     // Mirror copies: a face shown twice at once (another place, cos 0.5–0.75).
@@ -793,7 +1328,7 @@ fn stress(tracks: &[FaceTrack], labels_path: &str) {
             if base[i].quality < 0.3 {
                 continue;
             }
-            let c = 0.5 + 0.25 * rng.next();
+            let c = copy_lo + (copy_hi - copy_lo) * rng.next();
             let mut t = base[i].clone();
             t.embedding = copy_of(&mut rng, &base[i].embedding, c);
             t.quality = (base[i].quality * (0.7 + 0.3 * rng.next())).max(0.05);
@@ -809,10 +1344,18 @@ fn stress(tracks: &[FaceTrack], labels_path: &str) {
     // same light): its face, a share of the mirror's look, and noise.
     for (seed, (own, glass)) in [(0.55f32, 0.6f32), (0.55, 0.75), (0.53, 0.75), (0.65, 0.5)].into_iter().enumerate() {
         let mut rng = Rng(77 + seed as u64);
+        let own = own_share(own);
         let (mut ins, mut nm, mut fr) = (base.clone(), names.clone(), frames.clone());
         let theirs: Vec<usize> =
             (0..base.len()).filter(|&i| names[i] == Some(lead) && base[i].quality >= 0.6).skip(10).take(8).collect();
         let mirror: Vec<f32> = copy_of(&mut rng, &base[theirs[0]].embedding, 0.0);
+        // Own face, glass and noise are orthogonal unit parts: with more than
+        // the whole in the first two, the reflection's likeness to its face
+        // would no longer follow `own`.
+        assert!(
+            own * own + glass * glass <= 1.0,
+            "STRESS_REFL_LO/HI: own share {own:.3} and glass {glass} make more than a whole face"
+        );
         let rest = (1.0 - own * own - glass * glass).max(0.0).sqrt();
         let mut sims = Vec::new();
         for &i in &theirs {
@@ -916,12 +1459,12 @@ fn stress(tracks: &[FaceTrack], labels_path: &str) {
 /// each time. How long grouping takes, and whether everyone is still one
 /// character.
 fn scale(tracks: &[FaceTrack], labels_path: &str, n: u32) {
-    let labels = read_labels(labels_path);
+    let labels = load_labels(labels_path);
     let names = names_of(tracks, &labels);
     let base = input(tracks);
     let frames: Vec<u32> = tracks.iter().map(|t| t.end - t.start).collect();
     let dot = |a: &[f32], b: &[f32]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>();
-    let named = |i: usize| names[i].filter(|n| !matches!(*n, "?" | "x" | "-"));
+    let named = |i: usize| names[i].and_then(labels::named);
     let mut of: HashMap<&str, Vec<usize>> = HashMap::new();
     for i in 0..base.len() {
         if let Some(name) = named(i) {
@@ -999,8 +1542,9 @@ fn scale(tracks: &[FaceTrack], labels_path: &str, n: u32) {
         o.characters.len(),
         notes.join("; ")
     );
-    if std::env::var_os("DETAIL").is_some() {
-        // Where the people who are split are: per character, their tracks per episode.
+    if let Ok(detail) = std::env::var("DETAIL") {
+        // Where the people who are split are: per character, their tracks
+        // per episode. `DETAIL=<name>,…` names the people to show.
         let got = members(&o);
         let mut by: HashMap<(&str, usize), Vec<u32>> = HashMap::new();
         for (i, c) in got.iter().enumerate() {
@@ -1009,8 +1553,27 @@ fn scale(tracks: &[FaceTrack], labels_path: &str, n: u32) {
                 v[ins[i].media as usize] += 1;
             }
         }
-        let mut rows: Vec<_> =
-            by.into_iter().filter(|((name, _), _)| matches!(*name, "walter" | "jesse" | "skyler" | "waltjr")).collect();
+        let shown: HashSet<&str> = match detail.as_str() {
+            "1" => {
+                // Named people on screen 20 s or more (as `splits_and_merges`)
+                // with two tracks or more in each of two characters or more.
+                let mut secs: HashMap<&str, f64> = HashMap::new();
+                for (i, name) in nm.iter().enumerate() {
+                    if let Some(name) = name.and_then(labels::named) {
+                        *secs.entry(name).or_default() += f64::from(fr[i]) / fps();
+                    }
+                }
+                let mut of: HashMap<&str, usize> = HashMap::new();
+                for ((name, _), per) in &by {
+                    if per.iter().sum::<u32>() >= 2 && secs.get(name).is_some_and(|&s| s >= 20.0) {
+                        *of.entry(name).or_default() += 1;
+                    }
+                }
+                of.into_iter().filter(|&(_, k)| k >= 2).map(|(n, _)| n).collect()
+            }
+            names => names.split(',').map(str::trim).collect(),
+        };
+        let mut rows: Vec<_> = by.into_iter().filter(|((name, _), _)| shown.contains(name)).collect();
         rows.sort();
         let cos = |a: &[f32], b: &[f32]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>();
         let mut main: HashMap<&str, usize> = HashMap::new();
@@ -1108,6 +1671,9 @@ fn env_params() -> Params {
 
 fn main() {
     let a: Vec<String> = std::env::args().skip(1).collect();
+    if a[0] == "paired" {
+        return paired(&a[1], &a[2]);
+    }
     let tracks = read_tracks(&a[1]);
     match a[0].as_str() {
         "separation" => separation(&tracks, &a[2]),
@@ -1194,5 +1760,381 @@ fn main() {
             score(&tracks, &a[2], &p, std::env::var_os("DETAIL").is_some())
         }
         other => panic!("unknown command {other}"),
+    }
+}
+
+/// Mutation tests: from synthetic tracks grouped perfectly, each mistake
+/// moves the number it is about and leaves the others as they were.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use labels::tests::{label_of, track};
+
+    /// Frames per shot: a track per shot, each 12.5 s.
+    const SHOT: u32 = 300;
+    /// Where each figure's head is, and where `n` (not a head) is.
+    const PLACE: [[f32; 4]; 4] =
+        [[0.10, 0.10, 0.30, 0.40], [0.40, 0.10, 0.60, 0.40], [0.70, 0.10, 0.90, 0.40], [0.40, 0.50, 0.60, 0.80]];
+    const NOT_A_HEAD: [f32; 4] = [0.05, 0.60, 0.15, 0.75];
+
+    struct World {
+        tracks: Vec<FaceTrack>,
+        labels: Vec<Label>,
+        got: Vec<Option<usize>>,
+    }
+
+    fn setup(shots: Option<Vec<(u32, u32)>>) -> Setup {
+        Setup {
+            gallery: None,
+            level: Level::Look,
+            presence: None,
+            spans: Spans::default(),
+            shots,
+            main_secs: 30.0,
+            episodes: Vec::new(),
+        }
+    }
+
+    impl World {
+        fn empty() -> Self {
+            World { tracks: Vec::new(), labels: Vec::new(), got: Vec::new() }
+        }
+
+        /// Main figures A (8 tracks, 100 s), B (6) and C (5), and D (one
+        /// track, not main), each their own character.
+        fn perfect() -> Self {
+            let mut w = World::empty();
+            for (f, (name, n)) in [("A", 8), ("B", 6), ("C", 5), ("D", 1)].into_iter().enumerate() {
+                for _ in 0..n {
+                    w.add(name, PLACE[f], Some(f));
+                }
+            }
+            w
+        }
+
+        /// A track in a shot of its own, labelled `name`, in character `c`.
+        fn add(&mut self, name: &str, bbox: [f32; 4], c: Option<usize>) {
+            let start = SHOT * self.labels.len() as u32;
+            let t = track(start, start + SHOT, bbox);
+            self.labels.push(label_of(&t, name, bbox));
+            self.tracks.push(t);
+            self.got.push(c);
+        }
+
+        /// The tracks labelled `name`.
+        fn of(&self, name: &str) -> Vec<usize> {
+            let at: HashSet<u32> = self.labels.iter().filter(|l| l.name == name).map(|l| l.span.0).collect();
+            (0..self.tracks.len()).filter(|&i| at.contains(&self.tracks[i].start)).collect()
+        }
+
+        /// A shot per label.
+        fn shots(&self) -> Vec<(u32, u32)> {
+            (0..self.labels.len() as u32).map(|k| (k * SHOT, (k + 1) * SHOT)).collect()
+        }
+
+        fn report(&self, shots: bool) -> Report {
+            let setup = setup(shots.then(|| self.shots()));
+            let cast = setup.cast(&self.labels);
+            assert_eq!(cast.figures.iter().map(|f| f.0.as_str()).collect::<Vec<_>>(), ["A", "B", "C"]);
+            self.report_with(&setup)
+        }
+
+        /// As `score` with `setup`: names at its level, its main cast.
+        fn report_with(&self, setup: &Setup) -> Report {
+            let (labels, cast) = setup.name_labels(self.labels.clone());
+            let truth = names_of(&self.tracks, &labels);
+            report(&self.tracks, &labels, &truth, &self.got, &cast, setup)
+        }
+
+        fn numbers(&self) -> Numbers {
+            Self::numbers_of(&self.report(true), self)
+        }
+
+        fn numbers_with(&self, setup: &Setup) -> Numbers {
+            Self::numbers_of(&self.report_with(setup), self)
+        }
+
+        fn numbers_of(r: &Report, w: &World) -> Numbers {
+            let (held, theirs) = r.held();
+            let (clip_precision, clip_recall, _, _) = r.clips().unwrap();
+            Numbers {
+                labelled: names_of(&w.tracks, &w.labels).iter().flatten().count(),
+                precision: r.track.precision,
+                recall: r.track.recall,
+                held,
+                theirs,
+                merges: r.merges(),
+                clip_precision,
+                clip_recall,
+            }
+        }
+    }
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    struct Numbers {
+        labelled: usize,
+        precision: f32,
+        recall: f32,
+        held: f64,
+        theirs: f64,
+        merges: usize,
+        clip_precision: f64,
+        clip_recall: f64,
+    }
+
+    const PERFECT: Numbers = Numbers {
+        labelled: 20,
+        precision: 1.0,
+        recall: 1.0,
+        held: 1.0,
+        theirs: 1.0,
+        merges: 0,
+        clip_precision: 1.0,
+        clip_recall: 1.0,
+    };
+
+    #[test]
+    fn a_perfect_grouping_scores_perfectly() {
+        assert_eq!(World::perfect().numbers(), PERFECT);
+    }
+
+    #[test]
+    fn two_main_figures_merged_cost_precision_alone() {
+        let mut w = World::perfect();
+        for i in w.of("B") {
+            w.got[i] = Some(0);
+        }
+        let n = w.numbers();
+        assert!(n.precision < 1.0 && n.clip_precision < 1.0, "{n:?}");
+        assert!(n.theirs < 1.0, "B's frames are on A's character: {n:?}");
+        assert_eq!((n.labelled, n.recall, n.held, n.merges), (20, 1.0, 1.0, 0));
+    }
+
+    #[test]
+    fn a_figure_split_costs_recall_and_a_merge() {
+        let mut w = World::perfect();
+        for &i in &w.of("A")[4..] {
+            w.got[i] = Some(9);
+        }
+        let n = w.numbers();
+        assert!(n.recall < 1.0 && n.clip_recall < 1.0, "{n:?}");
+        assert_eq!(n.merges, 1);
+        assert_eq!((n.labelled, n.precision, n.held, n.theirs, n.clip_precision), (20, 1.0, 1.0, 1.0, 1.0));
+    }
+
+    #[test]
+    fn not_a_head_on_a_main_figure_costs_precision_alone() {
+        let mut w = World::perfect();
+        for _ in 0..3 {
+            w.add("n", NOT_A_HEAD, Some(0));
+        }
+        let n = w.numbers();
+        assert!(n.precision < 1.0 && n.clip_precision < 1.0, "{n:?}");
+        assert_eq!(n.labelled, 23);
+        assert_eq!((n.recall, n.held, n.theirs, n.merges, n.clip_recall), (1.0, 1.0, 1.0, 0, 1.0));
+    }
+
+    #[test]
+    fn dropped_tracks_cost_coverage_alone() {
+        let mut w = World::perfect();
+        for &i in w.of("A")[..3].iter().rev() {
+            w.tracks.remove(i);
+            w.got.remove(i);
+        }
+        let n = w.numbers();
+        assert!(n.held < 1.0 && n.theirs < 1.0 && n.clip_recall < 1.0, "{n:?}");
+        assert_eq!(n.labelled, 17);
+        assert_eq!((n.precision, n.recall, n.merges, n.clip_precision), (1.0, 1.0, 0, 1.0));
+    }
+
+    #[test]
+    fn face_boxes_inside_head_boxes_are_those_heads() {
+        // The tracks box faces, the labels heads: a face is well inside its
+        // head box but overlaps it too little for IoU alone.
+        let face = |b: [f32; 4]| {
+            let (w, h) = (b[2] - b[0], b[3] - b[1]);
+            [b[0] + 0.2 * w, b[1] + 0.25 * h, b[2] - 0.2 * w, b[3] - 0.1 * h]
+        };
+        assert!(labels::box_iou(&PLACE[0], &face(PLACE[0])) < 0.5);
+        let mut w = World::perfect();
+        w.tracks.iter_mut().flat_map(|t| &mut t.dets).for_each(|d| d.bbox = face(d.bbox));
+        assert_eq!(w.numbers(), PERFECT);
+        // Moved out of the head box (its centre outside): no longer that head.
+        for i in w.of("C") {
+            w.tracks[i].dets.iter_mut().for_each(|d| d.bbox = [d.bbox[0] + 0.2, d.bbox[1], d.bbox[2] + 0.2, d.bbox[3]]);
+        }
+        let n = w.numbers();
+        assert!(n.held < 1.0 && n.theirs < 1.0 && n.clip_recall < 1.0, "{n:?}");
+        assert_eq!(n.labelled, 15);
+        assert_eq!((n.precision, n.recall, n.merges, n.clip_precision), (1.0, 1.0, 0, 1.0));
+    }
+
+    #[test]
+    fn items_add_up_to_the_numbers_and_the_bootstrap_resamples_figures() {
+        let items = |w: &World| -> Vec<Item> { w.report(false).items.into_iter().map(|x| x.1).collect() };
+        let mut merged = World::perfect();
+        for i in merged.of("B") {
+            merged.got[i] = Some(0);
+        }
+        let r = merged.report(false);
+        let m = scoring::metrics(r.items.iter().map(|x| &x.1));
+        assert!((m[0] - f64::from(r.track.f)).abs() < 1e-6 && (m[1] - f64::from(r.time.f)).abs() < 1e-6);
+        let (a, b) = (items(&World::perfect()), items(&merged));
+        assert_eq!(scoring::bootstrap(&a, 200, BOOT_SEED)[0], (1.0, 1.0));
+        // A and B lost precision, C didn't: the resamples spread round the
+        // point (all C: 1.0, all B: 0.6).
+        let iv = scoring::bootstrap(&b, 2000, BOOT_SEED);
+        for k in 0..2 {
+            let (lo, hi) = iv[k];
+            assert!(lo < m[k] && m[k] < hi, "{} {} not inside {iv:?}", scoring::METRICS[k], m[k]);
+        }
+        // No packs without shots: clip precision is NaN.
+        assert!(iv[2].0.is_nan() && iv[2].1.is_nan());
+        // Paired: one draw of figures for both runs, so a run against itself
+        // never differs, however much its figures do.
+        let same = scoring::paired(&b, &b, 2000, BOOT_SEED);
+        assert_eq!((same[0], same[1]), ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0)));
+        let worse = scoring::paired(&a, &b, 2000, BOOT_SEED);
+        let (d, lo, hi) = worse[0];
+        assert!(lo < d && d < hi && hi <= 0.0, "{worse:?}");
+        assert!((d - (m[0] - 1.0)).abs() < 1e-12);
+    }
+
+    /// Tanjiro as himself (4 tracks) and in his uniform (3), both one
+    /// figure, behind his mask (3, a figure of its own), and Nezuko (6).
+    /// Each figure is a character; at `LEVEL=look` both of Tanjiro's looks
+    /// are one.
+    fn looks() -> World {
+        let mut w = World::empty();
+        for (name, n, c) in [("TAN", 4, 0), ("TAN_U", 3, 0), ("TAN_M", 3, 1), ("NEZ", 6, 2)] {
+            for _ in 0..n {
+                w.add(name, PLACE[c], Some(c));
+            }
+        }
+        w
+    }
+
+    fn at(level: Level) -> Setup {
+        Setup { gallery: Some(anime::tests::gallery()), level, ..setup(None) }
+    }
+
+    #[test]
+    fn figures_hold_a_persons_looks_but_not_their_masks() {
+        let pr = |w: &World, level: Level| {
+            let r = w.report_with(&at(level));
+            (r.track.precision, r.track.recall)
+        };
+        let mut w = looks();
+        let cast = at(Level::Figure).cast(&w.labels);
+        let figures: Vec<&str> = cast.figures.iter().map(|f| f.0.as_str()).collect();
+        assert_eq!(figures, ["tanjiro", "nezuko", "TAN_M"]);
+        assert_eq!(pr(&w, Level::Figure), (1.0, 1.0));
+        let (p, r) = pr(&w, Level::Look);
+        assert!(p < 1.0 && r == 1.0, "two looks in one character: {p} {r}");
+        let (p, r) = pr(&w, Level::Person);
+        assert!(p == 1.0 && r < 1.0, "the mask apart from its person: {p} {r}");
+        // At the look level the bootstrap still draws figures.
+        let look = w.report_with(&at(Level::Look));
+        let mut rows: Vec<&str> = look.rows.iter().map(|r| r.name.as_str()).collect();
+        let mut items: Vec<&str> = look.items.iter().map(|x| x.0.as_str()).collect();
+        rows.sort_unstable();
+        items.sort_unstable();
+        assert_eq!((rows, items), (vec!["NEZ", "TAN", "TAN_M", "TAN_U"], vec!["TAN_M", "nezuko", "tanjiro"]));
+        let sum = scoring::metrics(look.items.iter().map(|x| &x.1));
+        assert!((sum[0] - f64::from(look.track.f)).abs() < 1e-6);
+        // The mask put on Tanjiro: a merge of two figures, one person.
+        for i in w.of("TAN_M") {
+            w.got[i] = Some(0);
+        }
+        let (p, r) = pr(&w, Level::Figure);
+        assert!(p < 1.0 && r == 1.0, "{p} {r}");
+        assert_eq!(pr(&w, Level::Person), (1.0, 1.0));
+    }
+
+    #[test]
+    fn tracks_in_op_ed_spans_are_left_out() {
+        let mut w = World::perfect();
+        let first = w.labels.len() as u32;
+        // B in the opening, on A's character.
+        for _ in 0..3 {
+            w.add("B", PLACE[1], Some(0));
+        }
+        let span = (SHOT * first, SHOT * w.labels.len() as u32);
+        assert!(w.numbers_with(&setup(Some(w.shots()))).precision < 1.0);
+        let s = Setup { spans: Spans(vec![(span.0, span.1, "op".into())]), ..setup(Some(w.shots())) };
+        assert_eq!(w.numbers_with(&s), Numbers { labelled: 23, ..PERFECT });
+    }
+
+    #[test]
+    fn shot_presence_fixes_the_cast_and_the_true_shots() {
+        let w = World::perfect();
+        // D, labelled in one shot, is seen in A's 8 shots too (from behind):
+        // 112.5 s by presence, the most of all.
+        let rows: Vec<Presence> = w
+            .labels
+            .iter()
+            .map(|l| {
+                let mut codes = vec![l.name.clone()];
+                if l.name == "A" {
+                    codes.push("D".into());
+                }
+                Presence { start: l.span.0, end: l.span.1, codes }
+            })
+            .collect();
+        let s = Setup { presence: Some(rows), ..setup(Some(w.shots())) };
+        let cast = s.cast(&w.labels);
+        assert_eq!(cast.from, "shot presence");
+        assert_eq!(cast.figures.iter().map(|f| f.0.as_str()).collect::<Vec<_>>(), ["D", "A", "B", "C"]);
+        let r = w.report_with(&s);
+        let d = r.rows.iter().find(|r| r.name == "D").unwrap().pack.unwrap();
+        assert_eq!((d.shots, d.right, d.truth), (1, 1, 9));
+        let n = w.numbers_with(&s);
+        assert!(n.clip_recall < 1.0, "{n:?}");
+        assert_eq!((n.precision, n.recall, n.held, n.theirs, n.merges, n.clip_precision), (1.0, 1.0, 1.0, 1.0, 0, 1.0));
+    }
+
+    #[test]
+    fn shots_of_faces_nobody_could_name_leave_clip_precision() {
+        let mut w = World::perfect();
+        for name in ["x", "?u"] {
+            w.add(name, PLACE[3], Some(0));
+        }
+        assert_eq!(w.numbers(), Numbers { labelled: 22, ..PERFECT });
+        assert_eq!(w.report(true).clips().unwrap().3, 2);
+        // Someone of their own there is a wrong shot.
+        w.add("?e", PLACE[3], Some(0));
+        let n = w.numbers();
+        assert!(n.precision < 1.0 && n.clip_precision < 1.0, "{n:?}");
+    }
+
+    #[test]
+    fn merges_to_clean_per_episode() {
+        let mut w = World::perfect();
+        // A's last 4 tracks (from frame 1200) in a character of their own.
+        for &i in &w.of("A")[4..] {
+            w.got[i] = Some(9);
+        }
+        let mut s = setup(Some(w.shots()));
+        let r = w.report_with(&s);
+        assert_eq!((r.merges(), r.worst_episode(), &r.rows[0].per_episode[..]), (1, 1, &[2][..]));
+        // Cut where A's second character starts: each episode holds one.
+        s.episodes = vec![4 * SHOT];
+        let r = w.report_with(&s);
+        assert_eq!((r.rows[0].name.as_str(), r.merges(), r.worst_episode()), ("A", 1, 0));
+        assert_eq!((&r.rows[0].per_episode[..], &r.rows[1].per_episode[..]), (&[1, 1][..], &[0, 1][..]));
+        // Cut earlier: the second episode holds both.
+        s.episodes = vec![2 * SHOT];
+        assert_eq!(w.report_with(&s).rows[0].per_episode, [1, 2]);
+    }
+
+    #[test]
+    fn unassigned_tracks_cost_no_merge_but_show() {
+        let mut w = World::perfect();
+        for &i in &w.of("A")[..6] {
+            w.got[i] = None;
+        }
+        let r = w.report(true);
+        let a = &r.rows[0];
+        assert_eq!((a.name.as_str(), a.groups, a.unassigned), ("A", 1, 0.75));
+        assert!(r.held().1 < 1.0);
     }
 }
