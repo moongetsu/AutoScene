@@ -190,12 +190,19 @@
     -webkit-user-select: none;
   }
 
-  /* Controls keep the arrow, as in native apps (the hand means "web link"). */
+  /* Interactive controls show a pointer cursor on hover. */
   a,
   button,
   [role="button"],
   [role="tab"] {
-    cursor: default;
+    cursor: pointer;
+  }
+
+  /* Disabled controls keep the default arrow or not-allowed cursor. */
+  button:disabled,
+  [role="button"][aria-disabled="true"],
+  [aria-disabled="true"] {
+    cursor: not-allowed;
   }
 
   /* Pictures and links don't drag out as the browser's ghost (a link would show its URL). */
