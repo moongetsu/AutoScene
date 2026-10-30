@@ -1,0 +1,144 @@
+{
+ "crops": [
+  {
+   "still": "anime-1.webp",
+   "box": [
+    0.098651,
+    0.273971,
+    0.248991,
+    0.671399
+   ],
+   "score": 0.90621,
+   "rect": [
+    33,
+    49,
+    168
+   ],
+   "rgb": "ccip_0.rgb",
+   "vec": "ccip_0.vec",
+   "dim": 768,
+   "norm": 157.5282
+  },
+  {
+   "still": "anime-1.webp",
+   "box": [
+    0.774404,
+    0.241164,
+    0.93969,
+    0.637953
+   ],
+   "score": 0.89949,
+   "rect": [
+    492,
+    40,
+    167
+   ],
+   "rgb": "ccip_1.rgb",
+   "vec": "ccip_1.vec",
+   "dim": 768,
+   "norm": 169.9179
+  },
+  {
+   "still": "anime-2.webp",
+   "box": [
+    0.549542,
+    0.010584,
+    0.895617,
+    0.563997
+   ],
+   "score": 0.92815,
+   "rect": [
+    152,
+    0,
+    170
+   ],
+   "rgb": "ccip_2.rgb",
+   "vec": "ccip_2.vec",
+   "dim": 768,
+   "norm": 197.4401
+  },
+  {
+   "still": "anime-3.webp",
+   "box": [
+    0.222984,
+    0.243303,
+    0.378076,
+    0.561686
+   ],
+   "score": 0.91035,
+   "rect": [
+    55,
+    30,
+    88
+   ],
+   "rgb": "ccip_3.rgb",
+   "vec": "ccip_3.vec",
+   "dim": 768,
+   "norm": 163.9602
+  },
+  {
+   "still": "anime-3.webp",
+   "box": [
+    0.405162,
+    0.025298,
+    0.644759,
+    0.493922
+   ],
+   "score": 0.90911,
+   "rect": [
+    108,
+    0,
+    129
+   ],
+   "rgb": "ccip_4.rgb",
+   "vec": "ccip_4.vec",
+   "dim": 768,
+   "norm": 171.8933
+  }
+ ],
+ "detectors": {
+  "head_detect_v2.0_s": {
+   "model": "anime_head_detection/head_detect_v2.0_s/model.onnx",
+   "sha256": "6679f9b71192298bbf174d82e9e5581c3237b0c3dc67deace7cdbf686b070a00",
+   "input": "images",
+   "shape": [
+    "batch",
+    3,
+    "height",
+    "width"
+   ]
+  },
+  "person_detect_v1.3_s": {
+   "model": "anime_person_detection/person_detect_v1.3_s/model.onnx",
+   "sha256": "6da88929438cd442e31e45ff4f934dd2d7eb9cf7a423c22885d650ee52550f90",
+   "input": "images",
+   "shape": [
+    "batch",
+    3,
+    "height",
+    "width"
+   ]
+  }
+ },
+ "ccip": {
+  "model": "ccip_onnx/ccip-caformer-24-randaug-pruned/model_feat.onnx",
+  "sha256": "4ea118d16496274f4f6e08d3afc768cc592389e8f7f32f8732ce2215c228ac5f",
+  "input": "input",
+  "shape": [
+   "batch",
+   3,
+   384,
+   384
+  ],
+  "mean": [
+   0.48145467042922974,
+   0.45782750844955444,
+   0.40821072459220886
+  ],
+  "std": [
+   0.2686295509338379,
+   0.2613025903701782,
+   0.27577710151672363
+  ]
+ }
+}
