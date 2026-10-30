@@ -103,15 +103,16 @@ export function AboutSection() {
             description={
               <span data-selectable>
                 {m.source}
-                <span className="block text-fg-3">
-                  {m.installed ? "Downloaded" : "Not downloaded yet"} · {formatBytes(m.sizeBytes ?? 0)}
+                <span className="mt-1 flex flex-wrap items-center gap-x-2 text-fg-3">
+                  <span>{m.installed ? "Downloaded" : "Not downloaded yet"} · {formatBytes(m.sizeBytes ?? 0)}</span>
+                  <span>·</span>
+                  <span>{m.license}</span>
                 </span>
               </span>
             }
-            className="min-h-12 py-2.5"
+            className="min-h-14 py-3"
           >
             {m.nonCommercial && <Badge tone="accent">Non-commercial</Badge>}
-            <span className="text-sm text-fg-3">{m.license}</span>
           </SettingRow>
         )) ?? <SettingRow label="Checking…" />}
       </SettingsGroup>
