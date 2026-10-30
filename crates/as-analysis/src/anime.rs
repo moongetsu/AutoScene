@@ -548,13 +548,13 @@ pub fn face_tracks(
             anime.heads.frame_size()
         )));
     }
-    if let Some(persons) = &anime.persons {
-        if persons.frame_size() != size {
-            return Err(AnalysisError::Internal(format!(
-                "person detector loaded for {:?} frames, this media needs {size:?}",
-                persons.frame_size()
-            )));
-        }
+    if let Some(persons) = &anime.persons
+        && persons.frame_size() != size
+    {
+        return Err(AnalysisError::Internal(format!(
+            "person detector loaded for {:?} frames, this media needs {size:?}",
+            persons.frame_size()
+        )));
     }
     // Shots from the resume point on; samples outside them are skipped.
     let shots = &shots[shots.partition_point(|s| s.end <= resume)..];
