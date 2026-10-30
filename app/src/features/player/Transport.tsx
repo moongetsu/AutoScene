@@ -14,12 +14,15 @@ import {
 } from "@/components/icons"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
+import { ContextArea } from "@/components/ui/context-area"
+import { ContextMenuItem, ContextMenuRadioGroup, ContextMenuRadioItem, ContextMenuSeparator } from "@/components/ui/context-menu"
 import { Slider } from "@/components/ui/slider"
 import { Tooltip } from "@/components/ui/tooltip"
 import { modKey } from "@/lib/platform"
 import { cn } from "@/lib/utils"
 import { type FrameStore, useFrame } from "./frame-store"
 import { rateLabel } from "./shuttle"
+import { type TimecodeDisplayMode, useTimecodeMode } from "./timecode-mode"
 
 /**
  * Under the picture: the timecode (click or Ctrl/⌘ G to go somewhere), the
@@ -163,6 +166,7 @@ function FrameReadout({
   onSeek: (f: number) => void
 }) {
   const frame = useFrame(store)
+  const { mode, setMode, cycleMode } = useTimecodeMode()
   const field = useRef<HTMLInputElement>(null)
   // Select the go-to field once when it opens, not on every frame (that
   // would wipe what is being typed).
@@ -171,6 +175,37 @@ function FrameReadout({
     field.current?.focus()
     field.current?.select()
   }, [goto])
+
+  const formatReadout = (f: number, m: TimecodeDisplayMode) => {
+    switch (m) {
+      case "elapsed":
+        return tc(f)
+      case "remaining": {
+        const rem = Math.max(0, last - f)
+        return `-${tc(rem)}`
+      }
+      case "frames":
+        return `${f.toLocaleString("en-GB")}`
+      case "percent": {
+        const p = last > 0 ? (f / last) * 100 : 0
+        return `${p.toFixed(1)} %`
+      }
+    }
+  }
+
+  const readoutLabel = (m: TimecodeDisplayMode) => {
+    switch (m) {
+      case "elapsed":
+        return "Elapsed Timecode"
+      case "remaining":
+        return "Remaining Timecode"
+      case "frames":
+        return "Current Frame"
+      case "percent":
+        return "Percentage"
+    }
+  }
+
   return (
     <>
       {goto ? (
@@ -199,18 +234,45 @@ function FrameReadout({
           }}
         />
       ) : (
-        <Tooltip label="Go to timecode or frame" shortcut={[modKey, "G"]}>
-          <button
-            onClick={() => onGoto(true)}
-            className="timecode -mx-2 rounded-xl px-2 text-lg font-medium tracking-tight text-fg-1 transition-colors hover:bg-white/[0.06] @3xl:text-2xl"
-          >
-            {tc(frame)}
-          </button>
-        </Tooltip>
+        <ContextArea
+          menu={
+            <>
+              <ContextMenuRadioGroup value={mode} onValueChange={(v) => setMode(v as TimecodeDisplayMode)}>
+                <ContextMenuRadioItem value="elapsed">Elapsed Timecode</ContextMenuRadioItem>
+                <ContextMenuRadioItem value="remaining">Remaining Timecode</ContextMenuRadioItem>
+                <ContextMenuRadioItem value="frames">Frame Number</ContextMenuRadioItem>
+                <ContextMenuRadioItem value="percent">Percentage</ContextMenuRadioItem>
+              </ContextMenuRadioGroup>
+              <ContextMenuSeparator />
+              <ContextMenuItem onSelect={() => onGoto(true)} shortcut={[modKey, "G"]}>
+                Go to timecode or frame…
+              </ContextMenuItem>
+            </>
+          }
+        >
+          <Tooltip label={`${readoutLabel(mode)} · Click to cycle mode, double-click or ${modKey}+G to jump`}>
+            <button
+              onClick={cycleMode}
+              onDoubleClick={() => onGoto(true)}
+              aria-label={`${readoutLabel(mode)}: ${formatReadout(frame, mode)}. Click to cycle mode.`}
+              className="timecode -mx-2 rounded-xl px-2 text-lg font-medium tracking-tight text-fg-1 transition-colors hover:bg-white/[0.06] @3xl:text-2xl"
+            >
+              {formatReadout(frame, mode)}
+            </button>
+          </Tooltip>
+        </ContextArea>
       )}
-      <span className="timecode hidden text-sm whitespace-nowrap text-fg-3 @xl:inline">
-        {frame} / {last}
-      </span>
+      <Tooltip label="Total duration and frames">
+        <span className="timecode hidden text-sm whitespace-nowrap text-fg-3 @xl:inline">
+          {mode === "frames" ? (
+            `/ ${last.toLocaleString("en-GB")}`
+          ) : mode === "percent" ? (
+            `${frame.toLocaleString("en-GB")} / ${last.toLocaleString("en-GB")} f`
+          ) : (
+            `${frame.toLocaleString("en-GB")} / ${last.toLocaleString("en-GB")}`
+          )}
+        </span>
+      </Tooltip>
     </>
   )
 }
