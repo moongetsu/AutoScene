@@ -29,8 +29,8 @@ pub const CROP_BYTES: usize = CROP * CROP * 3;
 /// Embedding size.
 pub const DIM: usize = 768;
 /// CLIP input normalisation, channel-wise: (v/255 − mean)/std.
-const MEAN: [f32; 3] = [0.48145467042922974, 0.45782750844955444, 0.40821072459220886];
-const STD: [f32; 3] = [0.2686295509338379, 0.2613025903701782, 0.27577710151672363];
+const MEAN: [f32; 3] = [0.48145466, 0.4578275, 0.40821072];
+const STD: [f32; 3] = [0.26862954, 0.2613026, 0.2757771];
 /// How close a session's embeddings must sit to the CPU goldens (cosine).
 const GOLDEN_COSINE: f32 = 0.999;
 
@@ -220,7 +220,7 @@ pub fn crop(rgb: &[u8], w: usize, h: usize, x: f32, y: f32, side: f32) -> Vec<u8
         return out;
     }
     let mut rows = vec![0f32; (r1 - r0) as usize * CROP * 3];
-    for (sy, dst) in (r0..r1).zip(rows.chunks_exact_mut(CROP * 3)) {
+    for (sy, dst) in (r0..r1).zip(rows.as_chunks_mut::<{ CROP * 3 }>().0) {
         let src = &rgb[sy as usize * w * 3..(sy as usize + 1) * w * 3];
         for ((first, ws), o) in xt.iter().zip(dst.as_chunks_mut::<3>().0) {
             for (k, &wt) in ws.iter().enumerate() {
@@ -234,7 +234,7 @@ pub fn crop(rgb: &[u8], w: usize, h: usize, x: f32, y: f32, side: f32) -> Vec<u8
             }
         }
     }
-    for ((first, ws), line) in yt.iter().zip(out.chunks_exact_mut(CROP * 3)) {
+    for ((first, ws), line) in yt.iter().zip(out.as_chunks_mut::<{ CROP * 3 }>().0) {
         for (u, o) in line.as_chunks_mut::<3>().0.iter_mut().enumerate() {
             let mut acc = [0f32; 3];
             for (k, &wt) in ws.iter().enumerate() {
