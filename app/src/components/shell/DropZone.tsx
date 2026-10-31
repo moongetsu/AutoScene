@@ -9,23 +9,29 @@ import { useNewProject } from "@/state/new-project"
 
 /**
  * Files and folders dropped anywhere on the window: inside a project they are
- * added to it, elsewhere they start a new project (or fill the open New
- * Project dialog).
+ * added to it, elsewhere they start a new project. While the New Project
+ * dialog is open they fill its file list, which lights up for them (no
+ * window-wide "Create a project" over it).
  */
 export function DropZone() {
   const [over, setOver] = useState(false)
+  const dialogOpen = useNewProject((s) => s.open)
   const path = useRouterState({ select: (s) => s.location.pathname })
   const pid = path.match(/^\/p\/([^/]+)/)?.[1]
 
   useEffect(() => {
     if (!isTauri) return
+    const dragging = (on: boolean) => {
+      setOver(on)
+      useNewProject.getState().setDragging(on)
+    }
     const un = getCurrentWebview().onDragDropEvent(({ payload }) => {
       // Only files from outside: text or a link dragged inside the window
       // (no paths) is no drop for a project. "over" keeps what "enter" said.
-      if (payload.type === "enter") setOver(payload.paths.length > 0)
-      else if (payload.type === "leave") setOver(false)
+      if (payload.type === "enter") dragging(payload.paths.length > 0)
+      else if (payload.type === "leave") dragging(false)
       else if (payload.type === "drop") {
-        setOver(false)
+        dragging(false)
         const paths = payload.paths
         if (!paths.length) return
         const np = useNewProject.getState()
@@ -41,7 +47,7 @@ export function DropZone() {
     return () => void un.then((f) => f())
   }, [pid])
 
-  if (!over) return null
+  if (!over || dialogOpen) return null
   return (
     <div className="pointer-events-none fixed inset-0 z-[60] p-4">
       <div className="flex size-full animate-fade-in flex-col items-center justify-center rounded-[28px] border-2 border-dashed border-accent-line bg-black/60 backdrop-blur-xl">

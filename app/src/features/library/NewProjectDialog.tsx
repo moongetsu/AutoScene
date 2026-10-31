@@ -42,6 +42,8 @@ function NewProjectForm({ seed, onDone }: { seed: string[]; onDone: () => void }
   const [scan, setScan] = useState<{ key: string; found: ImportCandidate[] }>({ key: "", found: [] })
   const [removed, setRemoved] = useState<Set<string>>(new Set())
   const [creating, setCreating] = useState(false)
+  // Files dragged over the window land here: the list says so while they hover.
+  const dragging = useNewProject((s) => s.dragging)
   const scanKey = JSON.stringify([kind, sources])
   const scanning = sources.length > 0 && scan.key !== scanKey
   const candidates = useMemo(() => (sources.length > 0 ? scan.found : []), [sources, scan])
@@ -133,7 +135,21 @@ function NewProjectForm({ seed, onDone }: { seed: string[]; onDone: () => void }
         <FootagePicker value={content} onChange={setContent} />
       </Field>
 
-      <div className="mt-6 overflow-hidden rounded-2xl border border-white/[0.08] bg-black/25">
+      <div
+        className={cn(
+          "relative mt-6 overflow-hidden rounded-2xl border border-white/[0.08] bg-black/25 transition-colors duration-[var(--dur-fast)]",
+          dragging && "border-accent-line",
+        )}
+      >
+        {dragging && (
+          <div className="pointer-events-none absolute inset-2 z-10 flex animate-fade-in flex-col items-center justify-center rounded-xl border-2 border-dashed border-accent-line bg-black/70 text-center backdrop-blur-md">
+            <span className="flex size-12 items-center justify-center rounded-full bg-accent-subtle text-accent [&_svg]:size-6">
+              <FilePlus />
+            </span>
+            <p className="mt-3 text-lg font-medium text-fg-1">Drop to add to this project</p>
+            <p className="mt-1 text-sm text-fg-3">Season folders and video files</p>
+          </div>
+        )}
         {candidates.length === 0 ? (
           <div className="flex flex-col items-center border-2 border-dashed border-white/[0.08] m-2 rounded-xl px-6 py-12 text-center">
             {scanning ? (
