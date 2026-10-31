@@ -123,8 +123,8 @@ Rules:
 - **Project overview:** the hero, then shelves (`Section` + `Shelf`) of the cast as portraits and the episodes as
   stills. Files that can't be found show as a gold banner with Locate folder… here and on Episodes.
 - **Cast:** portrait cards (3:4), Everyone else, hidden characters folded away; Review as the white pill.
-- **Character:** blurred-face hero with the portrait, the name (click to rename) and facts as chips; Build a
-  scenepack as the white pill; shots scrub on hover.
+- **Character:** blurred-face hero with the portrait (click to choose it from their clearest faces), the name
+  (click to rename) and facts as chips; Build a scenepack as the white pill; shots scrub on hover.
 - **Scenepack:** the character's portrait and name, the filters in a glass bar that stays under the top bar (order,
   shot sizes as chips, length, episodes, limit, handles, "only them", flash cuts), then every shot of the character:
   the ones the pack takes bright with a gold tick, the rest dimmed with the reason. A click takes a shot in or out,

@@ -17,6 +17,7 @@ import { cn } from "@/lib/utils"
 import { CharacterCard } from "./CharacterCard"
 import { AniListDialog } from "./AniListDialog"
 import { AniListNames } from "./AniListNames"
+import { ChoosePictureDialog } from "./ChoosePictureDialog"
 import { RenameCharacterDialog } from "./RenameCharacterDialog"
 import { namesSource, plural, splitHidden, unplacedNote, useProjectAnalysis } from "./cast"
 
@@ -34,6 +35,7 @@ export function CastPage() {
   const [showHidden, setShowHidden] = useState(false)
   const [anilistOpen, setAnilistOpen] = useState(false)
   const [renaming, setRenaming] = useState<Character | null>(null)
+  const [picturing, setPicturing] = useState<Character | null>(null)
   const navigate = useNavigate()
   const { shown, hidden } = splitHidden(cast)
   const unplaced = unplacedNote(cast?.unplaced ?? 0)
@@ -134,7 +136,13 @@ export function CastPage() {
           <>
             <CardGrid>
               {shown.map((c) => (
-                <CharacterCard key={c.id} pid={pid} character={c} onRename={() => setRenaming(c)} />
+                <CharacterCard
+                  key={c.id}
+                  pid={pid}
+                  character={c}
+                  onRename={() => setRenaming(c)}
+                  onChoosePicture={() => setPicturing(c)}
+                />
               ))}
               {cast && cast.unassigned > 0 && (
                 <ContextArea
@@ -171,7 +179,13 @@ export function CastPage() {
                 {showHidden && (
                   <CardGrid className="mt-5 opacity-60 transition-opacity hover:opacity-100">
                     {hidden.map((c) => (
-                      <CharacterCard key={c.id} pid={pid} character={c} onRename={() => setRenaming(c)} />
+                      <CharacterCard
+                        key={c.id}
+                        pid={pid}
+                        character={c}
+                        onRename={() => setRenaming(c)}
+                        onChoosePicture={() => setPicturing(c)}
+                      />
                     ))}
                   </CardGrid>
                 )}
@@ -188,6 +202,12 @@ export function CastPage() {
         character={renaming}
         open={renaming != null}
         onOpenChange={(open) => !open && setRenaming(null)}
+      />
+      <ChoosePictureDialog
+        pid={pid}
+        character={picturing}
+        open={picturing != null}
+        onOpenChange={(open) => !open && setPicturing(null)}
       />
     </Page>
   )

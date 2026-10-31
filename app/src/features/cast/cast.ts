@@ -1,6 +1,6 @@
 import { useMemo } from "react"
 import { toast } from "sonner"
-import type { Cast, CastEdit, Character, ContentKind, JobInfo, ProjectKind } from "@/bindings"
+import type { Cast, CastEdit, Character, ContentKind, FaceTrackItem, JobInfo, ProjectKind } from "@/bindings"
 import { commands, errorMessage } from "@/lib/ipc"
 import { useActivity, isFinished } from "@/state/activity"
 
@@ -65,6 +65,19 @@ export function unplacedNote(n: number): string | null {
 export function splitHidden(cast: Cast | undefined): { shown: Character[]; hidden: Character[] } {
   const all = cast?.characters ?? []
   return { shown: all.filter((c) => !c.hidden), hidden: all.filter((c) => c.hidden) }
+}
+
+/**
+ * A character's faces to choose their picture from: the one it is now
+ * first (`current`: its thumbnail), then the clearest — of two as clear,
+ * the bigger face — at most `n`.
+ */
+export function pictureChoices(tracks: FaceTrackItem[], current: string | null, n: number): FaceTrackItem[] {
+  const now = current == null ? undefined : tracks.find((t) => t.thumb === current)
+  const rest = tracks
+    .filter((t) => t !== now)
+    .sort((a, b) => (b.quality ?? -1) - (a.quality ?? -1) || (b.faceHeight ?? 0) - (a.faceHeight ?? 0))
+  return (now ? [now, ...rest] : rest).slice(0, n)
 }
 
 /** The analysis jobs of a project that are queued or running, oldest first. */

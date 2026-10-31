@@ -1,5 +1,5 @@
 import { useNavigate } from "@tanstack/react-router"
-import { ArrowsMerge, Eye, EyeSlash, Package, PencilSimple, User, UserFocus } from "@/components/icons"
+import { ArrowsMerge, Eye, EyeSlash, Image, Package, PencilSimple, User, UserFocus } from "@/components/icons"
 import type { Character } from "@/bindings"
 import type { MenuKit } from "@/components/ui/menu-actions"
 import { castEdit } from "./cast"
@@ -7,8 +7,9 @@ import { castEdit } from "./cast"
 /**
  * What a character offers wherever it is shown — its card, its page's hero,
  * the ⋯ menu there: open it, its scenepack, the faces to review, rename,
- * merge, hide. `onRename` and `onMerge` only where those can be done (the
- * character's page); `open` off on that page itself.
+ * choose its picture, merge, hide. `onRename`, `onChoosePicture` and
+ * `onMerge` only where those can be done; `open` off on the character's
+ * page itself.
  */
 export function CharacterItems({
   kit,
@@ -16,6 +17,7 @@ export function CharacterItems({
   character: c,
   open = true,
   onRename,
+  onChoosePicture,
   onMerge,
 }: {
   kit: MenuKit
@@ -23,6 +25,7 @@ export function CharacterItems({
   character: Character
   open?: boolean
   onRename?: () => void
+  onChoosePicture?: () => void
   onMerge?: () => void
 }) {
   const navigate = useNavigate()
@@ -49,6 +52,11 @@ export function CharacterItems({
       {onRename && (
         <Item onSelect={onRename}>
           <PencilSimple /> Rename
+        </Item>
+      )}
+      {onChoosePicture && (
+        <Item disabled={c.tracks === 0} onSelect={onChoosePicture}>
+          <Image /> Choose picture…
         </Item>
       )}
       {onMerge && (

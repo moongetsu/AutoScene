@@ -53,6 +53,7 @@ import { FACES_SHORTCUTS, useShortcuts } from "@/lib/shortcuts"
 import { cn } from "@/lib/utils"
 import { castEdit, formatScreenTime, plural } from "./cast"
 import { CharacterItems } from "./character-actions"
+import { ChoosePictureDialog } from "./ChoosePictureDialog"
 import { FaceGrid } from "./FaceGrid"
 import { FacePreview } from "./FacePreview"
 import { canPlayMoment } from "./moment"
@@ -82,6 +83,7 @@ export function CharacterPage() {
   const [picked, setSelected] = useState<Set<number>>(new Set())
   const [moveOpen, setMoveOpen] = useState(false)
   const [mergeOpen, setMergeOpen] = useState(false)
+  const [pictureOpen, setPictureOpen] = useState(false)
   const [chosenView, setView] = useState<View>(lastView)
   // Everyone else has faces, not shots of their own.
   const view: View = everyone ? "faces" : chosenView
@@ -188,7 +190,14 @@ export function CharacterPage() {
   const pageMenu = (
     <>
       {character && (
-        <CharacterItems kit={contextKit} pid={pid} character={character} open={false} onMerge={() => setMergeOpen(true)} />
+        <CharacterItems
+          kit={contextKit}
+          pid={pid}
+          character={character}
+          open={false}
+          onChoosePicture={() => setPictureOpen(true)}
+          onMerge={() => setMergeOpen(true)}
+        />
       )}
       <ContextMenuSeparator />
       {!everyone && (
@@ -225,6 +234,7 @@ export function CharacterPage() {
         backdrop={backdrop}
         everyone={everyone}
         faces={list.length}
+        onChoosePicture={() => setPictureOpen(true)}
         onMerge={() => setMergeOpen(true)}
       />
 
@@ -309,6 +319,7 @@ export function CharacterPage() {
           else await edit({ op: "assign", tracks: ids, characterId: target.id })
         }}
       />
+      <ChoosePictureDialog pid={pid} character={character ?? null} open={pictureOpen} onOpenChange={setPictureOpen} />
       {character && (
         <PickCharacter
           pid={pid}
@@ -402,6 +413,7 @@ function Header({
   backdrop,
   everyone,
   faces,
+  onChoosePicture,
   onMerge,
 }: {
   pid: string
@@ -409,34 +421,68 @@ function Header({
   backdrop: string | null
   everyone: boolean
   faces: number
+  onChoosePicture: () => void
   onMerge: () => void
 }) {
   const [editing, setEditing] = useState(false)
   const heroPath = backdrop ?? c?.coverSmall
   const ambient = useAmbient(heroPath)
   const [row, setRow] = useState<HTMLDivElement | null>(null)
+  // Their picture is one of their faces: without faces there's nothing to choose.
+  const choosable = c != null && c.tracks > 0
+  const portrait = (
+    <Artwork
+      key={c?.id}
+      path={c?.cover}
+      className="size-40 shrink-0 rounded-[28px] shadow-[0_30px_60px_-20px_rgb(0_0_0/0.8),inset_0_0_0_1px_rgb(255_255_255/0.12)]"
+      imgClassName="object-[50%_30%]"
+      fallback={
+        <div className="flex size-full items-center justify-center bg-white/[0.06] text-white/60 [&_svg]:size-14">
+          <User />
+        </div>
+      }
+    >
+      {choosable && (
+        <span className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/45 text-white opacity-0 transition-opacity group-hover/portrait:opacity-100 group-focus-visible/portrait:opacity-100 [&_svg]:size-8">
+          <Image />
+        </span>
+      )}
+    </Artwork>
+  )
 
   return (
     <ContextArea
       disabled={!c}
       menu={
-        c && <CharacterItems kit={contextKit} pid={pid} character={c} open={false} onRename={() => setEditing(true)} onMerge={onMerge} />
+        c && (
+          <CharacterItems
+            kit={contextKit}
+            pid={pid}
+            character={c}
+            open={false}
+            onRename={() => setEditing(true)}
+            onChoosePicture={onChoosePicture}
+            onMerge={onMerge}
+          />
+        )
       }
     >
       <Hero path={heroPath} ambient={ambient} blur={!backdrop} className="min-h-[clamp(320px,44vh,460px)]">
         <div ref={setRow} className="flex flex-wrap items-end justify-between gap-8">
           <div className="flex min-w-0 items-end gap-7">
-            <Artwork
-              key={c?.id}
-              path={c?.cover}
-              className="size-40 shrink-0 rounded-[28px] shadow-[0_30px_60px_-20px_rgb(0_0_0/0.8),inset_0_0_0_1px_rgb(255_255_255/0.12)]"
-              imgClassName="object-[50%_30%]"
-              fallback={
-                <div className="flex size-full items-center justify-center bg-white/[0.06] text-white/60 [&_svg]:size-14">
-                  <User />
-                </div>
-              }
-            />
+            {c && choosable ? (
+              <Tooltip label="Choose picture" side="bottom">
+                <button
+                  onClick={onChoosePicture}
+                  aria-label={`Choose a picture for ${c.label}`}
+                  className="group/portrait shrink-0 rounded-[28px] outline-none focus-visible:ring-2 focus-visible:ring-accent-line"
+                >
+                  {portrait}
+                </button>
+              </Tooltip>
+            ) : (
+              portrait
+            )}
             <div className="min-w-0 pb-1">
               {everyone ? (
                 <h1 className="display text-6xl leading-none text-white">Everyone else</h1>
@@ -501,6 +547,7 @@ function Header({
                     character={c}
                     open={false}
                     onRename={() => setEditing(true)}
+                    onChoosePicture={onChoosePicture}
                     onMerge={onMerge}
                   />
                 </DropdownMenuContent>

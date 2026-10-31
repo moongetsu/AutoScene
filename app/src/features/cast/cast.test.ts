@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
-import { formatScreenTime, namesCredit, namesSource, plural, unplacedNote } from "./cast"
+import type { FaceTrackItem } from "@/bindings"
+import { formatScreenTime, namesCredit, namesSource, pictureChoices, plural, unplacedNote } from "./cast"
 
 describe("cast wording", () => {
   it("says screen time the way people do", () => {
@@ -30,5 +31,36 @@ describe("names source", () => {
     expect([...of("live"), ...of("mixed"), namesSource(undefined, undefined)]).toEqual([null, null, null, null, null])
     expect([namesCredit("AniList"), namesCredit(null)]).toEqual([null, null])
     expect(namesCredit("Fandom")).toContain("CC BY-SA")
+  })
+})
+
+describe("picture choices", () => {
+  const face = (id: number, quality: number | null, faceHeight: number | null = 0.2): FaceTrackItem => ({
+    id,
+    mediaId: "m",
+    start: id * 10,
+    end: id * 10 + 5,
+    quality,
+    faceHeight,
+    thumb: `faces/${id}.jpg`,
+    characterId: "c",
+    assign: "auto",
+    score: 1,
+  })
+  const ids = (list: FaceTrackItem[]) => list.map((t) => t.id)
+
+  it("offers the clearest faces first, the bigger of two as clear, unknown ones last", () => {
+    const list = [face(1, 0.5), face(2, null), face(3, 0.9), face(4, 0.9, 0.4), face(5, 0.7)]
+    expect(ids(pictureChoices(list, null, 10))).toEqual([4, 3, 5, 1, 2])
+    expect(ids(pictureChoices(list, null, 2))).toEqual([4, 3])
+    // The list it was given keeps its order.
+    expect(ids(list)).toEqual([1, 2, 3, 4, 5])
+  })
+
+  it("puts their picture now first, even when it isn't among the clearest", () => {
+    const list = [face(1, 0.5), face(2, 0.9), face(3, 0.2)]
+    expect(ids(pictureChoices(list, "faces/3.jpg", 2))).toEqual([3, 2])
+    // A picture that isn't one of these faces changes nothing.
+    expect(ids(pictureChoices(list, "faces/9.jpg", 2))).toEqual([2, 1])
   })
 })

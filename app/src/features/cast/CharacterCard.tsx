@@ -15,16 +15,18 @@ export function CharacterCard({
   character: c,
   className,
   onRename,
+  onChoosePicture,
 }: {
   pid: string
   character: Character
   className?: string
   onRename?: () => void
+  onChoosePicture?: () => void
 }) {
   // Their episode is being analysed again: the faces come back when it's done.
   const refinding = c.tracks === 0 && c.waiting > 0
   return (
-    <ContextArea menu={<CharacterItems kit={contextKit} pid={pid} character={c} onRename={onRename} />}>
+    <ContextArea menu={<CharacterItems kit={contextKit} pid={pid} character={c} onRename={onRename} onChoosePicture={onChoosePicture} />}>
         <Link
           to="/p/$pid/cast/$cid"
           params={{ pid, cid: c.id }}
