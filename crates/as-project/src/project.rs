@@ -1089,6 +1089,24 @@ impl Project {
         Ok(self.db.set_export_status(id, ExportStatus::Failed)?)
     }
 
+    /// An export cancelled before it started: it and its clips say so, not
+    /// "Queued" with nothing left to make them (until the next launch tidies
+    /// up), and the names it promised are free again. One that started is
+    /// left to its run, which marks what it stopped.
+    pub fn cancel_unstarted_export(&self, id: ExportId) -> ProjectResult<()> {
+        let ex = self.export(id)?;
+        if ex.status != ExportStatus::Queued {
+            return Ok(());
+        }
+        for item in ex.items.iter().filter(|i| i.status == ExportStatus::Queued) {
+            match ex.merged {
+                Some(_) => self.db.update_export_part(item.id, ExportStatus::Cancelled, None, None)?,
+                None => self.db.update_export_item(item.id, ExportStatus::Cancelled, None, None)?,
+            }
+        }
+        Ok(self.db.set_export_status(id, ExportStatus::Cancelled)?)
+    }
+
     pub fn export(&self, id: ExportId) -> ProjectResult<ExportSummary> {
         self.db.export(self.id, id)?.ok_or_else(|| ProjectError::NotFound("This export no longer exists.".into()))
     }
@@ -1756,6 +1774,42 @@ mod tests {
         let e = project.create_export(&req, preset, Path::new("Exports")).unwrap_err();
         assert!(matches!(&e, ProjectError::Invalid(s) if s == "Choose a full folder path for the export."), "{e:?}");
         assert!(project.exports().unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_export_cancelled_before_it_starts_says_so() {
+        let (dir, project, m) = crate::analysis::tests::project_with_media(240);
+        let preset = || as_export::builtin_presets().into_iter().find(|p| p.id == "h264-edit").unwrap();
+        let clips = vec![
+            ClipRequest { media_id: m, start: 0, end: 24, name: Some("A".into()) },
+            ClipRequest { media_id: m, start: 48, end: 96, name: Some("B".into()) },
+        ];
+        let req = |merge: Option<&str>| ExportRequest {
+            preset_id: "h264-edit".into(),
+            out_dir: None,
+            clips: clips.clone(),
+            label: None,
+            merge: merge.map(Into::into),
+        };
+        for merge in [None, Some("Both")] {
+            let ex = project.create_export(&req(merge), preset(), dir.path()).unwrap();
+            project.cancel_unstarted_export(ex.id).unwrap();
+            let ex = project.export(ex.id).unwrap();
+            assert_eq!(ex.status, ExportStatus::Cancelled, "{merge:?}");
+            assert!(ex.items.iter().all(|i| i.status == ExportStatus::Cancelled), "{merge:?}");
+            // Its names are free for the next export to the same folder.
+            let next = project.create_export(&req(merge), preset(), dir.path()).unwrap();
+            match merge {
+                Some(name) => assert_eq!(next.merged.unwrap().name, name),
+                None => assert_eq!(next.items.iter().map(|i| i.name.as_str()).collect::<Vec<_>>(), ["A", "B"]),
+            }
+            project.cancel_unstarted_export(next.id).unwrap();
+        }
+        // One that is running is its run's to mark.
+        let ex = project.create_export(&req(None), preset(), dir.path()).unwrap();
+        project.db().set_export_status(ex.id, ExportStatus::Running).unwrap();
+        project.cancel_unstarted_export(ex.id).unwrap();
+        assert_eq!(project.export(ex.id).unwrap().status, ExportStatus::Running);
     }
 
     #[test]

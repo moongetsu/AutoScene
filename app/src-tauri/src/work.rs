@@ -12,7 +12,7 @@ use std::sync::Arc;
 use as_api::{
     AnalysisStage, CastEdit, ExportSummary, JobInfo, JobKind, JobState, MediaItem, MediaStatus, ProxyState, StageState,
 };
-use as_core::{MediaId, ProjectId};
+use as_core::{ExportId, MediaId, ProjectId};
 use as_engine::{Devices, EngineError, FacesEvent, FacesInput, ShotsEvent};
 use as_jobs::{Class, JobCtx, JobError, JobSpec};
 use as_models::ModelError;
@@ -999,8 +999,13 @@ pub fn queue_export(app: &AppHandle, project: &Arc<Project>, export: &ExportSumm
         media_id: None,
         export_id: Some(export_id),
     };
+    let unstarted = {
+        let (app, project) = (app.clone(), project.clone());
+        Unstarted(Some(move || export_dropped(&app, &project, export_id)))
+    };
     let (app2, project) = (app.clone(), project.clone());
     state.jobs.submit(spec, move |ctx| {
+        unstarted.started();
         let state = app2.state::<AppState>();
         let notify = || {
             let _ = ExportChanged { project_id: project.id, export_id }.emit(&app2);
@@ -1041,6 +1046,21 @@ pub fn queue_export(app: &AppHandle, project: &Arc<Project>, export: &ExportSumm
         }
         Ok(())
     });
+}
+
+/// An export dropped before it started (cancelled from Activity while
+/// queued): it says Cancelled at once, not Queued until the next launch. A
+/// shutdown leaves it to the next launch, which cancels what didn't finish.
+fn export_dropped(app: &AppHandle, project: &Project, export_id: ExportId) {
+    if app.state::<AppState>().jobs.is_shutting_down() {
+        return;
+    }
+    match project.cancel_unstarted_export(export_id) {
+        Ok(()) => {
+            let _ = ExportChanged { project_id: project.id, export_id }.emit(app);
+        }
+        Err(e) => log::warn!("marking a cancelled export: {}", e.detail()),
+    }
 }
 
 /// What an export with `failed` of its `clips` failing says.
