@@ -1,5 +1,5 @@
 import type * as React from "react"
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { useReducedMotion } from "motion/react"
 import { HoverCard } from "radix-ui"
 import type { FaceTrackItem, MediaItem } from "@/bindings"
@@ -81,9 +81,14 @@ function Moment({ pid, track, label, onFail }: { pid: string; track: FaceTrackIt
   }, [data])
   const loop = useMemo(() => (clock ? momentLoop(clock, track.start, track.end) : null), [clock, track.start, track.end])
   const src = data ? assetUrl(data.src) : null
-  // The element as state, not a ref: the portal mounts it a render after
-  // this one, and the effect below has to run again once it is there.
-  const [video, setVideo] = useState<HTMLVideoElement | null>(null)
+  // The portal mounts the video a render after this one: `mounted` runs the
+  // effect below again once it is there.
+  const ref = useRef<HTMLVideoElement | null>(null)
+  const [mounted, setMounted] = useState(false)
+  const attach = useCallback((el: HTMLVideoElement | null) => {
+    ref.current = el
+    setMounted(el !== null)
+  }, [])
   const [shown, setShown] = useState(false)
   const fail = useRef(onFail)
   useLayoutEffect(() => {
@@ -96,7 +101,7 @@ function Moment({ pid, track, label, onFail }: { pid: string; track: FaceTrackIt
   }, [broken])
 
   useEffect(() => {
-    const v = video as RvfcVideo | null
+    const v = ref.current as RvfcVideo | null
     if (!v || !src || !clock || !loop || unplayable.has(src)) return
     const moving = loop.last > loop.first
     let handle = 0
@@ -147,7 +152,7 @@ function Moment({ pid, track, label, onFail }: { pid: string; track: FaceTrackIt
       v.removeAttribute("src")
       v.load()
     }
-  }, [video, src, clock, loop])
+  }, [mounted, src, clock, loop])
 
   if (!data || broken) return null
   const where = [label, timecode(track.start, data.fps, data.dropFrame)].filter(Boolean).join(" · ")
@@ -166,7 +171,7 @@ function Moment({ pid, track, label, onFail }: { pid: string; track: FaceTrackIt
       >
         {/* Loaded only while the card is open. No crossOrigin: nothing reads its pixels (the player's is for canvas grabs). */}
         <video
-          ref={setVideo}
+          ref={attach}
           muted
           playsInline
           disablePictureInPicture
