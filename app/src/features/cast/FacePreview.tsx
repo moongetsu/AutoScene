@@ -81,7 +81,9 @@ function Moment({ pid, track, label, onFail }: { pid: string; track: FaceTrackIt
   }, [data])
   const loop = useMemo(() => (clock ? momentLoop(clock, track.start, track.end) : null), [clock, track.start, track.end])
   const src = data ? assetUrl(data.src) : null
-  const ref = useRef<HTMLVideoElement>(null)
+  // The element as state, not a ref: the portal mounts it a render after
+  // this one, and the effect below has to run again once it is there.
+  const [video, setVideo] = useState<HTMLVideoElement | null>(null)
   const [shown, setShown] = useState(false)
   const fail = useRef(onFail)
   useLayoutEffect(() => {
@@ -94,7 +96,7 @@ function Moment({ pid, track, label, onFail }: { pid: string; track: FaceTrackIt
   }, [broken])
 
   useEffect(() => {
-    const v = ref.current as RvfcVideo | null
+    const v = video as RvfcVideo | null
     if (!v || !src || !clock || !loop || unplayable.has(src)) return
     const moving = loop.last > loop.first
     let handle = 0
@@ -145,7 +147,7 @@ function Moment({ pid, track, label, onFail }: { pid: string; track: FaceTrackIt
       v.removeAttribute("src")
       v.load()
     }
-  }, [src, clock, loop])
+  }, [video, src, clock, loop])
 
   if (!data || broken) return null
   const where = [label, timecode(track.start, data.fps, data.dropFrame)].filter(Boolean).join(" · ")
@@ -164,7 +166,7 @@ function Moment({ pid, track, label, onFail }: { pid: string; track: FaceTrackIt
       >
         {/* Loaded only while the card is open. No crossOrigin: nothing reads its pixels (the player's is for canvas grabs). */}
         <video
-          ref={ref}
+          ref={setVideo}
           muted
           playsInline
           disablePictureInPicture
