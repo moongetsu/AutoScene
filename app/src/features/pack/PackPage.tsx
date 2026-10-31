@@ -25,12 +25,13 @@ import { firstFailure, useCast, useMediaList, usePresets, useSettings } from "@/
 import { modKey } from "@/lib/platform"
 import { PACK_SHORTCUTS, useShortcuts } from "@/lib/shortcuts"
 import { type BodyVerdict } from "@/features/shots/shots"
+import { useUi } from "@/state/ui"
 import { PackCard } from "./PackCard"
 import { PackExportDialog } from "./PackExportDialog"
 import { PackFilters } from "./PackFilters"
 import { PackFooter } from "./PackFooter"
 import { type Show, between, handPicked, keyOf, shown } from "./spec"
-import { usePack } from "./use-pack"
+import { usePack, usePackExport } from "./use-pack"
 
 const NO_CLIPS: PackClip[] = []
 const NO_MEDIA: MediaItem[] = []
@@ -80,11 +81,12 @@ function PackView({ pid, cid }: { pid: string; cid: string }) {
       </Page>
     )
   }
-  return <Builder pid={pid} character={character} media={media} mediaById={mediaById} pack={pack} toolbar={toolbar} />
+  return <Builder pid={pid} cid={cid} character={character} media={media} mediaById={mediaById} pack={pack} toolbar={toolbar} />
 }
 
 function Builder({
   pid,
+  cid,
   character,
   media,
   mediaById,
@@ -92,6 +94,7 @@ function Builder({
   toolbar,
 }: {
   pid: string
+  cid: string
   character: Character | undefined
   media: MediaItem[]
   mediaById: Map<string, MediaItem>
@@ -108,7 +111,9 @@ function Builder({
   const visible = useMemo(() => shown(clips, show), [clips, show])
   const picks = useMemo(() => handPicked(clips), [clips])
   const taken = totals.clips
-  const canExport = taken > 0 && pack.current && character != null
+  // One export of the pack at a time: the button shows the one under way.
+  const exporting = usePackExport(pid, cid)
+  const canExport = taken > 0 && pack.current && character != null && !exporting
   const bytes = pack.plan.data?.sizes.find((s) => s.presetId === settings?.exportPresetId)?.bytes ?? null
   const format = presets?.find((p) => p.id === settings?.exportPresetId)?.name
 
@@ -275,8 +280,10 @@ function Builder({
           format={format ? shortFormatName(format) : null}
           picks={picks.length}
           canExport={canExport}
+          exporting={exporting}
           onClearPicks={() => void pack.clearPicks(picks)}
           onExport={() => setExportOpen(true)}
+          onShowExport={() => useUi.getState().setActivityOpen(true)}
         />
       )}
     </div>

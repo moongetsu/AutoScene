@@ -2,11 +2,12 @@ import type * as React from "react"
 import { QueryClientProvider } from "@tanstack/react-query"
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import type { PackChoices, PackClip, PackPreview, PackState } from "@/bindings"
+import type { JobInfo, PackChoices, PackClip, PackPreview, PackState } from "@/bindings"
 import { commands } from "@/lib/ipc"
 import { queryClient } from "@/lib/queries"
 import { DEFAULT_SPEC, totalsOf } from "./spec"
-import { usePack } from "./use-pack"
+import { useActivity } from "@/state/activity"
+import { packExportStarted, usePack, usePackExport } from "./use-pack"
 
 vi.mock("@/lib/ipc", () => ({
   commands: {
@@ -258,5 +259,28 @@ describe("usePack", () => {
     expect(commands.packOverride).toHaveBeenCalledWith("p", "c", picks([[0], null]), solo)
     expect(result.current.preview.data?.stamp).toBe("both, solo")
     expect(result.current.preview.data?.clips[0]).toMatchObject({ included: true, manual: null })
+  })
+})
+
+describe("the pack's export", () => {
+  const job = (id: string, exportId: string, state: JobInfo["state"], rev = 1) =>
+    ({ id, kind: "export", projectId: "p", exportId, state, progress: null, rev, createdAt: rev }) as JobInfo
+
+  it("is the job of the export the pack started, while it waits or runs", () => {
+    useActivity.setState({ jobs: {}, order: [] })
+    const { result } = renderHook(() => usePackExport("p", "walter"))
+    expect(result.current).toBeUndefined()
+    act(() => {
+      packExportStarted("p", "walter", "e1")
+      // Another character's pack, and Walter's in another project.
+      packExportStarted("p", "jesse", "e2")
+      packExportStarted("q", "walter", "e3")
+      for (const j of [job("j2", "e2", "running"), job("j3", "e3", "running"), job("j1", "e1", "queued")]) {
+        useActivity.getState().upsert(j)
+      }
+    })
+    expect(result.current?.id).toBe("j1")
+    act(() => useActivity.getState().upsert(job("j1", "e1", "cancelled", 2)))
+    expect(result.current).toBeUndefined()
   })
 })

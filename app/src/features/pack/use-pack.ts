@@ -1,9 +1,23 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { type Query, hashKey, keepPreviousData, useQuery } from "@tanstack/react-query"
 import { toast } from "sonner"
-import type { CharacterId, MediaItem, PackChoices, PackClip, PackNaming, PackPreview, PackSpec, PackState, ProjectId } from "@/bindings"
+import { create } from "zustand"
+import type {
+  CharacterId,
+  ExportId,
+  JobInfo,
+  MediaItem,
+  PackChoices,
+  PackClip,
+  PackNaming,
+  PackPreview,
+  PackSpec,
+  PackState,
+  ProjectId,
+} from "@/bindings"
 import { commands, errorMessage } from "@/lib/ipc"
 import { qk, queryClient } from "@/lib/queries"
+import { isFinished, useActivity } from "@/state/activity"
 import { fits, keyOf, pickable, picksFor, withChoices, withPicks } from "./spec"
 
 /** How long the filters rest before the pack is made again, and before they are kept. */
@@ -206,3 +220,29 @@ export function usePack(pid: ProjectId, cid: CharacterId, media: Map<string, Med
 }
 
 export type Pack = ReturnType<typeof usePack>
+
+/**
+ * The exports started from each pack while the app is open, by project and
+ * character: a job says which export it renders, not whose pack that was.
+ */
+const started = create<Record<string, ExportId[]>>(() => ({}))
+const packKey = (pid: ProjectId, cid: CharacterId) => `${pid}/${cid}`
+
+/** Note an export the pack of `cid` started. */
+export function packExportStarted(pid: ProjectId, cid: CharacterId, exportId: ExportId) {
+  const key = packKey(pid, cid)
+  started.setState((s) => ({ [key]: [...(s[key] ?? []), exportId] }))
+}
+
+/** The job of the pack's newest export while it waits or runs, if any. */
+export function usePackExport(pid: ProjectId, cid: CharacterId): JobInfo | undefined {
+  const ids = started((s) => s[packKey(pid, cid)])
+  return useActivity((s) => {
+    if (!ids) return undefined
+    for (const id of s.order) {
+      const j = s.jobs[id]
+      if (j.exportId && ids.includes(j.exportId) && !isFinished(j)) return j
+    }
+    return undefined
+  })
+}

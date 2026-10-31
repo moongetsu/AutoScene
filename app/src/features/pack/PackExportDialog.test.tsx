@@ -39,7 +39,7 @@ vi.mock("@/lib/ipc", () => ({
     ),
     settingsUpdate: vi.fn(),
     exportDefaultDir: vi.fn(() => Promise.resolve("C:\\Library\\Exports\\Show")),
-    packExport: vi.fn(() => Promise.resolve({})),
+    packExport: vi.fn(() => Promise.resolve({ id: "e1" })),
   },
   errorMessage: (e: unknown) => String(e),
 }))

@@ -15,7 +15,7 @@ import { commands, errorMessage } from "@/lib/ipc"
 import { pickFolder } from "@/lib/media"
 import { qk, queryClient, useExportDir, usePresets, useSettings } from "@/lib/queries"
 import { useUi } from "@/state/ui"
-import type { Pack } from "./use-pack"
+import { type Pack, packExportStarted } from "./use-pack"
 
 /** What a file name can be made of (as_project::naming). */
 const TOKENS = [
@@ -89,7 +89,9 @@ function ExportForm({ pid, character, pack, onDone }: { pid: string; character: 
     if (!presetId || stamp == null) return
     setBusy(true)
     try {
-      await commands.packExport(pid, character.id, { spec: state.spec, naming, presetId, outDir: dir, stamp })
+      const ex = await commands.packExport(pid, character.id, { spec: state.spec, naming, presetId, outDir: dir, stamp })
+      // The pack's Export button follows it from now on.
+      packExportStarted(pid, character.id, ex.id)
       rememberPreset(settings, presetId)
       onDone()
       toast(oneFile ? `Exporting ${shots} of ${character.label} into one file` : `Exporting ${shots} of ${character.label}`, {
