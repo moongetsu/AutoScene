@@ -10,11 +10,21 @@ import { formatScreenTime, plural } from "./cast"
 import { CharacterItems } from "./character-actions"
 
 /** A character as a portrait: the face fills the card, the name sits on it. */
-export function CharacterCard({ pid, character: c, className }: { pid: string; character: Character; className?: string }) {
+export function CharacterCard({
+  pid,
+  character: c,
+  className,
+  onRename,
+}: {
+  pid: string
+  character: Character
+  className?: string
+  onRename?: () => void
+}) {
   // Their episode is being analysed again: the faces come back when it's done.
   const refinding = c.tracks === 0 && c.waiting > 0
   return (
-    <ContextArea menu={<CharacterItems kit={contextKit} pid={pid} character={c} />}>
+    <ContextArea menu={<CharacterItems kit={contextKit} pid={pid} character={c} onRename={onRename} />}>
         <Link
           to="/p/$pid/cast/$cid"
           params={{ pid, cid: c.id }}
@@ -41,7 +51,18 @@ export function CharacterCard({ pid, character: c, className }: { pid: string; c
               </Badge>
             )}
             <div className="absolute inset-x-0 bottom-0 p-3.5">
-              <div className={cn("display truncate text-2xl leading-7", c.name ? "text-white" : "text-white/70 italic")}>{c.label}</div>
+              <div
+                onDoubleClick={(e) => {
+                  if (onRename) {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    onRename()
+                  }
+                }}
+                className={cn("display truncate text-2xl leading-7 select-none", c.name ? "text-white" : "text-white/70 italic")}
+              >
+                {c.label}
+              </div>
               <div className="mt-0.5 truncate text-xs text-white/70">
                 {refinding ? (
                   "Being found again…"
