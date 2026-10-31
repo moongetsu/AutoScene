@@ -1,6 +1,16 @@
 import { describe, expect, it } from "vitest"
-import type { FaceTrackItem } from "@/bindings"
-import { formatScreenTime, namesCredit, namesSource, pictureChoices, plural, unplacedNote } from "./cast"
+import type { Character, FaceTrackItem } from "@/bindings"
+import {
+  ALL_CAST,
+  findCharacters,
+  formatScreenTime,
+  isNarrowed,
+  namesCredit,
+  namesSource,
+  pictureChoices,
+  plural,
+  unplacedNote,
+} from "./cast"
 
 describe("cast wording", () => {
   it("says screen time the way people do", () => {
@@ -62,5 +72,61 @@ describe("picture choices", () => {
     expect(ids(pictureChoices(list, "faces/3.jpg", 2))).toEqual([3, 2])
     // A picture that isn't one of these faces changes nothing.
     expect(ids(pictureChoices(list, "faces/9.jpg", 2))).toEqual([2, 1])
+  })
+})
+
+describe("finding characters", () => {
+  const person = (id: string, name: string | null, number: number, shots: number, unsure = 0): Character => ({
+    id,
+    name,
+    label: name ?? `Character ${number}`,
+    hidden: false,
+    tracks: shots,
+    shots,
+    media: 1,
+    screenSec: 100 - number,
+    cover: null,
+    coverSmall: null,
+    unsure,
+    waiting: 0,
+  })
+  // The backend's order: most screen time first.
+  const cast = [
+    person("walter", "Walter", 1, 40),
+    person("c2", null, 2, 55, 3),
+    person("zoe", "Zoë", 3, 12, 1),
+    person("c10", null, 10, 12),
+    person("abe", "abe", 11, 30),
+  ]
+  const ids = (list: Character[]) => list.map((c) => c.id)
+  const find = (patch: Partial<typeof ALL_CAST>) => ids(findCharacters(cast, { ...ALL_CAST, ...patch }))
+
+  it("keeps everyone in the cast's order by default", () => {
+    expect(find({})).toEqual(["walter", "c2", "zoe", "c10", "abe"])
+    expect(isNarrowed(ALL_CAST)).toBe(false)
+    expect(isNarrowed({ ...ALL_CAST, order: "name" })).toBe(false)
+    expect(isNarrowed({ ...ALL_CAST, query: "  " })).toBe(false)
+    expect(isNarrowed({ ...ALL_CAST, show: "named" })).toBe(true)
+  })
+
+  it("finds by name or label, whatever the case and accents", () => {
+    expect(find({ query: "WAL" })).toEqual(["walter"])
+    expect(find({ query: "zoe" })).toEqual(["zoe"])
+    expect(find({ query: " character 1 " })).toEqual(["c10"])
+    expect(find({ query: "nobody" })).toEqual([])
+  })
+
+  it("shows only the named, or only those with faces to review", () => {
+    expect(find({ show: "named" })).toEqual(["walter", "zoe", "abe"])
+    expect(find({ show: "review" })).toEqual(["c2", "zoe"])
+    expect(find({ show: "review", query: "zo" })).toEqual(["zoe"])
+  })
+
+  it("orders by shots, or by name with the unnamed after in their numbers' order", () => {
+    // Equal shots keep the cast's order.
+    expect(find({ order: "shots" })).toEqual(["c2", "walter", "abe", "zoe", "c10"])
+    expect(find({ order: "name" })).toEqual(["abe", "walter", "zoe", "c2", "c10"])
+    // The list it was given keeps its order.
+    expect(ids(cast)).toEqual(["walter", "c2", "zoe", "c10", "abe"])
   })
 })

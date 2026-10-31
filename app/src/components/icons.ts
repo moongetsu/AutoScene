@@ -12,6 +12,7 @@ export {
   ArrowSquareOut,
   ArrowUUpLeft,
   ArrowUUpRight,
+  ArrowsDownUp,
   ArrowsMerge,
   ArrowsOutLineHorizontal,
   Backspace,

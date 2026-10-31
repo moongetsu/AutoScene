@@ -17,9 +17,25 @@ import { cn } from "@/lib/utils"
 import { CharacterCard } from "./CharacterCard"
 import { AniListDialog } from "./AniListDialog"
 import { AniListNames } from "./AniListNames"
+import { CastFilters } from "./CastFilters"
 import { ChoosePictureDialog } from "./ChoosePictureDialog"
 import { RenameCharacterDialog } from "./RenameCharacterDialog"
-import { namesSource, plural, splitHidden, unplacedNote, useProjectAnalysis } from "./cast"
+import {
+  ALL_CAST,
+  type CastFind,
+  findCharacters,
+  isNarrowed,
+  namesSource,
+  plural,
+  splitHidden,
+  unplacedNote,
+  useProjectAnalysis,
+} from "./cast"
+
+/** Fewer characters than a row of cards: nothing to look for, so no search. */
+const FIND_FROM = 6
+/** How each project's cast was narrowed last: coming back from a character finds it so again. */
+const lastFind = new Map<string, CastFind>()
 
 /** Everyone the analysis found, most screen time first. */
 export function CastPage() {
@@ -36,8 +52,18 @@ export function CastPage() {
   const [anilistOpen, setAnilistOpen] = useState(false)
   const [renaming, setRenaming] = useState<Character | null>(null)
   const [picturing, setPicturing] = useState<Character | null>(null)
+  const [find, setFindState] = useState(() => lastFind.get(pid) ?? ALL_CAST)
+  const setFind = (f: CastFind) => {
+    lastFind.set(pid, f)
+    setFindState(f)
+  }
   const navigate = useNavigate()
-  const { shown, hidden } = splitHidden(cast)
+  const { shown: everyoneShown, hidden: everyoneHidden } = splitHidden(cast)
+  const narrowed = isNarrowed(find)
+  const shown = findCharacters(everyoneShown, find)
+  const hidden = findCharacters(everyoneHidden, find)
+  // The search stays while it narrows or orders the cast, however small it got.
+  const finding = (cast?.characters.length ?? 0) >= FIND_FROM || narrowed || find.order !== ALL_CAST.order
   const unplaced = unplacedNote(cast?.unplaced ?? 0)
   // Names from AniList (anime) or TVmaze (animation) while the opt-in in
   // Settings is on and someone shown is still unnamed.
@@ -86,7 +112,9 @@ export function CastPage() {
           <h1 className="display text-5xl text-fg-1">Cast</h1>
           {cast && (
             <p className="mt-2 text-md text-fg-2">
-              {plural(shown.length, "character")}
+              {narrowed
+                ? `${shown.length.toLocaleString("en-GB")} of ${plural(everyoneShown.length, "character")}`
+                : plural(shown.length, "character")}
               {cast.mediaTotal > 0 &&
                 ` · faces from ${cast.mediaDone} of ${plural(cast.mediaTotal, project?.kind === "movie" ? "file" : "episode")}`}
             </p>
@@ -106,6 +134,9 @@ export function CastPage() {
             </Button>
           )}
         </div>
+        {cast && finding && (
+          <CastFilters className="basis-full" find={find} review={cast.characters.some((c) => c.unsure > 0)} onChange={setFind} />
+        )}
       </header>
 
       <div className="px-10 pb-16">
@@ -122,7 +153,7 @@ export function CastPage() {
               <div key={i} className="skeleton aspect-[3/4] rounded-2xl" />
             ))}
           </CardGrid>
-        ) : shown.length === 0 ? (
+        ) : everyoneShown.length === 0 ? (
           <EmptyState
             icon={<Users />}
             title={running.length > 0 ? "Looking for characters" : "No characters yet"}
@@ -134,6 +165,18 @@ export function CastPage() {
           />
         ) : (
           <>
+            {shown.length === 0 && (
+              <div className="flex flex-col items-start gap-4 py-4">
+                <p className="text-md text-fg-3">
+                  {find.query.trim()
+                    ? `Nobody matches “${find.query.trim()}”.`
+                    : find.show === "named"
+                      ? "Nobody here has a name yet."
+                      : "No faces wait for review."}
+                </p>
+                <Button onClick={() => setFind({ ...find, query: "", show: "all" })}>Show everyone</Button>
+              </div>
+            )}
             <CardGrid>
               {shown.map((c) => (
                 <CharacterCard
@@ -144,7 +187,8 @@ export function CastPage() {
                   onChoosePicture={() => setPicturing(c)}
                 />
               ))}
-              {cast && cast.unassigned > 0 && (
+              {/* Not a character: left out while the cast is narrowed. */}
+              {!narrowed && cast && cast.unassigned > 0 && (
                 <ContextArea
                   menu={
                     <ContextMenuItem onSelect={() => void navigate({ to: "/p/$pid/cast/$cid", params: { pid, cid: "unassigned" } })}>

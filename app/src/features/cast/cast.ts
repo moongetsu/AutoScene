@@ -67,6 +67,43 @@ export function splitHidden(cast: Cast | undefined): { shown: Character[]; hidde
   return { shown: all.filter((c) => !c.hidden), hidden: all.filter((c) => c.hidden) }
 }
 
+/** Who the cast shows: everyone, the named only, or those with faces to review. */
+export type CastShow = "all" | "named" | "review"
+/** The cast's order: most screen time first (the backend's), most shots first, or by name. */
+export type CastOrder = "screen" | "shots" | "name"
+export type CastFind = { query: string; show: CastShow; order: CastOrder }
+
+export const ALL_CAST: CastFind = { query: "", show: "all", order: "screen" }
+
+/** The cast is narrowed: some characters may be left out (an order leaves nobody out). */
+export function isNarrowed(find: CastFind): boolean {
+  return find.query.trim() !== "" || find.show !== "all"
+}
+
+/** Lower case without accents: "Zoë" is found by "zoe". */
+const folded = (s: string) => s.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase()
+const byName = new Intl.Collator("en-GB", { numeric: true, sensitivity: "base" })
+
+/**
+ * The characters `find` asks for, in its order. Named ones come before the
+ * unnamed by name, the unnamed in their numbers' order ("Character 2"
+ * before "Character 10"); every order keeps the cast's own among equals.
+ */
+export function findCharacters(characters: Character[], find: CastFind): Character[] {
+  const q = folded(find.query.trim())
+  const found = characters.filter(
+    (c) =>
+      (!q || folded(c.label).includes(q)) &&
+      (find.show !== "named" || c.name != null) &&
+      (find.show !== "review" || c.unsure > 0),
+  )
+  if (find.order === "shots") return found.sort((a, b) => b.shots - a.shots)
+  if (find.order === "name") {
+    return found.sort((a, b) => Number(a.name == null) - Number(b.name == null) || byName.compare(a.label, b.label))
+  }
+  return found
+}
+
 /**
  * A character's faces to choose their picture from: the one it is now
  * first (`current`: its thumbnail), then the clearest — of two as clear,
