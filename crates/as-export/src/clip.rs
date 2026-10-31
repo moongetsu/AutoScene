@@ -134,6 +134,17 @@ fn gop_args(gop: Gop, fps: f64, hardware: Option<Vendor>, args: &mut Vec<String>
     }
 }
 
+/// x265 dates its first frames back by the delay its B-frames add, which it
+/// works out from the third frame and before that reads from a field it
+/// never sets: a clip of one or two frames gets a decode time off by
+/// whatever that memory held (macOS: often), which a MOV refuses ("pts/dts
+/// pair unsupported") or keeps wrong. So few frames have nothing to reorder.
+pub(crate) fn x265_in_order_when_short(encoder: &str, frames: u32, args: &mut Vec<String>) {
+    if encoder == "libx265" && frames < 3 && !args.iter().any(|a| a == "-bf") {
+        args.extend(["-bf".into(), "0".into()]);
+    }
+}
+
 /// Which encoder and arguments `codec` resolves to on a machine with `caps`,
 /// for `size` pictures with keyframes spaced by `fps`. `fastest` is the
 /// highest frame rate an encoder of them is told ([`encoder_fps`]): NVENC's
@@ -562,10 +573,12 @@ pub fn export_clip(
     }
     let n = range.len();
     let s = range.start;
-    let recipe = match job.part {
+    let mut recipe = match job.part {
         Some(part) => part_recipe(job, part),
         None => clip_recipe(tools, job)?,
     };
+    // A part's encoding is its file's: the plan already took its shortest clip.
+    x265_in_order_when_short(&recipe.encoder, n, &mut recipe.args);
 
     let out = with_suffix(&job.out_stem, &format!(".{}", recipe.ext));
     // Work files live in a hidden folder next to the clips, so no clip name
@@ -855,5 +868,22 @@ mod tests {
         }
         let x264 = resolve_encoding(&v, &nvidia(), FILM, (1920, 1080), FILM).unwrap().args.join(" ");
         assert_eq!(x264, "-c:v libx264 -preset slow -crf 14 -profile:v high -g 1 -bf 0");
+    }
+
+    #[test]
+    fn x265_reorders_no_clip_of_one_or_two_frames() {
+        let with = |encoder: &str, frames, args: &[&str]| {
+            let mut a: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+            x265_in_order_when_short(encoder, frames, &mut a);
+            a.join(" ")
+        };
+        assert_eq!(with("libx265", 1, &["-c:v", "libx265"]), "-c:v libx265 -bf 0");
+        assert_eq!(with("libx265", 2, &["-c:v", "libx265"]), "-c:v libx265 -bf 0");
+        // From the third frame on x265 times its B-frames right.
+        assert_eq!(with("libx265", 3, &["-c:v", "libx265"]), "-c:v libx265");
+        // A GOP that already has none stays as it is; other encoders aren't touched.
+        assert_eq!(with("libx265", 1, &["-g", "1", "-bf", "0"]), "-g 1 -bf 0");
+        assert_eq!(with("libx264", 1, &["-c:v", "libx264"]), "-c:v libx264");
+        assert_eq!(with("hevc_nvenc", 1, &["-c:v", "hevc_nvenc"]), "-c:v hevc_nvenc");
     }
 }

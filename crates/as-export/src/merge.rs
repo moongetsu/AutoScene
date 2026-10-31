@@ -30,7 +30,9 @@ use as_media::frames::MAX_SIDE;
 use as_media::{AudioStream, Caps, ExactFormat, HdrKind, MediaError, MediaInfo, Tools, run_ffmpeg};
 use serde_json::Value;
 
-use crate::clip::{AUDIO_RATE, ClipOutcome, Encoding, encoder_fps, resolve_encoding, with_suffix};
+use crate::clip::{
+    AUDIO_RATE, ClipOutcome, Encoding, encoder_fps, resolve_encoding, with_suffix, x265_in_order_when_short,
+};
 use crate::lossless::{self, LosslessCodec};
 use crate::preset::{AudioCodec, Container, ExportPreset, HdrMode, VideoCodec};
 use crate::{ExportError, ExportResult};
@@ -334,7 +336,7 @@ pub fn plan_lossless_merge(caps: &Caps, sources: &[MergeSource], exact: &[ExactF
         .zip(exact)
         .map(|(s, e)| lossless::keeper(caps, e, &s.info.video.codec, (s.info.video.width, s.info.video.height)))
         .collect::<ExportResult<Vec<_>>>()?;
-    let keeper = keepers[0].clone();
+    let mut keeper = keepers[0].clone();
     let alike = |k: &lossless::Keeper| {
         (k.codec, &k.encoding.args, &k.tag, &k.repack)
             == (keeper.codec, &keeper.encoding.args, &keeper.tag, &keeper.repack)
@@ -342,6 +344,10 @@ pub fn plan_lossless_merge(caps: &Caps, sources: &[MergeSource], exact: &[ExactF
     if !keepers.iter().all(alike) {
         return unlike("their episodes decode to different picture formats or colours");
     }
+    // Every part encoded alike, so the shortest decides whether x265 may
+    // reorder frames.
+    let shortest = sources.iter().map(|s| s.range.len()).min().unwrap_or(0);
+    x265_in_order_when_short(&keeper.encoding.encoder, shortest, &mut keeper.encoding.args);
     if exact.iter().any(|e| e.interlaced != exact[0].interlaced) {
         return unlike("their episodes' fields come in a different order");
     }
@@ -1102,6 +1108,27 @@ mod tests {
             assert!(refused(plan_lossless_merge(&caps, &sources(range), &[ExactFormat::default()])), "{range:?}");
         }
         assert!(plan_merge(&caps, &prores, &sources(FrameRange::new(2, 8))).is_ok());
+    }
+
+    #[test]
+    fn one_short_clip_keeps_x265_from_reordering_every_part() {
+        let film = info(1920, 1080, r(1, 1), 0);
+        let index = FrameIndex::cfr(r(1, 24), r(24, 1), 0, 100);
+        let caps = Caps { sw_encoders: vec!["libx265".into()], ..Caps::default() };
+        let exact = ExactFormat { pix_fmt: "yuv420p".into(), ..ExactFormat::default() };
+        let args = |ranges: &[FrameRange]| {
+            let sources: Vec<MergeSource> = ranges
+                .iter()
+                .map(|&range| MergeSource { info: &film, index: &index, range, audio_ordinal: None })
+                .collect();
+            let plan = plan_lossless_merge(&caps, &sources, &vec![exact.clone(); sources.len()]).unwrap();
+            assert_eq!(plan.shape.encoding.encoder, "libx265");
+            plan.shape.encoding.args.join(" ")
+        };
+        let (long, two) = (FrameRange::new(10, 40), FrameRange::new(50, 52));
+        assert!(!args(&[long, long]).contains("-bf"));
+        assert!(args(&[long, two]).contains("-bf 0"));
+        assert!(args(&[two]).contains("-bf 0"));
     }
 
     #[test]
