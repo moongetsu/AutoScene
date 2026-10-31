@@ -126,6 +126,14 @@ export const FACES_SHORTCUTS: Shortcut<FacesId>[] = [
   { id: "clearSelection", label: "Clear the selection", keys: ["Esc"], bindings: [key("escape")] },
 ]
 
+export type CastId = "selectAll" | "clearSelection"
+
+/** On the Cast page's cards. */
+export const CAST_SHORTCUTS: Shortcut<CastId>[] = [
+  { id: "selectAll", label: "Select every character", keys: [modKey, "A"], bindings: [key("a", { mod: true })] },
+  { id: "clearSelection", label: "Clear the selection", keys: ["Esc"], bindings: [key("escape")] },
+]
+
 export type PackId = "toggle" | "watch" | "export"
 
 /** While building a scenepack (the first two on the focused shot). */
@@ -145,6 +153,11 @@ export const SHORTCUT_GROUPS: { title: string; description: string; shortcuts: S
   { title: "Everywhere", description: "Work faster without leaving the keyboard.", shortcuts: GLOBAL_SHORTCUTS },
   { title: "Player", description: "While an episode is open.", shortcuts: PLAYER_SHORTCUTS },
   { title: "Review faces", description: "Answer with one key; every answer is kept.", shortcuts: REVIEW_SHORTCUTS },
+  {
+    title: "Cast",
+    description: `On the Cast page. ${modKey}-click selects a character too, Shift-click every one between.`,
+    shortcuts: CAST_SHORTCUTS,
+  },
   { title: "A character's faces", description: "In a character's Faces view.", shortcuts: FACES_SHORTCUTS },
   { title: "Scenepack", description: "While picking a character's shots.", shortcuts: PACK_SHORTCUTS },
 ]

@@ -1,37 +1,80 @@
+import type * as React from "react"
 import { Link } from "@tanstack/react-router"
-import { User, UserFocus } from "@/components/icons"
+import { Check, CheckCircle, User, UserFocus } from "@/components/icons"
 import type { Character } from "@/bindings"
 import { Artwork } from "@/components/ui/artwork"
 import { Badge } from "@/components/ui/badge"
 import { ContextArea } from "@/components/ui/context-area"
+import { ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-menu"
 import { contextKit } from "@/components/ui/menu-actions"
 import { cn } from "@/lib/utils"
 import { formatScreenTime, plural } from "./cast"
 import { CharacterItems } from "./character-actions"
 
-/** A character as a portrait: the face fills the card, the name sits on it. */
+/**
+ * A character as a portrait: the face fills the card, the name sits on it.
+ * Where cards can be selected (`onPick`), a selected one wears a gold ring
+ * and tick, and its right-click offers what the selection can be told.
+ */
 export function CharacterCard({
   pid,
   character: c,
   className,
   onRename,
   onChoosePicture,
+  selected = false,
+  selecting = false,
+  onPick,
+  onSelect,
+  selectionMenu,
 }: {
   pid: string
   character: Character
   className?: string
   onRename?: () => void
   onChoosePicture?: () => void
+  selected?: boolean
+  /** Something is selected: a click adds or takes away this card too. */
+  selecting?: boolean
+  /** A click on the card; `true` when the selection took it (the character isn't opened). */
+  onPick?: (e: React.MouseEvent) => boolean
+  /** Add this card to the selection, or start one with it (its menu's Select). */
+  onSelect?: () => void
+  /** What a right-click on the card offers while it is selected. */
+  selectionMenu?: React.ReactNode
 }) {
   // Their episode is being analysed again: the faces come back when it's done.
   const refinding = c.tracks === 0 && c.waiting > 0
+  const menu =
+    selected && selectionMenu ? (
+      selectionMenu
+    ) : (
+      <>
+        <CharacterItems kit={contextKit} pid={pid} character={c} onRename={onRename} onChoosePicture={onChoosePicture} />
+        {onSelect && (
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuItem onSelect={onSelect}>
+              <CheckCircle /> Select
+            </ContextMenuItem>
+          </>
+        )}
+      </>
+    )
   return (
-    <ContextArea menu={<CharacterItems kit={contextKit} pid={pid} character={c} onRename={onRename} onChoosePicture={onChoosePicture} />}>
+    <ContextArea menu={menu}>
         <Link
           to="/p/$pid/cast/$cid"
           params={{ pid, cid: c.id }}
+          // In the capture phase: the browser guards stop a Ctrl/⌘- or
+          // Shift-click on a link before it gets here, and the link then skips
+          // its onClick. A click the selection takes doesn't open the character.
+          onClickCapture={(e) => {
+            if (onPick?.(e)) e.preventDefault()
+          }}
           className={cn(
-            "group block rounded-2xl transition-transform duration-[var(--dur-med)] ease-out hover:-translate-y-1 focus-visible:-translate-y-1",
+            "group block rounded-2xl transition-[transform,box-shadow] duration-[var(--dur-med)] ease-out hover:-translate-y-1 focus-visible:-translate-y-1",
+            selected && "ring-2 ring-accent ring-offset-2 ring-offset-canvas",
             refinding && "opacity-60",
             className,
           )}
@@ -51,6 +94,23 @@ export function CharacterCard({
               <Badge tone="media" className="absolute top-2.5 right-2.5">
                 +{c.unsure} to review
               </Badge>
+            )}
+            {(selected || selecting) && (
+              <span
+                className={cn(
+                  "absolute top-2.5 left-2.5 flex size-6 items-center justify-center rounded-full border-2 transition-opacity",
+                  selected
+                    ? "border-accent bg-accent text-on-accent"
+                    : "border-white/70 bg-black/30 opacity-0 backdrop-blur-sm group-hover:opacity-100",
+                )}
+              >
+                {selected && (
+                  <>
+                    <Check className="size-3.5" weight="bold" />
+                    <span className="sr-only">Selected</span>
+                  </>
+                )}
+              </span>
             )}
             <div className="absolute inset-x-0 bottom-0 p-3.5">
               <div className={cn("display truncate text-2xl leading-7", c.name ? "text-white" : "text-white/70 italic")}>{c.label}</div>

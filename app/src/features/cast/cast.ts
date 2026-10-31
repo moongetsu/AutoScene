@@ -1,6 +1,7 @@
 import { useMemo } from "react"
 import { toast } from "sonner"
 import type { Cast, CastEdit, Character, ContentKind, FaceTrackItem, JobInfo, ProjectKind } from "@/bindings"
+import { clickSelect } from "@/lib/grid"
 import { commands, errorMessage } from "@/lib/ipc"
 import { useActivity, isFinished } from "@/state/activity"
 
@@ -33,6 +34,36 @@ export function namesCredit(source: ReturnType<typeof namesSource>): string | nu
   if (source === "TVmaze") return "Names and pictures: TVmaze.com (CC BY-SA)."
   if (source === "Fandom") return "Names and pictures: the film's Fandom wiki (CC BY-SA), found through Wikidata."
   return null
+}
+
+/**
+ * Hide several characters (or show them again), one after the other. The
+ * first that fails stops the rest (its toast says why). How many changed.
+ */
+export async function setHiddenAll(pid: string, ids: string[], hidden: boolean): Promise<number> {
+  let done = 0
+  for (const id of ids) {
+    if ((await castEdit(pid, { op: "set_hidden", characterId: id, hidden })) === undefined) break
+    done++
+  }
+  return done
+}
+
+/**
+ * A click on a cast card (`ids`: the cards in the order shown). A plain
+ * one opens the character: `null`. With Ctrl/⌘ or Shift — or any click
+ * once something is selected — it selects as a grid of faces does
+ * (`clickSelect`); a range starts only from a card of the selection now.
+ */
+export function cardClick(
+  ids: readonly string[],
+  selected: ReadonlySet<string>,
+  anchor: string | null,
+  index: number,
+  mods: { shift: boolean; toggle: boolean },
+): { selected: Set<string>; anchor: string | null } | null {
+  if (selected.size === 0 && !mods.shift && !mods.toggle) return null
+  return clickSelect(ids, selected, selected.size === 0 ? null : anchor, index, mods)
 }
 
 /** Screen time as people say it: "42 s", "12 min", "1 h 05 min". */

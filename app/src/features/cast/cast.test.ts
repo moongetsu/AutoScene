@@ -1,7 +1,9 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import type { Character, FaceTrackItem } from "@/bindings"
+import { commands } from "@/lib/ipc"
 import {
   ALL_CAST,
+  cardClick,
   findCharacters,
   formatScreenTime,
   isNarrowed,
@@ -9,6 +11,7 @@ import {
   namesSource,
   pictureChoices,
   plural,
+  setHiddenAll,
   unplacedNote,
 } from "./cast"
 
@@ -128,5 +131,43 @@ describe("finding characters", () => {
     expect(find({ order: "name" })).toEqual(["abe", "walter", "zoe", "c2", "c10"])
     // The list it was given keeps its order.
     expect(ids(cast)).toEqual(["walter", "c2", "zoe", "c10", "abe"])
+  })
+})
+
+describe("selecting cast cards", () => {
+  const ids = ["a", "b", "c", "d"]
+  const click = (selected: string[], anchor: string | null, index: number, mods: { shift?: boolean; toggle?: boolean } = {}) =>
+    cardClick(ids, new Set(selected), anchor, index, { shift: false, toggle: false, ...mods })
+
+  it("opens the character on a plain click while nothing is selected", () => {
+    expect(click([], null, 1)).toBeNull()
+    // An anchor left from a cleared selection changes nothing.
+    expect(click([], "a", 2)).toBeNull()
+  })
+
+  it("selects with Ctrl/⌘ or Shift, and any click once something is selected", () => {
+    expect(click([], null, 1, { toggle: true })).toEqual({ selected: new Set(["b"]), anchor: "b" })
+    expect(click([], null, 2, { shift: true })).toEqual({ selected: new Set(["c"]), anchor: "c" })
+    expect(click(["b"], "b", 3)?.selected).toEqual(new Set(["b", "d"]))
+    expect(click(["b", "d"], "d", 1)?.selected).toEqual(new Set(["d"]))
+  })
+
+  it("selects a range from a card of the selection, never from one cleared before", () => {
+    expect(click(["b"], "b", 3, { shift: true })?.selected).toEqual(new Set(["b", "c", "d"]))
+    expect(click([], "a", 2, { shift: true })?.selected).toEqual(new Set(["c"]))
+  })
+})
+
+describe("hiding several characters", () => {
+  it("hides them one after the other and stops at the first that fails", async () => {
+    const edit = vi.spyOn(commands, "castEdit").mockResolvedValueOnce(null).mockRejectedValueOnce({ code: "not_found", message: "Gone" })
+    expect(await setHiddenAll("p", ["a", "b", "c"], true)).toBe(1)
+    expect(edit.mock.calls).toEqual([
+      ["p", { op: "set_hidden", characterId: "a", hidden: true }],
+      ["p", { op: "set_hidden", characterId: "b", hidden: true }],
+    ])
+    edit.mockReset().mockResolvedValue(null)
+    expect(await setHiddenAll("p", ["a", "b"], false)).toBe(2)
+    edit.mockRestore()
   })
 })
