@@ -12,6 +12,8 @@ type UpdatesState = {
   error: string | null
   dialogOpen: boolean
   lastChecked: number | null
+  /** Check at launch and every few hours (off: only when asked). */
+  auto: boolean
   /**
    * `manual` checks always surface the result; launch checks respect snooze/skip.
    * `announce` also toasts "up to date" / failures, for checks started where
@@ -23,10 +25,12 @@ type UpdatesState = {
   remindLater: () => void
   skipVersion: () => void
   setDialogOpen: (open: boolean) => void
+  setAuto: (on: boolean) => void
 }
 
 const SNOOZE_KEY = "autoscene.update.snoozeUntil"
 const SKIP_KEY = "autoscene.update.skipVersion"
+const AUTO_KEY = "autoscene.update.auto"
 const SNOOZE_MS = 24 * 60 * 60 * 1000
 
 function suppressed(version: string | null): boolean {
@@ -34,6 +38,15 @@ function suppressed(version: string | null): boolean {
   if (localStorage.getItem(SKIP_KEY) === version) return true
   const until = Number(localStorage.getItem(SNOOZE_KEY) ?? 0)
   return Date.now() < until
+}
+
+/** Automatic checks are on unless turned off (storage may refuse: then on). */
+function autoChecks(): boolean {
+  try {
+    return localStorage.getItem(AUTO_KEY) !== "off"
+  } catch {
+    return true
+  }
 }
 
 export const useUpdates = create<UpdatesState>((set, get) => ({
@@ -44,6 +57,7 @@ export const useUpdates = create<UpdatesState>((set, get) => ({
   error: null,
   dialogOpen: false,
   lastChecked: null,
+  auto: autoChecks(),
 
   async check(manual, announce = false) {
     const busy = ["checking", "downloading", "installing"].includes(get().phase)
@@ -105,15 +119,34 @@ export const useUpdates = create<UpdatesState>((set, get) => ({
   },
 
   setDialogOpen: (dialogOpen) => set({ dialogOpen }),
+
+  setAuto(auto) {
+    try {
+      if (auto) localStorage.removeItem(AUTO_KEY)
+      else localStorage.setItem(AUTO_KEY, "off")
+    } catch {
+      // Kept for this session only.
+    }
+    set({ auto })
+  },
 }))
+
+/** A version's release page (tags are "v" + the version, e.g. v1.0.3-BETA). */
+export function releaseNotesUrl(version: string): string {
+  return `https://github.com/tcmmi/AutoScene/releases/tag/v${encodeURIComponent(version)}`
+}
 
 const LAUNCH_DELAY_MS = 4_000
 const INTERVAL_MS = 6 * 60 * 60 * 1000
 
-/** Start the background update schedule once per app session. */
+/** Start the background update schedule once per app session. Each check
+ *  asks the setting then, so turning it on or off applies without a restart. */
 export function startUpdateSchedule(): () => void {
-  const first = window.setTimeout(() => void useUpdates.getState().check(false), LAUNCH_DELAY_MS)
-  const every = window.setInterval(() => void useUpdates.getState().check(false), INTERVAL_MS)
+  const tick = () => {
+    if (useUpdates.getState().auto) void useUpdates.getState().check(false)
+  }
+  const first = window.setTimeout(tick, LAUNCH_DELAY_MS)
+  const every = window.setInterval(tick, INTERVAL_MS)
   return () => {
     window.clearTimeout(first)
     window.clearInterval(every)

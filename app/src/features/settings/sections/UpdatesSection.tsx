@@ -1,9 +1,11 @@
 import type * as React from "react"
-import { CheckCircle, CircleNotch } from "@/components/icons"
+import { ArrowSquareOut, CheckCircle, CircleNotch } from "@/components/icons"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { Switch } from "@/components/ui/switch"
+import { openExternalUrl } from "@/lib/os"
 import { useAppInfo } from "@/lib/queries"
-import { useUpdates } from "@/state/updates"
+import { releaseNotesUrl, useUpdates } from "@/state/updates"
 import { SettingRow, SettingsGroup } from "../primitives"
 
 function relativeTime(ms: number): string {
@@ -19,7 +21,9 @@ export function UpdatesSection() {
   const u = useUpdates()
   const checking = u.phase === "checking"
 
-  let statusLine: React.ReactNode = "Checks automatically at launch and every few hours."
+  let statusLine: React.ReactNode = u.auto
+    ? "Checks automatically at launch and every few hours."
+    : "Checks only when you ask."
   if (checking) statusLine = "Checking…"
   else if (u.phase === "current")
     statusLine = (
@@ -53,6 +57,19 @@ export function UpdatesSection() {
           </Button>
         )}
       </SettingRow>
+      <SettingRow
+        label="Check for updates automatically"
+        description="At launch and every few hours. Off, AutoScene only looks when you click Check for updates."
+      >
+        <Switch aria-label="Check for updates automatically" checked={u.auto} onCheckedChange={u.setAuto} />
+      </SettingRow>
+      {info?.version && (
+        <SettingRow label="What's new" description={`What changed in AutoScene ${info.version}, on GitHub.`}>
+          <Button size="sm" variant="ghost" onClick={() => void openExternalUrl(releaseNotesUrl(info.version))}>
+            <ArrowSquareOut /> Release notes
+          </Button>
+        </SettingRow>
+      )}
     </SettingsGroup>
   )
 }
