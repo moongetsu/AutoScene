@@ -48,6 +48,7 @@ export {
   Image,
   Info,
   Keyboard,
+  ListBullets,
   ListNumbers,
   MagnifyingGlass,
   MagnifyingGlassMinus,

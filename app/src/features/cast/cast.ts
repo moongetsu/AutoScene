@@ -98,6 +98,35 @@ export function splitHidden(cast: Cast | undefined): { shown: Character[]; hidde
   return { shown: all.filter((c) => !c.hidden), hidden: all.filter((c) => c.hidden) }
 }
 
+/**
+ * Split characters into main and supporting tiers.
+ * Named characters or those with >= 60 seconds screen time belong to the main cast.
+ */
+export function splitTiers(shown: Character[]): { main: Character[]; supporting: Character[] } {
+  const main: Character[] = []
+  const supporting: Character[] = []
+
+  for (const c of shown) {
+    if (c.name || (c.screenSec ?? 0) >= 60) {
+      main.push(c)
+    } else {
+      supporting.push(c)
+    }
+  }
+
+  // If there are few characters in total (<= 8), keep them in one primary group
+  if (shown.length <= 8) {
+    return { main: shown, supporting: [] }
+  }
+
+  // If none qualify as main by screen time/naming, keep the top 6 as main
+  if (main.length === 0 && shown.length > 0) {
+    return { main: shown.slice(0, 6), supporting: shown.slice(6) }
+  }
+
+  return { main, supporting }
+}
+
 /** Who the cast shows: everyone, the named only, or those with faces to review. */
 export type CastShow = "all" | "named" | "review"
 /** The cast's order: most screen time first (the backend's), most shots first, or by name. */

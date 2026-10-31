@@ -7,8 +7,10 @@ import {
   Eye,
   EyeSlash,
   Info,
+  ListBullets,
   MagnifyingGlass,
   SelectionAll,
+  SquaresFour,
   User,
   UserFocus,
   Users,
@@ -16,10 +18,10 @@ import {
 } from "@/components/icons"
 import type { Character } from "@/bindings"
 import { Button } from "@/components/ui/button"
-import { ContextArea } from "@/components/ui/context-area"
 import { ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-menu"
 import { EmptyState } from "@/components/ui/empty-state"
 import { Page } from "@/components/ui/page"
+import { Segmented } from "@/components/ui/segmented"
 import { TopBar } from "@/components/ui/topbar"
 import { AnalysisStatus } from "@/features/project/AnalysisStatus"
 import { ProjectLoadError } from "@/features/project/ProjectLoadError"
@@ -27,12 +29,14 @@ import { ProjectNav } from "@/features/project/ProjectNav"
 import { modKey } from "@/lib/platform"
 import { firstFailure, useCast, useMediaList, useProject, useSettings } from "@/lib/queries"
 import { CAST_SHORTCUTS, useShortcuts } from "@/lib/shortcuts"
+import { useUi } from "@/state/ui"
 import { cn } from "@/lib/utils"
-import { CharacterCard } from "./CharacterCard"
+import { CharacterCard, CharacterRow } from "./CharacterCard"
 import { AniListDialog } from "./AniListDialog"
 import { AniListNames } from "./AniListNames"
 import { CastFilters } from "./CastFilters"
 import { ChoosePictureDialog } from "./ChoosePictureDialog"
+import { EveryoneElseCard } from "./EveryoneElseCard"
 import { RenameCharacterDialog } from "./RenameCharacterDialog"
 import {
   ALL_CAST,
@@ -44,6 +48,7 @@ import {
   plural,
   setHiddenAll,
   splitHidden,
+  splitTiers,
   unplacedNote,
   useProjectAnalysis,
 } from "./cast"
@@ -78,6 +83,9 @@ export function CastPage() {
   const narrowed = isNarrowed(find)
   const shown = findCharacters(everyoneShown, find)
   const hidden = findCharacters(everyoneHidden, find)
+  const { main: mainShown, supporting: supportingShown } = splitTiers(shown)
+  const view = useUi((s) => s.castView)
+  const setView = useUi((s) => s.setCastView)
   // The search stays while it narrows or orders the cast, however small it got.
   const finding = (cast?.characters.length ?? 0) >= FIND_FROM || narrowed || find.order !== ALL_CAST.order
 
@@ -223,6 +231,17 @@ export function CastPage() {
           )}
         </div>
         <div className="flex items-center gap-2.5">
+          {everyoneShown.length > 0 && (
+            <Segmented
+              value={view}
+              onChange={setView}
+              aria-label="View layout"
+              options={[
+                { value: "grid", label: <SquaresFour weight="bold" /> },
+                { value: "list", label: <ListBullets weight="bold" /> },
+              ]}
+            />
+          )}
           {anilist && (
             <Button variant="secondary" size="lg" onClick={() => setAnilistOpen(true)}>
               <MagnifyingGlass weight="bold" /> Names from {source}
@@ -279,33 +298,93 @@ export function CastPage() {
                 <Button onClick={() => setFind({ ...find, query: "", show: "all" })}>Show everyone</Button>
               </div>
             )}
-            <CardGrid>
-              {shown.map((c, i) => (
-                <CharacterCard key={c.id} {...cardProps(c, i)} />
-              ))}
-              {/* Not a character: left out while the cast is narrowed. */}
-              {!narrowed && cast && cast.unassigned > 0 && (
-                <ContextArea
-                  menu={
-                    <ContextMenuItem onSelect={() => void navigate({ to: "/p/$pid/cast/$cid", params: { pid, cid: "unassigned" } })}>
-                      <User /> Open everyone else
-                    </ContextMenuItem>
-                  }
-                >
-                  <Link
-                    to="/p/$pid/cast/$cid"
-                    params={{ pid, cid: "unassigned" }}
-                    className="group flex aspect-[3/4] flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-white/15 text-center transition-colors hover:border-white/30 hover:bg-white/[0.03]"
-                  >
-                    <span className="flex size-14 items-center justify-center rounded-full bg-white/[0.06] text-fg-2 transition-colors group-hover:bg-white/[0.1] group-hover:text-fg-1 [&_svg]:size-6">
-                      <User />
-                    </span>
-                    <span className="display text-2xl text-fg-1">Everyone else</span>
-                    <span className="text-xs text-fg-3">{plural(cast.unassigned, "face")} nobody claimed</span>
-                  </Link>
-                </ContextArea>
-              )}
-            </CardGrid>
+            {shown.length > 0 && (
+              view === "grid" ? (
+                supportingShown.length > 0 ? (
+                  <div className="space-y-10">
+                    <section>
+                      <div className="mb-4 flex items-center justify-between">
+                        <h2 className="text-sm font-semibold tracking-wide uppercase text-fg-2">Main Cast</h2>
+                        <span className="text-xs text-fg-3">{plural(mainShown.length, "character")}</span>
+                      </div>
+                      <CardGrid className="grid-cols-[repeat(auto-fill,minmax(200px,1fr))]">
+                        {mainShown.map((c) => {
+                          const i = shown.indexOf(c)
+                          return <CharacterCard key={c.id} {...cardProps(c, i)} />
+                        })}
+                      </CardGrid>
+                    </section>
+
+                    <section>
+                      <div className="mb-4 flex items-center justify-between">
+                        <h2 className="text-sm font-semibold tracking-wide uppercase text-fg-2">Supporting & Recurring</h2>
+                        <span className="text-xs text-fg-3">{plural(supportingShown.length, "character")}</span>
+                      </div>
+                      <CardGrid className="grid-cols-[repeat(auto-fill,minmax(140px,1fr))] gap-x-3.5 gap-y-4">
+                        {supportingShown.map((c) => {
+                          const i = shown.indexOf(c)
+                          return <CharacterCard key={c.id} {...cardProps(c, i)} />
+                        })}
+                        {!narrowed && cast && (
+                          <EveryoneElseCard pid={pid} unassigned={cast.unassigned} view="grid" compact />
+                        )}
+                      </CardGrid>
+                    </section>
+                  </div>
+                ) : (
+                  <CardGrid>
+                    {shown.map((c, i) => (
+                      <CharacterCard key={c.id} {...cardProps(c, i)} />
+                    ))}
+                    {!narrowed && cast && (
+                      <EveryoneElseCard pid={pid} unassigned={cast.unassigned} view="grid" />
+                    )}
+                  </CardGrid>
+                )
+              ) : (
+                supportingShown.length > 0 ? (
+                  <div className="space-y-8">
+                    <section>
+                      <div className="mb-3 flex items-center justify-between">
+                        <h2 className="text-sm font-semibold tracking-wide uppercase text-fg-2">Main Cast</h2>
+                        <span className="text-xs text-fg-3">{plural(mainShown.length, "character")}</span>
+                      </div>
+                      <div className="divide-y divide-white/[0.06] rounded-2xl border border-white/10 bg-white/[0.02] p-2">
+                        {mainShown.map((c) => {
+                          const i = shown.indexOf(c)
+                          return <CharacterRow key={c.id} {...cardProps(c, i)} />
+                        })}
+                      </div>
+                    </section>
+
+                    <section>
+                      <div className="mb-3 flex items-center justify-between">
+                        <h2 className="text-sm font-semibold tracking-wide uppercase text-fg-2">Supporting & Recurring</h2>
+                        <span className="text-xs text-fg-3">{plural(supportingShown.length, "character")}</span>
+                      </div>
+                      <div className="divide-y divide-white/[0.06] rounded-2xl border border-white/10 bg-white/[0.02] p-2">
+                        {supportingShown.map((c) => {
+                          const i = shown.indexOf(c)
+                          return <CharacterRow key={c.id} {...cardProps(c, i)} />
+                        })}
+                        {!narrowed && cast && (
+                          <EveryoneElseCard pid={pid} unassigned={cast.unassigned} view="list" />
+                        )}
+                      </div>
+                    </section>
+                  </div>
+                ) : (
+                  <div className="divide-y divide-white/[0.06] rounded-2xl border border-white/10 bg-white/[0.02] p-2">
+                    {shown.map((c, i) => (
+                      <CharacterRow key={c.id} {...cardProps(c, i)} />
+                    ))}
+                    {!narrowed && cast && (
+                      <EveryoneElseCard pid={pid} unassigned={cast.unassigned} view="list" />
+                    )}
+                  </div>
+                )
+              )
+            )}
             {hidden.length > 0 && (
               <div className="mt-12">
                 <button
@@ -317,11 +396,19 @@ export function CastPage() {
                   Hidden <span className="font-medium text-fg-3">{hidden.length}</span>
                 </button>
                 {showHidden && (
-                  <CardGrid className="mt-5 opacity-60 transition-opacity hover:opacity-100">
-                    {hidden.map((c, i) => (
-                      <CharacterCard key={c.id} {...cardProps(c, shown.length + i)} />
-                    ))}
-                  </CardGrid>
+                  view === "grid" ? (
+                    <CardGrid className="mt-5 opacity-60 transition-opacity hover:opacity-100">
+                      {hidden.map((c, i) => (
+                        <CharacterCard key={c.id} {...cardProps(c, shown.length + i)} />
+                      ))}
+                    </CardGrid>
+                  ) : (
+                    <div className="mt-5 divide-y divide-white/[0.06] rounded-2xl border border-white/10 bg-white/[0.02] p-2 opacity-60 transition-opacity hover:opacity-100">
+                      {hidden.map((c, i) => (
+                        <CharacterRow key={c.id} {...cardProps(c, shown.length + i)} />
+                      ))}
+                    </div>
+                  )
                 )}
               </div>
             )}
