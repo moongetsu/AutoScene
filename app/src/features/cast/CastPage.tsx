@@ -36,6 +36,14 @@ export function CastPage() {
   // the AUTOSCENE_ANIME_FACES switch; off means "coming" as before.
   const anime = project?.content === "anime" && !settings?.animeCharacters
   const unplaced = anime ? null : unplacedNote(cast?.unplaced ?? 0)
+  // Names from AniList: anime projects whose characters are found (the
+  // anime switch on), while the opt-in in Settings is on and someone shown
+  // is still unnamed.
+  const anilist =
+    !!settings?.anilist &&
+    project?.content === "anime" &&
+    !anime &&
+    !!cast?.characters.some((c) => !c.hidden && !c.name)
   const failure = firstFailure(projectQuery, castQuery, mediaQuery)
 
   if (failure) {
@@ -61,7 +69,7 @@ export function CastPage() {
               <User /> Everyone else
             </ContextMenuItem>
           )}
-          {cast && settings?.anilist && project?.content === "anime" && !anime && (
+          {anilist && (
             <ContextMenuItem onSelect={() => setAnilistOpen(true)}>
               <MagnifyingGlass /> Names from AniList
             </ContextMenuItem>
@@ -85,13 +93,20 @@ export function CastPage() {
             </p>
           )}
         </div>
-        {cast && cast.unsure > 0 && (
-          <Button variant="primary" size="lg" asChild>
-            <Link to="/p/$pid/cast/review" params={{ pid }}>
-              <UserFocus weight="bold" /> Review {plural(cast.unsure, "face")}
-            </Link>
-          </Button>
-        )}
+        <div className="flex items-center gap-2.5">
+          {anilist && (
+            <Button variant="secondary" size="lg" onClick={() => setAnilistOpen(true)}>
+              <MagnifyingGlass weight="bold" /> Names from AniList
+            </Button>
+          )}
+          {cast && cast.unsure > 0 && (
+            <Button variant="primary" size="lg" asChild>
+              <Link to="/p/$pid/cast/review" params={{ pid }}>
+                <UserFocus weight="bold" /> Review {plural(cast.unsure, "face")}
+              </Link>
+            </Button>
+          )}
+        </div>
       </header>
 
       <div className="px-10 pb-16">

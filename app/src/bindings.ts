@@ -266,13 +266,16 @@ export type AniListMerge = {
 
 /**
  *  AniList suggests this cast character's name: their portrait matched the
- *  character's faces.
+ *  character's look.
  */
 export type AniListSuggestion = {
 	characterId: CharacterId,
 	anilistId: number,
 	name: string,
-	/**  Cosine of the best portrait ↔ face pair (0..1). */
+	/**
+	 *  Cosine of the portrait to the character's look (the quality-weighted
+	 *  mean of its faces), 0..1.
+	 */
 	score: number | null,
 	/**  The portrait file in the image cache (absolute path). */
 	image: string | null,

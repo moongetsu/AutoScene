@@ -841,14 +841,28 @@ impl Project {
 // Matching AniList portraits to the cast
 // ---------------------------------------------------------------------------
 
-/// A portrait scoring at least this against one of a character's own faces
-/// suggests the name. Portrait art to a frame crop crosses domains, so the
-/// bar sits under the pipeline's own link bar — E5's bench tunes it.
-const SUGGEST_MIN_COS: f32 = 0.45;
+/// A portrait scoring at least this against a character's look (the
+/// quality-weighted mean of its own faces) may suggest the name. CCIP reads
+/// hair, eyes and colours first, so portrait art lands high on everyone who
+/// shares them: the bar only keeps out the plainly unlike, [`LOOK_ALIKES`]
+/// decides. Provisional until E5's bench tunes it.
+const SUGGEST_MIN_COS: f32 = 0.70;
+
+/// Portraits within this of the best one are the character's look-alikes
+/// (a father, a brother, a younger self score as high as the person
+/// themself): of those, only one with a bigger part than all the others
+/// names the character, and none does when two share the biggest part.
+/// Provisional until E5's bench tunes it.
+const LOOK_ALIKES: f32 = 0.08;
+
+/// Two cast characters whose best portrait is the same are proposed for
+/// merging only when their looks are this alike too; otherwise the weaker
+/// is left unnamed (a portrait names one character).
+const MERGE_MIN_COS: f32 = 0.80;
 
 /// AniList says this character's name: the cast character, the match score
-/// (cosine of the best portrait ↔ own-face pair) and the portrait file it
-/// came from.
+/// (cosine of the portrait to the character's look) and the portrait file
+/// it came from.
 #[derive(Clone, Debug)]
 pub struct NameSuggestion {
     pub character_id: as_core::CharacterId,
@@ -874,35 +888,76 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 
-/// The proposals a per-character best portrait (`best`: cast character →
-/// portrait index and score) makes: each portrait names at most one
-/// character — the strongest hit; a second character at the bar on the
-/// same portrait is its merge candidate.
-fn proposals(
-    portraits: &[(CastMember, Vec<f32>)],
-    best: HashMap<as_core::CharacterId, (usize, f32)>,
-) -> (Vec<NameSuggestion>, Vec<MergeProposal>) {
-    let mut by_portrait: HashMap<usize, Vec<(as_core::CharacterId, f32)>> = HashMap::new();
-    for (c, (p, s)) in best {
-        if s >= SUGGEST_MIN_COS {
-            by_portrait.entry(p).or_default().push((c, s));
-        }
+/// The portrait that names a character whose look scores `scores` against
+/// the portraits of `roles` (`strongest`: each portrait's best score over
+/// every character): the best one at the bar, or among the look-alikes
+/// within [`LOOK_ALIKES`] of it the one with the biggest part when no
+/// other shares it and no other character matches it better. When another
+/// does, this one is either a look-alike of that part (a father scoring
+/// high on his son's portrait) or a split of the same person: it is named
+/// only when its own best portrait is the one look-alike left. `None` when
+/// nothing is close enough or the look-alikes can't be told apart.
+fn best_portrait(scores: &[f32], roles: &[Role], strongest: &[f32]) -> Option<(usize, f32)> {
+    let (best, top) =
+        scores.iter().copied().enumerate().filter(|(_, s)| s.is_finite()).max_by(|a, b| a.1.total_cmp(&b.1))?;
+    if top < SUGGEST_MIN_COS {
+        return None;
+    }
+    let close: Vec<usize> = (0..scores.len()).filter(|&i| scores[i] >= top - LOOK_ALIKES).collect();
+    if close.len() == 1 {
+        return Some((best, top));
+    }
+    let part = close.iter().map(|&i| roles[i]).min()?;
+    let [i] = close.iter().copied().filter(|&i| roles[i] == part).collect::<Vec<_>>()[..] else {
+        return None;
+    };
+    if scores[i] >= strongest[i] {
+        return (scores[i] >= SUGGEST_MIN_COS).then_some((i, scores[i]));
+    }
+    match close.iter().copied().filter(|&j| j != i).collect::<Vec<_>>()[..] {
+        [j] if j == best => Some((best, top)),
+        _ => None,
+    }
+}
+
+/// A cast character's match: the portrait that names it, its score and the
+/// character's look.
+struct Match {
+    character: as_core::CharacterId,
+    portrait: usize,
+    score: f32,
+    look: Vec<f32>,
+}
+
+/// The proposals the characters' matches make: each portrait names at most
+/// one character — the strongest match; another one matching it is
+/// proposed for merging into that one when their looks agree.
+fn proposals(portraits: &[(CastMember, Vec<f32>)], matches: Vec<Match>) -> (Vec<NameSuggestion>, Vec<MergeProposal>) {
+    let mut by_portrait: HashMap<usize, Vec<Match>> = HashMap::new();
+    for m in matches {
+        by_portrait.entry(m.portrait).or_default().push(m);
     }
     let mut names = Vec::new();
     let mut merges = Vec::new();
     for (p, mut hit) in by_portrait {
-        hit.sort_by(|a, b| b.1.total_cmp(&a.1));
-        let (c, score) = hit[0];
+        hit.sort_by(|a, b| b.score.total_cmp(&a.score));
+        let named = &hit[0];
         let (member, _) = &portraits[p];
         names.push(NameSuggestion {
-            character_id: c,
+            character_id: named.character,
             anilist_id: member.character.id,
             name: member.character.name.clone(),
-            score,
+            score: named.score,
             image: member.image.clone(),
         });
-        for &(other, _) in &hit[1..] {
-            merges.push(MergeProposal { from: other, into: c, anilist_id: member.character.id });
+        for other in &hit[1..] {
+            if cosine(&other.look, &named.look) >= MERGE_MIN_COS {
+                merges.push(MergeProposal {
+                    from: other.character,
+                    into: named.character,
+                    anilist_id: member.character.id,
+                });
+            }
         }
     }
     names.sort_by(|a, b| b.score.total_cmp(&a.score));
@@ -910,37 +965,55 @@ fn proposals(
     (names, merges)
 }
 
+/// A character's look: the quality-weighted mean of its `dim`-long face
+/// embeddings (the portraits' length), unit length (`None` without one).
+fn look(faces: &[as_db::OwnFace], dim: usize) -> Option<Vec<f32>> {
+    let mut sum = vec![0.0f32; dim];
+    for f in faces {
+        let Some(e) = as_analysis::tracks::embedding_from_bytes(&f.emb).filter(|e| e.len() == dim) else { continue };
+        let w = if f.quality.is_finite() { f.quality.max(1e-3) } else { 1e-3 };
+        sum.iter_mut().zip(&e).for_each(|(s, x)| *s += w * x);
+    }
+    let n = sum.iter().map(|x| x * x).sum::<f32>().sqrt();
+    (n > 0.0 && n.is_finite()).then(|| sum.into_iter().map(|x| x / n).collect())
+}
+
 impl Project {
     /// Match AniList portraits (already embedded — the engine embeds, this
-    /// matches) to this project's cast: one name suggestion per cast
-    /// character, and a merge proposal when two of them land on the same
-    /// AniList character. Returns the cast revision the match was made on:
+    /// matches) to this project's cast: one name suggestion per portrait,
+    /// for the character whose look matches it best, and a merge proposal
+    /// when a second character with the same look lands on it too. Returns
+    /// the cast revision the match was made on:
     /// [`Self::apply_anilist_suggestions`] only applies it while that holds.
     pub fn anilist_suggest(
         &self,
         portraits: &[(CastMember, Vec<f32>)],
     ) -> ProjectResult<(i64, Vec<NameSuggestion>, Vec<MergeProposal>)> {
         let rev = self.db().cast_rev()?;
-        // Per cast character: the best portrait cosine over its own faces.
-        let mut best: HashMap<as_core::CharacterId, (usize, f32)> = HashMap::new();
+        let roles: Vec<Role> = portraits.iter().map(|(m, _)| m.character.role).collect();
+        let Some(dim) = portraits.first().map(|(_, emb)| emb.len()) else {
+            return Ok((rev, Vec::new(), Vec::new()));
+        };
+        // Every unnamed, shown character's look and its score on each portrait.
+        let mut cast = Vec::new();
         for c in self.db().characters()? {
             if c.hidden || c.name.is_some() {
                 continue;
             }
-            let faces = self.db().own_faces(c.id)?;
-            for (p, (_, emb)) in portraits.iter().enumerate() {
-                let score = faces
-                    .iter()
-                    .filter_map(|f| as_analysis::tracks::embedding_from_bytes(&f.emb))
-                    .map(|e| cosine(&e, emb))
-                    .fold(f32::NEG_INFINITY, f32::max);
-                let keep = best.get(&c.id).is_none_or(|&(_, s)| score > s);
-                if keep {
-                    best.insert(c.id, (p, score));
-                }
+            let Some(look) = look(&self.db().own_faces(c.id)?, dim) else { continue };
+            let scores: Vec<f32> = portraits.iter().map(|(_, emb)| cosine(&look, emb)).collect();
+            cast.push((c.id, look, scores));
+        }
+        let strongest: Vec<f32> = (0..portraits.len())
+            .map(|p| cast.iter().map(|(_, _, s)| s[p]).filter(|s| s.is_finite()).fold(f32::NEG_INFINITY, f32::max))
+            .collect();
+        let mut matches = Vec::new();
+        for (character, look, scores) in cast {
+            if let Some((portrait, score)) = best_portrait(&scores, &roles, &strongest) {
+                matches.push(Match { character, portrait, score, look });
             }
         }
-        let (names, merges) = proposals(portraits, best);
+        let (names, merges) = proposals(portraits, matches);
         Ok((rev, names, merges))
     }
 
@@ -1587,7 +1660,57 @@ mod tests {
     }
 
     #[test]
-    fn portrait_matches_propose_names_and_merges() {
+    fn a_look_alike_with_a_smaller_part_does_not_take_the_name() {
+        use Role::{Main, Supporting};
+        let roles = [Supporting, Supporting, Main, Supporting];
+        // The hero's father and brother share his hair and score a little
+        // higher on his look than his own portrait: the main part wins.
+        let hero = [0.962, 0.962, 0.935, 0.63];
+        assert_eq!(best_portrait(&hero, &roles, &hero), Some((2, 0.935)));
+        // The father's own group, the hero there and closer to the hero's
+        // portrait: not the hero, and father and brother can't be told
+        // apart — no name.
+        let strongest = [0.95, 0.962, 0.935, 0.63];
+        assert_eq!(best_portrait(&[0.95, 0.90, 0.90, 0.5], &roles, &strongest), None);
+        // Without the brother as a look-alike the father keeps his own.
+        assert_eq!(best_portrait(&[0.95, 0.5, 0.90, 0.5], &roles, &strongest), Some((0, 0.95)));
+        // A second group of the hero, the first closer to his portrait: not
+        // the brother whose portrait comes next — no name.
+        assert_eq!(best_portrait(&[0.5, 0.80, 0.857, 0.5], &roles, &[0.95, 0.962, 0.935, 0.63]), None);
+        // A clear best needs no part to decide.
+        let clear = [0.91, 0.78, 0.75];
+        assert_eq!(best_portrait(&clear, &[Supporting, Main, Main], &clear), Some((0, 0.91)));
+        // Look-alikes of the same part can't be told apart: no name.
+        let same = [0.84, 0.82, 0.80];
+        assert_eq!(best_portrait(&same, &[Supporting, Supporting, Supporting], &same), None);
+        assert_eq!(best_portrait(&[0.90, 0.88], &[Main, Main], &[0.90, 0.88]), None);
+        // The bigger part names only at the bar itself.
+        let low = [0.72, SUGGEST_MIN_COS - 0.05];
+        assert_eq!(best_portrait(&low, &[Supporting, Main], &low), None);
+        // Under the bar, nothing at all, or a spoilt score: no name from it.
+        assert_eq!(best_portrait(&[SUGGEST_MIN_COS - 0.01], &[Main], &[1.0]), None);
+        assert_eq!(best_portrait(&[], &[], &[]), None);
+        assert_eq!(best_portrait(&[f32::NAN, 0.91], &[Main, Supporting], &[1.0, 0.91]), Some((1, 0.91)));
+    }
+
+    #[test]
+    fn a_look_weighs_faces_by_quality_and_skips_other_sizes() {
+        let face = |v: &[f32], quality: f32| as_db::OwnFace {
+            id: 0,
+            pinned: false,
+            quality,
+            emb: as_analysis::tracks::embedding_to_bytes(v),
+        };
+        let faces = [face(&[1.0, 0.0], 0.9), face(&[0.0, 1.0], 0.1), face(&[0.0, 0.0, 1.0], 1.0)];
+        let l = look(&faces, 2).unwrap();
+        assert!((l[0] - 0.9939).abs() < 1e-3 && (l[1] - 0.1104).abs() < 1e-3, "{l:?}");
+        // No face of the portraits' length: no look.
+        assert!(look(&faces[2..], 2).is_none());
+        assert!(look(&[], 2).is_none());
+    }
+
+    #[test]
+    fn a_portrait_names_one_character_and_merges_only_alike_looks() {
         let portraits: Vec<(CastMember, Vec<f32>)> =
             vec![(member(10, "Frieren"), vec![]), (member(11, "Fern"), vec![])];
         let (a, b, c, d) = (
@@ -1596,16 +1719,25 @@ mod tests {
             as_core::CharacterId::new(),
             as_core::CharacterId::new(),
         );
-        // Two cast characters at the bar on Frieren's portrait: the
-        // stronger is named, the weaker is proposed for merging into it.
-        let (names, merges) = proposals(&portraits, HashMap::from([(a, (0, 0.9)), (b, (0, 0.8)), (c, (1, 0.7))]));
+        let m = |character, portrait, score, look: [f32; 2]| Match { character, portrait, score, look: look.to_vec() };
+        // a and b both match Frieren's portrait and look alike (cosine
+        // 0.98): a, the stronger, is named and b proposed for merging into
+        // it. d matches it too but looks unlike a (cosine 0.6): unnamed,
+        // not merged. c is Fern.
+        let (names, merges) = proposals(
+            &portraits,
+            vec![
+                m(a, 0, 0.9, [1.0, 0.0]),
+                m(b, 0, 0.85, [0.98, 0.199]),
+                m(d, 0, 0.8, [0.6, 0.8]),
+                m(c, 1, 0.75, [0.0, 1.0]),
+            ],
+        );
         assert_eq!(names.len(), 2);
         let frieren = names.iter().find(|n| n.anilist_id == 10).unwrap();
         assert_eq!((frieren.character_id, frieren.name.as_str()), (a, "Frieren"));
+        assert!(names.iter().any(|n| n.anilist_id == 11 && n.character_id == c));
         assert_eq!(merges.len(), 1);
         assert_eq!((merges[0].from, merges[0].into, merges[0].anilist_id), (b, a, 10));
-        // Below the bar: no name, no merge.
-        let (names, merges) = proposals(&portraits, HashMap::from([(d, (0, SUGGEST_MIN_COS - 0.01))]));
-        assert!(names.is_empty() && merges.is_empty());
     }
 }

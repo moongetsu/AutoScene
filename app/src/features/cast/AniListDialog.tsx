@@ -13,7 +13,7 @@ type Stage = "search" | "chain" | "suggestions"
 /** Fetch names from AniList: the person confirms the series, then the
  *  series' cast portraits are matched to the project's characters and the
  *  names are suggested (or given at once when the project's auto flag is
- *  set). Only ever opened from the Cast menu of an anime project while the
+ *  set). Only ever opened from the Cast page of an anime project while the
  *  AniList setting is on. */
 export function AniListDialog({
   pid,

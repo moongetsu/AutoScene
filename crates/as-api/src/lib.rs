@@ -428,14 +428,15 @@ pub struct AniListMedia {
 }
 
 /// AniList suggests this cast character's name: their portrait matched the
-/// character's faces.
+/// character's look.
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct AniListSuggestion {
     pub character_id: CharacterId,
     pub anilist_id: u32,
     pub name: String,
-    /// Cosine of the best portrait ↔ face pair (0..1).
+    /// Cosine of the portrait to the character's look (the quality-weighted
+    /// mean of its faces), 0..1.
     pub score: f32,
     /// The portrait file in the image cache (absolute path).
     pub image: Option<String>,
