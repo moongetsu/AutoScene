@@ -54,6 +54,8 @@ import { cn } from "@/lib/utils"
 import { castEdit, formatScreenTime, plural } from "./cast"
 import { CharacterItems } from "./character-actions"
 import { FaceGrid } from "./FaceGrid"
+import { FacePreview } from "./FacePreview"
+import { canPlayMoment } from "./moment"
 import { PickCharacter } from "./PickCharacter"
 
 const NO_TRACKS: FaceTrackItem[] = []
@@ -569,6 +571,8 @@ function Maybe({
 }) {
   const [all, setAll] = useState(false)
   const [dismissed, setDismissed] = useState<Set<number>>(new Set())
+  // The face whose moment plays in its card: one at a time.
+  const [peek, setPeek] = useState<number | null>(null)
   const activeTracks = useMemo(() => tracks.filter((t) => !dismissed.has(t.id)), [tracks, dismissed])
   const shown = all ? activeTracks : activeTracks.slice(0, 12)
   const navigate = useNavigate()
@@ -628,65 +632,92 @@ function Maybe({
         </div>
         <div className="grid grid-cols-[repeat(auto-fill,minmax(104px,1fr))] gap-3">
           <AnimatePresence mode="popLayout">
-            {shown.map((t) => (
-              <motion.div
-                key={t.id}
-                layout
-                initial={{ opacity: 0, scale: 0.9 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.8 }}
-                transition={{ duration: 0.15, ease: "easeOut" }}
-              >
-                <ContextArea
-                  menu={
-                    <>
-                      <ContextMenuItem onSelect={() => void handleAction({ op: "assign", tracks: [t.id], characterId: c.id }, [t.id])}>
-                        <Check /> Yes, {c.label}
-                      </ContextMenuItem>
-                      <ContextMenuItem onSelect={() => void handleAction({ op: "not_them", tracks: [t.id], characterId: c.id }, [t.id])}>
-                        <X /> Not {c.label}
-                      </ContextMenuItem>
-                      <ContextMenuSeparator />
-                      <ContextMenuItem onSelect={() => onOpen(t)}>
-                        <Play /> Watch this moment
-                      </ContextMenuItem>
-                    </>
-                  }
+            {shown.map((t) => {
+              const m = media.get(t.mediaId)
+              return (
+                <motion.div
+                  key={t.id}
+                  layout
+                  initial={{ opacity: 0, scale: 0.9 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.8 }}
+                  transition={{ duration: 0.15, ease: "easeOut" }}
                 >
-                  <div className="group relative aspect-square overflow-hidden rounded-xl bg-inset picture-edge transition-transform duration-100 ease-out hover:scale-[1.03]">
-                    <Tooltip label={media.get(t.mediaId)?.label ?? "This face"} hint="Double-click to watch" side="top" delay={600}>
-                      <img
-                        src={assetUrl(t.thumb)}
-                        alt=""
-                        loading="lazy"
-                        className="size-full object-cover"
-                        onDoubleClick={() => onOpen(t)}
-                      />
-                    </Tooltip>
-                    <div className="absolute inset-x-1 bottom-1 flex justify-between gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-                      <Tooltip label={`Yes, ${c.label}`} side="top">
-                        <button
-                          onClick={() => void handleAction({ op: "assign", tracks: [t.id], characterId: c.id }, [t.id])}
-                          aria-label={`Yes, ${c.label}`}
-                          className="flex h-7 flex-1 items-center justify-center rounded-lg bg-black/60 text-white backdrop-blur-md hover:bg-accent hover:text-on-accent active:scale-95 transition-transform"
+                  <FacePreview
+                    pid={pid}
+                    track={t}
+                    media={m}
+                    open={peek === t.id}
+                    onOpenChange={(o) => setPeek((p) => (o ? t.id : p === t.id ? null : p))}
+                  >
+                    <ContextArea
+                      menu={
+                        <>
+                          <ContextMenuItem onSelect={() => void handleAction({ op: "assign", tracks: [t.id], characterId: c.id }, [t.id])}>
+                            <Check /> Yes, {c.label}
+                          </ContextMenuItem>
+                          <ContextMenuItem onSelect={() => void handleAction({ op: "not_them", tracks: [t.id], characterId: c.id }, [t.id])}>
+                            <X /> Not {c.label}
+                          </ContextMenuItem>
+                          <ContextMenuSeparator />
+                          <ContextMenuItem onSelect={() => onOpen(t)}>
+                            <Play /> Watch this moment
+                          </ContextMenuItem>
+                        </>
+                      }
+                    >
+                      <div className="group relative aspect-square overflow-hidden rounded-xl bg-inset picture-edge transition-transform duration-100 ease-out hover:scale-[1.03] has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-accent-line">
+                        <Tooltip
+                          label={m?.label ?? "This face"}
+                          hint={canPlayMoment(m) ? "Double-click to watch · Space plays it here" : "Double-click to watch"}
+                          side="top"
+                          delay={600}
+                          // The moment's card says the same, where the tooltip would be.
+                          disabled={peek === t.id}
                         >
-                          <Check className="size-3.5" />
-                        </button>
-                      </Tooltip>
-                      <Tooltip label={`Not ${c.label}`} side="top">
-                        <button
-                          onClick={() => void handleAction({ op: "not_them", tracks: [t.id], characterId: c.id }, [t.id])}
-                          aria-label={`Not ${c.label}`}
-                          className="flex h-7 flex-1 items-center justify-center rounded-lg bg-black/60 text-white backdrop-blur-md hover:bg-danger hover:text-white active:scale-95 transition-transform"
-                        >
-                          <X className="size-3.5" />
-                        </button>
-                      </Tooltip>
-                    </div>
-                  </div>
-                </ContextArea>
-              </motion.div>
-            ))}
+                          <button
+                            type="button"
+                            onDoubleClick={() => onOpen(t)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") onOpen(t)
+                              // Space plays the moment here, as resting the pointer on the face does.
+                              if (e.key === " " && canPlayMoment(m)) {
+                                e.preventDefault()
+                                if (!e.repeat) setPeek((p) => (p === t.id ? null : t.id))
+                              }
+                            }}
+                            aria-label={`Face${m?.label ? ` in ${m.label}` : ""}`}
+                            className="block size-full outline-none"
+                          >
+                            <img src={assetUrl(t.thumb)} alt="" loading="lazy" className="size-full object-cover" />
+                          </button>
+                        </Tooltip>
+                        <div className="absolute inset-x-1 bottom-1 flex justify-between gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                          <Tooltip label={`Yes, ${c.label}`} side="top">
+                            <button
+                              onClick={() => void handleAction({ op: "assign", tracks: [t.id], characterId: c.id }, [t.id])}
+                              aria-label={`Yes, ${c.label}`}
+                              className="flex h-7 flex-1 items-center justify-center rounded-lg bg-black/60 text-white backdrop-blur-md hover:bg-accent hover:text-on-accent active:scale-95 transition-transform"
+                            >
+                              <Check className="size-3.5" />
+                            </button>
+                          </Tooltip>
+                          <Tooltip label={`Not ${c.label}`} side="top">
+                            <button
+                              onClick={() => void handleAction({ op: "not_them", tracks: [t.id], characterId: c.id }, [t.id])}
+                              aria-label={`Not ${c.label}`}
+                              className="flex h-7 flex-1 items-center justify-center rounded-lg bg-black/60 text-white backdrop-blur-md hover:bg-danger hover:text-white active:scale-95 transition-transform"
+                            >
+                              <X className="size-3.5" />
+                            </button>
+                          </Tooltip>
+                        </div>
+                      </div>
+                    </ContextArea>
+                  </FacePreview>
+                </motion.div>
+              )
+            })}
           </AnimatePresence>
         </div>
         {activeTracks.length > 12 && (
