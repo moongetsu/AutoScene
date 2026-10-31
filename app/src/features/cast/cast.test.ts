@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { formatScreenTime, plural, unplacedNote } from "./cast"
+import { formatScreenTime, namesCredit, namesSource, plural, unplacedNote } from "./cast"
 
 describe("cast wording", () => {
   it("says screen time the way people do", () => {
@@ -18,5 +18,17 @@ describe("cast wording", () => {
     expect(unplacedNote(1414)).toBe(
       "1,414 of your decisions wait for faces the latest analysis didn't find again. They're tried again at the next analysis.",
     )
+  })
+})
+
+describe("names source", () => {
+  it("names anime from AniList, an animated series from TVmaze, an animated film from Fandom", () => {
+    const kinds = ["series", "movie"] as const
+    const of = (content: string) => kinds.map((k) => namesSource(content as never, k))
+    expect(of("anime")).toEqual(["AniList", "AniList"])
+    expect(of("animation")).toEqual(["TVmaze", "Fandom"])
+    expect([...of("live"), ...of("mixed"), namesSource(undefined, undefined)]).toEqual([null, null, null, null, null])
+    expect([namesCredit("AniList"), namesCredit(null)]).toEqual([null, null])
+    expect(namesCredit("Fandom")).toContain("CC BY-SA")
   })
 })

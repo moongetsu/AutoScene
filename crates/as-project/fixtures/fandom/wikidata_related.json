@@ -1,0 +1,51 @@
+{
+ "entities": {
+  "Q6470744": {
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "Miraculous: Tales of Ladybug & Cat Noir"
+    },
+    "fr": {
+     "language": "fr",
+     "value": "Miraculous : Les Aventures de Ladybug et Chat Noir"
+    }
+   },
+   "aliases": {},
+   "descriptions": {
+    "en": {
+     "language": "en",
+     "value": "children's animated superhero television series"
+    }
+   },
+   "claims": {
+    "P6262": [
+     {
+      "mainsnak": {
+       "datavalue": {
+        "value": "miraculousladybug:Miraculous:_Tales_of_Ladybug_&_Cat_Noir",
+        "type": "string"
+       }
+      }
+     },
+     {
+      "mainsnak": {
+       "datavalue": {
+        "value": "youtube:Miraculous_Ladybug",
+        "type": "string"
+       }
+      }
+     },
+     {
+      "mainsnak": {
+       "datavalue": {
+        "value": "no.norske-dubber:Miraculous_Ladybug_&_Cat_Noir_på_eventyr_(TV-serie)",
+        "type": "string"
+       }
+      }
+     }
+    ]
+   }
+  }
+ }
+}

@@ -1,6 +1,6 @@
 import { useMemo } from "react"
 import { toast } from "sonner"
-import type { Cast, CastEdit, Character, JobInfo } from "@/bindings"
+import type { Cast, CastEdit, Character, ContentKind, JobInfo, ProjectKind } from "@/bindings"
 import { commands, errorMessage } from "@/lib/ipc"
 import { useActivity, isFinished } from "@/state/activity"
 
@@ -12,6 +12,27 @@ export async function castEdit(pid: string, edit: CastEdit): Promise<string | nu
     toast.error("Couldn't change the cast", { description: errorMessage(e) })
     return undefined
   }
+}
+
+/** Where a project's character names come from, by its footage and
+ *  whether it is a film (as the backend's `Source::of`): AniList for anime,
+ *  TVmaze for an animated series, the film's Fandom wiki for an animated
+ *  film, none for the rest. */
+export function namesSource(
+  content: ContentKind | undefined,
+  kind: ProjectKind | undefined,
+): "AniList" | "TVmaze" | "Fandom" | null {
+  if (content === "anime") return "AniList"
+  if (content === "animation") return kind === "movie" ? "Fandom" : "TVmaze"
+  return null
+}
+
+/** Where a source's names and pictures come from, as its licence asks it
+ *  to be said (`null`: nothing to say). */
+export function namesCredit(source: ReturnType<typeof namesSource>): string | null {
+  if (source === "TVmaze") return "Names and pictures: TVmaze.com (CC BY-SA)."
+  if (source === "Fandom") return "Names and pictures: the film's Fandom wiki (CC BY-SA), found through Wikidata."
+  return null
 }
 
 /** Screen time as people say it: "42 s", "12 min", "1 h 05 min". */

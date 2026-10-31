@@ -576,6 +576,11 @@ impl Project {
         self.media_faces_dir(media).join(format!("{track}-{frame}-{}-{w}x{h}.jpg", box_tag(det.bbox)))
     }
 
+    /// Track `track`'s portrait, once it is made.
+    pub(crate) fn portrait_file(&self, track: i64) -> ProjectResult<Option<PathBuf>> {
+        Ok(self.portrait_plans(&[track])?.pop().map(|p| p.path).filter(|p| p.is_file()))
+    }
+
     /// The portraits of `tracks` (those that exist): each shows the track's
     /// clearest face, the moment its thumbnail shows.
     fn portrait_plans(&self, tracks: &[i64]) -> ProjectResult<Vec<PortraitPlan>> {
@@ -1928,6 +1933,56 @@ pub(crate) mod tests {
         assert_eq!(now.len(), 3);
         assert!(now.iter().all(|t| t.id != wrong));
         assert!(now.iter().any(|t| t.id == blurry[0].id && t.assign == TrackAssign::Pinned));
+    }
+
+    #[test]
+    fn a_characters_look_is_shown_by_their_sharpest_faces_and_their_portrait() {
+        let frames = 2000;
+        let (_dir, project, id) = project_with_media(frames);
+        let segments: Vec<Segment> = (0..frames)
+            .step_by(100)
+            .map(|s| Segment { start: s, end: s + 100, kind: SegmentKind::Shot, tiny: false })
+            .collect();
+        project.db().store_segments(id, &segments).unwrap();
+        project.faces_plan(id, MODEL).unwrap();
+        // Person 1 in twelve shots, sharper in each; person 2 in four.
+        let mut found: Vec<FaceTrack> = (0..12).map(|k| face(1, k * 100, 0.1, 0.5 + 0.04 * k as f32)).collect();
+        found.extend((0..4).map(|k| face(2, 1200 + k * 100, 0.5, 0.9)));
+        project.store_face_chunk(id, 0, frames, &tracks::encode(&found), &[], &[]).unwrap();
+        project.finish_faces(id).unwrap();
+        assert_eq!(project.recluster().unwrap(), 2);
+        let cast = project.cast().unwrap().characters;
+        let one = cast.iter().find(|c| c.tracks == 12).unwrap().id;
+        let two = cast.iter().find(|c| c.tracks == 4).unwrap().id;
+        let of = |c: CharacterId| {
+            project.look_pictures().unwrap().1.into_iter().find(|(x, _)| *x == c).map(|(_, p)| p).unwrap_or_default()
+        };
+
+        // Their ten sharpest faces, the sharpest first, weighted by how sharp.
+        let pictures = of(one);
+        assert_eq!(pictures.len(), crate::anilist::LOOK_FACES);
+        assert!(pictures.windows(2).all(|w| w[0].1 >= w[1].1));
+        assert!((pictures[0].1 - 0.94).abs() < 1e-4, "{pictures:?}");
+        assert!(pictures.iter().all(|(p, _)| p.is_file()));
+        let theirs = project.cast_tracks(TrackFilter::Character(one)).unwrap();
+        let blurriest = theirs.iter().min_by(|a, b| a.quality.total_cmp(&b.quality)).unwrap();
+        assert!(pictures.iter().all(|(p, _)| *p != project.thumb_path(id, i64::from(blurriest.id))));
+        assert_eq!(of(two).len(), 4);
+
+        // Their cover's portrait, once made, shows them too.
+        let cover = project.db().character_cover(one).unwrap().unwrap().0;
+        let portrait = project.portrait_plans(&[cover]).unwrap().pop().unwrap().path;
+        std::fs::write(&portrait, b"jpeg").unwrap();
+        let pictures = of(one);
+        assert_eq!(pictures.len(), crate::anilist::LOOK_FACES + 1);
+        assert_eq!(pictures.last().unwrap(), &(portrait, 1.0));
+
+        // Named or hidden: no one asks how they look.
+        project.cast_edit(&CastEdit::Rename { character_id: two, name: Some("Adrien".into()) }).unwrap();
+        project.cast_edit(&CastEdit::SetHidden { character_id: one, hidden: true }).unwrap();
+        let (rev, pictures) = project.look_pictures().unwrap();
+        assert!(pictures.is_empty());
+        assert_eq!(rev, project.db().cast_rev().unwrap(), "read with the cast's revision");
     }
 
     /// Person `who`'s face in one of their looks: turned `by` towards `toward`.

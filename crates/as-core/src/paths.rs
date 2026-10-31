@@ -51,6 +51,16 @@ impl AppPaths {
     pub fn anilist(&self) -> PathBuf {
         self.data.join("anilist")
     }
+    /// Character images from TVmaze, by TVmaze character id (only while
+    /// names from AniList and TVmaze are on).
+    pub fn tvmaze(&self) -> PathBuf {
+        self.data.join("tvmaze")
+    }
+    /// Character pictures from films' Fandom wikis (only while character
+    /// names are on).
+    pub fn fandom(&self) -> PathBuf {
+        self.data.join("fandom")
+    }
 
     /// Where new projects go unless the user picks another folder.
     pub fn default_library_root() -> PathBuf {

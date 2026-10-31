@@ -16,7 +16,7 @@ import { cn } from "@/lib/utils"
 import { CharacterCard } from "./CharacterCard"
 import { AniListDialog } from "./AniListDialog"
 import { AniListNames } from "./AniListNames"
-import { plural, splitHidden, unplacedNote, useProjectAnalysis } from "./cast"
+import { namesSource, plural, splitHidden, unplacedNote, useProjectAnalysis } from "./cast"
 
 /** Everyone the analysis found, most screen time first. */
 export function CastPage() {
@@ -34,10 +34,10 @@ export function CastPage() {
   const navigate = useNavigate()
   const { shown, hidden } = splitHidden(cast)
   const unplaced = unplacedNote(cast?.unplaced ?? 0)
-  // Names from AniList: anime projects while the opt-in in Settings is on
-  // and someone shown is still unnamed.
-  const anilist =
-    !!settings?.anilist && project?.content === "anime" && !!cast?.characters.some((c) => !c.hidden && !c.name)
+  // Names from AniList (anime) or TVmaze (animation) while the opt-in in
+  // Settings is on and someone shown is still unnamed.
+  const source = namesSource(project?.content, project?.kind)
+  const anilist = !!settings?.anilist && source !== null && !!cast?.characters.some((c) => !c.hidden && !c.name)
   const failure = firstFailure(projectQuery, castQuery, mediaQuery)
 
   if (failure) {
@@ -65,7 +65,7 @@ export function CastPage() {
           )}
           {anilist && (
             <ContextMenuItem onSelect={() => setAnilistOpen(true)}>
-              <MagnifyingGlass /> Names from AniList
+              <MagnifyingGlass /> Names from {source}
             </ContextMenuItem>
           )}
           {hidden.length > 0 && (
@@ -90,7 +90,7 @@ export function CastPage() {
         <div className="flex items-center gap-2.5">
           {anilist && (
             <Button variant="secondary" size="lg" onClick={() => setAnilistOpen(true)}>
-              <MagnifyingGlass weight="bold" /> Names from AniList
+              <MagnifyingGlass weight="bold" /> Names from {source}
             </Button>
           )}
           {cast && cast.unsure > 0 && (

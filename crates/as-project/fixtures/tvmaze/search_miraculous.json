@@ -1,0 +1,97 @@
+[
+ {
+  "score": 0.66132265,
+  "show": {
+   "id": 69077,
+   "url": "https://www.tvmaze.com/shows/69077/miraculous-brothers",
+   "name": "Miraculous Brothers",
+   "type": "Scripted",
+   "language": "Korean",
+   "genres": [
+    "Drama",
+    "Fantasy",
+    "Mystery"
+   ],
+   "status": "Ended",
+   "premiered": "2023-06-28",
+   "image": {
+    "medium": "https://static.tvmaze.com/uploads/images/medium_portrait/465/1163533.jpg",
+    "original": "https://static.tvmaze.com/uploads/images/original_untouched/465/1163533.jpg"
+   }
+  }
+ },
+ {
+  "score": 0.62975544,
+  "show": {
+   "id": 68577,
+   "url": "https://www.tvmaze.com/shows/68577/miraculous-5",
+   "name": "Miraculous 5",
+   "type": "Scripted",
+   "language": "Thai",
+   "genres": [],
+   "status": "Ended",
+   "premiered": "2022-02-25",
+   "image": {
+    "medium": "https://static.tvmaze.com/uploads/images/medium_portrait/459/1149794.jpg",
+    "original": "https://static.tvmaze.com/uploads/images/original_untouched/459/1149794.jpg"
+   }
+  }
+ },
+ {
+  "score": 0.5814254,
+  "show": {
+   "id": 62953,
+   "url": "https://www.tvmaze.com/shows/62953/miraculous-zag-chibi",
+   "name": "Miraculous Zag Chibi",
+   "type": "Animation",
+   "language": "English",
+   "genres": [
+    "Children"
+   ],
+   "status": "Ended",
+   "premiered": "2018-08-31",
+   "image": {
+    "medium": "https://static.tvmaze.com/uploads/images/medium_portrait/415/1037883.jpg",
+    "original": "https://static.tvmaze.com/uploads/images/original_untouched/415/1037883.jpg"
+   }
+  }
+ },
+ {
+  "score": 0.5783746,
+  "show": {
+   "id": 85305,
+   "url": "https://www.tvmaze.com/shows/85305/miraculous-stellar-force",
+   "name": "Miraculous Stellar Force",
+   "type": "Animation",
+   "language": null,
+   "genres": [],
+   "status": "In Development",
+   "premiered": null,
+   "image": {
+    "medium": "https://static.tvmaze.com/uploads/images/medium_portrait/573/1434441.jpg",
+    "original": "https://static.tvmaze.com/uploads/images/original_untouched/573/1434441.jpg"
+   }
+  }
+ },
+ {
+  "score": 0.535022,
+  "show": {
+   "id": 5557,
+   "url": "https://www.tvmaze.com/shows/5557/miraculous-les-aventures-de-ladybug-et-chat-noir",
+   "name": "Miraculous: Les aventures de Ladybug et Chat Noir",
+   "type": "Animation",
+   "language": "French",
+   "genres": [
+    "Comedy",
+    "Action",
+    "Fantasy"
+   ],
+   "status": "Running",
+   "premiered": "2015-09-01",
+   "image": {
+    "medium": "https://static.tvmaze.com/uploads/images/medium_portrait/599/1499134.jpg",
+    "original": "https://static.tvmaze.com/uploads/images/original_untouched/599/1499134.jpg"
+   }
+  }
+ }
+]

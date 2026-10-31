@@ -8,9 +8,11 @@ use as_core::{AppPaths, CancelToken, MediaId, ProjectId};
 use as_db::{LibraryDb, NewMedia, ProjectDb};
 use parking_lot::Mutex;
 
-use crate::anilist::AniList;
+use crate::anilist::{AniList, Names, PictureKey};
+use crate::fandom::Fandom;
 use crate::naming::{episode_cmp, is_video, parse_episode, safe_component};
 use crate::project::{PROJECT_DB, Project};
+use crate::tvmaze::TvMaze;
 use crate::{ProjectError, ProjectResult};
 
 const KEY_LIBRARY_ROOT: &str = "library_root";
@@ -44,6 +46,12 @@ pub struct Library {
     /// [`Library::anilist_token`]).
     anilist_stop: Mutex<CancelToken>,
     anilist: AniList,
+    /// Names for animated series and films, behind the same opt-in.
+    tvmaze: TvMaze,
+    fandom: Fandom,
+    /// Pictures of projects' characters embedded this session, by file
+    /// (see [`Project::look_pictures`]).
+    look_pictures: Mutex<HashMap<PictureKey, Vec<f32>>>,
 }
 
 impl Library {
@@ -53,6 +61,8 @@ impl Library {
         let find_bodies = Arc::new(AtomicBool::new(db.setting(KEY_FIND_BODIES)?.as_deref() == Some("1")));
         let anilist_on = AtomicBool::new(db.setting(KEY_ANILIST)?.as_deref() == Some("1"));
         let anilist = AniList::new(paths.anilist());
+        let tvmaze = TvMaze::new(paths.tvmaze());
+        let fandom = Fandom::new(paths.fandom());
         Ok(Self {
             db,
             open: Mutex::default(),
@@ -61,6 +71,9 @@ impl Library {
             anilist_on,
             anilist_stop: Mutex::default(),
             anilist,
+            tvmaze,
+            fandom,
+            look_pictures: Mutex::default(),
         })
     }
 
@@ -70,7 +83,20 @@ impl Library {
         Self { anilist, ..self }
     }
 
-    /// Whether projects may ask AniList for names.
+    /// This library asking `tvmaze` instead (recorded answers).
+    #[cfg(test)]
+    pub(crate) fn with_tvmaze(self, tvmaze: TvMaze) -> Self {
+        Self { tvmaze, ..self }
+    }
+
+    /// This library asking `fandom` instead (recorded answers).
+    #[cfg(test)]
+    pub(crate) fn with_fandom(self, fandom: Fandom) -> Self {
+        Self { fandom, ..self }
+    }
+
+    /// Whether projects may ask AniList (anime), TVmaze (animated series)
+    /// and Wikidata with Fandom (animated films) for names.
     pub fn names_from_anilist(&self) -> bool {
         self.anilist_on.load(Ordering::Relaxed)
     }
@@ -83,6 +109,18 @@ impl Library {
 
     pub(crate) fn anilist(&self) -> &AniList {
         &self.anilist
+    }
+
+    pub(crate) fn tvmaze(&self) -> &TvMaze {
+        &self.tvmaze
+    }
+
+    pub(crate) fn fandom(&self) -> &Fandom {
+        &self.fandom
+    }
+
+    pub(crate) fn look_pictures(&self) -> &Mutex<HashMap<PictureKey, Vec<f32>>> {
+        &self.look_pictures
     }
 
     /// Whether characters are looked for by their bodies too.
@@ -126,11 +164,14 @@ impl Library {
         self.db.set_setting(KEY_FAST_SCAN, if s.fast_scan { "1" } else { "0" })?;
         self.db.set_setting(KEY_ANILIST, if s.anilist { "1" } else { "0" })?;
         self.anilist_on.store(s.anilist, Ordering::Relaxed);
-        // Off: whatever asks AniList stops, and nothing from it stays (also
-        // what an earlier attempt left).
+        // Off: whatever asks for names stops, and nothing from where they
+        // come from stays (also what an earlier attempt left).
         if !s.anilist {
             std::mem::take(&mut *self.anilist_stop.lock()).cancel();
             self.anilist.forget()?;
+            self.tvmaze.forget()?;
+            self.fandom.forget()?;
+            self.look_pictures.lock().clear();
         }
         self.settings()
     }

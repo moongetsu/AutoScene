@@ -1,0 +1,212 @@
+{
+ "batchcomplete": "",
+ "query": {
+  "pages": {
+   "-1": {
+    "ns": 6,
+    "title": "File:Plagg (Movie) Square.png",
+    "missing": "",
+    "known": "",
+    "imagerepository": "local",
+    "imageinfo": [
+     {
+      "thumburl": "https://static.wikia.nocookie.net/lady-bug/images/5/53/Plagg_%28Movie%29_Square.png/revision/latest/scale-to-width-down/600?cb=20230731224324",
+      "url": "https://static.wikia.nocookie.net/lady-bug/images/5/53/Plagg_%28Movie%29_Square.png/revision/latest?cb=20230731224324"
+     }
+    ]
+   },
+   "415823": {
+    "pageid": 415823,
+    "ns": 6,
+    "title": "File:Adrien Agreste (Movie) Square.png",
+    "imagerepository": "local",
+    "imageinfo": [
+     {
+      "thumburl": "https://static.wikia.nocookie.net/lady-bug/images/a/aa/Adrien_Agreste_%28Movie%29_Square.png/revision/latest/scale-to-width-down/600?cb=20230731224141",
+      "url": "https://static.wikia.nocookie.net/lady-bug/images/a/aa/Adrien_Agreste_%28Movie%29_Square.png/revision/latest?cb=20230731224141"
+     }
+    ]
+   },
+   "416796": {
+    "pageid": 416796,
+    "ns": 6,
+    "title": "File:Akuma (Movie) Square.png",
+    "imagerepository": "local",
+    "imageinfo": [
+     {
+      "thumburl": "https://static.wikia.nocookie.net/lady-bug/images/3/36/Akuma_%28Movie%29_Square.png/revision/latest/scale-to-width-down/600?cb=20230808172727",
+      "url": "https://static.wikia.nocookie.net/lady-bug/images/3/36/Akuma_%28Movie%29_Square.png/revision/latest?cb=20230808172727"
+     }
+    ]
+   },
+   "415872": {
+    "pageid": 415872,
+    "ns": 6,
+    "title": "File:Bubbler (Movie) Square.png",
+    "imagerepository": "local",
+    "imageinfo": [
+     {
+      "thumburl": "https://static.wikia.nocookie.net/lady-bug/images/b/b6/Bubbler_%28Movie%29_Square.png/revision/latest/scale-to-width-down/600?cb=20230802151610",
+      "url": "https://static.wikia.nocookie.net/lady-bug/images/b/b6/Bubbler_%28Movie%29_Square.png/revision/latest?cb=20230802151610"
+     }
+    ]
+   },
+   "416797": {
+    "pageid": 416797,
+    "ns": 6,
+    "title": "File:Butterfly (Movie) Square.png",
+    "imagerepository": "local",
+    "imageinfo": [
+     {
+      "thumburl": "https://static.wikia.nocookie.net/lady-bug/images/5/50/Butterfly_%28Movie%29_Square.png/revision/latest/scale-to-width-down/600?cb=20230808172809",
+      "url": "https://static.wikia.nocookie.net/lady-bug/images/5/50/Butterfly_%28Movie%29_Square.png/revision/latest?cb=20230808172809"
+     }
+    ]
+   },
+   "415821": {
+    "pageid": 415821,
+    "ns": 6,
+    "title": "File:Cat Noir (Movie) Square.png",
+    "imagerepository": "local",
+    "imageinfo": [
+     {
+      "thumburl": "https://static.wikia.nocookie.net/lady-bug/images/f/ff/Cat_Noir_%28Movie%29_Square.png/revision/latest/scale-to-width-down/600?cb=20230731224115",
+      "url": "https://static.wikia.nocookie.net/lady-bug/images/f/ff/Cat_Noir_%28Movie%29_Square.png/revision/latest?cb=20230731224115"
+     }
+    ]
+   },
+   "415824": {
+    "pageid": 415824,
+    "ns": 6,
+    "title": "File:Gabriel Agreste (Movie) Square.png",
+    "imagerepository": "local",
+    "imageinfo": [
+     {
+      "thumburl": "https://static.wikia.nocookie.net/lady-bug/images/2/20/Gabriel_Agreste_%28Movie%29_Square.png/revision/latest/scale-to-width-down/600?cb=20230731224210",
+      "url": "https://static.wikia.nocookie.net/lady-bug/images/2/20/Gabriel_Agreste_%28Movie%29_Square.png/revision/latest?cb=20230731224210"
+     }
+    ]
+   },
+   "415478": {
+    "pageid": 415478,
+    "ns": 6,
+    "title": "File:Gargoyle Square.png",
+    "imagerepository": "local",
+    "imageinfo": [
+     {
+      "thumburl": "https://static.wikia.nocookie.net/lady-bug/images/5/54/Gargoyle_Square.png/revision/latest/scale-to-width-down/600?cb=20230728233815",
+      "url": "https://static.wikia.nocookie.net/lady-bug/images/5/54/Gargoyle_Square.png/revision/latest?cb=20230728233815"
+     }
+    ]
+   },
+   "415761": {
+    "pageid": 415761,
+    "ns": 6,
+    "title": "File:Hawk Moth (Movie) Square.png",
+    "imagerepository": "local",
+    "imageinfo": [
+     {
+      "thumburl": "https://static.wikia.nocookie.net/lady-bug/images/f/fd/Hawk_Moth_%28Movie%29_Square.png/revision/latest/scale-to-width-down/600?cb=20230730104635",
+      "url": "https://static.wikia.nocookie.net/lady-bug/images/f/fd/Hawk_Moth_%28Movie%29_Square.png/revision/latest?cb=20230730104635"
+     }
+    ]
+   },
+   "415874": {
+    "pageid": 415874,
+    "ns": 6,
+    "title": "File:Hawk Moth Akumatized (Movie) Square.png",
+    "imagerepository": "local",
+    "imageinfo": [
+     {
+      "thumburl": "https://static.wikia.nocookie.net/lady-bug/images/5/55/Hawk_Moth_Akumatized_%28Movie%29_Square.png/revision/latest/scale-to-width-down/600?cb=20230802151728",
+      "url": "https://static.wikia.nocookie.net/lady-bug/images/5/55/Hawk_Moth_Akumatized_%28Movie%29_Square.png/revision/latest?cb=20230802151728"
+     }
+    ]
+   },
+   "415818": {
+    "pageid": 415818,
+    "ns": 6,
+    "title": "File:Ladybug (Movie) Square.png",
+    "imagerepository": "local",
+    "imageinfo": [
+     {
+      "thumburl": "https://static.wikia.nocookie.net/lady-bug/images/c/ca/Ladybug_%28Movie%29_Square.png/revision/latest/scale-to-width-down/600?cb=20230731223803",
+      "url": "https://static.wikia.nocookie.net/lady-bug/images/c/ca/Ladybug_%28Movie%29_Square.png/revision/latest?cb=20230731223803"
+     }
+    ]
+   },
+   "415819": {
+    "pageid": 415819,
+    "ns": 6,
+    "title": "File:Marinette Dupain-Cheng (Movie) Square.png",
+    "imagerepository": "local",
+    "imageinfo": [
+     {
+      "thumburl": "https://static.wikia.nocookie.net/lady-bug/images/d/dc/Marinette_Dupain-Cheng_%28Movie%29_Square.png/revision/latest/scale-to-width-down/600?cb=20230731224034",
+      "url": "https://static.wikia.nocookie.net/lady-bug/images/d/dc/Marinette_Dupain-Cheng_%28Movie%29_Square.png/revision/latest?cb=20230731224034"
+     }
+    ]
+   },
+   "415868": {
+    "pageid": 415868,
+    "ns": 6,
+    "title": "File:Nino Lahiffe (Movie) Square.png",
+    "imagerepository": "local",
+    "imageinfo": [
+     {
+      "thumburl": "https://static.wikia.nocookie.net/lady-bug/images/2/2e/Nino_Lahiffe_%28Movie%29_Square.png/revision/latest/scale-to-width-down/600?cb=20230802150352",
+      "url": "https://static.wikia.nocookie.net/lady-bug/images/2/2e/Nino_Lahiffe_%28Movie%29_Square.png/revision/latest?cb=20230802150352"
+     }
+    ]
+   },
+   "415912": {
+    "pageid": 415912,
+    "ns": 6,
+    "title": "File:Plagg (movie cat form) Square.png",
+    "imagerepository": "local",
+    "imageinfo": [
+     {
+      "thumburl": "https://static.wikia.nocookie.net/lady-bug/images/c/c7/Plagg_%28movie_cat_form%29_Square.png/revision/latest/scale-to-width-down/600?cb=20230803153915",
+      "url": "https://static.wikia.nocookie.net/lady-bug/images/c/c7/Plagg_%28movie_cat_form%29_Square.png/revision/latest?cb=20230803153915"
+     }
+    ]
+   },
+   "415477": {
+    "pageid": 415477,
+    "ns": 6,
+    "title": "File:Raymond Square.png",
+    "imagerepository": "local",
+    "imageinfo": [
+     {
+      "thumburl": "https://static.wikia.nocookie.net/lady-bug/images/1/1f/Raymond_Square.png/revision/latest/scale-to-width-down/600?cb=20230728233749",
+      "url": "https://static.wikia.nocookie.net/lady-bug/images/1/1f/Raymond_Square.png/revision/latest?cb=20230728233749"
+     }
+    ]
+   },
+   "415825": {
+    "pageid": 415825,
+    "ns": 6,
+    "title": "File:Tikki (Movie) Square.png",
+    "imagerepository": "local",
+    "imageinfo": [
+     {
+      "thumburl": "https://static.wikia.nocookie.net/lady-bug/images/d/da/Tikki_%28Movie%29_Square.png/revision/latest/scale-to-width-down/600?cb=20230731224310",
+      "url": "https://static.wikia.nocookie.net/lady-bug/images/d/da/Tikki_%28Movie%29_Square.png/revision/latest?cb=20230731224310"
+     }
+    ]
+   },
+   "415940": {
+    "pageid": 415940,
+    "ns": 6,
+    "title": "File:Tikki (movie ladybug form) Square.png",
+    "imagerepository": "local",
+    "imageinfo": [
+     {
+      "thumburl": "https://static.wikia.nocookie.net/lady-bug/images/0/04/Tikki_%28movie_ladybug_form%29_Square.png/revision/latest/scale-to-width-down/600?cb=20230803154033",
+      "url": "https://static.wikia.nocookie.net/lady-bug/images/0/04/Tikki_%28movie_ladybug_form%29_Square.png/revision/latest?cb=20230803154033"
+     }
+    ]
+   }
+  }
+ }
+}

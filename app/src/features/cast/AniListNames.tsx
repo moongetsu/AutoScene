@@ -8,19 +8,21 @@ import { assetUrl } from "@/lib/media"
 import { qk, queryClient, useAniListNames, useProject, useSettings } from "@/lib/queries"
 import { cn } from "@/lib/utils"
 import { AniListDialog } from "./AniListDialog"
-import { plural } from "./cast"
+import { namesCredit, namesSource, plural } from "./cast"
 
 /**
- * Names from AniList for an anime project's cast. Once the characters are
- * found the app looks them up by itself (the series by the project's
- * title, then its cast's portraits matched to the characters); this shows
- * that it is looking, then the names it found, given with one click. Shown
- * while the AniList setting is on.
+ * Names for an anime project's cast from AniList, for an animation
+ * project's from TVmaze. Once the characters are found the app looks them
+ * up by itself (the series by the project's title, then its cast's
+ * portraits matched to the characters); this shows that it is looking, then
+ * the names it found, given with one click. Shown while the names setting
+ * is on.
  */
 export function AniListNames({ pid, cast, className }: { pid: ProjectId; cast: Cast | undefined; className?: string }) {
   const { data: settings } = useSettings()
   const { data: project } = useProject(pid)
-  const on = !!settings?.anilist && project?.content === "anime"
+  const source = namesSource(project?.content, project?.kind)
+  const on = !!settings?.anilist && source !== null
   const { data } = useAniListNames(pid, on && !!cast)
   const [busy, setBusy] = useState(false)
   const [searching, setSearching] = useState(false)
@@ -58,7 +60,7 @@ export function AniListNames({ pid, cast, className }: { pid: ProjectId; cast: C
       const leftNames = names.filter((n) => out.has(n.characterId))
       const leftMerges = merges.filter((m) => out.has(m.from))
       await commands.anilistAccept(pid, kept, keptMerges, leftNames, leftMerges)
-      toast.success(kept.length > 0 ? `Named ${plural(kept.length, "character")} from AniList` : "Characters merged")
+      toast.success(kept.length > 0 ? `Named ${plural(kept.length, "character")} from ${source}` : "Characters merged")
       refresh()
     })
   const dismiss = () =>
@@ -84,16 +86,17 @@ export function AniListNames({ pid, cast, className }: { pid: ProjectId; cast: C
             <div className="min-w-0 flex-1">
               <p className="text-md font-medium text-fg-1">
                 {names.length > 0
-                  ? `AniList has names for ${plural(names.length, "character")}`
-                  : "AniList sees one person in two characters"}
+                  ? `${source} has names for ${plural(names.length, "character")}`
+                  : `${source} sees one person in two characters`}
               </p>
               <p className="text-sm text-fg-2">
-                From the cast of {data.series ?? "the series"}. Click one that's wrong to leave it out.
+                From the cast of {data.series ?? "the series"}. Click one that's wrong to leave it out.{" "}
+                {namesCredit(source)}
               </p>
             </div>
             <div className="flex items-center gap-2">
               <Button variant="ghost" disabled={busy} onClick={wrongSeries}>
-                Wrong series…
+                {source === "Fandom" ? "Wrong film…" : "Wrong series…"}
               </Button>
               <Button variant="ghost" disabled={busy} onClick={dismiss}>
                 Not now
@@ -156,7 +159,7 @@ export function AniListNames({ pid, cast, className }: { pid: ProjectId; cast: C
       ) : (
         data.looking && (
           <p role="status" className={cn("flex items-center gap-2.5 text-sm text-fg-2", className)}>
-            <CircleNotch className="size-4 animate-spin" /> Looking up the characters' names on AniList…
+            <CircleNotch className="size-4 animate-spin" /> Looking up the characters' names on {source}…
           </p>
         )
       )}

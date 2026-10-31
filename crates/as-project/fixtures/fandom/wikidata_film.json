@@ -1,0 +1,388 @@
+{
+ "entities": {
+  "Q57958005": {
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "Ladybug & Cat Noir: The Movie"
+    },
+    "cs": {
+     "language": "cs",
+     "value": "Kouzelná Beruška a Černý kocour ve filmu"
+    },
+    "ro": {
+     "language": "ro",
+     "value": "Untitled Miraculous animated musical"
+    },
+    "pt": {
+     "language": "pt",
+     "value": "Ladybug & Cat Noir Awakening"
+    },
+    "uk": {
+     "language": "uk",
+     "value": "Леді Баг і Супер-Кіт: Пробудження"
+    },
+    "ru": {
+     "language": "ru",
+     "value": "Леди Баг и Супер-Кот: Пробуждение силы"
+    },
+    "zh-hant": {
+     "language": "zh-hant",
+     "value": "不可思議：瓢蟲女爵和黑貓諾爾大電影"
+    },
+    "zh": {
+     "language": "zh",
+     "value": "不可思議：瓢蟲女爵和黑貓諾爾大電影"
+    },
+    "tr": {
+     "language": "tr",
+     "value": "Ladybug & Cat Noir Awakening"
+    },
+    "es": {
+     "language": "es",
+     "value": "Miraculous: Las aventuras de Ladybug"
+    },
+    "he": {
+     "language": "he",
+     "value": "הרפתקאות ליידי באג: התעוררות"
+    },
+    "fr": {
+     "language": "fr",
+     "value": "Miraculous, le film"
+    },
+    "cy": {
+     "language": "cy",
+     "value": "Ladybug & Cat Noir Deffroad"
+    },
+    "pl": {
+     "language": "pl",
+     "value": "Miraculum: Biedronka i Czarny Kot"
+    },
+    "de": {
+     "language": "de",
+     "value": "Miraculous: Ladybug & Cat Noir – Der Film"
+    },
+    "ca": {
+     "language": "ca",
+     "value": "Miraculous, le film"
+    },
+    "el": {
+     "language": "el",
+     "value": "Λέιντι Μπαγκ & Κατ Νουάρ: Το Ξεκίνημα"
+    },
+    "fa": {
+     "language": "fa",
+     "value": "لیدی باگ و کت نوآر: فیلم"
+    },
+    "it": {
+     "language": "it",
+     "value": "Miraculous - Ladybug & Chat Noir: Il film"
+    },
+    "uz": {
+     "language": "uz",
+     "value": "Miraculous, le film"
+    },
+    "sq": {
+     "language": "sq",
+     "value": "Ladybug & Cat Noir: The Movie"
+    },
+    "ar": {
+     "language": "ar",
+     "value": "الدعسوقة ميراكيلوس والقط الأسود: الفيلم"
+    },
+    "hu": {
+     "language": "hu",
+     "value": "Miraculous – Katicabogár és Fekete Macska kalandjai – A mozifilm"
+    },
+    "nl": {
+     "language": "nl",
+     "value": "Ladybug & Cat Noir: de film"
+    },
+    "sv": {
+     "language": "sv",
+     "value": "Miraculous: Filmen om Ladybug & Cat Noir"
+    },
+    "da": {
+     "language": "da",
+     "value": "Miraculous: Ladybug & Cat Noir - filmen"
+    },
+    "ja": {
+     "language": "ja",
+     "value": "ミラキュラス レディバグ&シャノワール: ザ・ムービー"
+    },
+    "nb": {
+     "language": "nb",
+     "value": "Miraculous: Ladybug & Cat Noir - filmen"
+    },
+    "nn": {
+     "language": "nn",
+     "value": "Miraculous: Ladybug & Cat Noir - filmen"
+    },
+    "fi": {
+     "language": "fi",
+     "value": "Miraculous: Ladybug ja Cat Noir - Elokuva"
+    },
+    "hr": {
+     "language": "hr",
+     "value": "Bubamara i Crni Mačak: Animirani film"
+    },
+    "zh-sg": {
+     "language": "zh-sg",
+     "value": "不可思议：瓢虫女爵和黑猫诺尔大电影"
+    },
+    "lt": {
+     "language": "lt",
+     "value": "Stebuklingoji boružėlė ir juodasis katinas"
+    },
+    "bg": {
+     "language": "bg",
+     "value": "Мега-чудесата на Калинката и Черния котарак: Филмът"
+    },
+    "et": {
+     "language": "et",
+     "value": "Lepatriinu ja Must Kass. Film"
+    },
+    "id": {
+     "language": "id",
+     "value": "Ladybug & Cat Noir: The Movie"
+    },
+    "th": {
+     "language": "th",
+     "value": "มหัศจรรย์สาวเต่าทองกับแมวดำ เดอะ มูฟวี่"
+    },
+    "mul": {
+     "language": "mul",
+     "value": "Ladybug & Cat Noir: The Movie"
+    }
+   },
+   "aliases": {
+    "en": [
+     {
+      "language": "en",
+      "value": "Miraculous: Ladybug & Cat Noir, The Movie"
+     },
+     {
+      "language": "en",
+      "value": "Ladybug & Cat Noir: The Awakening"
+     },
+     {
+      "language": "en",
+      "value": "Miraculous, le film"
+     }
+    ],
+    "ru": [
+     {
+      "language": "ru",
+      "value": "Леди Баг и Супер-Кот: Фильм"
+     }
+    ],
+    "pt": [
+     {
+      "language": "pt",
+      "value": "Miraculous Ladybug: The Movie"
+     },
+     {
+      "language": "pt",
+      "value": "Ladybug & Cat Noir: The Movie"
+     }
+    ],
+    "zh": [
+     {
+      "language": "zh",
+      "value": "瓢蟲少女電影版"
+     },
+     {
+      "language": "zh",
+      "value": "瓢蟲和黑貓覺醒"
+     },
+     {
+      "language": "zh",
+      "value": "瓢虫和黑猫觉醒"
+     }
+    ],
+    "fa": [
+     {
+      "language": "fa",
+      "value": "دختر کفشدوزکی و گربه سیاه: فیلم"
+     },
+     {
+      "language": "fa",
+      "value": "فیلم دختر کفشدوزکی و گربه سیاه"
+     },
+     {
+      "language": "fa",
+      "value": "فیلم لیدی باگ و کت نوآر"
+     }
+    ],
+    "nl": [
+     {
+      "language": "nl",
+      "value": "Miraculous, le film"
+     }
+    ],
+    "pl": [
+     {
+      "language": "pl",
+      "value": "Miraculous: Biedronka i Czarny Kot"
+     }
+    ],
+    "ar": [
+     {
+      "language": "ar",
+      "value": "‎الدعسوقة ميراكيلوس والقط الأسود: الفيلم"
+     },
+     {
+      "language": "ar",
+      "value": "Ladybug & Cat Noir: The Movie"
+     },
+     {
+      "language": "ar",
+      "value": "Miraculous: Ladybug & Cat Noir, The Movie"
+     },
+     {
+      "language": "ar",
+      "value": "Ladybug & Cat Noir: The Awakening"
+     },
+     {
+      "language": "ar",
+      "value": "Miraculous, le film"
+     }
+    ],
+    "mul": [
+     {
+      "language": "mul",
+      "value": "Miraculous: Ladybug & Cat Noir, The Movie"
+     },
+     {
+      "language": "mul",
+      "value": "Ladybug & Cat Noir: The Awakening"
+     },
+     {
+      "language": "mul",
+      "value": "Miraculous, le film"
+     }
+    ]
+   },
+   "descriptions": {
+    "en": {
+     "language": "en",
+     "value": "2023 animated film directed by Jeremy Zag"
+    }
+   },
+   "claims": {
+    "P31": [
+     {
+      "mainsnak": {
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 202866,
+         "id": "Q202866"
+        },
+        "type": "wikibase-entityid"
+       }
+      }
+     },
+     {
+      "mainsnak": {
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 11424,
+         "id": "Q11424"
+        },
+        "type": "wikibase-entityid"
+       }
+      }
+     }
+    ],
+    "P577": [
+     {
+      "mainsnak": {
+       "datavalue": {
+        "value": {
+         "time": "+2023-07-05T00:00:00Z",
+         "timezone": 0,
+         "before": 0,
+         "after": 0,
+         "precision": 11,
+         "calendarmodel": "http://www.wikidata.org/entity/Q1985727"
+        },
+        "type": "time"
+       }
+      }
+     },
+     {
+      "mainsnak": {
+       "datavalue": {
+        "value": {
+         "time": "+2023-07-06T00:00:00Z",
+         "timezone": 0,
+         "before": 0,
+         "after": 0,
+         "precision": 11,
+         "calendarmodel": "http://www.wikidata.org/entity/Q1985727"
+        },
+        "type": "time"
+       }
+      }
+     },
+     {
+      "mainsnak": {
+       "datavalue": {
+        "value": {
+         "time": "+2023-07-27T00:00:00Z",
+         "timezone": 0,
+         "before": 0,
+         "after": 0,
+         "precision": 11,
+         "calendarmodel": "http://www.wikidata.org/entity/Q1985727"
+        },
+        "type": "time"
+       }
+      }
+     },
+     {
+      "mainsnak": {
+       "datavalue": {
+        "value": {
+         "time": "+2023-08-03T00:00:00Z",
+         "timezone": 0,
+         "before": 0,
+         "after": 0,
+         "precision": 11,
+         "calendarmodel": "http://www.wikidata.org/entity/Q1985727"
+        },
+        "type": "time"
+       }
+      }
+     }
+    ],
+    "P144": [
+     {
+      "mainsnak": {
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 6470744,
+         "id": "Q6470744"
+        },
+        "type": "wikibase-entityid"
+       }
+      }
+     }
+    ],
+    "P6262": [
+     {
+      "mainsnak": {
+       "datavalue": {
+        "value": "no.norske-dubber:Miraculous:_Ladybug_&_Cat_Noir_–_filmen_(Film)",
+        "type": "string"
+       }
+      }
+     }
+    ]
+   }
+  }
+ }
+}

@@ -111,8 +111,10 @@ export const commands = {
 	 */
 	anilistSearchText: (projectId: ProjectId) => __TAURI_INVOKE<string>("anilist_search_text", { projectId }),
 	/**
-	 *  Search AniList for `text` — the text the person confirmed is sent as
-	 *  it is. Series the project rejected aren't among the results.
+	 *  Search AniList (anime), TVmaze (animated series) or Wikidata (animated
+	 *  films, with their Fandom wikis) for `text` — the text the person
+	 *  confirmed is sent as it is. Series the project rejected aren't among the
+	 *  results.
 	 */
 	anilistSearch: (projectId: ProjectId, text: string) => __TAURI_INVOKE<AniListMedia[]>("anilist_search", { projectId, text }),
 	/**
@@ -125,10 +127,11 @@ export const commands = {
 	/**
 	 *  Match the confirmed series' cast portraits to the project's
 	 *  characters: every portrait is embedded by the engine (CCIP), then
-	 *  matched against the cast's faces. A portrait the engine fails on is
-	 *  left out (only when it fails on all of them is that an error); an engine
-	 *  that won't start, crashed or was cancelled stops the match at once. When
-	 *  `anilist.auto` is on, the names are given at once.
+	 *  matched against the cast's faces (animation: against pictures of them,
+	 *  see [`looks`]). A portrait the engine fails on is left out (only when it
+	 *  fails on all of them is that an error); an engine that won't start,
+	 *  crashed or was cancelled stops the match at once. When `anilist.auto` is
+	 *  on, the names are given at once.
 	 */
 	anilistSuggest: (projectId: ProjectId) => __TAURI_INVOKE<AniListSuggestions>("anilist_suggest", { projectId }),
 	/**
@@ -391,10 +394,11 @@ export type AppSettings = {
 	 */
 	fastScan?: boolean,
 	/**
-	 *  Anime projects may ask AniList for their series' cast, to name
-	 *  their characters: only the search text the person confirmed, and
-	 *  requests for that series' cast and images, are sent. Off by default;
-	 *  switching it off deletes the images kept.
+	 *  Anime projects may ask AniList, animated series TVmaze, animated films
+	 *  Wikidata and their franchise's Fandom wiki, for their cast, to name
+	 *  their characters: only the search text (the project's title, or what
+	 *  the person confirmed), and requests for that cast and its pictures, are
+	 *  sent. Off by default; switching it off deletes the pictures kept.
 	 */
 	anilist?: boolean,
 };

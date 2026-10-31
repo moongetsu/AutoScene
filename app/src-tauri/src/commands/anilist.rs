@@ -1,14 +1,18 @@
-//! AniList naming for anime projects (the opt-in in Settings gates all of
-//! it): the look-up the app does by itself once the characters are found
-//! ([`look_up`]), and by hand: search, confirm a series, match its cast's
-//! portraits to the project's characters, apply the suggestions.
+//! Naming from AniList (anime projects), TVmaze (animated series) and a
+//! film's Fandom wiki (animated films; the one opt-in in Settings gates all
+//! of it): the look-up the app does by itself
+//! once the characters are found ([`look_up`]), and by hand: search, confirm
+//! a series, match its cast's portraits to the project's characters, apply
+//! the suggestions.
 
+use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use as_api::{AniListMedia, AniListMerge, AniListNames, AniListSuggestion, AniListSuggestions, CastEdit};
 use as_core::{CancelToken, CharacterId, ProjectId};
 use as_engine::Engine;
-use as_project::anilist::{CastMember, Media, MergeProposal, NameSuggestion, Suggested};
+use as_models::ModelStore;
+use as_project::anilist::{CastMember, Looks, Media, MergeProposal, NameSuggestion, Source, Suggested};
 use as_project::{Library, ProjectError, ProjectResult};
 use tauri::{AppHandle, Manager, State};
 use tauri_specta::Event;
@@ -45,32 +49,103 @@ fn portraits(
     project_id: ProjectId,
     cancel: &CancelToken,
 ) -> ProjectResult<Vec<(CastMember, Vec<f32>)>> {
-    let cast = lib.anilist_cast(project_id, cancel)?;
+    let (source, cast) = lib.anilist_cast(project_id, cancel)?;
     let mut portraits = Vec::with_capacity(cast.len());
     let mut failed = None;
     for member in cast {
         let Some(image) = &member.image else { continue };
-        if let Some(emb) = lib.anilist_portrait(member.character.id) {
+        if let Some(emb) = lib.anilist_portrait(source, member.character.id) {
             portraits.push((member, emb));
             continue;
         }
-        match engine.embed(image.clone(), cancel) {
+        match embedded(engine, image, cancel)? {
             Ok(emb) => {
-                lib.keep_anilist_portrait(member.character.id, &emb, cancel);
+                lib.keep_anilist_portrait(source, member.character.id, &emb, cancel);
                 portraits.push((member, emb));
             }
-            Err(e @ as_engine::EngineError::Failed { .. }) => {
-                log::warn!("anilist: the portrait of character {} wasn't read: {}", member.character.id, e.detail());
+            Err(e) => {
+                log::warn!("names: the portrait of character {} wasn't read: {}", member.character.id, e.detail());
                 failed.get_or_insert(e);
             }
-            Err(as_engine::EngineError::Cancelled) => return Err(ProjectError::Cancelled),
-            Err(e) => return Err(ProjectError::Invalid(format!("embedding the portraits: {}", e.detail()))),
         }
     }
     if let Some(e) = failed.filter(|_| portraits.is_empty()) {
         return Err(ProjectError::Invalid(format!("embedding the portraits: {}", e.detail())));
     }
     Ok(portraits)
+}
+
+/// A picture embedded by the engine (CCIP): `Err` inside when the engine
+/// couldn't read this one picture; an engine that won't start, crashed or
+/// was cancelled stops the caller.
+fn embedded(
+    engine: &Engine,
+    path: &std::path::Path,
+    cancel: &CancelToken,
+) -> ProjectResult<Result<Vec<f32>, as_engine::EngineError>> {
+    match engine.embed(path.to_path_buf(), cancel) {
+        Ok(emb) => Ok(Ok(emb)),
+        Err(e @ as_engine::EngineError::Failed { .. }) => Ok(Err(e)),
+        Err(as_engine::EngineError::Cancelled) => Err(ProjectError::Cancelled),
+        Err(e) => Err(ProjectError::Invalid(format!("embedding the portraits: {}", e.detail()))),
+    }
+}
+
+/// The portraits' embedder (CCIP), downloaded first when it isn't yet: an
+/// animation project's face pass never needs it.
+fn embedder_ready(models: &ModelStore, cancel: &CancelToken) -> ProjectResult<()> {
+    let ccip = as_models::ids::ANIME_CCIP;
+    if models.installed(ccip).map_err(|e| ProjectError::Invalid(e.to_string()))?.is_some() {
+        return Ok(());
+    }
+    models.install(ccip, cancel, |_, _| {}).map_err(|e| match e {
+        as_models::ModelError::Cancelled => ProjectError::Cancelled,
+        e => {
+            log::warn!("names: {}", e.detail());
+            ProjectError::NotReady(e.to_string())
+        }
+    })?;
+    Ok(())
+}
+
+/// The characters' looks as the portraits' embedder sees them, where the
+/// project's faces were found by another one (TVmaze and Fandom name
+/// animation, whose faces ArcFace or SFace found): each unnamed, shown character's pictures
+/// ([`as_project::Project::look_pictures`]) embedded by the engine (each once
+/// a session) and averaged. `None` where the faces themselves are the looks
+/// (anime), or there are no portraits to match them to.
+fn looks(
+    lib: &Library,
+    engine: &Engine,
+    project_id: ProjectId,
+    portraits: &[(CastMember, Vec<f32>)],
+    cancel: &CancelToken,
+) -> ProjectResult<Option<Looks>> {
+    if portraits.is_empty() || lib.name_source(project_id)?.faces_are_looks() {
+        return Ok(None);
+    }
+    let (rev, pictures) = lib.project(project_id)?.look_pictures()?;
+    let mut looks = HashMap::with_capacity(pictures.len());
+    for (character, pictures) in pictures {
+        let mut seen = Vec::with_capacity(pictures.len());
+        for (path, weight) in pictures {
+            if let Some(emb) = lib.look_picture(&path) {
+                seen.push((emb, weight));
+                continue;
+            }
+            match embedded(engine, &path, cancel)? {
+                Ok(emb) => {
+                    lib.keep_look_picture(&path, &emb, cancel);
+                    seen.push((emb, weight));
+                }
+                Err(e) => log::warn!("names: a picture of character {character} wasn't read: {}", e.detail()),
+            }
+        }
+        if let Some(look) = as_project::anilist::look_of(&seen) {
+            looks.insert(character, look);
+        }
+    }
+    Ok(Some(Looks { rev, of: looks }))
 }
 
 /// A project's look-up this session (see [`look_up`]).
@@ -118,7 +193,7 @@ pub fn look_up(app: &AppHandle, id: ProjectId, rerun: bool) {
         let lib = &state.library;
         let mut gave = false;
         loop {
-            let done = catch_unwind(AssertUnwindSafe(|| look_up_now(lib, &state.engine, id)))
+            let done = catch_unwind(AssertUnwindSafe(|| look_up_now(lib, &state.engine, &state.models, id)))
                 .unwrap_or_else(|_| Err(ProjectError::Invalid("the look-up stopped unexpectedly".into())));
             gave |= matches!(done, Ok(true));
             let mut runs = state.anilist.lock();
@@ -148,7 +223,7 @@ pub fn look_up(app: &AppHandle, id: ProjectId, rerun: bool) {
 /// One look-up; returns whether names were given at once. The project is
 /// held open only while its database is read or written, never while
 /// AniList or the engine answers (a project deleted meanwhile goes).
-fn look_up_now(lib: &Library, engine: &Engine, id: ProjectId) -> ProjectResult<bool> {
+fn look_up_now(lib: &Library, engine: &Engine, models: &ModelStore, id: ProjectId) -> ProjectResult<bool> {
     if !lib.anilist_wanted(id)? {
         return Ok(false);
     }
@@ -157,18 +232,21 @@ fn look_up_now(lib: &Library, engine: &Engine, id: ProjectId) -> ProjectResult<b
         lib.project(id)?.set_anilist_looked()?;
         return Ok(false);
     };
+    embedder_ready(models, &cancel)?;
     let portraits = portraits(lib, engine, id, &cancel)?;
+    let looks = looks(lib, engine, id, &portraits, &cancel)?;
     if cancel.is_cancelled() {
         return Err(ProjectError::Cancelled);
     }
     let project = lib.project(id)?;
-    let (rev, names, merges) = project.anilist_suggest(&portraits)?;
+    let (rev, names, merges) = project.anilist_suggest_with(&portraits, looks.as_ref())?;
     log::info!(
-        "anilist: {} names and {} merges from {} portraits of {}",
+        "names: {} names and {} merges from {} portraits of {} ({})",
         names.len(),
         merges.len(),
         portraits.len(),
-        series.name
+        series.name,
+        project.name_source()?.map_or("no source", Source::name)
     );
     // Another series confirmed meanwhile: what was found is from the wrong
     // cast (the next look-up uses the new one).
@@ -281,8 +359,10 @@ pub async fn anilist_search_text(state: State<'_, AppState>, project_id: Project
     blocking(move || Ok(lib.anilist_search_text(project_id)?)).await
 }
 
-/// Search AniList for `text` — the text the person confirmed is sent as
-/// it is. Series the project rejected aren't among the results.
+/// Search AniList (anime), TVmaze (animated series) or Wikidata (animated
+/// films, with their Fandom wikis) for `text` — the text the person
+/// confirmed is sent as it is. Series the project rejected aren't among the
+/// results.
 #[tauri::command]
 #[specta::specta]
 pub async fn anilist_search(
@@ -321,19 +401,24 @@ pub async fn anilist_reject(state: State<'_, AppState>, project_id: ProjectId, m
 
 /// Match the confirmed series' cast portraits to the project's
 /// characters: every portrait is embedded by the engine (CCIP), then
-/// matched against the cast's faces. A portrait the engine fails on is
-/// left out (only when it fails on all of them is that an error); an engine
-/// that won't start, crashed or was cancelled stops the match at once. When
-/// `anilist.auto` is on, the names are given at once.
+/// matched against the cast's faces (animation: against pictures of them,
+/// see [`looks`]). A portrait the engine fails on is left out (only when it
+/// fails on all of them is that an error); an engine that won't start,
+/// crashed or was cancelled stops the match at once. When `anilist.auto` is
+/// on, the names are given at once.
 #[tauri::command]
 #[specta::specta]
 pub async fn anilist_suggest(state: State<'_, AppState>, project_id: ProjectId) -> AppResult<AniListSuggestions> {
     let lib = state.library.clone();
     let engine = state.engine.clone();
+    let models = state.models.clone();
     blocking(move || {
-        let portraits = portraits(&lib, &engine, project_id, &lib.anilist_token())?;
+        let cancel = lib.anilist_token();
+        embedder_ready(&models, &cancel)?;
+        let portraits = portraits(&lib, &engine, project_id, &cancel)?;
+        let looks = looks(&lib, &engine, project_id, &portraits, &cancel)?;
         let project = lib.project(project_id)?;
-        let (rev, names, merges) = project.anilist_suggest(&portraits)?;
+        let (rev, names, merges) = project.anilist_suggest_with(&portraits, looks.as_ref())?;
         let auto = project.anilist_auto()?;
         if auto {
             project.apply_anilist_suggestions(rev, &names, &merges)?;

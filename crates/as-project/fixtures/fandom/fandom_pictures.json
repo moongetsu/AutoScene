@@ -1,0 +1,187 @@
+{
+ "batchcomplete": "",
+ "query": {
+  "redirects": [
+   {
+    "from": "Akuma/Movie",
+    "to": "Butterflies/Movie"
+   },
+   {
+    "from": "Emilie Agreste/Movie",
+    "to": "Émilie Agreste/Movie"
+   }
+  ],
+  "pages": {
+   "415674": {
+    "pageid": 415674,
+    "ns": 0,
+    "title": "Adrien Agreste/Movie",
+    "thumbnail": {
+     "source": "https://static.wikia.nocookie.net/lady-bug/images/a/aa/Adrien_Agreste_%28Movie%29_Square.png/revision/latest/scale-to-width-down/600?cb=20230731224141",
+     "width": 600,
+     "height": 600
+    }
+   },
+   "415676": {
+    "pageid": 415676,
+    "ns": 0,
+    "title": "Alya Césaire/Movie",
+    "thumbnail": {
+     "source": "https://static.wikia.nocookie.net/lady-bug/images/2/28/Alya_C%C3%A9saire_%28Movie%29_Square.png/revision/latest/scale-to-width-down/600?cb=20230730101648",
+     "width": 600,
+     "height": 600
+    }
+   },
+   "415672": {
+    "pageid": 415672,
+    "ns": 0,
+    "title": "Chloé Bourgeois/Movie",
+    "thumbnail": {
+     "source": "https://static.wikia.nocookie.net/lady-bug/images/4/44/Chlo%C3%A9_Bourgeois_%28movie%29_Square.png/revision/latest/scale-to-width-down/600?cb=20230731224458",
+     "width": 600,
+     "height": 600
+    }
+   },
+   "415688": {
+    "pageid": 415688,
+    "ns": 0,
+    "title": "Gabriel Agreste/Movie",
+    "thumbnail": {
+     "source": "https://static.wikia.nocookie.net/lady-bug/images/2/20/Gabriel_Agreste_%28Movie%29_Square.png/revision/latest/scale-to-width-down/600?cb=20230731224210",
+     "width": 600,
+     "height": 600
+    }
+   },
+   "415673": {
+    "pageid": 415673,
+    "ns": 0,
+    "title": "Marinette Dupain-Cheng/Movie",
+    "thumbnail": {
+     "source": "https://static.wikia.nocookie.net/lady-bug/images/d/dc/Marinette_Dupain-Cheng_%28Movie%29_Square.png/revision/latest/scale-to-width-down/600?cb=20230731224034",
+     "width": 600,
+     "height": 600
+    }
+   },
+   "415690": {
+    "pageid": 415690,
+    "ns": 0,
+    "title": "Nathalie Sancoeur/Movie",
+    "thumbnail": {
+     "source": "https://static.wikia.nocookie.net/lady-bug/images/4/4b/Nathalie_Sancoeur_%28Movie%29_Square.png/revision/latest/scale-to-width-down/600?cb=20230730101232",
+     "width": 600,
+     "height": 600
+    }
+   },
+   "415675": {
+    "pageid": 415675,
+    "ns": 0,
+    "title": "Nino Lahiffe/Movie",
+    "thumbnail": {
+     "source": "https://static.wikia.nocookie.net/lady-bug/images/2/2e/Nino_Lahiffe_%28Movie%29_Square.png/revision/latest/scale-to-width-down/600?cb=20230802150352",
+     "width": 600,
+     "height": 600
+    }
+   },
+   "415699": {
+    "pageid": 415699,
+    "ns": 0,
+    "title": "Nooroo/Movie",
+    "thumbnail": {
+     "source": "https://static.wikia.nocookie.net/lady-bug/images/1/11/Nooroo_%28Movie%29_Square.png/revision/latest/scale-to-width-down/600?cb=20230731224353",
+     "width": 600,
+     "height": 600
+    }
+   },
+   "415698": {
+    "pageid": 415698,
+    "ns": 0,
+    "title": "Plagg/Movie",
+    "thumbnail": {
+     "source": "https://static.wikia.nocookie.net/lady-bug/images/5/53/Plagg_%28Movie%29_Square.png/revision/latest/scale-to-width-down/600?cb=20230731224324",
+     "width": 600,
+     "height": 600
+    }
+   },
+   "415479": {
+    "pageid": 415479,
+    "ns": 0,
+    "title": "Raymond",
+    "thumbnail": {
+     "source": "https://static.wikia.nocookie.net/lady-bug/images/1/1f/Raymond_Square.png/revision/latest/scale-to-width-down/600?cb=20230728233749",
+     "width": 600,
+     "height": 600
+    }
+   },
+   "415689": {
+    "pageid": 415689,
+    "ns": 0,
+    "title": "Sabine Cheng/Movie",
+    "thumbnail": {
+     "source": "https://static.wikia.nocookie.net/lady-bug/images/8/85/Sabine_Cheng_%28Movie%29_Square.png/revision/latest/scale-to-width-down/600?cb=20230803152630",
+     "width": 600,
+     "height": 600
+    }
+   },
+   "415671": {
+    "pageid": 415671,
+    "ns": 0,
+    "title": "Sabrina Raincomprix/Movie",
+    "thumbnail": {
+     "source": "https://static.wikia.nocookie.net/lady-bug/images/8/8b/Sabrina_Raincomprix_%28Movie%29_Square.png/revision/latest/scale-to-width-down/600?cb=20230731224540",
+     "width": 600,
+     "height": 600
+    }
+   },
+   "415697": {
+    "pageid": 415697,
+    "ns": 0,
+    "title": "Tikki/Movie",
+    "thumbnail": {
+     "source": "https://static.wikia.nocookie.net/lady-bug/images/d/da/Tikki_%28Movie%29_Square.png/revision/latest/scale-to-width-down/600?cb=20230731224310",
+     "width": 600,
+     "height": 600
+    }
+   },
+   "415683": {
+    "pageid": 415683,
+    "ns": 0,
+    "title": "Tom Dupain/Movie",
+    "thumbnail": {
+     "source": "https://static.wikia.nocookie.net/lady-bug/images/d/de/Tom_Dupain_%28Movie%29_Square.png/revision/latest/scale-to-width-down/600?cb=20230730134008",
+     "width": 600,
+     "height": 600
+    }
+   },
+   "415687": {
+    "pageid": 415687,
+    "ns": 0,
+    "title": "Wang Fu/Movie",
+    "thumbnail": {
+     "source": "https://static.wikia.nocookie.net/lady-bug/images/b/be/Wang_Fu_%28Movie%29_Square.png/revision/latest/scale-to-width-down/600?cb=20230802121055",
+     "width": 600,
+     "height": 600
+    }
+   },
+   "415747": {
+    "pageid": 415747,
+    "ns": 0,
+    "title": "Butterflies/Movie",
+    "thumbnail": {
+     "source": "https://static.wikia.nocookie.net/lady-bug/images/3/36/Akuma_%28Movie%29_Square.png/revision/latest/scale-to-width-down/600?cb=20230808172727",
+     "width": 600,
+     "height": 600
+    }
+   },
+   "415693": {
+    "pageid": 415693,
+    "ns": 0,
+    "title": "Émilie Agreste/Movie",
+    "thumbnail": {
+     "source": "https://static.wikia.nocookie.net/lady-bug/images/2/29/%C3%89milie_Agreste_%28Movie%29_Square.png/revision/latest/scale-to-width-down/600?cb=20241023173819",
+     "width": 600,
+     "height": 600
+    }
+   }
+  }
+ }
+}

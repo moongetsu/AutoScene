@@ -1,0 +1,151 @@
+[
+ {
+  "person": {
+   "id": 155335,
+   "name": "Cristina Valenzuela"
+  },
+  "character": {
+   "id": 1063644,
+   "url": "https://www.tvmaze.com/characters/1063644/miraculous-les-aventures-de-ladybug-et-chat-noir-marinette-dupain-cheng-ladybug",
+   "name": "Marinette Dupain-Cheng / Ladybug",
+   "image": {
+    "medium": "https://static.tvmaze.com/uploads/images/medium_portrait/535/1338734.jpg",
+    "original": "https://static.tvmaze.com/uploads/images/original_untouched/535/1338734.jpg"
+   }
+  },
+  "self": false,
+  "voice": true
+ },
+ {
+  "person": {
+   "id": 107439,
+   "name": "Bryce Papenbrook"
+  },
+  "character": {
+   "id": 1063645,
+   "url": "https://www.tvmaze.com/characters/1063645/miraculous-les-aventures-de-ladybug-et-chat-noir-adrien-agreste-cat-noir",
+   "name": "Adrien Agreste / Cat Noir",
+   "image": {
+    "medium": "https://static.tvmaze.com/uploads/images/medium_portrait/437/1093350.jpg",
+    "original": "https://static.tvmaze.com/uploads/images/original_untouched/437/1093350.jpg"
+   }
+  },
+  "self": false,
+  "voice": true
+ },
+ {
+  "person": {
+   "id": 106841,
+   "name": "Keith Silverstein"
+  },
+  "character": {
+   "id": 1063657,
+   "url": "https://www.tvmaze.com/characters/1063657/miraculous-les-aventures-de-ladybug-et-chat-noir-gabriel-agreste",
+   "name": "Gabriel Agreste",
+   "image": {
+    "medium": "https://static.tvmaze.com/uploads/images/medium_portrait/535/1338739.jpg",
+    "original": "https://static.tvmaze.com/uploads/images/original_untouched/535/1338739.jpg"
+   }
+  },
+  "self": false,
+  "voice": true
+ },
+ {
+  "person": {
+   "id": 371651,
+   "name": "Lauren Landa"
+  },
+  "character": {
+   "id": 1075945,
+   "url": "https://www.tvmaze.com/characters/1075945/miraculous-les-aventures-de-ladybug-et-chat-noir-sabrina-raincomprix",
+   "name": "Sabrina Raincomprix",
+   "image": {
+    "medium": "https://static.tvmaze.com/uploads/images/medium_portrait/535/1338742.jpg",
+    "original": "https://static.tvmaze.com/uploads/images/original_untouched/535/1338742.jpg"
+   }
+  },
+  "self": false,
+  "voice": true
+ },
+ {
+  "person": {
+   "id": 333952,
+   "name": "Cassandra Lee Morris"
+  },
+  "character": {
+   "id": 1075945,
+   "url": "https://www.tvmaze.com/characters/1075945/miraculous-les-aventures-de-ladybug-et-chat-noir-sabrina-raincomprix",
+   "name": "Sabrina Raincomprix",
+   "image": {
+    "medium": "https://static.tvmaze.com/uploads/images/medium_portrait/535/1338742.jpg",
+    "original": "https://static.tvmaze.com/uploads/images/original_untouched/535/1338742.jpg"
+   }
+  },
+  "self": false,
+  "voice": true
+ },
+ {
+  "person": {
+   "id": 14280,
+   "name": "Marieve Herington"
+  },
+  "character": {
+   "id": 1075945,
+   "url": "https://www.tvmaze.com/characters/1075945/miraculous-les-aventures-de-ladybug-et-chat-noir-sabrina-raincomprix",
+   "name": "Sabrina Raincomprix",
+   "image": {
+    "medium": "https://static.tvmaze.com/uploads/images/medium_portrait/535/1338742.jpg",
+    "original": "https://static.tvmaze.com/uploads/images/original_untouched/535/1338742.jpg"
+   }
+  },
+  "self": false,
+  "voice": true
+ },
+ {
+  "person": {
+   "id": 282510,
+   "name": "Mela Lee"
+  },
+  "character": {
+   "id": 1064071,
+   "url": "https://www.tvmaze.com/characters/1064071/miraculous-les-aventures-de-ladybug-et-chat-noir-tikki",
+   "name": "Tikki",
+   "image": {
+    "medium": "https://static.tvmaze.com/uploads/images/medium_portrait/444/1110550.jpg",
+    "original": "https://static.tvmaze.com/uploads/images/original_untouched/444/1110550.jpg"
+   }
+  },
+  "self": false,
+  "voice": true
+ },
+ {
+  "person": {
+   "id": 107439,
+   "name": "Bryce Papenbrook"
+  },
+  "character": {
+   "id": 1297321,
+   "url": "https://www.tvmaze.com/characters/1297321/miraculous-les-aventures-de-ladybug-et-chat-noir-copycat",
+   "name": "Copycat",
+   "image": {
+    "medium": "https://static.tvmaze.com/uploads/images/medium_portrait/535/1338962.jpg",
+    "original": "https://static.tvmaze.com/uploads/images/original_untouched/535/1338962.jpg"
+   }
+  },
+  "self": false,
+  "voice": true
+ },
+ {
+  "person": {
+   "id": 1,
+   "name": "Nobody"
+  },
+  "character": {
+   "id": 99,
+   "name": "  ",
+   "image": null
+  },
+  "self": false,
+  "voice": true
+ }
+]

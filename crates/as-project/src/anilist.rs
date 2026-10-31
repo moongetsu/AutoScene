@@ -31,7 +31,7 @@ use regex::Regex;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use crate::{Library, Project, ProjectError, ProjectResult};
+use crate::{Library, Project, ProjectError, ProjectResult, fandom, tvmaze};
 
 /// Project meta: the confirmed series first, then the rest of its sequel
 /// chain (AniList media ids, a JSON array).
@@ -54,6 +54,116 @@ pub const REFUSED: &str = "anilist.refused";
 /// not confirmed by the person: names from it are never given unasked.
 pub const PICKED: &str = "anilist.picked";
 
+/// Where a project's character names come from, by its footage: AniList
+/// for anime, TVmaze ([`crate::tvmaze`]) for an animated series, the film's
+/// Fandom wiki ([`crate::fandom`]) for an animated film. All are behind the
+/// one opt-in, and a project keeps what it decided about each apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Source {
+    AniList,
+    TvMaze,
+    Fandom,
+}
+
+impl Source {
+    /// Where names for footage `content` of a project of `kind` come from
+    /// (live action, mixed: nowhere).
+    pub fn of(content: as_api::ContentKind, kind: as_api::ProjectKind) -> Option<Self> {
+        match (content, kind) {
+            (as_api::ContentKind::Anime, _) => Some(Self::AniList),
+            (as_api::ContentKind::Animation, as_api::ProjectKind::Series) => Some(Self::TvMaze),
+            (as_api::ContentKind::Animation, as_api::ProjectKind::Movie) => Some(Self::Fandom),
+            (as_api::ContentKind::Live | as_api::ContentKind::Mixed, _) => None,
+        }
+    }
+
+    /// Whether a project's own faces were embedded the way this source's
+    /// portraits are (anime's, by CCIP): else their looks are made from
+    /// pictures of them (see [`Project::look_pictures`]).
+    pub fn faces_are_looks(self) -> bool {
+        matches!(self, Self::AniList)
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::AniList => "AniList",
+            Self::TvMaze => "TVmaze",
+            Self::Fandom => "Fandom",
+        }
+    }
+
+    fn keys(self) -> &'static Keys {
+        match self {
+            Self::AniList => &ANILIST_KEYS,
+            Self::TvMaze => &TVMAZE_KEYS,
+            Self::Fandom => &FANDOM_KEYS,
+        }
+    }
+}
+
+/// The project meta a source's decisions live in (see [`MEDIA`] and the
+/// rest for what each holds); ids in them are that source's.
+struct Keys {
+    media: &'static str,
+    rejected: &'static str,
+    auto: &'static str,
+    suggested: &'static str,
+    looked: &'static str,
+    refused: &'static str,
+    picked: &'static str,
+}
+
+const ANILIST_KEYS: Keys = Keys {
+    media: MEDIA,
+    rejected: REJECTED,
+    auto: AUTO,
+    suggested: SUGGESTED,
+    looked: LOOKED,
+    refused: REFUSED,
+    picked: PICKED,
+};
+
+const TVMAZE_KEYS: Keys = Keys {
+    media: "tvmaze.media",
+    rejected: "tvmaze.rejected",
+    auto: "tvmaze.auto",
+    suggested: "tvmaze.suggested",
+    looked: "tvmaze.looked",
+    refused: "tvmaze.refused",
+    picked: "tvmaze.picked",
+};
+
+/// Its media are films (Wikidata's `Q` numbers).
+const FANDOM_KEYS: Keys = Keys {
+    media: "fandom.media",
+    rejected: "fandom.rejected",
+    auto: "fandom.auto",
+    suggested: "fandom.suggested",
+    looked: "fandom.looked",
+    refused: "fandom.refused",
+    picked: "fandom.picked",
+};
+
+/// A database of a series' characters and their pictures: AniList or
+/// TVmaze. Its series are [`Media`] (a TVmaze show is a chain of one), its
+/// characters [`Character`]s.
+pub(crate) trait Names: Send + Sync {
+    /// Series matching `text` (sent as it is), best first.
+    fn search(&self, text: &str, cancel: &CancelToken) -> ProjectResult<Vec<Media>>;
+    fn media(&self, id: u32, cancel: &CancelToken) -> ProjectResult<Media>;
+    /// `root` and the series that share its cast, `root` first.
+    fn chain(&self, root: u32, cancel: &CancelToken) -> ProjectResult<Vec<Media>>;
+    /// The cast of every series in `ids`, each character once.
+    fn cast(&self, ids: &[u32], cancel: &CancelToken) -> ProjectResult<Vec<Character>>;
+    /// A character's picture in the library's cache, loaded into it first.
+    fn image(&self, c: &Character, cancel: &CancelToken) -> ProjectResult<Option<PathBuf>>;
+    /// Character `id`'s picture as embedded this session.
+    fn portrait(&self, id: u32) -> Option<Vec<f32>>;
+    fn keep_portrait(&self, id: u32, embedding: &[f32], cancel: &CancelToken);
+    /// Forget everything: what was read, and every cached picture.
+    fn forget(&self) -> std::io::Result<()>;
+}
+
 const API: &str = "https://graphql.anilist.co";
 /// At least this long between two requests to the API: 24 a minute, under
 /// the 30 AniList allows while it is degraded.
@@ -64,9 +174,9 @@ const IMAGE_GAP: Duration = Duration::from_millis(250);
 /// are left: its limit counts a minute.
 pub(crate) const MIN_PAUSE: Duration = Duration::from_secs(60);
 /// The longest pause a `Retry-After` can ask for.
-const MAX_PAUSE: Duration = Duration::from_secs(15 * 60);
+pub(crate) const MAX_PAUSE: Duration = Duration::from_secs(15 * 60);
 /// How often one request is tried while AniList asks to wait.
-const ATTEMPTS: usize = 3;
+pub(crate) const ATTEMPTS: usize = 3;
 /// Search results asked for.
 const RESULTS: u32 = 10;
 /// Characters a page (AniList's most).
@@ -137,7 +247,7 @@ static YEAR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[(\[]((?:19|20)\d{2
 
 /// `s` for comparing titles: lower case, letters and digits, one space
 /// between words (`Journey's End` → `journeys end`).
-fn title_key(s: &str) -> String {
+pub(crate) fn title_key(s: &str) -> String {
     let s: String = s
         .to_lowercase()
         .chars()
@@ -247,6 +357,11 @@ pub struct Character {
     pub alternative: Vec<String>,
     /// AniList's large image of them.
     pub image: Option<String>,
+    /// The character this one is another self of (their first self's id),
+    /// where a source shows a hero and their everyday self apart (see
+    /// [`crate::fandom`]): selves of one character don't compete for a group.
+    #[serde(default)]
+    pub kin: Option<u32>,
 }
 
 /// A character with their image in the library's cache (`None`: AniList has
@@ -433,7 +548,7 @@ pub(crate) trait Clock: Send + Sync {
     fn sleep(&self, d: Duration, cancel: &CancelToken);
 }
 
-struct SystemClock;
+pub(crate) struct SystemClock;
 
 impl Clock for SystemClock {
     fn now(&self) -> Instant {
@@ -528,18 +643,24 @@ pub(crate) trait Transport: Send + Sync {
     fn post(&self, body: &str) -> Result<Reply, String>;
     /// GET an image.
     fn get(&self, url: &str) -> Result<Reply, String>;
+    /// GET a picture for a page of `referer` (an image server that serves
+    /// only those).
+    fn get_from(&self, url: &str, referer: &str) -> Result<Reply, String> {
+        let _ = referer;
+        self.get(url)
+    }
 }
 
-struct Ureq(ureq::Agent);
+pub(crate) struct Ureq(ureq::Agent);
 
 impl Ureq {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let agent = ureq::Agent::config_builder()
             .https_only(true)
             // A 429 is read like any answer: its headers say how long to wait.
             .http_status_as_error(false)
             .timeout_global(Some(Duration::from_secs(30)))
-            .user_agent(concat!("AutoScene/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("AutoScene/", env!("CARGO_PKG_VERSION"), " (+https://github.com/tcmmi/AutoScene)"))
             .build()
             .into();
         Self(agent)
@@ -570,6 +691,10 @@ impl Transport for Ureq {
 
     fn get(&self, url: &str) -> Result<Reply, String> {
         Self::reply(self.0.get(url).call().map_err(|e| e.to_string())?, MAX_IMAGE)
+    }
+
+    fn get_from(&self, url: &str, referer: &str) -> Result<Reply, String> {
+        Self::reply(self.0.get(url).header("Referer", referer).call().map_err(|e| e.to_string())?, MAX_IMAGE)
     }
 }
 
@@ -608,7 +733,7 @@ fn busy() -> ProjectError {
 }
 
 /// `Cancelled` once `cancel` is (the opt-in went off, say).
-fn going(cancel: &CancelToken) -> ProjectResult<()> {
+pub(crate) fn going(cancel: &CancelToken) -> ProjectResult<()> {
     if cancel.is_cancelled() { Err(ProjectError::Cancelled) } else { Ok(()) }
 }
 
@@ -797,13 +922,7 @@ impl AniList {
             tracing::warn!(character = c.id, "anilist: the image isn't a picture");
             return Ok(None);
         };
-        going(cancel)?;
-        std::fs::create_dir_all(&self.dir)?;
-        let path = self.dir.join(format!("{}.{ext}", c.id));
-        let part = self.dir.join(format!("{}.{ext}.part", c.id));
-        std::fs::write(&part, &reply.body)?;
-        std::fs::rename(&part, &path)?;
-        Ok(Some(path))
+        Ok(Some(store_picture(&self.dir, c.id, ext, &reply.body, cancel)?))
     }
 
     /// A character's cached image.
@@ -823,6 +942,84 @@ impl AniList {
             self.portraits.lock().insert(id, embedding.to_vec());
         }
     }
+}
+
+impl Names for AniList {
+    fn search(&self, text: &str, cancel: &CancelToken) -> ProjectResult<Vec<Media>> {
+        AniList::search(self, text, cancel)
+    }
+
+    fn media(&self, id: u32, cancel: &CancelToken) -> ProjectResult<Media> {
+        AniList::media(self, id, cancel)
+    }
+
+    fn chain(&self, root: u32, cancel: &CancelToken) -> ProjectResult<Vec<Media>> {
+        AniList::chain(self, root, cancel)
+    }
+
+    fn cast(&self, ids: &[u32], cancel: &CancelToken) -> ProjectResult<Vec<Character>> {
+        AniList::cast(self, ids, cancel)
+    }
+
+    fn image(&self, c: &Character, cancel: &CancelToken) -> ProjectResult<Option<PathBuf>> {
+        AniList::image(self, c, cancel)
+    }
+
+    fn portrait(&self, id: u32) -> Option<Vec<f32>> {
+        AniList::portrait(self, id)
+    }
+
+    fn keep_portrait(&self, id: u32, embedding: &[f32], cancel: &CancelToken) {
+        AniList::keep_portrait(self, id, embedding, cancel)
+    }
+
+    fn forget(&self) -> std::io::Result<()> {
+        AniList::forget(self)
+    }
+}
+
+/// The error for footage no one names (live action, mixed).
+fn no_source() -> ProjectError {
+    ProjectError::Invalid("Names are looked up for anime and animation only.".into())
+}
+
+/// Which file a picture is: its path, when it was written and its size.
+pub(crate) type PictureKey = (PathBuf, Option<std::time::SystemTime>, u64);
+
+fn picture_key(path: &Path) -> Option<PictureKey> {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((path.to_path_buf(), meta.modified().ok(), meta.len()))
+}
+
+/// Keep a downloaded picture as `dir/<id>.<ext>`: written beside it under
+/// a name of its own first (two look-ups may load one picture at once),
+/// then moved in place — one already there is as good. Not once `cancel`
+/// is (the opt-in went off meanwhile: nothing stays behind).
+pub(crate) fn store_picture(
+    dir: &Path,
+    id: u32,
+    ext: &str,
+    body: &[u8],
+    cancel: &CancelToken,
+) -> ProjectResult<PathBuf> {
+    static PARTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    going(cancel)?;
+    std::fs::create_dir_all(dir)?;
+    let path = dir.join(format!("{id}.{ext}"));
+    let n = PARTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let part = dir.join(format!("{id}.{ext}.{}-{n}.part", std::process::id()));
+    std::fs::write(&part, body)?;
+    if let Err(e) = std::fs::rename(&part, &path) {
+        let _ = std::fs::remove_file(&part);
+        if !path.is_file() {
+            return Err(e.into());
+        }
+    }
+    if cancel.is_cancelled() {
+        let _ = std::fs::remove_file(&path);
+        return Err(ProjectError::Cancelled);
+    }
+    Ok(path)
 }
 
 fn not_on_anilist(id: u32) -> ProjectError {
@@ -868,6 +1065,7 @@ fn character(e: CastEdge, asked: Role) -> Option<Character> {
         native,
         alternative: name.alternative.into_iter().filter_map(nonempty).collect(),
         image: nonempty(node.image.and_then(|i| i.large)),
+        kin: None,
     })
 }
 
@@ -878,7 +1076,7 @@ fn on_image_server(url: &str) -> bool {
     host == "anilist.co" || host.ends_with(".anilist.co")
 }
 
-fn image_ext(url: &str, content_type: Option<&str>) -> Option<&'static str> {
+pub(crate) fn image_ext(url: &str, content_type: Option<&str>) -> Option<&'static str> {
     let by_type = match content_type.map(|t| t.split(';').next().unwrap_or_default().trim().to_ascii_lowercase()) {
         Some(t) if t == "image/png" => Some("png"),
         Some(t) if t == "image/jpeg" || t == "image/jpg" => Some("jpg"),
@@ -904,6 +1102,24 @@ fn image_ext(url: &str, content_type: Option<&str>) -> Option<&'static str> {
 // ---------------------------------------------------------------------------
 
 impl Project {
+    /// Where this project's character names come from, by its footage and
+    /// whether it is a film (`None`: live action and mixed footage are named
+    /// by no one).
+    pub fn name_source(&self) -> ProjectResult<Option<Source>> {
+        let kind = self.db().meta("kind")?.unwrap_or_default();
+        let kind = serde_json::from_value(serde_json::Value::String(kind)).unwrap_or(as_api::ProjectKind::Series);
+        Ok(Source::of(self.content()?, kind))
+    }
+
+    /// The meta this project keeps its decisions about its names in; an
+    /// error for footage no one names.
+    fn keys(&self) -> ProjectResult<&'static Keys> {
+        match self.name_source()? {
+            Some(source) => Ok(source.keys()),
+            None => Err(no_source()),
+        }
+    }
+
     fn anilist_ids(&self, key: &str) -> ProjectResult<Vec<u32>> {
         Ok(self.db().meta(key)?.and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default())
     }
@@ -918,59 +1134,61 @@ impl Project {
     /// The confirmed series first, then the rest of its chain (empty: none
     /// confirmed).
     pub fn anilist_media(&self) -> ProjectResult<Vec<u32>> {
-        self.anilist_ids(MEDIA)
+        self.anilist_ids(self.keys()?.media)
     }
 
     /// Series the person said aren't this one.
     pub fn anilist_rejected(&self) -> ProjectResult<Vec<u32>> {
-        self.anilist_ids(REJECTED)
+        self.anilist_ids(self.keys()?.rejected)
     }
 
     /// Whether names from AniList are given without asking (off: only
     /// suggested).
     pub fn anilist_auto(&self) -> ProjectResult<bool> {
-        Ok(self.db().meta(AUTO)?.and_then(|v| serde_json::from_str(&v).ok()).unwrap_or(false))
+        Ok(self.db().meta(self.keys()?.auto)?.and_then(|v| serde_json::from_str(&v).ok()).unwrap_or(false))
     }
 
     pub fn set_anilist_auto(&self, on: bool) -> ProjectResult<()> {
-        Ok(self.db().set_meta(AUTO, if on { "true" } else { "false" })?)
+        Ok(self.db().set_meta(self.keys()?.auto, if on { "true" } else { "false" })?)
     }
 
     /// Keep `chain` (the confirmed series first) as this project's series,
     /// confirmed by the person or `picked` by the app from the title; none
     /// of it stays rejected.
     pub fn confirm_anilist_media(&self, chain: &[u32], picked: bool) -> ProjectResult<()> {
-        let rejected: Vec<u32> = self.anilist_rejected()?.into_iter().filter(|id| !chain.contains(id)).collect();
-        self.set_anilist_ids(REJECTED, &rejected)?;
+        let k = self.keys()?;
+        let rejected: Vec<u32> = self.anilist_ids(k.rejected)?.into_iter().filter(|id| !chain.contains(id)).collect();
+        self.set_anilist_ids(k.rejected, &rejected)?;
         // Names found in another series' cast don't wait any longer.
-        if self.anilist_media()? != chain {
-            self.set_anilist_suggested(None)?;
+        if self.anilist_ids(k.media)? != chain {
+            self.db().delete_meta(k.suggested)?;
         }
         if picked {
-            self.db().set_meta(PICKED, "true")?;
+            self.db().set_meta(k.picked, "true")?;
         } else {
-            self.db().delete_meta(PICKED)?;
+            self.db().delete_meta(k.picked)?;
         }
-        self.set_anilist_ids(MEDIA, chain)
+        self.set_anilist_ids(k.media, chain)
     }
 
     /// Whether the series was picked by the app from the title, not
     /// confirmed by the person.
     pub fn anilist_picked(&self) -> ProjectResult<bool> {
-        Ok(self.db().meta(PICKED)?.as_deref() == Some("true"))
+        Ok(self.db().meta(self.keys()?.picked)?.as_deref() == Some("true"))
     }
 
     /// Say series `id` isn't this one (and forget it if it was confirmed).
     pub fn reject_anilist_media(&self, id: u32) -> ProjectResult<()> {
-        let mut rejected = self.anilist_rejected()?;
+        let k = self.keys()?;
+        let mut rejected = self.anilist_ids(k.rejected)?;
         if !rejected.contains(&id) {
             rejected.push(id);
         }
-        self.set_anilist_ids(REJECTED, &rejected)?;
-        if self.anilist_media()?.contains(&id) {
-            self.set_anilist_ids(MEDIA, &[])?;
-            self.db().delete_meta(PICKED)?;
-            self.set_anilist_suggested(None)?;
+        self.set_anilist_ids(k.rejected, &rejected)?;
+        if self.anilist_ids(k.media)?.contains(&id) {
+            self.set_anilist_ids(k.media, &[])?;
+            self.db().delete_meta(k.picked)?;
+            self.db().delete_meta(k.suggested)?;
         }
         Ok(())
     }
@@ -980,7 +1198,9 @@ impl Project {
     /// merges of characters both still shown. `None` without any, or once
     /// another series is confirmed.
     pub fn anilist_suggested(&self) -> ProjectResult<Option<Suggested>> {
-        let Some(mut s) = self.db().meta(SUGGESTED)?.and_then(|v| serde_json::from_str::<Suggested>(&v).ok()) else {
+        let Some(mut s) =
+            self.db().meta(self.keys()?.suggested)?.and_then(|v| serde_json::from_str::<Suggested>(&v).ok())
+        else {
             return Ok(None);
         };
         if s.media != self.anilist_media()? {
@@ -1005,24 +1225,25 @@ impl Project {
 
     /// Keep `s` waiting for the person's yes (`None`: nothing waits).
     pub fn set_anilist_suggested(&self, s: Option<&Suggested>) -> ProjectResult<()> {
+        let key = self.keys()?.suggested;
         match s {
-            Some(s) => Ok(self.db().set_meta(SUGGESTED, &serde_json::to_string(s).expect("suggestions serialize"))?),
-            None => Ok(self.db().delete_meta(SUGGESTED)?),
+            Some(s) => Ok(self.db().set_meta(key, &serde_json::to_string(s).expect("suggestions serialize"))?),
+            None => Ok(self.db().delete_meta(key)?),
         }
     }
 
     /// Whether the app looked the names up by itself.
     pub fn anilist_looked(&self) -> ProjectResult<bool> {
-        Ok(self.db().meta(LOOKED)?.as_deref() == Some("true"))
+        Ok(self.db().meta(self.keys()?.looked)?.as_deref() == Some("true"))
     }
 
     pub fn set_anilist_looked(&self) -> ProjectResult<()> {
-        Ok(self.db().set_meta(LOOKED, "true")?)
+        Ok(self.db().set_meta(self.keys()?.looked, "true")?)
     }
 
     /// Names the person left out: `(character, AniList character)`.
     pub fn anilist_refused(&self) -> ProjectResult<Vec<(as_core::CharacterId, u32)>> {
-        Ok(self.db().meta(REFUSED)?.and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default())
+        Ok(self.db().meta(self.keys()?.refused)?.and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default())
     }
 
     /// Give the waiting names and merges ([`Self::anilist_suggested`]) the
@@ -1038,10 +1259,12 @@ impl Project {
         merge: &[(as_core::CharacterId, as_core::CharacterId)],
         left_out: &[(as_core::CharacterId, u32)],
     ) -> ProjectResult<(usize, usize)> {
+        let k = self.keys()?;
         let Some(s) = self.anilist_suggested()? else {
             return Err(ProjectError::NotReady("These names no longer wait: the series or the cast changed.".into()));
         };
-        let mut refused = self.anilist_refused()?;
+        let mut refused: Vec<(as_core::CharacterId, u32)> =
+            self.db().meta(k.refused)?.and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default();
         let waiting = |pair: &(as_core::CharacterId, u32)| {
             s.names.iter().any(|n| (n.character_id, n.anilist_id) == *pair)
                 || s.merges.iter().any(|m| (m.from, m.anilist_id) == *pair)
@@ -1051,7 +1274,7 @@ impl Project {
                 refused.push(*pair);
             }
         }
-        self.db().set_meta(REFUSED, &serde_json::to_string(&refused).expect("pairs serialize"))?;
+        self.db().set_meta(k.refused, &serde_json::to_string(&refused).expect("pairs serialize"))?;
         let mut merged = 0;
         for m in s.merges.iter().filter(|m| merge.contains(&(m.from, m.into))) {
             self.cast_edit(&as_api::CastEdit::Merge { from: m.from, into: m.into })?;
@@ -1064,7 +1287,7 @@ impl Project {
                 named += 1;
             }
         }
-        self.set_anilist_suggested(None)?;
+        self.db().delete_meta(k.suggested)?;
         Ok((merged, named))
     }
 }
@@ -1142,21 +1365,23 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
 
 /// The portrait that names a character whose look scores `scores` against
 /// the portraits of `roles` (`strongest`: each portrait's best score over
-/// every character): the best one at the bar, or among the look-alikes
-/// within [`LOOK_ALIKES`] of it the one with the biggest part when no
-/// other shares it and no other character matches it better. When another
+/// every character): the best one at the bar — also when every look-alike
+/// within [`LOOK_ALIKES`] of it is another self of the same character
+/// (`kin`: whose self each portrait is; Marinette and Ladybug) — or among
+/// the look-alikes the one with the biggest part when no other shares it
+/// and no other character matches it better. When another
 /// does, this one is either a look-alike of that part (a father scoring
 /// high on his son's portrait) or a split of the same person: it is named
 /// only when its own best portrait is the one look-alike left. `None` when
 /// nothing is close enough or the look-alikes can't be told apart.
-fn best_portrait(scores: &[f32], roles: &[Role], strongest: &[f32]) -> Option<(usize, f32)> {
+fn best_portrait(scores: &[f32], roles: &[Role], kin: &[u32], strongest: &[f32]) -> Option<(usize, f32)> {
     let (best, top) =
         scores.iter().copied().enumerate().filter(|(_, s)| s.is_finite()).max_by(|a, b| a.1.total_cmp(&b.1))?;
     if top < SUGGEST_MIN_COS {
         return None;
     }
     let close: Vec<usize> = (0..scores.len()).filter(|&i| scores[i] >= top - LOOK_ALIKES).collect();
-    if close.len() == 1 {
+    if close.iter().all(|&i| kin[i] == kin[best]) {
         return Some((best, top));
     }
     let part = close.iter().map(|&i| roles[i]).min()?;
@@ -1230,6 +1455,77 @@ fn look(faces: &[as_db::OwnFace], dim: usize) -> Option<Vec<f32>> {
     (n > 0.0 && n.is_finite()).then(|| sum.into_iter().map(|x| x / n).collect())
 }
 
+/// How many of a character's sharpest faces show their look to the
+/// portraits' embedder where their faces were found by another (animation:
+/// see [`Project::look_pictures`]). On the Miraculous film (CCIP looks
+/// against TVmaze's pictures), 3 left the heroine's biggest group — some of
+/// its sharpest faces someone else's — unnamed and unmerged; 10 named it and
+/// merged her four other groups into it; 16 changed nothing more.
+pub const LOOK_FACES: usize = 10;
+
+/// A picture of a character and its weight in their look (see [`look_of`]).
+pub type Picture = (PathBuf, f32);
+/// Each character's pictures.
+pub type CharacterPictures = Vec<(as_core::CharacterId, Vec<Picture>)>;
+
+/// The characters' looks as the portraits' embedder sees them (see
+/// [`Project::look_pictures`]), made at cast revision `rev`.
+#[derive(Clone, Debug, Default)]
+pub struct Looks {
+    pub rev: i64,
+    pub of: HashMap<as_core::CharacterId, Vec<f32>>,
+}
+
+/// A look from embedded pictures (`(embedding, weight)`): their weighted
+/// mean, unit length; pictures of another length than the first are left
+/// out (`None` without any).
+pub fn look_of(pictures: &[(Vec<f32>, f32)]) -> Option<Vec<f32>> {
+    let dim = pictures.first()?.0.len();
+    let mut sum = vec![0.0f32; dim];
+    for (e, w) in pictures.iter().filter(|(e, w)| e.len() == dim && w.is_finite() && *w > 0.0) {
+        sum.iter_mut().zip(e).for_each(|(s, x)| *s += w * x);
+    }
+    let n = sum.iter().map(|x| x * x).sum::<f32>().sqrt();
+    (n > 0.0 && n.is_finite()).then(|| sum.into_iter().map(|x| x / n).collect())
+}
+
+impl Project {
+    /// The pictures that show each shown, unnamed character's look to the
+    /// portraits' embedder when their faces were found by another one
+    /// (animation): the thumbnails of their [`LOOK_FACES`] sharpest faces,
+    /// weighted by quality, and their cover's portrait once it is made
+    /// (weight 1); with the cast revision they were read at ([`Looks`]).
+    /// The engine embeds them; [`look_of`] makes the look.
+    pub fn look_pictures(&self) -> ProjectResult<(i64, CharacterPictures)> {
+        let rev = self.db().cast_rev()?;
+        let mut out = Vec::new();
+        for c in self.db().characters()? {
+            if c.hidden || c.name.is_some() {
+                continue;
+            }
+            let mut faces = self.db().tracks(as_api::TrackFilter::Character(c.id))?;
+            faces.sort_by(|a, b| {
+                b.quality.total_cmp(&a.quality).then(b.face_h.total_cmp(&a.face_h)).then(a.id.cmp(&b.id))
+            });
+            let mut pictures: Vec<(PathBuf, f32)> = faces
+                .iter()
+                .take(LOOK_FACES)
+                .map(|t| (self.thumb_path(t.media_id, t.id), t.quality.max(1e-3)))
+                .filter(|(p, _)| p.is_file())
+                .collect();
+            if let Some((cover, _)) = c.cover
+                && let Some(portrait) = self.portrait_file(cover)?
+            {
+                pictures.push((portrait, 1.0));
+            }
+            if !pictures.is_empty() {
+                out.push((c.id, pictures));
+            }
+        }
+        Ok((rev, out))
+    }
+}
+
 impl Project {
     /// Match AniList portraits (already embedded — the engine embeds, this
     /// matches) to this project's cast: one name suggestion per portrait,
@@ -1241,8 +1537,25 @@ impl Project {
         &self,
         portraits: &[(CastMember, Vec<f32>)],
     ) -> ProjectResult<(i64, Vec<NameSuggestion>, Vec<MergeProposal>)> {
-        let rev = self.db().cast_rev()?;
+        self.anilist_suggest_with(portraits, None)
+    }
+
+    /// [`Self::anilist_suggest`] with the characters' `looks` given where
+    /// their own faces weren't embedded the way the portraits were; a
+    /// character without one there has none. The match is made on the cast
+    /// revision the looks were made at: applying it after a change since
+    /// fails.
+    pub fn anilist_suggest_with(
+        &self,
+        portraits: &[(CastMember, Vec<f32>)],
+        looks: Option<&Looks>,
+    ) -> ProjectResult<(i64, Vec<NameSuggestion>, Vec<MergeProposal>)> {
+        let rev = match looks {
+            Some(looks) => looks.rev,
+            None => self.db().cast_rev()?,
+        };
         let roles: Vec<Role> = portraits.iter().map(|(m, _)| m.character.role).collect();
+        let kin: Vec<u32> = portraits.iter().map(|(m, _)| m.character.kin.unwrap_or(m.character.id)).collect();
         let Some(dim) = portraits.first().map(|(_, emb)| emb.len()) else {
             return Ok((rev, Vec::new(), Vec::new()));
         };
@@ -1252,7 +1565,11 @@ impl Project {
             if c.hidden || c.name.is_some() {
                 continue;
             }
-            let Some(look) = look(&self.db().own_faces(c.id)?, dim) else { continue };
+            let look = match looks {
+                Some(looks) => looks.of.get(&c.id).filter(|l| l.len() == dim).cloned(),
+                None => look(&self.db().own_faces(c.id)?, dim),
+            };
+            let Some(look) = look else { continue };
             let scores: Vec<f32> = portraits.iter().map(|(_, emb)| cosine(&look, emb)).collect();
             cast.push((c.id, look, scores));
         }
@@ -1261,7 +1578,7 @@ impl Project {
             .collect();
         let mut matches = Vec::new();
         for (character, look, scores) in cast {
-            if let Some((portrait, score)) = best_portrait(&scores, &roles, &strongest) {
+            if let Some((portrait, score)) = best_portrait(&scores, &roles, &kin, &strongest) {
                 matches.push(Match { character, portrait, score, look });
             }
         }
@@ -1306,8 +1623,23 @@ impl Library {
         if self.names_from_anilist() {
             Ok(())
         } else {
-            Err(ProjectError::Invalid("Turn on names from AniList in Settings first.".into()))
+            Err(ProjectError::Invalid("Turn on character names in Settings first.".into()))
         }
+    }
+
+    /// Where `source`'s names are read.
+    pub(crate) fn names(&self, source: Source) -> &dyn Names {
+        match source {
+            Source::AniList => self.anilist(),
+            Source::TvMaze => self.tvmaze(),
+            Source::Fandom => self.fandom(),
+        }
+    }
+
+    /// Where project `id`'s names come from (see [`Project::name_source`]);
+    /// an error for footage no one names.
+    pub fn name_source(&self, id: ProjectId) -> ProjectResult<Source> {
+        self.project(id)?.name_source()?.ok_or_else(no_source)
     }
 
     /// The search text project `id`'s title suggests (nothing is sent).
@@ -1315,13 +1647,16 @@ impl Library {
         Ok(search_text(&self.summary(id)?.title))
     }
 
-    /// Look `text` up on AniList for project `id` (the text the person
-    /// confirmed: it is sent as it is). Series the project rejected aren't
-    /// among the results.
+    /// Look `text` up for project `id` where its names come from (the text
+    /// the person confirmed: it is sent as it is). Series the project
+    /// rejected aren't among the results.
     pub fn anilist_search(&self, id: ProjectId, text: &str, cancel: &CancelToken) -> ProjectResult<Vec<Media>> {
         self.anilist_allowed()?;
-        let rejected = self.project(id)?.anilist_rejected()?;
-        let found = self.anilist().search(text, cancel)?;
+        let project = self.project(id)?;
+        let source = project.name_source()?.ok_or_else(no_source)?;
+        let rejected = project.anilist_rejected()?;
+        drop(project);
+        let found = self.names(source).search(text, cancel)?;
         Ok(found.into_iter().filter(|m| !rejected.contains(&m.id)).collect())
     }
 
@@ -1329,8 +1664,13 @@ impl Library {
     /// kept. Returns the chain, `media` first.
     pub fn anilist_confirm(&self, id: ProjectId, media: u32, cancel: &CancelToken) -> ProjectResult<Vec<Media>> {
         self.anilist_allowed()?;
+        let source = self.name_source(id)?;
+        let chain = self.names(source).chain(media, cancel)?;
         let project = self.project(id)?;
-        let chain = self.anilist().chain(media, cancel)?;
+        // Another footage was set meanwhile: this series isn't its source's.
+        if project.name_source()? != Some(source) {
+            return Err(ProjectError::NotReady("The footage changed meanwhile; search again.".into()));
+        }
         project.confirm_anilist_media(&chain.iter().map(|m| m.id).collect::<Vec<_>>(), false)?;
         Ok(chain)
     }
@@ -1340,33 +1680,37 @@ impl Library {
         self.project(id)?.reject_anilist_media(media)
     }
 
-    /// Whether project `id` is one AniList names: the opt-in is on, it was
-    /// made as anime, and someone shown is still unnamed.
+    /// Whether project `id` is one AniList, TVmaze or Fandom names: the
+    /// opt-in is on, it was made as anime or animation, and someone shown is
+    /// still unnamed.
     pub fn anilist_wanted(&self, id: ProjectId) -> ProjectResult<bool> {
         if !self.names_from_anilist() {
             return Ok(false);
         }
         let project = self.project(id)?;
-        if project.content()? != as_api::ContentKind::Anime {
+        if project.name_source()?.is_none() {
             return Ok(false);
         }
         Ok(project.db().characters()?.iter().any(|c| !c.hidden && c.name.is_none()))
     }
 
-    /// Project `id`'s series on AniList, found without asking: the one
-    /// confirmed, or else the one its title plainly names ([`pick_series`]),
-    /// then kept with its sequel chain (as picked by the app, see
-    /// [`PICKED`]). `None` when none plainly is (the person searches by hand
-    /// then). The project isn't held open while AniList answers.
+    /// Project `id`'s series (or film) where its names come from, found
+    /// without asking: the one confirmed, or else the one its title plainly
+    /// names ([`pick_series`], for a film [`fandom::pick_film`]), then kept
+    /// with its sequel chain (as picked by the app, see [`PICKED`]). `None`
+    /// when none plainly is (the person searches by hand then). The project
+    /// isn't held open while the source answers.
     pub fn anilist_find_series(&self, id: ProjectId, cancel: &CancelToken) -> ProjectResult<Option<Series>> {
         self.anilist_allowed()?;
+        let source = self.name_source(id)?;
+        let names = self.names(source);
         let confirmed = |lib: &Self| -> ProjectResult<Option<Series>> {
             let project = lib.project(id)?;
             let media = project.anilist_media()?;
             let picked = project.anilist_picked()?;
             drop(project);
             let Some(&root) = media.first() else { return Ok(None) };
-            Ok(Some(Series { name: lib.anilist().media(root, cancel)?.name(), media, picked }))
+            Ok(Some(Series { name: names.media(root, cancel)?.name(), media, picked }))
         };
         if let Some(series) = confirmed(self)? {
             return Ok(Some(series));
@@ -1378,16 +1722,36 @@ impl Library {
         }
         let rejected = self.project(id)?.anilist_rejected()?;
         // Picked among all the answers: with the turned-down ones left out,
-        // the next answer would be taken for the title's.
-        let found = self.anilist().search(&text, cancel)?;
-        let Some(media) = pick_series(&title, &found) else {
-            tracing::info!(text, "anilist: no series plainly matches the title");
+        // the next answer would be taken for the title's. TVmaze's answers
+        // are any series: only an animated one is one this project is.
+        let pick = |text: &str| -> ProjectResult<Option<Media>> {
+            let mut found = names.search(text, cancel)?;
+            if source == Source::TvMaze {
+                found.retain(|m| m.format.as_deref() == Some(tvmaze::ANIMATION));
+            }
+            Ok(match source {
+                Source::Fandom => fandom::pick_film(text, &found),
+                Source::AniList | Source::TvMaze => pick_series(&title, &found),
+            }
+            .cloned())
+        };
+        let mut picked = pick(&text)?;
+        // A film's file name often ends in its year (`Toy.Story.1995`): what
+        // its title isn't, unless the title holds it (`Blade Runner 2049`).
+        if picked.is_none()
+            && source == Source::Fandom
+            && let Some(short) = fandom::without_year(&text)
+        {
+            picked = pick(&short)?;
+        }
+        let Some(media) = picked else {
+            tracing::info!(text, source = source.name(), "names: no series plainly matches the title");
             return Ok(None);
         };
-        let chain = self.anilist().chain(media.id, cancel)?;
+        let chain = names.chain(media.id, cancel)?;
         // Another season of a series the person turned down is still it.
         if chain.iter().any(|m| rejected.contains(&m.id)) {
-            tracing::info!(series = media.id, "anilist: the title's series was turned down");
+            tracing::info!(series = media.id, source = source.name(), "names: the title's series was turned down");
             return Ok(None);
         }
         going(cancel)?;
@@ -1395,9 +1759,19 @@ impl Library {
         if let Some(series) = confirmed(self)? {
             return Ok(Some(series));
         }
+        let project = self.project(id)?;
+        // Another footage was set meanwhile: this series isn't its source's.
+        if project.name_source()? != Some(source) {
+            return Ok(None);
+        }
         let ids: Vec<u32> = chain.iter().map(|m| m.id).collect();
-        self.project(id)?.confirm_anilist_media(&ids, true)?;
-        tracing::info!(series = media.id, chain = chain.len(), "anilist: series found by the title");
+        project.confirm_anilist_media(&ids, true)?;
+        tracing::info!(
+            series = media.id,
+            chain = chain.len(),
+            source = source.name(),
+            "names: series found by the title"
+        );
         Ok(Some(Series { name: media.name(), media: ids, picked: true }))
     }
 
@@ -1428,15 +1802,15 @@ impl Library {
         self.project(id)?.set_anilist_suggested(None)
     }
 
-    /// AniList character `id`'s portrait as embedded this session.
-    pub fn anilist_portrait(&self, id: u32) -> Option<Vec<f32>> {
-        self.anilist().portrait(id)
+    /// `source`'s character `id`'s portrait as embedded this session.
+    pub fn anilist_portrait(&self, source: Source, id: u32) -> Option<Vec<f32>> {
+        self.names(source).portrait(id)
     }
 
-    /// Keep AniList character `id`'s embedded portrait for the session (not
-    /// once `cancel` is).
-    pub fn keep_anilist_portrait(&self, id: u32, embedding: &[f32], cancel: &CancelToken) {
-        self.anilist().keep_portrait(id, embedding, cancel);
+    /// Keep `source`'s character `id`'s embedded portrait for the session
+    /// (not once `cancel` is).
+    pub fn keep_anilist_portrait(&self, source: Source, id: u32, embedding: &[f32], cancel: &CancelToken) {
+        self.names(source).keep_portrait(id, embedding, cancel);
     }
 
     /// Give project `id`'s characters the suggested names (see
@@ -1454,15 +1828,19 @@ impl Library {
         self.project(id)?.apply_anilist_suggestions(rev, names, merges)
     }
 
-    /// The main and supporting cast of project `id`'s confirmed series, their
-    /// images loaded into the library's cache.
-    pub fn anilist_cast(&self, id: ProjectId, cancel: &CancelToken) -> ProjectResult<Vec<CastMember>> {
+    /// The cast of project `id`'s confirmed series (AniList's main and
+    /// supporting cast, TVmaze's), their images loaded into the library's
+    /// cache; with where it came from.
+    pub fn anilist_cast(&self, id: ProjectId, cancel: &CancelToken) -> ProjectResult<(Source, Vec<CastMember>)> {
         self.anilist_allowed()?;
-        let media = self.project(id)?.anilist_media()?;
+        let project = self.project(id)?;
+        let source = project.name_source()?.ok_or_else(no_source)?;
+        let media = project.anilist_media()?;
+        drop(project);
         if media.is_empty() {
-            return Err(ProjectError::NotReady("Confirm the series on AniList first.".into()));
+            return Err(ProjectError::NotReady(format!("Confirm the series on {} first.", source.name())));
         }
-        let client = self.anilist();
+        let client = self.names(source);
         let cast = client.cast(&media, cancel)?;
         let mut out = Vec::with_capacity(cast.len());
         for character in cast {
@@ -1480,7 +1858,24 @@ impl Library {
             }
             out.push(CastMember { character, image });
         }
-        Ok(out)
+        Ok((source, out))
+    }
+
+    /// A picture of a project's character as the engine embedded it this
+    /// session (see [`Project::look_pictures`]), while the file is the one
+    /// it embedded: a face pass may write another face under its name.
+    pub fn look_picture(&self, path: &Path) -> Option<Vec<f32>> {
+        self.look_pictures().lock().get(&picture_key(path)?).cloned()
+    }
+
+    /// Keep a character picture's embedding for the session (not once
+    /// `cancel` is: the opt-in went off).
+    pub fn keep_look_picture(&self, path: &Path, embedding: &[f32], cancel: &CancelToken) {
+        if !cancel.is_cancelled()
+            && let Some(key) = picture_key(path)
+        {
+            self.look_pictures().lock().insert(key, embedding.to_vec());
+        }
     }
 }
 
@@ -1896,6 +2291,7 @@ mod tests {
             native: None,
             alternative: Vec::new(),
             image: Some("https://s4.anilist.co/file/anilistcdn/character/large/b176754-PCnpqIOkjhFk.png".into()),
+            kin: None,
         };
         let path = client.image(&frieren, &CancelToken::new()).unwrap().unwrap();
         assert_eq!(path, dir.path().join("anilist").join("176754.png"));
@@ -1997,6 +2393,11 @@ mod tests {
         assert!(!lib.settings().unwrap().anilist);
     }
 
+    /// Every portrait a character of its own.
+    fn apart() -> Vec<u32> {
+        (0..16).collect()
+    }
+
     fn member(id: u32, name: &str) -> CastMember {
         CastMember {
             character: Character {
@@ -2006,6 +2407,7 @@ mod tests {
                 native: None,
                 alternative: vec![],
                 image: None,
+                kin: None,
             },
             image: None,
         }
@@ -2018,31 +2420,38 @@ mod tests {
         // The hero's father and brother share his hair and score a little
         // higher on his look than his own portrait: the main part wins.
         let hero = [0.962, 0.962, 0.935, 0.63];
-        assert_eq!(best_portrait(&hero, &roles, &hero), Some((2, 0.935)));
+        assert_eq!(best_portrait(&hero, &roles, &apart(), &hero), Some((2, 0.935)));
         // The father's own group, the hero there and closer to the hero's
         // portrait: not the hero, and father and brother can't be told
         // apart — no name.
         let strongest = [0.95, 0.962, 0.935, 0.63];
-        assert_eq!(best_portrait(&[0.95, 0.90, 0.90, 0.5], &roles, &strongest), None);
+        assert_eq!(best_portrait(&[0.95, 0.90, 0.90, 0.5], &roles, &apart(), &strongest), None);
         // Without the brother as a look-alike the father keeps his own.
-        assert_eq!(best_portrait(&[0.95, 0.5, 0.90, 0.5], &roles, &strongest), Some((0, 0.95)));
+        assert_eq!(best_portrait(&[0.95, 0.5, 0.90, 0.5], &roles, &apart(), &strongest), Some((0, 0.95)));
         // A second group of the hero, the first closer to his portrait: not
         // the brother whose portrait comes next — no name.
-        assert_eq!(best_portrait(&[0.5, 0.80, 0.857, 0.5], &roles, &[0.95, 0.962, 0.935, 0.63]), None);
+        assert_eq!(best_portrait(&[0.5, 0.80, 0.857, 0.5], &roles, &apart(), &[0.95, 0.962, 0.935, 0.63]), None);
         // A clear best needs no part to decide.
         let clear = [0.91, 0.78, 0.75];
-        assert_eq!(best_portrait(&clear, &[Supporting, Main, Main], &clear), Some((0, 0.91)));
+        assert_eq!(best_portrait(&clear, &[Supporting, Main, Main], &apart(), &clear), Some((0, 0.91)));
         // Look-alikes of the same part can't be told apart: no name.
         let same = [0.84, 0.82, 0.80];
-        assert_eq!(best_portrait(&same, &[Supporting, Supporting, Supporting], &same), None);
-        assert_eq!(best_portrait(&[0.90, 0.88], &[Main, Main], &[0.90, 0.88]), None);
+        assert_eq!(best_portrait(&same, &[Supporting, Supporting, Supporting], &apart(), &same), None);
+        assert_eq!(best_portrait(&[0.90, 0.88], &[Main, Main], &apart(), &[0.90, 0.88]), None);
         // The bigger part names only at the bar itself.
         let low = [0.72, SUGGEST_MIN_COS - 0.05];
-        assert_eq!(best_portrait(&low, &[Supporting, Main], &low), None);
+        assert_eq!(best_portrait(&low, &[Supporting, Main], &apart(), &low), None);
         // Under the bar, nothing at all, or a spoilt score: no name from it.
-        assert_eq!(best_portrait(&[SUGGEST_MIN_COS - 0.01], &[Main], &[1.0]), None);
-        assert_eq!(best_portrait(&[], &[], &[]), None);
-        assert_eq!(best_portrait(&[f32::NAN, 0.91], &[Main, Supporting], &[1.0, 0.91]), Some((1, 0.91)));
+        assert_eq!(best_portrait(&[SUGGEST_MIN_COS - 0.01], &[Main], &apart(), &[1.0]), None);
+        assert_eq!(best_portrait(&[], &[], &apart(), &[]), None);
+        assert_eq!(best_portrait(&[f32::NAN, 0.91], &[Main, Supporting], &apart(), &[1.0, 0.91]), Some((1, 0.91)));
+        // Selves of one character (Marinette, Ladybug) don't compete: the
+        // best names it; a look-alike of someone else still does.
+        let selves = [0.86, 0.84, 0.70];
+        assert_eq!(best_portrait(&selves, &[Main, Main, Main], &[7, 7, 9], &selves), Some((0, 0.86)));
+        assert_eq!(best_portrait(&selves, &[Main, Main, Main], &apart(), &selves), None);
+        let with_other = [0.86, 0.84, 0.83];
+        assert_eq!(best_portrait(&with_other, &[Main, Main, Main], &[7, 7, 9], &with_other), None);
     }
 
     #[test]
@@ -2294,5 +2703,110 @@ mod tests {
         assert_eq!(lib.anilist().portrait(1), Some(vec![1.0]));
         lib.update_settings(&AppSettings { anilist: false, ..lib.settings().unwrap() }).unwrap();
         assert_eq!(lib.anilist().portrait(1), None);
+    }
+
+    fn unit(v: &[f32]) -> Vec<f32> {
+        let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        v.iter().map(|x| x / n).collect()
+    }
+
+    #[test]
+    fn given_looks_are_matched_where_the_faces_were_embedded_otherwise() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = library(dir.path());
+        let new = NewProject {
+            title: "Miraculous".into(),
+            kind: ProjectKind::Movie,
+            content: ContentKind::Animation,
+            files: vec![],
+        };
+        let id = lib.create_project(&new).unwrap().0.id;
+        let project = lib.project(id).unwrap();
+        let db = rusqlite::Connection::open(project.dir.join(crate::project::PROJECT_DB)).unwrap();
+        let [a, b, c, d, e] = [(); 5].map(|()| as_core::CharacterId::new());
+        for (n, ch) in [a, b, c, d, e].into_iter().enumerate() {
+            db.execute(
+                "INSERT INTO characters (id, number, name, hidden, created_at) VALUES (?1, ?2, NULL, 0, 0)",
+                rusqlite::params![ch.0.to_string(), n as i64 + 1],
+            )
+            .unwrap();
+        }
+        // TVmaze's parts are all alike; Copycat looks like Adrien.
+        let portraits = vec![
+            (member(1, "Marinette"), vec![1.0, 0.0, 0.0]),
+            (member(2, "Adrien"), vec![0.0, 1.0, 0.0]),
+            (member(3, "Copycat"), unit(&[0.0, 0.96, 0.28])),
+        ];
+        let looks: HashMap<as_core::CharacterId, Vec<f32>> = [
+            (a, vec![1.0, 0.0, 0.0]),
+            // A second group of hers, alike enough to be one with a.
+            (e, unit(&[0.98, 0.2, 0.0])),
+            // Adrien and Copycat as alike to c as each other: neither names c.
+            (c, unit(&[0.0, 1.0, 0.15])),
+            // Another embedder's look: matches no one.
+            (d, vec![1.0, 0.0]),
+        ]
+        .into_iter()
+        .collect();
+        let rev = project.db().cast_rev().unwrap();
+        let looks = Looks { rev, of: looks };
+        let (made_at, names, merges) = project.anilist_suggest_with(&portraits, Some(&looks)).unwrap();
+        assert_eq!(made_at, rev);
+        assert_eq!(names.iter().map(|n| (n.character_id, n.name.as_str())).collect::<Vec<_>>(), [(a, "Marinette")]);
+        assert_eq!(merges.iter().map(|m| (m.from, m.into)).collect::<Vec<_>>(), [(e, a)]);
+        // Looks made before the cast changed: what they suggest isn't applied.
+        let stale = Looks { rev: rev - 1, ..looks.clone() };
+        let (made_at, names, merges) = project.anilist_suggest_with(&portraits, Some(&stale)).unwrap();
+        assert_eq!(made_at, rev - 1);
+        let applied = project.apply_anilist_suggestions(made_at, &names, &merges);
+        assert!(matches!(applied, Err(ProjectError::NotReady(_))));
+        // b has no look; without looks, their faces are the looks (none here).
+        let (_, names, merges) = project.anilist_suggest(&portraits).unwrap();
+        assert!(names.is_empty() && merges.is_empty());
+    }
+
+    #[test]
+    fn a_picture_is_kept_once_whoever_loads_it_and_never_once_switched_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let cancel = CancelToken::new();
+        let path = store_picture(dir.path(), 7, "jpg", b"one", &cancel).unwrap();
+        assert_eq!(path, dir.path().join("7.jpg"));
+        // Another look-up loaded it meanwhile: as good.
+        assert_eq!(store_picture(dir.path(), 7, "jpg", b"two", &cancel).unwrap(), path);
+        let left: Vec<_> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(left, ["7.jpg"], "no part file stays");
+        let off = CancelToken::new();
+        off.cancel();
+        assert!(matches!(store_picture(dir.path(), 8, "jpg", b"x", &off), Err(ProjectError::Cancelled)));
+        assert!(!dir.path().join("8.jpg").exists());
+    }
+
+    #[test]
+    fn a_pictures_embedding_is_kept_only_while_the_file_is_the_same() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = library(dir.path());
+        let picture = dir.path().join("5.jpg");
+        std::fs::write(&picture, b"a face").unwrap();
+        lib.keep_look_picture(&picture, &[1.0], &CancelToken::new());
+        assert_eq!(lib.look_picture(&picture), Some(vec![1.0]));
+        // A new face pass wrote another face under the name.
+        std::fs::write(&picture, b"someone else's face").unwrap();
+        assert_eq!(lib.look_picture(&picture), None);
+        assert_eq!(lib.look_picture(&dir.path().join("missing.jpg")), None);
+        let on = AppSettings { anilist: true, ..lib.settings().unwrap() };
+        lib.update_settings(&on).unwrap();
+        lib.keep_look_picture(&picture, &[2.0], &lib.anilist_token());
+        lib.update_settings(&AppSettings { anilist: false, ..on }).unwrap();
+        assert_eq!(lib.look_picture(&picture), None, "forgotten with the opt-in");
+    }
+
+    #[test]
+    fn a_look_is_the_weighted_mean_of_its_pictures() {
+        let look = look_of(&[(vec![1.0, 0.0], 3.0), (vec![0.0, 1.0], 1.0), (vec![5.0], 9.0), (vec![0.0, 1.0], 0.0)]);
+        let l = look.unwrap();
+        assert!((l[0] - 0.948_683).abs() < 1e-5 && (l[1] - 0.316_228).abs() < 1e-5, "{l:?}");
+        assert_eq!(look_of(&[]), None);
+        assert_eq!(look_of(&[(vec![0.0, 0.0], 1.0)]), None);
+        assert_eq!(look_of(&[(vec![1.0], f32::NAN)]), None);
     }
 }

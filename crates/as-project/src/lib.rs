@@ -10,10 +10,12 @@ pub mod anilist;
 mod bodies;
 mod cast;
 mod error;
+pub mod fandom;
 mod library;
 pub mod naming;
 mod pack;
 mod project;
+pub mod tvmaze;
 
 pub use analysis::{Pass, ShotsPlan};
 pub use bodies::BodiesPlan;

@@ -84,11 +84,11 @@ export function GeneralSection() {
           />
         </SettingRow>
         <SettingRow
-          label="Character names from AniList"
-          description="Once an anime project's characters are found, AutoScene looks their names up on AniList and you give them with one click. Sends the project's title (or the search text you type), and requests for the matching series' cast and images, to AniList (API and image server); AniList sees your IP address. Turning it off deletes every image kept from AniList."
+          label="Character names from AniList, TVmaze and Fandom"
+          description="Once a project's characters are found, AutoScene looks their names up — an anime's on AniList, an animated series' on TVmaze, an animated film's on its franchise's Fandom wiki (found through Wikidata) — and you give them with one click. Sends the project's title (or the search text you type), and requests for the matching cast and pictures, to them (APIs and image servers); they see your IP address. Animation projects download the anime character model once to compare the pictures. Turning it off deletes every picture kept from them."
         >
           <Switch
-            aria-label="Character names from AniList"
+            aria-label="Character names from AniList, TVmaze and Fandom"
             checked={settings?.anilist ?? false}
             disabled={!settings}
             onCheckedChange={(on) => settings && void save({ ...settings, anilist: on })}

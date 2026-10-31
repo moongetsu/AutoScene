@@ -1,0 +1,58 @@
+[
+ {
+  "name": "Miraculous: Tales of Ladybug and Cat Noir",
+  "country": {
+   "name": "United States",
+   "code": "US",
+   "timezone": "America/New_York"
+  }
+ },
+ {
+  "name": "Miraculous: Tales of Ladybug & Cat Noir",
+  "country": {
+   "name": "United States",
+   "code": "US",
+   "timezone": "America/New_York"
+  }
+ },
+ {
+  "name": "Леди Баг и Супер-кот",
+  "country": {
+   "name": "Russian Federation",
+   "code": "RU",
+   "timezone": "Asia/Kamchatka"
+  }
+ },
+ {
+  "name": "Miraculous – Katicabogár és Fekete Macska kalandjai",
+  "country": {
+   "name": "Hungary",
+   "code": "HU",
+   "timezone": "Europe/Budapest"
+  }
+ },
+ {
+  "name": "Miraculous - Geschichten von Ladybug und Cat Noir",
+  "country": {
+   "name": "Germany",
+   "code": "DE",
+   "timezone": "Europe/Busingen"
+  }
+ },
+ {
+  "name": "Miraculum: Biedronka i Czarny Kot",
+  "country": {
+   "name": "Poland",
+   "code": "PL",
+   "timezone": "Europe/Warsaw"
+  }
+ },
+ {
+  "name": "Miraculous: Ladybug & Cat Noir på eventyr",
+  "country": {
+   "name": "Denmark",
+   "code": "DK",
+   "timezone": "Europe/Copenhagen"
+  }
+ }
+]
