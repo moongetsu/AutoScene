@@ -51,18 +51,7 @@ export function CharacterCard({
               </Badge>
             )}
             <div className="absolute inset-x-0 bottom-0 p-3.5">
-              <div
-                onDoubleClick={(e) => {
-                  if (onRename) {
-                    e.preventDefault()
-                    e.stopPropagation()
-                    onRename()
-                  }
-                }}
-                className={cn("display truncate text-2xl leading-7 select-none", c.name ? "text-white" : "text-white/70 italic")}
-              >
-                {c.label}
-              </div>
+              <div className={cn("display truncate text-2xl leading-7", c.name ? "text-white" : "text-white/70 italic")}>{c.label}</div>
               <div className="mt-0.5 truncate text-xs text-white/70">
                 {refinding ? (
                   "Being found again…"
