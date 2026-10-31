@@ -35,7 +35,8 @@ export const FOOTAGE: Footage[] = [
   {
     value: "anime",
     label: "Anime",
-    blurb: "Anime and other hand-drawn 2D animation. Shots are found now; characters come in a later update.",
+    blurb:
+      "Anime and other hand-drawn 2D animation. Characters are found by their heads and whole look, with detectors made for anime.",
     stills: ["/footage/anime-1.webp", "/footage/anime-2.webp", "/footage/anime-3.webp"],
     credit: "Pepper&Carrot artwork · David Revoy · Hero · Blender Studio · CC BY 4.0",
   },

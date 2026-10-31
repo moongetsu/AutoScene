@@ -14,7 +14,6 @@ export function EpisodeItems({
   kit,
   projectId,
   media: m,
-  faces,
   onOpen,
   onRemove,
   openShortcut,
@@ -22,8 +21,6 @@ export function EpisodeItems({
   kit: MenuKit
   projectId: string
   media: MediaItem
-  /** The project finds characters (live action). */
-  faces: boolean
   onOpen: () => void
   onRemove: () => void
   /** The key that opens it where it is shown (Enter on a focused row). */
@@ -67,7 +64,7 @@ export function EpisodeItems({
           <Scissors /> Find shots again
         </Item>
       )}
-      {ready && faces && m.shots === "ready" && (
+      {ready && m.shots === "ready" && (
         <Item onSelect={() => redo("faces")}>
           <UserFocus /> Find characters again
         </Item>

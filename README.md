@@ -71,12 +71,13 @@ on Windows, this prints `True` for an intact download:
   and each export is checked against the source frames.
 - **Shots.** A shot detector finds every cut. Transition frames belong to no
   shot, so clips never start mid-dissolve.
-- **Characters (live action).** Faces are detected, tracked and grouped into
-  characters automatically. You name them, and you review the faces the
-  analysis wasn't sure about with one key each. Your decisions survive every
-  later analysis: they go back onto the faces it finds again. One whose face
-  it doesn't find waits for the next analysis, and the cast says how many
-  wait. Anime characters come in a later version.
+- **Characters.** Faces are detected, tracked and grouped into characters
+  automatically. You name them, and you review the faces the analysis wasn't
+  sure about with one key each. Your decisions survive every later analysis:
+  they go back onto the faces it finds again. One whose face it doesn't find
+  waits for the next analysis, and the cast says how many wait. Projects made
+  as anime use their own pipeline (anime head detectors and a character
+  embedder) and can take names from AniList.
 - **Scenepacks.** For each character you get their shots, filters and your own
   picks, then one export: a single video with a chapter for each shot, or a
   file per shot, named from a template.
@@ -128,6 +129,7 @@ interpolation.
 
 The full face pass's models (SCRFD and ArcFace, with the people models)
 come from InsightFace and may only be used non-commercially; Fast Scan's
-(YuNet, SFace) are MIT and Apache-2.0. The shot detector, TransNetV2, is
-MIT-licensed. **Settings → About** shows each model's licence. `models/manifest.toml` lists
+(YuNet, SFace) are MIT and Apache-2.0. Anime's head and person detectors
+(deepghs) are MIT; its character embedder, CCIP, is under OpenRAIL, whose
+use restrictions apply. The shot detector, TransNetV2, is MIT-licensed. **Settings → About** shows each model's licence. `models/manifest.toml` lists
 the source and licence of each model.

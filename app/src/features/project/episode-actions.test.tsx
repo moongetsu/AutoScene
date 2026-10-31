@@ -30,7 +30,7 @@ describe("an episode's actions", () => {
   it("says so when indexing a failed episode again can't start", async () => {
     vi.mocked(commands.mediaRetry).mockRejectedValue("database is locked")
     const m = { id: "m", path: "C:\\Show\\E01.mkv", status: "failed", shots: "pending" } as MediaItem
-    render(<EpisodeItems kit={kit} projectId="p" media={m} faces onOpen={() => {}} onRemove={() => {}} />)
+    render(<EpisodeItems kit={kit} projectId="p" media={m} onOpen={() => {}} onRemove={() => {}} />)
     fireEvent.click(screen.getByRole("button", { name: /Index again/ }))
     expect(commands.mediaRetry).toHaveBeenCalledWith("p", "m")
     await vi.waitFor(() =>

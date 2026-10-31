@@ -114,7 +114,7 @@ const appInfo: AppInfo = {
 }
 
 let mockClipboard: string | null = null
-let settings: AppSettings = { libraryRoot: ROOT, exportPresetId: "prores-hq", audioLanguage: "eng", animeCharacters: false }
+let settings: AppSettings = { libraryRoot: ROOT, exportPresetId: "prores-hq", audioLanguage: "eng" }
 
 /** Canned AniList answers (no network in the mock). */
 const ANILIST_SERIES: AniListMedia[] = [
@@ -437,10 +437,8 @@ function analyze(p: MockProject, m: MediaItem) {
   startJob("analyze", `Analysing ${m.label ? `${m.label} · ` : ""}${m.fileName}`, p, 4000, { mediaId: m.id, stage }, () => {
     m.shots = "ready"
     m.shotCount = SHOT_COUNT
-    if (p.content !== "anime") {
-      m.faces = "ready"
-      m.faceCount = 31
-    }
+    m.faces = "ready"
+    m.faceCount = 31
     void emit("media:changed", { projectId: p.id, mediaId: m.id })
     void emit("analysis:changed", { projectId: p.id, mediaId: m.id })
     void emit("cast:changed", { projectId: p.id })
@@ -619,7 +617,7 @@ const handlers: Record<string, Handler> = {
     const r = req as NewProject
     const items = scan(r.files, r.kind).map((c) => media(c.fileName, [c.season, c.episode], { status: "queued", path: c.path }))
     const p = project(r.title, r.kind, r.content, items, 0)
-    // Like the library: projects made while Fast Scan is on keep it (anime finds no faces).
+    // Like the library: projects made while Fast Scan is on keep it (anime has its own pass).
     p.fastScan = (settings.fastScan ?? false) && r.content !== "anime"
     projects.unshift(p)
     items.forEach((m) => ingest(p, m))

@@ -50,7 +50,6 @@ export function OverviewPage() {
   const backdrop = pictured?.poster ?? null
   const ambient = useAmbient(pictured?.posterSmall ?? backdrop)
   const { shown } = splitHidden(cast)
-  const live = project?.content !== "anime"
   const movie = project?.kind === "movie"
   const failure = firstFailure(projectQuery, mediaQuery, castQuery)
 
@@ -67,13 +66,11 @@ export function OverviewPage() {
       topbar={<TopBar title={project?.title} overlay nav={<ProjectNav pid={pid} />} />}
       menu={
         <>
-          {live && (
-            <ContextMenuItem
-              onSelect={() => (shown.length > 0 ? setChoosing(true) : void navigate({ to: "/p/$pid/cast", params: { pid } }))}
-            >
-              <Package /> Build a scenepack…
-            </ContextMenuItem>
-          )}
+          <ContextMenuItem
+            onSelect={() => (shown.length > 0 ? setChoosing(true) : void navigate({ to: "/p/$pid/cast", params: { pid } }))}
+          >
+            <Package /> Build a scenepack…
+          </ContextMenuItem>
           <ContextMenuItem onSelect={() => void pickFolder().then((p) => (p ? addToProject(pid, [p]) : undefined))}>
             <FolderPlus /> Add {movie ? "a folder" : "episodes"}…
           </ContextMenuItem>
@@ -97,22 +94,21 @@ export function OverviewPage() {
             <p className="mt-4 text-lg text-white/75">
               {projectFacts(project)}
               {project.durationSec ? ` · ${formatDuration(project.durationSec)}` : ""}
-              {live && shown.length > 0 ? ` · ${plural(shown.length, "character")}` : ""}
+              {shown.length > 0 ? ` · ${plural(shown.length, "character")}` : ""}
             </p>
           )}
           <div className="mt-7 flex flex-wrap items-center gap-3">
-            {live &&
-              (shown.length > 0 ? (
-                <Button size="lg" variant="primary" onClick={() => setChoosing(true)}>
+            {shown.length > 0 ? (
+              <Button size="lg" variant="primary" onClick={() => setChoosing(true)}>
+                <Package weight="bold" /> Build a scenepack
+              </Button>
+            ) : (
+              <Button size="lg" variant="primary" asChild>
+                <Link to="/p/$pid/cast" params={{ pid }}>
                   <Package weight="bold" /> Build a scenepack
-                </Button>
-              ) : (
-                <Button size="lg" variant="primary" asChild>
-                  <Link to="/p/$pid/cast" params={{ pid }}>
-                    <Package weight="bold" /> Build a scenepack
-                  </Link>
-                </Button>
-              ))}
+                </Link>
+              </Button>
+            )}
             <Button size="lg" variant="glass" onClick={() => void pickFolder().then((p) => (p ? addToProject(pid, [p]) : undefined))}>
               <FolderPlus /> Add {movie ? "a folder" : "episodes"}
             </Button>
@@ -142,31 +138,29 @@ export function OverviewPage() {
 
       <div className="flex flex-col gap-10 pb-16">
         <MissingBanner pid={pid} media={media} movie={movie} className="mx-10" />
-        {live && (
-          <Section
-            title="Cast"
-            count={shown.length || undefined}
-            action={
-              shown.length > 0 && (
-                <SeeAll to={`/p/${pid}/cast`} label={cast && cast.unsure > 0 ? `${plural(cast.unsure, "face")} to review` : "All characters"} />
-              )
-            }
-          >
-            {shown.length > 0 ? (
-              <Shelf>
-                {shown.map((c) => (
-                  <CharacterCard key={c.id} pid={pid} character={c} className="w-[176px] shrink-0 snap-start" />
-                ))}
-              </Shelf>
-            ) : (
-              <Placeholder>
-                {(media?.length ?? 0) === 0
-                  ? "Add episodes, and the characters appear here as they are analysed."
-                  : "Characters appear here as soon as the first episode's faces are analysed."}
-              </Placeholder>
-            )}
-          </Section>
-        )}
+        <Section
+          title="Cast"
+          count={shown.length || undefined}
+          action={
+            shown.length > 0 && (
+              <SeeAll to={`/p/${pid}/cast`} label={cast && cast.unsure > 0 ? `${plural(cast.unsure, "face")} to review` : "All characters"} />
+            )
+          }
+        >
+          {shown.length > 0 ? (
+            <Shelf>
+              {shown.map((c) => (
+                <CharacterCard key={c.id} pid={pid} character={c} className="w-[176px] shrink-0 snap-start" />
+              ))}
+            </Shelf>
+          ) : (
+            <Placeholder>
+              {(media?.length ?? 0) === 0
+                ? "Add episodes, and the characters appear here as they are analysed."
+                : "Characters appear here as soon as the first episode's faces are analysed."}
+            </Placeholder>
+          )}
+        </Section>
 
         <Section
           title={movie ? "Files" : "Episodes"}
@@ -180,7 +174,6 @@ export function OverviewPage() {
                   key={m.id}
                   pid={pid}
                   media={m}
-                  faces={live}
                   onOpen={() => void navigate({ to: "/p/$pid/timeline/$mid", params: { pid, mid: m.id } })}
                   onRemove={() => setRemoving(m)}
                   className="w-[300px] shrink-0 snap-start"

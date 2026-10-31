@@ -63,7 +63,7 @@ describe("ProjectDetailsDialog", () => {
     expect(commands.projectSetFastScan).not.toHaveBeenCalled()
   })
 
-  it("has no Fast Scan for anime, which finds no faces", () => {
+  it("has no Fast Scan for anime, which has its own pass", () => {
     open({ ...film, content: "anime" })
     expect(screen.queryByRole("switch", { name: "Fast Scan" })).toBeNull()
   })

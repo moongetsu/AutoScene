@@ -45,33 +45,42 @@ function episode(bodies: StageState): MediaItem {
 
 describe("StatusCell", () => {
   it("offers to find the people again when their pass failed", async () => {
-    render(<StatusCell media={episode("failed")} projectId="p" faces />, { wrapper })
+    render(<StatusCell media={episode("failed")} projectId="p" />, { wrapper })
     expect(await screen.findByText(/People failed/)).toBeTruthy()
     fireEvent.click(screen.getByRole("button", { name: /Retry/ }))
     expect(commands.mediaAnalyze).toHaveBeenCalledWith("p", "m", null)
   })
 
   it("goes on with people a stop or a quit cut short", async () => {
-    const { unmount } = render(<StatusCell media={episode("stopped")} projectId="p" faces />, { wrapper })
+    const { unmount } = render(<StatusCell media={episode("stopped")} projectId="p" />, { wrapper })
     expect(await screen.findByRole("button", { name: /People stopped · continue/ })).toBeTruthy()
     unmount()
-    render(<StatusCell media={episode("running")} projectId="p" faces />, { wrapper })
+    render(<StatusCell media={episode("running")} projectId="p" />, { wrapper })
     fireEvent.click(await screen.findByRole("button", { name: /Find people/ }))
     expect(commands.mediaAnalyze).toHaveBeenCalledWith("p", "m", null)
   })
 
   it("says nothing of people when they aren't looked for", async () => {
     vi.mocked(commands.settingsGet).mockResolvedValueOnce({ findBodies: false } as never)
-    render(<StatusCell media={episode("failed")} projectId="p" faces />, { wrapper })
+    render(<StatusCell media={episode("failed")} projectId="p" />, { wrapper })
     await waitFor(() => expect(queryClient.getQueryData(qk.settings)).toBeTruthy())
     await waitFor(() => expect(queryClient.getQueryData(qk.project("p"))).toBeTruthy())
     expect(screen.getByText(/faces/)).toBeTruthy()
     expect(screen.queryByText(/People/)).toBeNull()
   })
 
+  it("says nothing of people in anime, whose characters are found whole", async () => {
+    vi.mocked(commands.projectGet).mockResolvedValueOnce({ id: "p", fastScan: false, content: "anime" } as never)
+    render(<StatusCell media={episode("pending")} projectId="p" />, { wrapper })
+    await waitFor(() => expect(queryClient.getQueryData(qk.settings)).toBeTruthy())
+    await waitFor(() => expect(queryClient.getQueryData(qk.project("p"))).toBeTruthy())
+    expect(screen.getByText(/faces/)).toBeTruthy()
+    expect(screen.queryByText(/people/i)).toBeNull()
+  })
+
   it("says nothing of people with Fast Scan, which finds faces alone", async () => {
     vi.mocked(commands.projectGet).mockResolvedValueOnce({ id: "p", fastScan: true } as never)
-    render(<StatusCell media={episode("pending")} projectId="p" faces />, { wrapper })
+    render(<StatusCell media={episode("pending")} projectId="p" />, { wrapper })
     await waitFor(() => expect(queryClient.getQueryData(qk.settings)).toBeTruthy())
     await waitFor(() => expect(queryClient.getQueryData(qk.project("p"))).toBeTruthy())
     expect(screen.queryByText(/people/i)).toBeNull()

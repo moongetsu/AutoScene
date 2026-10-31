@@ -125,8 +125,10 @@ export const commands = {
 	/**
 	 *  Match the confirmed series' cast portraits to the project's
 	 *  characters: every portrait is embedded by the engine (CCIP), then
-	 *  matched against the cast's faces. When `anilist.auto` is on, the names
-	 *  are given at once.
+	 *  matched against the cast's faces. A portrait the engine fails on is
+	 *  left out (only when it fails on all of them is that an error); an engine
+	 *  that won't start, crashed or was cancelled stops the match at once. When
+	 *  `anilist.auto` is on, the names are given at once.
 	 */
 	anilistSuggest: (projectId: ProjectId) => __TAURI_INVOKE<AniListSuggestions>("anilist_suggest", { projectId }),
 	/**
@@ -345,13 +347,6 @@ export type AppSettings = {
 	 *  switching it off deletes the images kept.
 	 */
 	anilist?: boolean,
-	/**
-	 *  Whether this process looks for characters in anime too — the
-	 *  `AUTOSCENE_ANIME_FACES` environment switch, until the anime
-	 *  benchmark's sealed test releases the feature. Read-only (a setting
-	 *  can't turn it on or off).
-	 */
-	animeCharacters?: boolean,
 };
 
 export type AudioCodec = { codec: "none" } | 

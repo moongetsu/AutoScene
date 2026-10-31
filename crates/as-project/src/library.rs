@@ -77,7 +77,6 @@ impl Library {
             find_bodies: self.finds_bodies(),
             fast_scan: self.fast_scan()?,
             anilist: self.names_from_anilist(),
-            anime_characters: crate::anime_faces_enabled(),
         })
     }
 
@@ -164,7 +163,7 @@ impl Library {
             duration_sec: 0.0,
             poster: None,
             poster_small: None,
-            // Anime finds no faces at all.
+            // Anime has its own pass; Fast Scan is for faces.
             fast_scan: self.fast_scan()? && req.content != ContentKind::Anime,
         };
         let project = Arc::new(Project::create(&summary, self.find_bodies.clone())?);
@@ -504,7 +503,6 @@ mod tests {
             find_bodies: false,
             fast_scan: false,
             anilist: false,
-            anime_characters: false,
         })
         .unwrap();
         assert_eq!(lib.audio_language().unwrap(), "deu", "stored as an ISO 639-2 code");
@@ -775,6 +773,10 @@ mod tests {
         let (anime, ..) = lib.create_project(&new(ContentKind::Anime)).unwrap();
         assert!(matches!(lib.set_project_content(anime.id, ContentKind::Live), Err(ProjectError::Invalid(_))));
         assert_eq!(lib.summary(anime.id).unwrap().content, ContentKind::Anime);
+        // Anime finds its characters whole: no people pass, whatever the setting.
+        lib.update_settings(&AppSettings { find_bodies: true, ..lib.settings().unwrap() }).unwrap();
+        assert!(lib.project(film.id).unwrap().finds_bodies());
+        assert!(!lib.project(anime.id).unwrap().finds_bodies());
     }
 
     #[test]
@@ -791,7 +793,7 @@ mod tests {
         assert!(lib.update_settings(&on).unwrap().fast_scan);
         let (after, ..) = lib.create_project(&new("After", ContentKind::Animation)).unwrap();
         assert!(after.fast_scan && lib.project(after.id).unwrap().fast_scan());
-        // Projects made before keep how they were made; anime finds no faces.
+        // Projects made before keep how they were made; anime has its own pass.
         assert!(!lib.summary(before.id).unwrap().fast_scan);
         let (anime, ..) = lib.create_project(&new("Anime", ContentKind::Anime)).unwrap();
         assert!(!anime.fast_scan);
@@ -820,7 +822,6 @@ mod tests {
             find_bodies: false,
             fast_scan: false,
             anilist: false,
-            anime_characters: false,
         };
         assert!(matches!(lib.update_settings(&bad), Err(ProjectError::Invalid(_))));
         assert_eq!(lib.settings().unwrap().export_preset_id, "h264-edit");

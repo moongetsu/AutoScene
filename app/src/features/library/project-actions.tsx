@@ -32,11 +32,9 @@ export function ProjectItems({
       <Item onSelect={() => actions.goProject(p.id, "episodes")}>
         <FilmStrip /> {p.kind === "movie" ? "Files" : "Episodes"}
       </Item>
-      {p.content !== "anime" && (
-        <Item onSelect={() => actions.goProject(p.id, "cast")}>
-          <Users /> Cast
-        </Item>
-      )}
+      <Item onSelect={() => actions.goProject(p.id, "cast")}>
+        <Users /> Cast
+      </Item>
       <Item onSelect={() => actions.goProject(p.id, "exports")}>
         <Package /> Exports
       </Item>

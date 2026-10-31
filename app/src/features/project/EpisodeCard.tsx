@@ -17,15 +17,12 @@ import { EpisodeItems } from "./episode-actions"
 export function EpisodeCard({
   pid,
   media: m,
-  faces,
   onOpen,
   onRemove,
   className,
 }: {
   pid: string
   media: MediaItem
-  /** The project finds characters (live action). */
-  faces: boolean
   onOpen: () => void
   onRemove: () => void
   className?: string
@@ -36,7 +33,7 @@ export function EpisodeCard({
   return (
     <Tooltip label={m.fileName} side="top" delay={600}>
       <ContextArea
-        menu={<EpisodeItems kit={contextKit} projectId={pid} media={m} faces={faces} onOpen={onOpen} onRemove={onRemove} />}
+        menu={<EpisodeItems kit={contextKit} projectId={pid} media={m} onOpen={onOpen} onRemove={onRemove} />}
       >
         <Link
           to="/p/$pid/timeline/$mid"

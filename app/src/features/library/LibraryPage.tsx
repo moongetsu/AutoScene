@@ -121,13 +121,11 @@ function Featured({ project: p, onRename, onDelete }: { project: ProjectSummary;
                 Open project
               </Link>
             </Button>
-            {p.content !== "anime" && (
-              <Button size="lg" variant="glass" asChild>
-                <Link to="/p/$pid/cast" params={{ pid: p.id }}>
-                  <UserFocus /> Cast
-                </Link>
-              </Button>
-            )}
+            <Button size="lg" variant="glass" asChild>
+              <Link to="/p/$pid/cast" params={{ pid: p.id }}>
+                <UserFocus /> Cast
+              </Link>
+            </Button>
           </div>
         </div>
       </Hero>

@@ -133,7 +133,6 @@ export function EpisodesPage() {
                     media={m}
                     ambiguous={(nameCounts.get(releaseTitle(m.fileName)) ?? 0) > 1}
                     projectId={pid}
-                    faces={project?.content !== "anime"}
                     onOpen={() => void navigate({ to: "/p/$pid/timeline/$mid", params: { pid, mid: m.id } })}
                     onRemove={() => setRemoving(m)}
                   />
@@ -150,7 +149,6 @@ function EpisodeRow({
   media: m,
   ambiguous,
   projectId,
-  faces,
   onOpen,
   onRemove,
 }: {
@@ -158,8 +156,6 @@ function EpisodeRow({
   /** Another row has the same clean name: show the file name too. */
   ambiguous: boolean
   projectId: string
-  /** The project finds characters (live action). */
-  faces: boolean
   onOpen: () => void
   onRemove: () => void
 }) {
@@ -174,7 +170,7 @@ function EpisodeRow({
       .catch((e) => toast.error("Couldn't change the audio track", { description: errorMessage(e) }))
   }
 
-  const items = { projectId, media: m, faces, onOpen, onRemove }
+  const items = { projectId, media: m, onOpen, onRemove }
   return (
     <ContextArea menu={<EpisodeItems kit={contextKit} {...items} openShortcut={["Enter"]} />}>
         <li
@@ -236,7 +232,7 @@ function EpisodeRow({
             )}
             {/* Narrow windows: the state under the name. */}
             <div className="mt-2.5 @3xl:hidden" onClick={(e) => e.stopPropagation()}>
-              <StatusCell media={m} projectId={projectId} faces={faces} />
+              <StatusCell media={m} projectId={projectId} />
             </div>
           </div>
 
@@ -256,7 +252,7 @@ function EpisodeRow({
           </div>
 
           <div className="hidden @3xl:block" onClick={(e) => e.stopPropagation()}>
-            <StatusCell media={m} projectId={projectId} faces={faces} />
+            <StatusCell media={m} projectId={projectId} />
           </div>
 
           <div onClick={(e) => e.stopPropagation()}>

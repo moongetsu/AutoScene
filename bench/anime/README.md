@@ -133,8 +133,9 @@ Floor: Track-F ≥ 0.85 and precision ≥ 0.97.
 
 1. Targets met: ship.
 2. Floor met: ship as beta with the published numbers.
-3. Below the floor: the feature stays behind its switch, and the oracle
-   ladder on tuning decides the next work. Then the reserve test runs once.
+3. Below the floor: the feature stays in as beta with its numbers (there is
+   no switch since DECISIONS #5), and the oracle ladder on tuning decides
+   the next work. Then the reserve test runs once.
 
 Oracle ladder: substitute ground-truth boxes, then ground-truth tracks, then
 label-oracle embeddings, and attribute the F gap to each stage. A failure is
@@ -156,11 +157,15 @@ Candidates are loaded from fixed Hugging Face commits (paths and SHA-256 in
 
 ## Implementation status
 
-Code-complete behind `AUTOSCENE_ANIME_FACES` (Phase E/F): head/person YOLO
-and CCIP wrappers with the CPU golden self-check, the anime pass, 768-d
-tracking, `Params::anime()`, engine anime jobs and `Embed`, the cast arms
-(`faces_key` `+anime2` since the person-box union was fixed), and AniList
-suggestions behind the opt-in.
+Code-complete (Phase E/F): head/person YOLO and CCIP wrappers with the CPU
+golden self-check, the anime pass, 768-d tracking, `Params::anime()`, engine
+anime jobs and `Embed`, the cast arms (`faces_key` `+anime2` since the
+person-box union was fixed), and AniList suggestions behind the opt-in.
+
+The `AUTOSCENE_ANIME_FACES` switch is gone (owner's decision, 2026-10-31):
+every project made as anime finds its characters with this pass, in every
+build, before the sealed test has run. The test below still decides what
+the numbers are and what is tuned next; it no longer gates the release.
 
 Still open — each needs the bench media, a GPU and the labels:
 
@@ -171,5 +176,5 @@ Still open — each needs the bench media, a GPU and the labels:
 - Engine on real GPUs: mixed live/anime episode, VRAM ≤ 6 GB, CoreML parity.
 - Older anime projects offering "Find characters" instead of re-analysing,
   and the CPU-only ETA confirmation.
-- Phase G (one commit): open the switch, lift the UI locks, README and
-  release notes. Not before the sealed test passes.
+- Phase G's switch and UI locks are done (2026-10-31); release notes
+  still to write with the next release.

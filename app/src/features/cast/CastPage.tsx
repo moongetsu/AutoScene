@@ -32,18 +32,11 @@ export function CastPage() {
   const [anilistOpen, setAnilistOpen] = useState(false)
   const navigate = useNavigate()
   const { shown, hidden } = splitHidden(cast)
-  // Anime runs its own character pipeline while the feature stays behind
-  // the AUTOSCENE_ANIME_FACES switch; off means "coming" as before.
-  const anime = project?.content === "anime" && !settings?.animeCharacters
-  const unplaced = anime ? null : unplacedNote(cast?.unplaced ?? 0)
-  // Names from AniList: anime projects whose characters are found (the
-  // anime switch on), while the opt-in in Settings is on and someone shown
-  // is still unnamed.
+  const unplaced = unplacedNote(cast?.unplaced ?? 0)
+  // Names from AniList: anime projects while the opt-in in Settings is on
+  // and someone shown is still unnamed.
   const anilist =
-    !!settings?.anilist &&
-    project?.content === "anime" &&
-    !anime &&
-    !!cast?.characters.some((c) => !c.hidden && !c.name)
+    !!settings?.anilist && project?.content === "anime" && !!cast?.characters.some((c) => !c.hidden && !c.name)
   const failure = firstFailure(projectQuery, castQuery, mediaQuery)
 
   if (failure) {
@@ -85,7 +78,7 @@ export function CastPage() {
       <header className="flex flex-wrap items-end justify-between gap-6 px-10 pt-10 pb-8">
         <div>
           <h1 className="display text-5xl text-fg-1">Cast</h1>
-          {cast && !anime && (
+          {cast && (
             <p className="mt-2 text-md text-fg-2">
               {plural(shown.length, "character")}
               {cast.mediaTotal > 0 &&
@@ -116,13 +109,7 @@ export function CastPage() {
             <Info /> {unplaced}
           </p>
         )}
-        {anime ? (
-          <EmptyState
-            icon={<UserFocus />}
-            title="Anime characters are coming"
-            description="Characters are found in live action for now. Anime gets its own face and head detectors in an upcoming update; shots already work."
-          />
-        ) : isPending ? (
+        {isPending ? (
           <CardGrid>
             {Array.from({ length: 8 }, (_, i) => (
               <div key={i} className="skeleton aspect-[3/4] rounded-2xl" />

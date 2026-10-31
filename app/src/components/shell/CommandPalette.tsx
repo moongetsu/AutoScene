@@ -69,9 +69,7 @@ export function CommandPalette() {
           icon: <ListNumbers />,
           run: () => a.goProject(current.id, "episodes"),
         },
-        ...(current.content !== "anime"
-          ? [{ id: "cast", label: "Cast", icon: <UserFocus />, run: () => a.goProject(current.id, "cast") }]
-          : []),
+        { id: "cast", label: "Cast", icon: <UserFocus />, run: () => a.goProject(current.id, "cast") },
         { id: "exports", label: "Exports", icon: <Package />, run: () => a.goProject(current.id, "exports") },
       ]
     : []
@@ -136,7 +134,7 @@ export function CommandPalette() {
             <Command.List className="min-h-0 flex-1 overflow-y-auto p-2">
               <Command.Empty className="px-3 py-10 text-center text-md text-fg-3">Nothing matches.</Command.Empty>
               {current && <Group heading={current.title} items={here} onSelect={select} />}
-              {current && <ProjectFinds pid={current.id} anime={current.content === "anime"} query={query} onSelect={select} />}
+              {current && <ProjectFinds pid={current.id} query={query} onSelect={select} />}
               {projectItems.length > 0 && <Group heading="Projects" items={projectItems} onSelect={select} />}
               <Group heading="Actions" items={actions} onSelect={select} />
               <Group heading="Go to" items={go} onSelect={select} />
@@ -151,12 +149,10 @@ export function CommandPalette() {
 /** The open project's characters and episodes, to jump to. */
 function ProjectFinds({
   pid,
-  anime,
   query,
   onSelect,
 }: {
   pid: string
-  anime: boolean
   query: string
   onSelect: (i: Item) => void
 }) {
@@ -175,17 +171,15 @@ function ProjectFinds({
           })
           .slice(0, MATCHES)
       : list.slice(0, FIRST)
-  const characters: Item[] = anime
-    ? []
-    : take(characterEntries(cast)).map((c) => ({
-        id: `character-${c.id}`,
-        label: c.label,
-        icon: <User />,
-        face: c.picture,
-        hint: c.hint,
-        keywords: c.keywords,
-        run: () => void navigate({ to: "/p/$pid/cast/$cid", params: { pid, cid: c.id } }),
-      }))
+  const characters: Item[] = take(characterEntries(cast)).map((c) => ({
+    id: `character-${c.id}`,
+    label: c.label,
+    icon: <User />,
+    face: c.picture,
+    hint: c.hint,
+    keywords: c.keywords,
+    run: () => void navigate({ to: "/p/$pid/cast/$cid", params: { pid, cid: c.id } }),
+  }))
   const episodes: Item[] = take(episodeEntries(media)).map((e) => ({
     id: `episode-${e.id}`,
     label: e.label,

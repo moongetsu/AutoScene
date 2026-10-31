@@ -21,11 +21,3 @@ pub use cast::{FACE_CHUNK, FacesPlan, PORTRAIT, Portrait, face_models};
 pub use error::{ProjectError, ProjectResult};
 pub use library::Library;
 pub use project::{Project, Recovery, RelinkedFolder};
-
-/// Whether the anime character pipeline is switched on for this process —
-/// `AUTOSCENE_ANIME_FACES` set to anything but empty or "0". It stays
-/// behind the switch until the anime benchmark's sealed test releases the
-/// feature (see bench/anime); the setting can't turn it on.
-pub fn anime_faces_enabled() -> bool {
-    std::env::var_os("AUTOSCENE_ANIME_FACES").is_some_and(|v| !v.is_empty() && v != "0")
-}

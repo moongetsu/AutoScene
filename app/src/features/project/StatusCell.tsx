@@ -22,12 +22,13 @@ function queuedLabel(m: MediaItem, job?: JobInfo): string {
 }
 
 /** Indexing, preview and analysis state of one media, with live progress from its job. */
-export function StatusCell({ media: m, projectId, faces }: { media: MediaItem; projectId: string; faces: boolean }) {
+export function StatusCell({ media: m, projectId }: { media: MediaItem; projectId: string }) {
   const job = useMediaJob(m.id)
-  // People are found by their bodies too (the setting; never with Fast Scan).
+  // People are found by their bodies too (the setting; never with Fast
+  // Scan, never in anime, whose characters are found whole).
   const { data: settings } = useSettings()
   const { data: project } = useProject(projectId)
-  const people = faces && (settings?.findBodies ?? false) && !(project?.fastScan ?? false)
+  const people = (settings?.findBodies ?? false) && !(project?.fastScan ?? false) && project?.content !== "anime"
   const retry = (e: React.MouseEvent) => {
     e.stopPropagation()
     commands.mediaRetry(projectId, m.id).catch((err) => toast.error("Couldn't retry", { description: errorMessage(err) }))
@@ -111,15 +112,13 @@ export function StatusCell({ media: m, projectId, faces }: { media: MediaItem; p
       <Check className="size-3.5 text-fg-3" /> <span className="timecode">{(m.shotCount ?? 0).toLocaleString("en-GB")}</span> shots
     </span>
   )
-  if (!faces || m.faces === "ready") {
+  if (m.faces === "ready") {
     return (
       <span className="inline-flex flex-col text-sm">
         {shots}
-        {faces && (
-          <span className="pl-5 text-xs text-fg-3">
-            <span className="timecode">{(m.faceCount ?? 0).toLocaleString("en-GB")}</span> faces
-          </span>
-        )}
+        <span className="pl-5 text-xs text-fg-3">
+          <span className="timecode">{(m.faceCount ?? 0).toLocaleString("en-GB")}</span> faces
+        </span>
         {people && m.bodies && m.bodies !== "ready" && <PeopleLine media={m} onContinue={analyze} />}
       </span>
     )

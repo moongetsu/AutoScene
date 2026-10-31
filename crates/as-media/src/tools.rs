@@ -27,7 +27,8 @@ pub struct Tools {
 const EXE: &str = if cfg!(windows) { ".exe" } else { "" };
 
 /// The demuxers of the containers AutoScene imports (`VIDEO_EXTENSIONS`)
-/// and writes (MP4, MOV and MKV clips, JPEG stills), and the only ones
+/// and writes (MP4, MOV and MKV clips, JPEG stills) and of the character
+/// pictures AniList serves (JPEG, PNG, WebP, GIF), and the only ones
 /// ffprobe uses. A "video" that is really a DASH manifest would otherwise
 /// make it open whatever file the manifest names, a network share's
 /// included (where Windows signs in with the user's credentials); none of
@@ -35,8 +36,7 @@ const EXE: &str = if cfg!(windows) { ".exe" } else { "" };
 /// for an image's name, at most its numbered siblings). Every file is
 /// probed before anything else reads it, so such a file is refused at
 /// import.
-pub const PROBE_FORMATS: &str =
-    "matroska,webm,mov,mp4,m4a,3gp,3g2,mj2,avi,asf,mpegts,mpeg,mpegvideo,flv,ogg,mxf,image2,jpeg_pipe";
+pub const PROBE_FORMATS: &str = "matroska,webm,mov,mp4,m4a,3gp,3g2,mj2,avi,asf,mpegts,mpeg,mpegvideo,flv,ogg,mxf,image2,jpeg_pipe,png_pipe,webp_pipe,gif";
 
 /// FFmpeg 7 is the oldest that works (`-stats_enc_pre {ptsi}`,
 /// `-enc_time_base`); it came with libavcodec 61.

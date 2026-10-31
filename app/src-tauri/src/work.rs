@@ -10,8 +10,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
 use as_api::{
-    AnalysisStage, CastEdit, ContentKind, ExportSummary, JobInfo, JobKind, JobState, MediaItem, MediaStatus,
-    ProxyState, StageState,
+    AnalysisStage, CastEdit, ExportSummary, JobInfo, JobKind, JobState, MediaItem, MediaStatus, ProxyState, StageState,
 };
 use as_core::{MediaId, ProjectId};
 use as_engine::{Devices, EngineError, FacesEvent, FacesInput, ShotsEvent};
@@ -273,25 +272,6 @@ fn record_stage(
     }
 }
 
-/// Characters are looked for in live action and 3D animation. Anime uses
-/// its own detectors and embedder (as_analysis::anime): enabled by the
-/// `AUTOSCENE_ANIME_FACES` environment switch until the anime benchmark's
-/// sealed test releases the feature (see bench/anime).
-fn finds_characters(project: &Project) -> bool {
-    match project.content() {
-        Ok(content) => finds_characters_of(content, as_project::anime_faces_enabled()),
-        _ => true,
-    }
-}
-
-/// Without the switch, anime gives false.
-fn finds_characters_of(content: ContentKind, anime_switch: bool) -> bool {
-    match content {
-        ContentKind::Anime => anime_switch,
-        _ => true,
-    }
-}
-
 /// Media whose faces another embedder found (another model, or the other of
 /// Fast Scan and the full pass) are found again: embeddings of two models
 /// can't be grouped together. Their decisions wait in
@@ -321,9 +301,6 @@ fn refresh_outdated_faces(
 /// older embedder found them, or another search than its footage's (3D
 /// animation is searched harder). Their old faces stay until then.
 pub fn queue_outdated_faces(app: &AppHandle, project: &Arc<Project>) {
-    if !finds_characters(project) {
-        return;
-    }
     match project.faces_by_other_model(project.face_embedder()) {
         Ok(ids) => {
             for id in ids {
@@ -399,17 +376,11 @@ fn submit_analysis(app: &AppHandle, project: &Arc<Project>, media_id: MediaId, o
         record_stage(&state, &shots, |s, e| project.set_shots_state(media_id, s, e));
         notify();
         let result = shots.and_then(|()| {
-            if !finds_characters(&project) {
-                return Ok(());
-            }
             let faces = guarded(|| recorded(|m| m.faces), || run_faces(&app2, &state, &project, media_id, ctx));
             record_stage(&state, &faces, |s, e| project.set_faces_state(media_id, s, e));
             notify();
             faces?;
-            // Anime finds its characters whole: no one is looked for by
-            // their body, however the setting reads.
-            let anime = project.content().map(|c| c == ContentKind::Anime).unwrap_or(false);
-            if !project.finds_bodies() || anime {
+            if !project.finds_bodies() {
                 return Ok(());
             }
             let bodies = guarded(|| recorded(|m| m.bodies), || run_bodies(&app2, &state, &project, media_id, ctx));
@@ -680,14 +651,11 @@ pub fn bodies_setting_changed(app: &AppHandle, on: bool) {
                     continue;
                 }
             };
-            if !finds_characters(&project) {
-                continue;
-            }
             if let Err(e) = project.reassign() {
                 log::warn!("placing the faces of '{}' again: {}", summary.title, e.detail());
             }
             cast_changed(&app, &project);
-            if on {
+            if on && project.finds_bodies() {
                 // A people pass left "running" with nothing running it (a
                 // quit or failed update install mid-way) waits too; one
                 // under way isn't queued again (see `queue_analysis`).
@@ -1137,24 +1105,22 @@ pub fn recover_all(app: &AppHandle) {
         }
         queue_portraits(app, &project);
         let pending = project.pending_shots().and_then(|mut ids| {
-            if finds_characters(&project) {
-                // Faces of an older embedder: their analysis installs the new
-                // one first, then finds them again (see `run_faces`).
-                for id in project.faces_by_other_model(project.face_embedder())? {
+            // Faces of an older embedder: their analysis installs the new
+            // one first, then finds them again (see `run_faces`).
+            for id in project.faces_by_other_model(project.face_embedder())? {
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+            }
+            for id in project.pending_faces()? {
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+            }
+            if project.finds_bodies() {
+                for id in project.pending_bodies()? {
                     if !ids.contains(&id) {
                         ids.push(id);
-                    }
-                }
-                for id in project.pending_faces()? {
-                    if !ids.contains(&id) {
-                        ids.push(id);
-                    }
-                }
-                if project.finds_bodies() {
-                    for id in project.pending_bodies()? {
-                        if !ids.contains(&id) {
-                            ids.push(id);
-                        }
                     }
                 }
             }
@@ -1184,20 +1150,9 @@ pub fn recover_all(app: &AppHandle) {
 mod tests {
     use std::cell::Cell;
 
-    use as_api::{ContentKind, StageState};
+    use as_api::StageState;
 
-    use super::{StageError, Unstarted, failed_message, finds_characters_of, guarded};
-
-    #[test]
-    fn characters_are_found_unless_the_anime_switch_is_off() {
-        assert!(!finds_characters_of(ContentKind::Anime, false));
-        assert!(finds_characters_of(ContentKind::Anime, true));
-        for content in [ContentKind::Live, ContentKind::Animation, ContentKind::Mixed] {
-            for anime in [false, true] {
-                assert!(finds_characters_of(content, anime), "{content:?} anime={anime}");
-            }
-        }
-    }
+    use super::{StageError, Unstarted, failed_message, guarded};
 
     #[test]
     fn a_stage_that_panics_fails_only_while_it_runs() {

@@ -6,8 +6,9 @@ use std::sync::{Arc, LazyLock};
 use std::time::SystemTime;
 
 use as_api::{
-    ClipRequest, ExportItem, ExportPlan, ExportRequest, ExportStatus, ExportSummary, FrameMap, ImportCandidate,
-    MediaItem, MediaStatus, MergedFile, PresetSize, ProjectKind, ProjectSummary, ProxyState, Relink, RelinkSummary,
+    ClipRequest, ContentKind, ExportItem, ExportPlan, ExportRequest, ExportStatus, ExportSummary, FrameMap,
+    ImportCandidate, MediaItem, MediaStatus, MergedFile, PresetSize, ProjectKind, ProjectSummary, ProxyState, Relink,
+    RelinkSummary,
 };
 use as_core::{CancelToken, ExportId, FrameIndex, FrameRange, MediaId, ProjectId};
 use as_db::{IngestRecord, NewExportItem, ProjectDb, Relinked};
@@ -223,7 +224,11 @@ impl Project {
     /// every clustering. Never with Fast Scan, which looks for faces alone
     /// (as the Scener app does).
     pub fn finds_bodies(&self) -> bool {
-        self.find_bodies.load(Ordering::Relaxed) && !self.fast_scan()
+        // Anime finds its characters whole: no one is looked for by their
+        // body, however the setting reads.
+        self.find_bodies.load(Ordering::Relaxed)
+            && !self.fast_scan()
+            && !matches!(self.content(), Ok(ContentKind::Anime))
     }
 
     /// Whether this project's faces are found with Fast Scan (the way the

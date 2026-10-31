@@ -84,7 +84,8 @@ impl Project {
     /// it, and so does how hard faces are searched for: faces found before a
     /// move to or from 3D animation are found again (see
     /// [`Project::faces_by_other_model`]). Anime is analysed differently from
-    /// the start (shots, no faces), so a project never moves to or from it.
+    /// the start (its own pass, see `as_analysis::anime`), so a project never
+    /// moves to or from it.
     /// Returns whether it changed; then the cast is grouped again by the next
     /// upkeep (see [`Project::cast_upkeep`]).
     pub fn set_content(&self, content: ContentKind) -> ProjectResult<bool> {
@@ -239,7 +240,6 @@ pub(crate) mod tests {
             find_bodies: false,
             fast_scan: false,
             anilist: false,
-            anime_characters: false,
         })
         .unwrap();
         let file = dir.path().join("Show - 01.mkv");

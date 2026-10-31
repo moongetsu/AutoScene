@@ -75,8 +75,10 @@ pub async fn anilist_reject(state: State<'_, AppState>, project_id: ProjectId, m
 
 /// Match the confirmed series' cast portraits to the project's
 /// characters: every portrait is embedded by the engine (CCIP), then
-/// matched against the cast's faces. When `anilist.auto` is on, the names
-/// are given at once.
+/// matched against the cast's faces. A portrait the engine fails on is
+/// left out (only when it fails on all of them is that an error); an engine
+/// that won't start, crashed or was cancelled stops the match at once. When
+/// `anilist.auto` is on, the names are given at once.
 #[tauri::command]
 #[specta::specta]
 pub async fn anilist_suggest(state: State<'_, AppState>, project_id: ProjectId) -> AppResult<AniListSuggestions> {
@@ -86,12 +88,28 @@ pub async fn anilist_suggest(state: State<'_, AppState>, project_id: ProjectId) 
         let cancel = CancelToken::new();
         let cast = lib.anilist_cast(project_id, &cancel)?;
         let mut portraits = Vec::with_capacity(cast.len());
+        let mut failed = None;
         for member in cast {
             let Some(image) = &member.image else { continue };
-            let emb = engine
-                .embed(image.clone(), &cancel)
-                .map_err(|e| as_project::ProjectError::Invalid(format!("embedding the portrait: {}", e.detail())))?;
-            portraits.push((member, emb));
+            match engine.embed(image.clone(), &cancel) {
+                Ok(emb) => portraits.push((member, emb)),
+                Err(e @ as_engine::EngineError::Failed { .. }) => {
+                    log::warn!(
+                        "anilist: the portrait of character {} wasn't read: {}",
+                        member.character.id,
+                        e.detail()
+                    );
+                    failed.get_or_insert(e);
+                }
+                Err(e) => {
+                    return Err(
+                        as_project::ProjectError::Invalid(format!("embedding the portraits: {}", e.detail())).into()
+                    );
+                }
+            }
+        }
+        if let Some(e) = failed.filter(|_| portraits.is_empty()) {
+            return Err(as_project::ProjectError::Invalid(format!("embedding the portraits: {}", e.detail())).into());
         }
         let project = lib.project(project_id)?;
         let (rev, names, merges) = project.anilist_suggest(&portraits)?;
