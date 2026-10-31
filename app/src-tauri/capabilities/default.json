@@ -5,7 +5,10 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "opener:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "https://github.com/*" }]
+    },
     "dialog:allow-open",
     "dialog:allow-save",
     "dialog:allow-message",

@@ -73,6 +73,8 @@ export function ContributorsSection() {
                   alt={c.name}
                   className="size-8 shrink-0 rounded-full border border-white/[0.1] bg-white/[0.05] object-cover"
                   loading="lazy"
+                  // Offline: the empty circle stays, not a broken picture.
+                  onError={(e) => (e.currentTarget.style.visibility = "hidden")}
                 />
                 <div>
                   <span className="font-medium text-fg-1">{c.name}</span>
