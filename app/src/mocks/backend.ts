@@ -939,7 +939,8 @@ const handlers: Record<string, Handler> = {
   export_default_dir: ({ projectId }) => `${settings.libraryRoot}\\Exports\\${find(projectId).title}`,
   export_start: ({ projectId, req }) => startExport(find(projectId), req as ExportRequest),
   export_plan: ({ projectId, clips }) => exportPlan(find(projectId), clips as ClipRequest[]),
-  exports_list: ({ projectId }) => find(projectId).exports,
+  // A copy, as IPC hands one over: the same array changed in place reads as unchanged.
+  exports_list: ({ projectId }) => structuredClone(find(projectId).exports),
   pack_get: ({ projectId, characterId }) => packGet(find(projectId).id, String(characterId)),
   pack_save: ({ projectId, characterId, pack }) => {
     packSave(find(projectId).id, String(characterId), pack as PackState)
