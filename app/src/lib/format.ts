@@ -45,3 +45,8 @@ export function formatEta(ms: number | null | undefined): string {
   const m = Math.round(s / 60)
   return m < 60 ? `about ${m} min left` : `about ${Math.round(m / 6) / 10} h left`
 }
+
+/** A job's remaining time and progress, each when known: "about 3 min left · 40%". */
+export function formatProgress(progress: number | null | undefined, etaMs: number | null | undefined): string {
+  return [formatEta(etaMs), formatPercent(progress)].filter(Boolean).join(" · ")
+}

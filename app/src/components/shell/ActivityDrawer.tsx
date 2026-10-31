@@ -28,7 +28,7 @@ import { EmptyState } from "@/components/ui/empty-state"
 import { Progress } from "@/components/ui/progress"
 import { Sheet, SheetContent } from "@/components/ui/sheet"
 import { Tooltip, TruncatedText } from "@/components/ui/tooltip"
-import { formatEta, formatPercent } from "@/lib/format"
+import { formatProgress } from "@/lib/format"
 import { commands, errorMessage } from "@/lib/ipc"
 import { copyText } from "@/lib/os"
 import { cn } from "@/lib/utils"
@@ -218,9 +218,7 @@ function JobRow({ job: j }: { job: JobInfo }) {
               <Progress value={j.state === "running" ? j.progress : null} />
               <div className="mt-1.5 flex justify-between gap-2 text-xs text-fg-3">
                 <span className="truncate">{j.state === "queued" ? "Waiting" : (j.stage ?? "Working")}</span>
-                <span className="timecode shrink-0">
-                  {[formatEta(j.etaMs), formatPercent(j.progress)].filter(Boolean).join(" · ")}
-                </span>
+                <span className="timecode shrink-0">{formatProgress(j.progress, j.etaMs)}</span>
               </div>
             </div>
           )}

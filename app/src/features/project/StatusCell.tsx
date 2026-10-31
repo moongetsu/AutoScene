@@ -3,7 +3,7 @@ import { toast } from "sonner"
 import type { JobInfo, MediaItem } from "@/bindings"
 import { Progress } from "@/components/ui/progress"
 import { Tooltip } from "@/components/ui/tooltip"
-import { formatPercent } from "@/lib/format"
+import { formatEta, formatPercent } from "@/lib/format"
 import { commands, errorMessage } from "@/lib/ipc"
 import { cancelJob, cancelLabel } from "@/lib/jobs"
 import { useProject, useSettings } from "@/lib/queries"
@@ -70,6 +70,7 @@ export function StatusCell({ media: m, projectId }: { media: MediaItem; projectI
     )
   }
   if (job && job.state === "running") {
+    const eta = formatEta(job.etaMs)
     return (
       <div className="flex items-center gap-1.5">
         <div className="flex w-36 flex-col gap-1.5">
@@ -78,6 +79,7 @@ export function StatusCell({ media: m, projectId }: { media: MediaItem; projectI
             <span className="timecode shrink-0">{formatPercent(job.progress)}</span>
           </div>
           <Progress value={job.progress} />
+          {eta && <span className="tabular text-xs text-fg-3">{eta}</span>}
         </div>
         <Tooltip label={cancelLabel(job.kind)}>
           <button

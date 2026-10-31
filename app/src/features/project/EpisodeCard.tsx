@@ -7,7 +7,7 @@ import { ContextArea } from "@/components/ui/context-area"
 import { contextKit } from "@/components/ui/menu-actions"
 import { ProgressRing } from "@/components/ui/progress"
 import { Tooltip } from "@/components/ui/tooltip"
-import { formatDuration } from "@/lib/format"
+import { formatDuration, formatEta } from "@/lib/format"
 import { cancelJob, cancelLabel } from "@/lib/jobs"
 import { releaseTitle } from "@/lib/media"
 import { cn } from "@/lib/utils"
@@ -30,6 +30,7 @@ export function EpisodeCard({
 }) {
   const job = useMediaJob(m.id)
   const working = job && job.state === "running"
+  const eta = formatEta(job?.etaMs)
   const broken = m.status === "missing" || m.status === "failed"
   return (
     <ContextArea menu={<EpisodeItems kit={contextKit} projectId={pid} media={m} onOpen={onOpen} onRemove={onRemove} />}>
@@ -91,6 +92,7 @@ export function EpisodeCard({
                 <span className="timecode text-xs font-semibold tracking-wider text-fg-1">
                   {job.progress != null ? `${Math.round(job.progress * 100)}%` : "Working…"}
                 </span>
+                {eta && <span className="tabular text-xs text-fg-2">· {eta}</span>}
               </div>
               <Tooltip label={cancelLabel(job.kind)}>
                 <button

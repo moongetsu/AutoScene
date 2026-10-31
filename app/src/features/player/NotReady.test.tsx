@@ -43,9 +43,10 @@ afterEach(() => {
 })
 
 describe("the player while an episode isn't ready", () => {
-  it("cancels the indexing it waits for", () => {
-    useActivity.getState().replaceAll([job({ id: "ingest" })])
+  it("cancels the indexing it waits for, and says how long it has left", () => {
+    useActivity.getState().replaceAll([job({ id: "ingest", etaMs: 150_000 })])
     show(episode({ status: "indexing" }))
+    expect(screen.getByText("about 3 min left · 40%")).toBeTruthy()
     fireEvent.click(screen.getByRole("button", { name: /Cancel indexing/ }))
     expect(commands.jobCancel).toHaveBeenCalledWith("ingest")
   })

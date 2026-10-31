@@ -124,6 +124,18 @@ describe("StatusCell", () => {
     expect(screen.queryByRole("button", { name: "Cancel analysis" })).toBeNull()
   })
 
+  it("tells the time left beside the progress, once there is an estimate", async () => {
+    useActivity.getState().replaceAll([job({ etaMs: 150_000 })])
+    const { unmount } = render(<StatusCell media={episode("pending")} projectId="p" />, { wrapper })
+    expect(await screen.findByText("about 3 min left")).toBeTruthy()
+    expect(screen.getByText("40%")).toBeTruthy()
+    unmount()
+    useActivity.getState().replaceAll([job({ etaMs: null, rev: 2 })])
+    render(<StatusCell media={episode("pending")} projectId="p" />, { wrapper })
+    expect(screen.getByText("40%")).toBeTruthy()
+    expect(screen.queryByText(/left/)).toBeNull()
+  })
+
   it("cancels an indexing that waits its turn", async () => {
     useActivity.getState().replaceAll([job({ id: "ingest", kind: "ingest", state: "queued", progress: null })])
     render(<StatusCell media={{ id: "m", status: "queued", shots: "pending" } as MediaItem} projectId="p" />, { wrapper })

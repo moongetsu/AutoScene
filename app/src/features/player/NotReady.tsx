@@ -6,7 +6,7 @@ import type { MediaItem } from "@/bindings"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { locateFile } from "@/features/project/relink"
-import { formatPercent } from "@/lib/format"
+import { formatProgress } from "@/lib/format"
 import { commands, errorMessage, isAppError } from "@/lib/ipc"
 import { cancelJob, cancelLabel } from "@/lib/jobs"
 import { assetUrl } from "@/lib/media"
@@ -79,9 +79,9 @@ export function NotReady({
         {job && (
           <div className="mt-6 w-full">
             <Progress value={job.state === "running" ? job.progress : null} />
-            <div className="mt-2 flex justify-between text-xs text-fg-3">
-              <span>{job.state === "queued" ? "Waiting…" : (job.stage ?? "")}</span>
-              <span className="timecode">{formatPercent(job.progress)}</span>
+            <div className="mt-2 flex justify-between gap-2 text-xs text-fg-3">
+              <span className="truncate">{job.state === "queued" ? "Waiting…" : (job.stage ?? "")}</span>
+              <span className="timecode shrink-0">{formatProgress(job.progress, job.etaMs)}</span>
             </div>
             <Button className="mt-5" size="sm" onClick={() => cancelJob(job)}>
               <X /> {cancelLabel(job.kind)}
