@@ -129,3 +129,84 @@ export function CharacterCard({
     </ContextArea>
   )
 }
+
+/** A compact row for list view: avatar thumbnail, name, screen time, shots. */
+export function CharacterRow({
+  pid,
+  character: c,
+  onRename,
+  onChoosePicture,
+  selected = false,
+  onPick,
+  onSelect,
+  selectionMenu,
+}: {
+  pid: string
+  character: Character
+  onRename?: () => void
+  onChoosePicture?: () => void
+  selected?: boolean
+  onPick?: (e: React.MouseEvent) => boolean
+  onSelect?: () => void
+  selectionMenu?: React.ReactNode
+}) {
+  const refinding = c.tracks === 0 && c.waiting > 0
+  const menu =
+    selected && selectionMenu ? (
+      selectionMenu
+    ) : (
+      <>
+        <CharacterItems kit={contextKit} pid={pid} character={c} onRename={onRename} onChoosePicture={onChoosePicture} />
+        {onSelect && (
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuItem onSelect={onSelect}>
+              <CheckCircle /> Select
+            </ContextMenuItem>
+          </>
+        )}
+      </>
+    )
+
+  return (
+    <ContextArea menu={menu}>
+      <Link
+        to="/p/$pid/cast/$cid"
+        params={{ pid, cid: c.id }}
+        onClickCapture={(e) => {
+          if (onPick?.(e)) e.preventDefault()
+        }}
+        className={cn(
+          "group flex items-center justify-between gap-4 rounded-xl px-4 py-2.5 transition-colors hover:bg-white/[0.04]",
+          selected && "bg-accent/10 ring-1 ring-accent",
+          refinding && "opacity-60",
+        )}
+      >
+        <div className="flex min-w-0 items-center gap-3.5">
+          <Artwork
+            path={c.coverSmall ?? c.cover}
+            className="size-10 shrink-0 rounded-lg picture-edge"
+            fallback={
+              <div className="flex size-full items-center justify-center artwork-fallback text-fg-3 [&_svg]:size-5">
+                <User />
+              </div>
+            }
+          />
+          <div className="min-w-0">
+            <div className={cn("truncate text-md font-medium", c.name ? "text-fg-1" : "text-fg-2 italic")}>
+              {c.label}
+            </div>
+            <div className="text-xs text-fg-3">
+              {refinding ? "Being found again…" : `${formatScreenTime(c.screenSec ?? 0)} · ${plural(c.shots, "shot")}`}
+            </div>
+          </div>
+        </div>
+        {c.unsure > 0 && (
+          <span className="flex items-center gap-1.5 rounded-full border border-accent-line bg-accent-subtle px-2.5 py-0.5 text-xs font-semibold text-accent">
+            {c.unsure} to review
+          </span>
+        )}
+      </Link>
+    </ContextArea>
+  )
+}

@@ -12,10 +12,40 @@ import {
   pictureChoices,
   plural,
   setHiddenAll,
+  splitTiers,
   unplacedNote,
 } from "./cast"
 
 describe("cast wording", () => {
+  it("splits main and supporting characters", () => {
+    const chars: Character[] = [
+      { id: "1", label: "Hero", name: "Patrick Jane", screenSec: 840, shots: 415, tracks: 1, media: 1, waiting: 0, unsure: 0, hidden: false, cover: null, coverSmall: null },
+      { id: "2", label: "Character 2", name: null, screenSec: 120, shots: 50, tracks: 1, media: 1, waiting: 0, unsure: 0, hidden: false, cover: null, coverSmall: null },
+      { id: "3", label: "Character 3", name: null, screenSec: 15, shots: 5, tracks: 1, media: 1, waiting: 0, unsure: 0, hidden: false, cover: null, coverSmall: null },
+    ]
+    const { main, supporting } = splitTiers(chars)
+    expect(main.length).toBe(3)
+    expect(supporting.length).toBe(0)
+
+    const manyChars = Array.from({ length: 15 }, (_, i) => ({
+      id: `${i}`,
+      label: `Char ${i}`,
+      name: i === 0 ? "Named" : null,
+      screenSec: i === 1 ? 90 : 20,
+      shots: 10,
+      tracks: 1,
+      media: 1,
+      waiting: 0,
+      unsure: 0,
+      hidden: false,
+      cover: null,
+      coverSmall: null,
+    }))
+    const res = splitTiers(manyChars)
+    expect(res.main.length).toBe(2)
+    expect(res.supporting.length).toBe(13)
+  })
+
   it("says screen time the way people do", () => {
     expect([0, 42.4, 61, 59 * 60, 3725].map(formatScreenTime)).toEqual(["0 s", "42 s", "1 min", "59 min", "1 h 02 min"])
   })
