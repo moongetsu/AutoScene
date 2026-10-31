@@ -184,8 +184,12 @@ impl Runtime {
             #[cfg(windows)]
             Device::DirectMl => {
                 // DirectML needs sequential execution without memory patterns.
+                // The fastest GPU, not adapter 0: on a laptop that is often
+                // the integrated one, with the dedicated GPU left idle.
+                let dml = ort::ep::DirectML::default()
+                    .with_performance_preference(ort::ep::directml::PerformancePreference::HighPerformance);
                 b = b
-                    .with_execution_providers([ort::ep::DirectML::default().build().error_on_failure()])
+                    .with_execution_providers([dml.build().error_on_failure()])
                     .map_err(|e| err(e.to_string()))?
                     .with_memory_pattern(false)
                     .map_err(|e| err(e.to_string()))?
