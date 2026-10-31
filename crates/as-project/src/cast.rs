@@ -62,6 +62,22 @@ pub(crate) const GROUPED_WITH: &str = "identity_version";
 /// The `meta` key of the face space the cast was last grouped in
 /// ([`as_identity::Space`], hex): decisions place faces in the same one.
 const GROUPED_IN: &str = "identity_space";
+/// The `meta` key of the [`COVER_RULE`] the characters' pictures were last
+/// picked by: a cast whose pictures were picked by an older one, or never
+/// (grouped before they were), has them picked again on the upkeep worker.
+const COVERS_PICKED: &str = "covers_picked";
+/// How characters' pictures are picked (see [`cover`]); counts up when that
+/// changes.
+const COVER_RULE: u32 = 1;
+/// A face is typical of a character (see [`cover`]) when it is at most this
+/// many times as far (1 − cosine) from their other clear faces as the median
+/// one. On the user's Demon Slayer episode, Breaking Bad S01E01 (by its hand
+/// labels), The Blacklist and Miraculous, 1.25 left out the covers showing
+/// someone else or the back of a head and kept the others; 1.1 also left out
+/// faces about as typical as the median one in groups of four.
+const COVER_FAR: f32 = 1.25;
+/// ... give or take what embeddings stored as f16 can't tell apart.
+const COVER_SLACK: f32 = 1e-3;
 
 /// Set (in `meta`) while a media's decisions wait for faces from another
 /// file than the one they were made on.
@@ -429,33 +445,105 @@ fn anchors(faces: &[OwnFace], n: usize, p: &Params) -> Vec<i64> {
         .collect();
     let clear: Vec<&(&OwnFace, Vec<f32>)> = readable.iter().filter(|(f, _)| f.quality >= p.core_quality).collect();
     let faces: Vec<&(&OwnFace, Vec<f32>)> = if clear.is_empty() { readable.iter().collect() } else { clear };
-    let Some(dim) = faces.first().map(|(_, e)| e.len()) else { return Vec::new() };
-    let mut sum = vec![0f32; dim];
-    for (_, e) in &faces {
-        sum.iter_mut().zip(e).for_each(|(s, x)| *s += x);
+    if faces.is_empty() {
+        return Vec::new();
     }
-    let sum2: f32 = sum.iter().map(|x| x * x).sum();
-    // How like the others each face is: its cosine to their mean (the rest
-    // of the sum). A face alone has nothing against it.
-    let like: Vec<f32> = if faces.len() == 1 {
-        vec![1.0]
-    } else {
-        faces
-            .iter()
-            .map(|(_, e)| {
-                let d: f32 = e.iter().zip(&sum).map(|(x, s)| x * s).sum();
-                let rest = (sum2 - 2.0 * d + 1.0).max(0.0).sqrt();
-                ((d - 1.0) / rest.max(1e-6)).clamp(-1.0, 1.0)
-            })
-            .collect()
-    };
-    let mut sorted = like.clone();
-    sorted.sort_by(f32::total_cmp);
-    let bar = sorted[(sorted.len() - 1) / 2].max(p.assign);
+    let like = likeness(&faces.iter().map(|(_, e)| e.as_slice()).collect::<Vec<_>>());
+    let bar = median(&like).max(p.assign);
     let mut chosen: Vec<usize> = (0..faces.len()).filter(|&i| !faces[i].0.pinned && like[i] >= bar).collect();
     // Sharpest first; of faces alike (a quality of 1 is common), the most typical.
     chosen.sort_by(|&a, &b| faces[b].0.quality.total_cmp(&faces[a].0.quality).then(like[b].total_cmp(&like[a])));
     chosen.into_iter().take(n).map(|i| faces[i].0.id).collect()
+}
+
+/// How like the others each of `faces` (unit length) is: its cosine to
+/// their mean (the rest of their sum). A face alone has nothing against it.
+fn likeness(faces: &[&[f32]]) -> Vec<f32> {
+    let Some(dim) = faces.first().map(|e| e.len()) else { return Vec::new() };
+    if faces.len() == 1 {
+        return vec![1.0];
+    }
+    let mut sum = vec![0f32; dim];
+    for e in faces {
+        sum.iter_mut().zip(e.iter()).for_each(|(s, x)| *s += x);
+    }
+    let sum2: f32 = sum.iter().map(|x| x * x).sum();
+    faces
+        .iter()
+        .map(|e| {
+            let d: f32 = e.iter().zip(&sum).map(|(x, s)| x * s).sum();
+            let rest = (sum2 - 2.0 * d + 1.0).max(0.0).sqrt();
+            ((d - 1.0) / rest.max(1e-6)).clamp(-1.0, 1.0)
+        })
+        .collect()
+}
+
+/// The lower median of `x` (not empty).
+fn median(x: &[f32]) -> f32 {
+    let mut sorted = x.to_vec();
+    sorted.sort_by(f32::total_cmp);
+    sorted[(sorted.len() - 1) / 2]
+}
+
+/// One of a character's own faces (pinned or automatic, not named by its
+/// body) as their picture is picked from them (see [`cover`]).
+#[derive(Clone, Copy, Debug)]
+struct CoverFace<'a> {
+    id: i64,
+    pinned: bool,
+    quality: f32,
+    face_h: f32,
+    rival: f32,
+    /// Unit length.
+    emb: &'a [f32],
+}
+
+/// The face a character's picture shows when the user chose none: of their
+/// typical faces, the clearest big one no other face crowds — as the cast
+/// orders faces where none was picked (`as_db`'s `COVER`: alone in the
+/// picture, big, sharp, bigger; of faces alike, the first automatic one,
+/// else the first pinned). Their clear faces (as clear as a face that
+/// defines a character; all of them when none is) are measured against
+/// each other as for [`anchors`]; a typical one is at most [`COVER_FAR`]
+/// times as far from the others as the median one. Someone else's face
+/// grouped with the character, however sharp and big (an eyecatch of
+/// another character, a guest), or one that hardly shows them (the back of
+/// their head) sits farther. `None` without a face.
+fn cover(faces: &[CoverFace], p: &Params) -> Option<i64> {
+    let clear: Vec<&CoverFace> = faces.iter().filter(|f| f.quality >= p.core_quality).collect();
+    let faces: Vec<&CoverFace> = if clear.is_empty() { faces.iter().collect() } else { clear };
+    if faces.is_empty() {
+        return None;
+    }
+    let like = likeness(&faces.iter().map(|f| f.emb).collect::<Vec<_>>());
+    let bar = 1.0 - COVER_FAR * (1.0 - median(&like)) - COVER_SLACK;
+    let alone = |f: &CoverFace| f.rival < 0.5;
+    let big = |f: &CoverFace| f64::from(f.face_h) >= 0.12;
+    faces
+        .iter()
+        .zip(&like)
+        .filter(|&(_, &l)| l >= bar)
+        .map(|(f, _)| *f)
+        .min_by(|a, b| {
+            alone(b)
+                .cmp(&alone(a))
+                .then(big(b).cmp(&big(a)))
+                .then(b.quality.total_cmp(&a.quality))
+                .then(b.face_h.total_cmp(&a.face_h))
+                .then(a.pinned.cmp(&b.pinned))
+                .then(a.id.cmp(&b.id))
+        })
+        .map(|f| f.id)
+}
+
+/// The face picked for each character's picture (see [`cover`]) from
+/// `faces`, each `(whose, face)`.
+fn covers<'a>(faces: impl IntoIterator<Item = (CharacterId, CoverFace<'a>)>, p: &Params) -> Vec<(CharacterId, i64)> {
+    let mut theirs: HashMap<CharacterId, Vec<CoverFace>> = HashMap::new();
+    for (c, f) in faces {
+        theirs.entry(c).or_default().push(f);
+    }
+    theirs.into_iter().filter_map(|(c, faces)| Some((c, cover(&faces, p)?))).collect()
 }
 
 impl Project {
@@ -629,21 +717,68 @@ impl Project {
     /// Whether the cast should be gone over on the upkeep worker (see
     /// [`Self::cast_upkeep`]).
     pub fn cast_needs_upkeep(&self) -> ProjectResult<bool> {
-        Ok(self.grouped_by_older_version()? || !self.db().media_without_rivals()?.is_empty())
+        Ok(self.grouped_by_older_version()?
+            || !self.db().media_without_rivals()?.is_empty()
+            || self.covers_picked_before()?)
     }
 
     /// Bring a cast made by an older version up to date: faces whose
-    /// portraits weren't looked at for other faces are, and a cast grouped
-    /// by an older version of the grouping is grouped again (the user's
-    /// decisions stay). Returns the number of characters when it was
-    /// grouped again.
+    /// portraits weren't looked at for other faces are, a cast grouped by an
+    /// older version of the grouping is grouped again (the user's decisions
+    /// stay), and the pictures of one grouped before they were picked as
+    /// they are now are picked again. Returns the number of characters when
+    /// it was grouped again.
     pub fn cast_upkeep(&self, cancel: &CancelToken) -> ProjectResult<Option<usize>> {
         let looked = self.fill_rivals(cancel)?;
         if looked > 0 {
             tracing::info!(project = %self.id, tracks = looked, "portraits looked at for other faces");
         }
         cancel.check().map_err(|_| ProjectError::Cancelled)?;
-        if self.grouped_by_older_version()? { self.recluster().map(Some) } else { Ok(None) }
+        if self.grouped_by_older_version()? {
+            return self.recluster().map(Some);
+        }
+        if self.covers_picked_before()? && self.pick_covers()? {
+            tracing::info!(project = %self.id, "character pictures picked again");
+        }
+        Ok(None)
+    }
+
+    /// Whether the characters' pictures were picked by an older
+    /// [`COVER_RULE`], or never (a cast grouped before they were).
+    fn covers_picked_before(&self) -> ProjectResult<bool> {
+        let (_, _, media_with_faces, _) = self.db().cast_counts()?;
+        // A newer rule's pictures are never picked again by an older one.
+        let picked = self.db().meta(COVERS_PICKED)?.and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
+        Ok(media_with_faces > 0 && picked < COVER_RULE)
+    }
+
+    /// Pick every character's picture (see [`cover`]) from the faces they
+    /// have now. Returns whether it did: not when the cast changed meanwhile
+    /// (that change groups it again, which picks them).
+    fn pick_covers(&self) -> ProjectResult<bool> {
+        let rev = self.db().cast_rev()?;
+        let rows = self.db().identity_tracks()?;
+        let embs: Vec<Option<Vec<f32>>> = rows
+            .iter()
+            .map(|r| tracks::embedding_from_bytes(&r.emb).filter(|e| e.iter().all(|x| x.is_finite())))
+            .collect();
+        let own = rows.iter().zip(&embs).filter_map(|(r, emb)| {
+            let pinned = r.assign == TrackAssign::Pinned;
+            if !(pinned || r.assign == TrackAssign::Auto) || r.via_body {
+                return None;
+            }
+            let face = CoverFace {
+                id: r.id,
+                pinned,
+                quality: r.quality,
+                face_h: r.face_h,
+                rival: r.rival,
+                emb: emb.as_deref()?,
+            };
+            Some((r.character_id?, face))
+        });
+        let covers = covers(own, &self.identity_params()?);
+        Ok(self.db().set_picked_covers(rev, &covers, &[(COVERS_PICKED, &COVER_RULE.to_string())])?)
     }
 
     // -- face pass ----------------------------------------------------------
@@ -1132,7 +1267,24 @@ impl Project {
         let bodies = people.as_ref().map(|(b, o)| crate::bodies::body_updates(b, o, &ids)).unwrap_or_default();
         let joined: Vec<(CharacterId, CharacterId)> =
             out.absorbed.iter().map(|&(k, c)| (cast.existing[k as usize], ids[c])).collect();
-        if !self.db().apply_identity_noting(rev, &new, &updates, &bodies, &joined, meta)? {
+        // The characters' pictures, from their own faces as stored: a pin
+        // stays as it is, a face named by its body is no one's own.
+        let own = cast.rows.iter().zip(&out.tracks).enumerate().filter_map(|(i, (&row, &(a, _)))| {
+            let r = &rows[row];
+            let (c, pinned) = match a {
+                _ if r.assign == TrackAssign::Pinned => (r.character_id?, true),
+                _ if named.contains_key(&i) => return None,
+                Assign::Auto(c) => (ids[c], false),
+                Assign::Pinned(c) => (ids[c], true),
+                Assign::Unsure(_) | Assign::None => return None,
+            };
+            let emb = &cast.tracks[i].embedding;
+            Some((c, CoverFace { id: r.id, pinned, quality: r.quality, face_h: r.face_h, rival: r.rival, emb }))
+        });
+        let covers = covers(own, &self.identity_params()?);
+        let rule = COVER_RULE.to_string();
+        let meta: Vec<(&str, &str)> = meta.iter().copied().chain([(COVERS_PICKED, rule.as_str())]).collect();
+        if !self.db().apply_identity_noting(rev, &new, &updates, &bodies, &joined, &covers, &meta)? {
             return Ok(None);
         }
         if !joined.is_empty() {
@@ -1527,9 +1679,13 @@ pub(crate) mod tests {
         assert!(!project.cast_needs_upkeep().unwrap());
 
         // A cast from before: grouped by an older version, no portrait looked
-        // at for other faces.
+        // at for other faces, no picture picked.
         let db = rusqlite::Connection::open(project.dir.join(crate::project::PROJECT_DB)).unwrap();
-        db.execute_batch("UPDATE tracks SET rival = NULL; DELETE FROM meta WHERE key = 'identity_version';").unwrap();
+        db.execute_batch(
+            "UPDATE tracks SET rival = NULL;
+             DELETE FROM meta WHERE key IN ('identity_version', 'covers_picked') OR key GLOB 'picked_cover:*';",
+        )
+        .unwrap();
         drop(db);
         assert_eq!(cover(&project), shows(behind));
         assert!(project.cast_needs_upkeep().unwrap());
@@ -1819,6 +1975,116 @@ pub(crate) mod tests {
         let unreadable = [own(9, false, 1.0, vec![0; 3]), own(1, false, 0.7, look(1, 10, 0.2))];
         assert_eq!(anchors(&unreadable, 5, &Params::default()), [1]);
         assert!(anchors(&[], 5, &Params::default()).is_empty());
+    }
+
+    #[test]
+    fn a_cover_is_the_clearest_big_face_of_the_typical_ones() {
+        let looks: Vec<Vec<f32>> =
+            [(1, 10, 0.2), (1, 11, 0.1), (1, 12, 0.15), (1, 13, 0.05), (2, 14, 0.1), (1, 15, 0.9)]
+                .iter()
+                .map(|&(who, toward, by)| tracks::embedding_from_bytes(&look(who, toward, by)).unwrap())
+                .collect();
+        let face = |id: usize, quality, face_h, rival| CoverFace {
+            id: id as i64,
+            pinned: false,
+            quality,
+            face_h,
+            rival,
+            emb: &looks[id],
+        };
+        let p = Params::default();
+        // Jesse in his looks; the biggest, sharpest faces of all are a SWAT
+        // officer's grouped with him (4) and the back of his head (5).
+        let mut faces = [
+            face(0, 0.9, 0.30, 0.0),
+            face(1, 0.9, 0.20, 0.0),
+            face(2, 0.8, 0.50, 0.0),
+            face(3, 0.95, 0.25, 0.0),
+            face(4, 1.0, 0.60, 0.0),
+            face(5, 1.0, 0.70, 0.0),
+        ];
+        assert_eq!(cover(&faces, &p), Some(3), "the sharpest of his own");
+        // Of those, one no other face crowds; a big one before a small one.
+        faces[3].rival = 0.6;
+        assert_eq!(cover(&faces, &p), Some(0));
+        faces[0].face_h = 0.1;
+        assert_eq!(cover(&faces, &p), Some(1));
+        // A blurry face is no cover while there is a clear one; all blurry,
+        // they are measured.
+        let mut with_blurry = faces.to_vec();
+        with_blurry.push(CoverFace { id: 6, quality: 0.3, face_h: 0.9, ..faces[1] });
+        assert_eq!(cover(&with_blurry, &p), Some(1));
+        let all_blurry: Vec<CoverFace> = faces.iter().map(|&f| CoverFace { quality: f.quality * 0.3, ..f }).collect();
+        assert_eq!(cover(&all_blurry, &p), Some(1));
+
+        // Faces alike (identical, or as alike as f16 tells): the clearest big
+        // one, as the cast orders them where none is picked; of faces equal
+        // in that, the first automatic one, else the first pinned.
+        let same = &looks[0];
+        let alike = |id, pinned, face_h| CoverFace { id, pinned, quality: 1.0, face_h, rival: 0.0, emb: same };
+        assert_eq!(cover(&[alike(7, false, 0.2), alike(8, false, 0.3), alike(9, false, 0.3)], &p), Some(8));
+        assert_eq!(cover(&[alike(7, true, 0.3), alike(8, true, 0.3), alike(9, false, 0.3)], &p), Some(9));
+        assert_eq!(cover(&[alike(9, true, 0.3), alike(8, true, 0.3)], &p), Some(8));
+        // Two faces can't tell whose is the odd one out; one face is theirs; none, no cover.
+        assert_eq!(cover(&[faces[4], faces[1]], &p), Some(4));
+        assert_eq!(cover(&faces[5..], &p), Some(5));
+        assert_eq!(cover(&[], &p), None);
+        // Per character.
+        let (a, b) = (CharacterId::new(), CharacterId::new());
+        let mut picked = covers([(a, faces[1]), (b, faces[4]), (a, faces[2]), (a, faces[4])], &p);
+        picked.sort_by_key(|&(c, _)| c != a);
+        assert_eq!(picked, [(a, 1), (b, 4)]);
+    }
+
+    #[test]
+    fn a_cover_shows_the_character_never_a_stray_face_grouped_with_them() {
+        let frames = 1000;
+        let (_dir, project, id) = project_with_media(frames);
+        // Person 1 in four shots; person 2 once, sharper and bigger than any
+        // of their faces.
+        let mut found: Vec<FaceTrack> = (0..4).map(|k| face(1, k * 100, 0.1 + 0.1 * k as f32, 0.9)).collect();
+        let mut stranger = face(2, 400, 0.1, 1.0);
+        stranger.dets.iter_mut().for_each(|d| d.bbox = [0.1, 0.1, 0.4, 0.8]);
+        found.push(stranger);
+        project.store_face_chunk(id, 0, frames, &tracks::encode(&found), &[], &[]).unwrap();
+        project.finish_faces(id).unwrap();
+        assert_eq!(project.recluster().unwrap(), 1);
+        let stranger = project.cast_tracks(TrackFilter::Unassigned).unwrap().remove(0);
+        assert_eq!(stranger.start, 400);
+        let shows = |track: u32| project.thumb_path(id, i64::from(track)).display().to_string();
+        let cover = || project.cast().unwrap().characters[0].cover_small.clone().unwrap();
+        let theirs = project.cast().unwrap().characters[0].id;
+        let first = cover();
+        assert!(project.cast_tracks(TrackFilter::Character(theirs)).unwrap().iter().any(|t| shows(t.id) == first));
+
+        // The stranger's face put with them: it never shows.
+        let edit = CastEdit::Assign { tracks: vec![stranger.id], character_id: theirs };
+        project.cast_edit(&edit).unwrap();
+        project.reassign().unwrap();
+        assert_eq!(project.cast().unwrap().characters[0].tracks, 5);
+        assert_eq!(cover(), first);
+        // (By the clearest big face alone, it would.)
+        let db = rusqlite::Connection::open(project.dir.join(crate::project::PROJECT_DB)).unwrap();
+        let unpicked = "DELETE FROM meta WHERE key = 'covers_picked' OR key GLOB 'picked_cover:*';";
+        db.execute_batch(unpicked).unwrap();
+        assert_eq!(cover(), shows(stranger.id));
+        // A cast grouped before pictures were picked gets them on the upkeep worker, once.
+        assert!(project.cast_needs_upkeep().unwrap());
+        assert_eq!(project.cast_upkeep(&CancelToken::new()).unwrap(), None, "not grouped again");
+        assert_eq!(cover(), first);
+        assert!(!project.cast_needs_upkeep().unwrap());
+        // Picked by a newer rule (the app was downgraded): left as they are.
+        db.execute("UPDATE meta SET value = ?1 WHERE key = 'covers_picked'", [(COVER_RULE + 1).to_string()]).unwrap();
+        assert!(!project.cast_needs_upkeep().unwrap());
+
+        // The user's choice stays, whatever grouping comes (a new one may
+        // leave the face they put there alone with them).
+        project.cast_edit(&CastEdit::SetCover { character_id: theirs, track: stranger.id }).unwrap();
+        assert_eq!(cover(), shows(stranger.id));
+        project.reassign().unwrap();
+        project.recluster().unwrap();
+        let chosen = project.cast().unwrap().characters.into_iter().find(|c| c.id == theirs).unwrap().cover_small;
+        assert_eq!(chosen, Some(shows(stranger.id)));
     }
 
     #[test]

@@ -37,6 +37,10 @@ pub struct IdentityTrack {
     pub start: FrameIdx,
     pub end: FrameIdx,
     pub quality: f32,
+    /// Its median face height, a fraction of the frame's.
+    pub face_h: f32,
+    /// How much another face takes of its portrait (0 while not looked at).
+    pub rival: f32,
     pub dets: u32,
     /// `as_analysis::tracks::dets_to_bytes`.
     pub det_bytes: Vec<u8>,
@@ -92,7 +96,8 @@ pub struct CharacterRow {
     pub number: u32,
     pub name: Option<String>,
     pub hidden: bool,
-    /// The chosen cover track, else the best track; with its media.
+    /// The chosen cover track, else the picked one, else the best track
+    /// (see `COVER`); with its media.
     pub cover: Option<(i64, MediaId)>,
     pub tracks: u32,
     pub shots: u32,
@@ -170,10 +175,15 @@ fn opt_id(s: Option<String>) -> DbResult<Option<CharacterId>> {
 }
 
 /// A character's (`c`) cover track: the chosen one while it is still theirs,
-/// else their clearest big face — where no one else's face takes half as
-/// much of the picture as theirs (a guest behind the host shows the host).
+/// else the one picked at their last grouping (one of their typical faces:
+/// never someone else's grouped with them) while it is still theirs, else
+/// their clearest big face — where no one else's face takes half as much of
+/// the picture as theirs (a guest behind the host shows the host).
 pub(crate) const COVER: &str = "COALESCE((SELECT x.id FROM tracks x WHERE x.id = c.cover AND x.character_id = c.id
                                  AND x.assign IN ('auto', 'pinned') AND x.not_face = 0),
+                              (SELECT x.id FROM tracks x
+                                WHERE x.id = (SELECT CAST(p.value AS INTEGER) FROM meta p WHERE p.key = 'picked_cover:' || c.id)
+                                  AND x.character_id = c.id AND x.assign IN ('auto', 'pinned') AND x.not_face = 0),
                               (SELECT b.id FROM tracks b WHERE b.character_id = c.id AND b.assign IN ('auto', 'pinned')
                                            AND b.not_face = 0
                                          ORDER BY COALESCE(b.rival, 0) < 0.5 DESC, b.face_h >= 0.12 DESC,
@@ -237,6 +247,10 @@ fn forget_tracks(tx: &Transaction, id: MediaId) -> DbResult<()> {
     )?;
     // Track ids are handed out again: a cover must not point at someone else's face.
     tx.execute("UPDATE characters SET cover = NULL WHERE cover IN (SELECT id FROM tracks WHERE media_id = ?1)", [&m])?;
+    tx.execute(
+        &format!("DELETE FROM meta WHERE {PICKED_COVERS} AND CAST(value AS INTEGER) IN (SELECT id FROM tracks WHERE media_id = ?1)"),
+        [&m],
+    )?;
     // Bodies are tied to the faces that go.
     crate::bodies::forget_bodies(tx, id)?;
     tx.execute("DELETE FROM tracks WHERE media_id = ?1", [&m])?;
@@ -340,6 +354,33 @@ fn drop_empty_characters(tx: &Transaction) -> DbResult<()> {
     tx.execute(&format!("DELETE FROM characters WHERE {GONE}"), [])?;
     tx.execute("UPDATE tracks SET assign = 'none', score = 0 WHERE character_id IS NULL AND assign <> 'none'", [])?;
     tx.execute("UPDATE characters SET cover = NULL WHERE cover IS NOT NULL AND NOT EXISTS (SELECT 1 FROM tracks t WHERE t.id = characters.cover AND t.character_id = characters.id AND t.assign IN ('auto', 'pinned'))", [])?;
+    Ok(())
+}
+
+/// The `meta` rows of the faces picked for characters' pictures, one per
+/// character (`picked_cover:<character>`, the track): kept there, a project
+/// still opens in an app from before they were picked.
+const PICKED_COVERS: &str = "key GLOB 'picked_cover:*'";
+
+/// Every character's picked picture goes, then `covers` (`(character,
+/// track)`) are theirs — those of characters there are.
+fn store_picked_covers(tx: &Transaction, covers: &[(CharacterId, i64)]) -> DbResult<()> {
+    tx.execute(&format!("DELETE FROM meta WHERE {PICKED_COVERS}"), [])?;
+    let mut st =
+        tx.prepare("INSERT INTO meta (key, value) SELECT 'picked_cover:' || id, ?2 FROM characters WHERE id = ?1")?;
+    for &(c, track) in covers {
+        st.execute(params![c.to_string(), track.to_string()])?;
+    }
+    Ok(())
+}
+
+fn store_meta(tx: &Transaction, meta: &[(&str, &str)]) -> DbResult<()> {
+    for (key, value) in meta {
+        tx.execute(
+            "INSERT INTO meta (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [key, value],
+        )?;
+    }
     Ok(())
 }
 
@@ -766,7 +807,7 @@ impl ProjectDb {
             }
             let mut st = c.prepare(
                 "SELECT id, media_id, start, end, quality, length(dets) / 32, emb, character_id, assign, dets, score,
-                        via_body
+                        via_body, face_h, COALESCE(rival, 0)
                    FROM tracks WHERE not_face = 0 AND media_id IN (SELECT id FROM media WHERE faces = 'ready')
                   ORDER BY media_id, start, id",
             )?;
@@ -780,6 +821,8 @@ impl ProjectDb {
                     start: r.get(2)?,
                     end: r.get(3)?,
                     quality: r.get::<_, f64>(4)? as f32,
+                    face_h: r.get::<_, f64>(12)? as f32,
+                    rival: r.get::<_, f64>(13)? as f32,
                     dets: r.get(5)?,
                     emb: r.get(6)?,
                     character_id: opt_id(r.get(7)?)?,
@@ -809,11 +852,14 @@ impl ProjectDb {
         bodies: &[crate::BodyUpdate],
         joined: &[(CharacterId, CharacterId)],
     ) -> DbResult<bool> {
-        self.apply_identity_noting(rev, new_characters, tracks, bodies, joined, &[])
+        self.apply_identity_noting(rev, new_characters, tracks, bodies, joined, &[], &[])
     }
 
-    /// [`Self::apply_identity`], storing `meta` (what the clustering was made
-    /// with) with it: both or neither.
+    /// [`Self::apply_identity`], storing with it the faces picked for the
+    /// characters' pictures (`covers`, `(character, track)`; see
+    /// [`Self::set_picked_covers`]) and `meta` (what the clustering was made
+    /// with): all or nothing.
+    #[allow(clippy::too_many_arguments)]
     pub fn apply_identity_noting(
         &self,
         rev: i64,
@@ -821,6 +867,7 @@ impl ProjectDb {
         tracks: &[TrackUpdate],
         bodies: &[crate::BodyUpdate],
         joined: &[(CharacterId, CharacterId)],
+        covers: &[(CharacterId, i64)],
         meta: &[(&str, &str)],
     ) -> DbResult<bool> {
         self.0.write(|tx| {
@@ -853,13 +900,25 @@ impl ProjectDb {
                 carry_over(tx, from, into)?;
             }
             drop_empty_characters(tx)?;
+            store_picked_covers(tx, covers)?;
             bump_rev(tx)?;
-            for (key, value) in meta {
-                tx.execute(
-                    "INSERT INTO meta (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                    [key, value],
-                )?;
+            store_meta(tx, meta)?;
+            Ok(true)
+        })
+    }
+
+    /// Store the faces picked for the characters' pictures at cast revision
+    /// `rev` (`(character, track)`; a character not among them has none:
+    /// its clearest big face shows, see `COVER`) and `meta` with them. The
+    /// cast itself doesn't change. Stores nothing and returns `false` when
+    /// the cast changed since `rev`.
+    pub fn set_picked_covers(&self, rev: i64, covers: &[(CharacterId, i64)], meta: &[(&str, &str)]) -> DbResult<bool> {
+        self.0.write(|tx| {
+            if rev_of(tx)? != rev {
+                return Ok(false);
             }
+            store_picked_covers(tx, covers)?;
+            store_meta(tx, meta)?;
             Ok(true)
         })
     }
@@ -1200,6 +1259,7 @@ impl ProjectDb {
                 [&f, &i],
             )?;
             tx.execute("DELETE FROM characters WHERE id = ?1", [&f])?;
+            tx.execute("DELETE FROM meta WHERE key = 'picked_cover:' || ?1", [&f])?;
             bump_rev(tx)
         })
     }
@@ -1903,6 +1963,69 @@ pub(crate) mod tests {
         assert_eq!(db.media_without_rivals().unwrap(), [m]);
         db.set_rivals(&[(ids[0], 0.0)]).unwrap();
         assert!(db.media_without_rivals().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_picked_cover_shows_while_it_is_theirs_and_none_was_chosen() {
+        let db = ProjectDb::memory();
+        let m = ready_media(&db, "/v/a.mkv");
+        // The sharpest face first: it would show unless another is picked.
+        let ids = db.put_face_chunk(m, 0, 1000, &[track(10, 1.0), track(100, 0.8), track(200, 0.7)], &[], |_| Ok(()));
+        let ids = ids.unwrap();
+        let (a, b) = (CharacterId::new(), CharacterId::new());
+        let theirs: Vec<TrackUpdate> = ids
+            .iter()
+            .map(|&id| TrackUpdate { id, character: Some(a), assign: TrackAssign::Auto, score: 1.0, via_body: false })
+            .collect();
+        let rev = db.cast_rev().unwrap();
+        let picked = [(a, ids[1]), (b, ids[0])];
+        assert!(db.apply_identity_noting(rev, &[a, b], &theirs, &[], &[], &picked, &[("covers", "1")]).unwrap());
+        let shown = |db: &ProjectDb| db.characters().unwrap()[0].cover.map(|c| c.0);
+        assert_eq!(shown(&db), Some(ids[1]));
+        assert_eq!((db.cover_tracks().unwrap(), db.character_cover(a).unwrap()), (vec![ids[1]], Some((ids[1], m))));
+        assert_eq!(db.meta("covers").unwrap().as_deref(), Some("1"));
+        // B, left empty, went: so did what was picked for them.
+        assert_eq!(db.characters().unwrap().len(), 1);
+        let picked = |c: &rusqlite::Connection| {
+            Ok(c.query_row(&format!("SELECT COUNT(*) FROM meta WHERE {PICKED_COVERS}"), [], |r| r.get::<_, i64>(0))?)
+        };
+        assert_eq!(db.0.read(picked).unwrap(), 1);
+
+        // Picked again: only while the cast is as it was read.
+        let rev = db.cast_rev().unwrap();
+        assert!(!db.set_picked_covers(rev - 1, &[(a, ids[2])], &[]).unwrap());
+        assert_eq!(shown(&db), Some(ids[1]));
+        assert!(db.set_picked_covers(rev, &[(a, ids[2])], &[("covers", "2")]).unwrap());
+        assert_eq!((shown(&db), db.cast_rev().unwrap()), (Some(ids[2]), rev), "the cast itself didn't change");
+        assert_eq!(db.meta("covers").unwrap().as_deref(), Some("2"));
+
+        // The user's choice comes first.
+        db.set_character_cover(a, ids[1]).unwrap();
+        assert_eq!(shown(&db), Some(ids[1]));
+        db.0.write(|tx| Ok(tx.execute("UPDATE characters SET cover = NULL", [])?)).unwrap();
+        assert_eq!(shown(&db), Some(ids[2]));
+        // A picked face that is no longer theirs, or no face, doesn't show:
+        // their clearest face does until they are picked again.
+        db.mark_not_face(&[ids[2]]).unwrap();
+        assert_eq!(shown(&db), Some(ids[0]));
+        assert!(db.set_picked_covers(db.cast_rev().unwrap(), &[(a, ids[1])], &[]).unwrap());
+        db.forbid_tracks(&[ids[1]], a).unwrap();
+        assert_eq!(shown(&db), Some(ids[0]));
+        assert!(db.set_picked_covers(db.cast_rev().unwrap(), &[], &[]).unwrap());
+        assert_eq!(shown(&db), Some(ids[0]), "none picked");
+
+        // One made one with another: what was picked for them goes.
+        let b = CharacterId::new();
+        db.pin_tracks(&[ids[1]], b, Some(None)).unwrap();
+        assert!(db.set_picked_covers(db.cast_rev().unwrap(), &[(a, ids[0]), (b, ids[1])], &[]).unwrap());
+        assert_eq!(db.0.read(picked).unwrap(), 2);
+        db.merge_characters(b, a).unwrap();
+        assert_eq!(db.0.read(picked).unwrap(), 1);
+
+        // Faces found again: what was picked of them goes with them.
+        assert!(db.set_picked_covers(db.cast_rev().unwrap(), &[(a, ids[0])], &[]).unwrap());
+        db.reset_faces(m).unwrap();
+        assert_eq!(db.0.read(picked).unwrap(), 0);
     }
 
     #[test]
