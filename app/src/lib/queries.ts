@@ -83,8 +83,11 @@ export function useSegments(pid: ProjectId, mid: MediaId, enabled: boolean) {
   return useQuery({ queryKey: qk.segments(pid, mid), queryFn: () => commands.mediaSegments(pid, mid), enabled })
 }
 
+/** A project's exports, newest first. */
+export const exportsQuery = (pid: ProjectId) => ({ queryKey: qk.exports(pid), queryFn: () => commands.exportsList(pid) })
+
 export function useExports(pid: ProjectId) {
-  return useQuery({ queryKey: qk.exports(pid), queryFn: () => commands.exportsList(pid) })
+  return useQuery(exportsQuery(pid))
 }
 
 export function useExportDir(pid: ProjectId) {

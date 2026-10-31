@@ -2,7 +2,8 @@ import { toast } from "sonner"
 import type { JobInfo } from "@/bindings"
 import { useActivity } from "@/state/activity"
 import { commands, events } from "./ipc"
-import { qk, queryClient } from "./queries"
+import { reveal } from "./os"
+import { exportsQuery, qk, queryClient } from "./queries"
 
 /**
  * Backend events → React Query invalidation and the activity store. The UI
@@ -87,6 +88,31 @@ function notifyFinished(job: JobInfo) {
     }
     return
   }
-  if (job.state === "done") toast.success("Export finished", { description: job.subtitle ?? undefined })
-  else if (job.state === "failed") toast.error("Export finished with errors", { description: job.error ?? undefined })
+  if (job.state === "done") {
+    // Said once it's known where the export went (a moment): Show in folder goes there.
+    void exportPlace(job).then((place) =>
+      toast.success("Export finished", {
+        description: job.subtitle ?? undefined,
+        action: place ? { label: "Show in folder", onClick: () => reveal(place) } : undefined,
+      }),
+    )
+  } else if (job.state === "failed") toast.error("Export finished with errors", { description: job.error ?? undefined })
+}
+
+/**
+ * Where a finished export is: its one file (the clips joined, or a single
+ * clip), else its folder. `null` when that can't be read.
+ */
+async function exportPlace(job: JobInfo): Promise<string | null> {
+  if (!job.projectId || !job.exportId) return null
+  try {
+    // Read afresh: the list on hand may be from before the export was made.
+    const list = await queryClient.fetchQuery({ ...exportsQuery(job.projectId), staleTime: 0 })
+    const ex = list.find((e) => e.id === job.exportId)
+    if (!ex) return null
+    const single = ex.items.length === 1 ? ex.items[0].path : null
+    return ex.merged?.path ?? single ?? ex.outDir
+  } catch {
+    return null
+  }
 }
