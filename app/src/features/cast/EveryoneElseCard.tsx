@@ -1,4 +1,4 @@
-import { Link } from "@tanstack/react-router"
+import { Link, useNavigate } from "@tanstack/react-router"
 import { User } from "@/components/icons"
 import { ContextArea } from "@/components/ui/context-area"
 import { ContextMenuItem } from "@/components/ui/context-menu"
@@ -16,13 +16,14 @@ export function EveryoneElseCard({
   view?: "grid" | "list"
   compact?: boolean
 }) {
+  const navigate = useNavigate()
   if (unassigned <= 0) return null
 
+  // An item that navigates, not one wrapping a link: the item adds its
+  // shortcut beside its children, and a Slot takes a single child only.
   const menu = (
-    <ContextMenuItem asChild>
-      <Link to="/p/$pid/cast/$cid" params={{ pid, cid: "unassigned" }}>
-        <User /> Open everyone else
-      </Link>
+    <ContextMenuItem onSelect={() => void navigate({ to: "/p/$pid/cast/$cid", params: { pid, cid: "unassigned" } })}>
+      <User /> Open everyone else
     </ContextMenuItem>
   )
 

@@ -84,6 +84,9 @@ export function CastPage() {
   const shown = findCharacters(everyoneShown, find)
   const hidden = findCharacters(everyoneHidden, find)
   const { main: mainShown, supporting: supportingShown } = splitTiers(shown)
+  // The order the cards are on screen, main cast first: a Shift-click's range
+  // is what lies between on screen, not in the backend's order.
+  const ordered = [...mainShown, ...supportingShown]
   const view = useUi((s) => s.castView)
   const setView = useUi((s) => s.setCastView)
   // The search stays while it narrows or orders the cast, however small it got.
@@ -91,7 +94,7 @@ export function CastPage() {
 
   // The cards in the order shown, hidden ones after while unfolded: a
   // Shift-click selects every card between.
-  const cards = showHidden ? [...shown, ...hidden] : shown
+  const cards = showHidden ? [...ordered, ...hidden] : ordered
   const [picked, setPicked] = useState<Set<string>>(new Set())
   const anchor = useRef<string | null>(null)
   // Only cards on screen count: a character merged away, narrowed out or
@@ -304,12 +307,12 @@ export function CastPage() {
                   <div className="space-y-10">
                     <section>
                       <div className="mb-4 flex items-center justify-between">
-                        <h2 className="text-sm font-semibold tracking-wide uppercase text-fg-2">Main Cast</h2>
+                        <h2 className="text-sm font-semibold tracking-wide uppercase text-fg-2">Main cast</h2>
                         <span className="text-xs text-fg-3">{plural(mainShown.length, "character")}</span>
                       </div>
                       <CardGrid className="grid-cols-[repeat(auto-fill,minmax(200px,1fr))]">
                         {mainShown.map((c) => {
-                          const i = shown.indexOf(c)
+                          const i = ordered.indexOf(c)
                           return <CharacterCard key={c.id} {...cardProps(c, i)} />
                         })}
                       </CardGrid>
@@ -317,12 +320,12 @@ export function CastPage() {
 
                     <section>
                       <div className="mb-4 flex items-center justify-between">
-                        <h2 className="text-sm font-semibold tracking-wide uppercase text-fg-2">Supporting & Recurring</h2>
+                        <h2 className="text-sm font-semibold tracking-wide uppercase text-fg-2">Supporting and recurring</h2>
                         <span className="text-xs text-fg-3">{plural(supportingShown.length, "character")}</span>
                       </div>
                       <CardGrid className="grid-cols-[repeat(auto-fill,minmax(140px,1fr))] gap-x-3.5 gap-y-4">
                         {supportingShown.map((c) => {
-                          const i = shown.indexOf(c)
+                          const i = ordered.indexOf(c)
                           return <CharacterCard key={c.id} {...cardProps(c, i)} />
                         })}
                         {!narrowed && cast && (
@@ -346,12 +349,12 @@ export function CastPage() {
                   <div className="space-y-8">
                     <section>
                       <div className="mb-3 flex items-center justify-between">
-                        <h2 className="text-sm font-semibold tracking-wide uppercase text-fg-2">Main Cast</h2>
+                        <h2 className="text-sm font-semibold tracking-wide uppercase text-fg-2">Main cast</h2>
                         <span className="text-xs text-fg-3">{plural(mainShown.length, "character")}</span>
                       </div>
                       <div className="divide-y divide-white/[0.06] rounded-2xl border border-white/10 bg-white/[0.02] p-2">
                         {mainShown.map((c) => {
-                          const i = shown.indexOf(c)
+                          const i = ordered.indexOf(c)
                           return <CharacterRow key={c.id} {...cardProps(c, i)} />
                         })}
                       </div>
@@ -359,12 +362,12 @@ export function CastPage() {
 
                     <section>
                       <div className="mb-3 flex items-center justify-between">
-                        <h2 className="text-sm font-semibold tracking-wide uppercase text-fg-2">Supporting & Recurring</h2>
+                        <h2 className="text-sm font-semibold tracking-wide uppercase text-fg-2">Supporting and recurring</h2>
                         <span className="text-xs text-fg-3">{plural(supportingShown.length, "character")}</span>
                       </div>
                       <div className="divide-y divide-white/[0.06] rounded-2xl border border-white/10 bg-white/[0.02] p-2">
                         {supportingShown.map((c) => {
-                          const i = shown.indexOf(c)
+                          const i = ordered.indexOf(c)
                           return <CharacterRow key={c.id} {...cardProps(c, i)} />
                         })}
                         {!narrowed && cast && (
