@@ -2,8 +2,9 @@ import { ArrowSquareOut, GithubLogo } from "@/components/icons"
 import { Button } from "@/components/ui/button"
 import { openExternalUrl } from "@/lib/os"
 import { SettingRow, SettingsGroup } from "../primitives"
+import CONTRIBUTORS_JSON from "./contributors.json"
 
-interface Contributor {
+export interface Contributor {
   name: string
   handle: string
   avatar: string
@@ -11,36 +12,7 @@ interface Contributor {
   profileUrl: string
 }
 
-const CONTRIBUTORS: Contributor[] = [
-  {
-    name: "tcmmi",
-    handle: "tcmmi",
-    avatar: "https://avatars.githubusercontent.com/u/119017174?v=4",
-    role: "Creator, media engine, models, and core architecture",
-    profileUrl: "https://github.com/tcmmi",
-  },
-  {
-    name: "0nsku",
-    handle: "0nsku",
-    avatar: "https://avatars.githubusercontent.com/u/143646543?v=4",
-    role: "Core engineering, anime benchmarks, and analysis",
-    profileUrl: "https://github.com/0nsku",
-  },
-  {
-    name: "ihyledd",
-    handle: "ihyledd",
-    avatar: "https://avatars.githubusercontent.com/u/156428574?v=4",
-    role: "macOS port, settings redesign, and project layout",
-    profileUrl: "https://github.com/ihyledd",
-  },
-  {
-    name: "Moongetsu",
-    handle: "moongetsu",
-    avatar: "https://avatars.githubusercontent.com/u/111883135?v=4",
-    role: "UI design, custom context menus, and visual polish",
-    profileUrl: "https://github.com/moongetsu",
-  },
-]
+const CONTRIBUTORS: Contributor[] = CONTRIBUTORS_JSON
 
 const REPO_URL = "https://github.com/tcmmi/AutoScene"
 
