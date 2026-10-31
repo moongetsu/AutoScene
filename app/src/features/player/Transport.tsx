@@ -166,7 +166,7 @@ function FrameReadout({
   onSeek: (f: number) => void
 }) {
   const frame = useFrame(store)
-  const { mode, setMode, cycleMode } = useTimecodeMode()
+  const { mode, setMode } = useTimecodeMode()
   const field = useRef<HTMLInputElement>(null)
   // Select the go-to field once when it opens, not on every frame (that
   // would wipe what is being typed).
@@ -250,11 +250,10 @@ function FrameReadout({
             </>
           }
         >
-          <Tooltip label={`${readoutLabel(mode)} · Click to cycle mode, double-click or ${modKey}+G to jump`}>
+          <Tooltip label="Go to timecode or frame" hint="Right-click to show the time left, frames or percent" shortcut={[modKey, "G"]}>
             <button
-              onClick={cycleMode}
-              onDoubleClick={() => onGoto(true)}
-              aria-label={`${readoutLabel(mode)}: ${formatReadout(frame, mode)}. Click to cycle mode.`}
+              onClick={() => onGoto(true)}
+              aria-label={`${readoutLabel(mode)}: ${formatReadout(frame, mode)}`}
               className="timecode -mx-2 rounded-xl px-2 text-lg font-medium tracking-tight text-fg-1 transition-colors hover:bg-white/[0.06] @3xl:text-2xl"
             >
               {formatReadout(frame, mode)}

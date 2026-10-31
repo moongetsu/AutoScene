@@ -9,19 +9,7 @@ describe("useTimecodeMode", () => {
     })
   })
 
-  it("cycles through all modes in order", () => {
-    expect(useTimecodeMode.getState().mode).toBe("elapsed")
-
-    act(() => useTimecodeMode.getState().cycleMode())
-    expect(useTimecodeMode.getState().mode).toBe("remaining")
-
-    act(() => useTimecodeMode.getState().cycleMode())
-    expect(useTimecodeMode.getState().mode).toBe("frames")
-
-    act(() => useTimecodeMode.getState().cycleMode())
-    expect(useTimecodeMode.getState().mode).toBe("percent")
-
-    act(() => useTimecodeMode.getState().cycleMode())
+  it("starts on elapsed timecode", () => {
     expect(useTimecodeMode.getState().mode).toBe("elapsed")
   })
 
@@ -33,4 +21,3 @@ describe("useTimecodeMode", () => {
     expect(useTimecodeMode.getState().mode).toBe("percent")
   })
 })
-
