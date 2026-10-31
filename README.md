@@ -77,7 +77,8 @@ on Windows, this prints `True` for an intact download:
   they go back onto the faces it finds again. One whose face it doesn't find
   waits for the next analysis, and the cast says how many wait. Projects made
   as anime use their own pipeline (anime head detectors and a character
-  embedder) and can take names from AniList.
+  embedder) and, with the AniList setting on, get their names looked up on
+  AniList once the characters are found: you give them with one click.
 - **Scenepacks.** For each character you get their shots, filters and your own
   picks, then one export: a single video with a chapter for each shot, or a
   file per shot, named from a template.

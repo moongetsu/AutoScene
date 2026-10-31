@@ -1,19 +1,24 @@
 //! Naming anime characters from AniList (opt-in, library setting `anilist`).
 //!
-//! Nothing here runs by itself: no launch, recovery or regroup calls it. A
-//! project asks for it through [`Library::anilist_search`] (with a search
-//! text the person confirmed, [`search_text`] only suggests one),
-//! [`Library::anilist_confirm`] and [`Library::anilist_cast`]. Every request
-//! to the API waits its turn on one process-wide [`Limiter`]: AniList allows
-//! 30 a minute (90 when it isn't degraded), and pauses everyone who asks
-//! more often.
+//! While the opt-in is on, the app looks names up by itself once an anime
+//! project's characters are found: [`Library::anilist_find_series`] searches
+//! the project's title ([`search_text`]) and keeps the series only when its
+//! title is the one searched for ([`pick_series`]); the portraits of its
+//! cast are matched, and the names wait in [`SUGGESTED`] for the person's
+//! yes. By hand, a project goes through [`Library::anilist_search`] (with a
+//! search text the person confirmed), [`Library::anilist_confirm`] and
+//! [`Library::anilist_cast`]. Every request to the API waits its turn on one
+//! process-wide [`Limiter`]: AniList allows 30 a minute (90 when it isn't
+//! degraded), and pauses everyone who asks more often.
 //!
 //! What a project decided lives in its meta, as JSON (a migration would make
 //! 1.0.3 refuse the project): [`MEDIA`] the confirmed series and its sequel
 //! chain, [`REJECTED`] the series turned down, [`AUTO`] whether names are
-//! given without asking. Character images are cached for the whole library
-//! by AniList character id ([`AppPaths::anilist`]) and deleted with the
-//! opt-in.
+//! given without asking, [`PICKED`] whether the app picked the series,
+//! [`SUGGESTED`] the names waiting for a yes, [`REFUSED`] the names left out
+//! and [`LOOKED`] whether the app looked by itself. Character images are
+//! cached for the whole library by AniList character id
+//! ([`AppPaths::anilist`]) and deleted with the opt-in.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -36,6 +41,18 @@ pub const REJECTED: &str = "anilist.rejected";
 /// Project meta: whether names are given without asking (JSON `true`/`false`;
 /// unset: only suggested).
 pub const AUTO: &str = "anilist.auto";
+/// Project meta: the names (and merges) a look-up found, waiting for the
+/// person's yes ([`Suggested`]; only good while the cast is as it was).
+pub const SUGGESTED: &str = "anilist.suggested";
+/// Project meta: the app looked the names up by itself once (`true`): it
+/// looks again only when the characters are found or grouped again.
+pub const LOOKED: &str = "anilist.looked";
+/// Project meta: names the person left out, as `[character, AniList
+/// character]` pairs: never suggested for that character again.
+pub const REFUSED: &str = "anilist.refused";
+/// Project meta: [`MEDIA`] was picked by the app from the title (`true`),
+/// not confirmed by the person: names from it are never given unasked.
+pub const PICKED: &str = "anilist.picked";
 
 const API: &str = "https://graphql.anilist.co";
 /// At least this long between two requests to the API: 24 a minute, under
@@ -88,8 +105,8 @@ static VIDEO_EXT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\.(?:mkv|mp4|m4v|avi|mov|webm|ts|m2ts)$").expect("valid"));
 
 /// The search text a project title suggests: without fansub groups, tags in
-/// brackets, the episode and the release's tags. Only suggested: nothing is
-/// sent until the person confirms (or edits) it.
+/// brackets, the episode and the release's tags. The look-up searches it
+/// while the opt-in is on; the search by hand only suggests it.
 ///
 /// `[SubsPlease] Sousou no Frieren - 03 (1080p) [A1B2C3D4]` → `Sousou no Frieren`.
 pub fn search_text(title: &str) -> String {
@@ -115,6 +132,57 @@ fn clean(s: &str) -> String {
     s.trim_matches(|c: char| c.is_whitespace() || "-–—|:.,~+".contains(c)).to_string()
 }
 
+/// A year in brackets, as titles carry one (`Hunter x Hunter (2011)`).
+static YEAR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[(\[]((?:19|20)\d{2})[)\]]").expect("valid"));
+
+/// `s` for comparing titles: lower case, letters and digits, one space
+/// between words (`Journey's End` → `journeys end`).
+fn title_key(s: &str) -> String {
+    let s: String = s
+        .to_lowercase()
+        .chars()
+        .filter(|c| !matches!(c, '\'' | '’'))
+        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
+        .collect();
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The series a project titled `title` plainly is, among AniList's answers
+/// to its [`search_text`]: the first with a title (or synonym) that is the
+/// search text itself — of the year the project's title names, when it
+/// names one and such a series is among them — else, for a search text of
+/// two words or more, the first answer when one of its titles starts with
+/// it as whole words (`Sousou no` → `Sousou no Frieren`; one word, `Fate` or
+/// `Love`, begins too many). Another season of the right series does no
+/// harm: the cast spans the whole sequel chain. `None`: none plainly is.
+pub fn pick_series<'a>(title: &str, found: &'a [Media]) -> Option<&'a Media> {
+    let text = title_key(&search_text(title));
+    if text.is_empty() {
+        return None;
+    }
+    let titles = |m: &Media| -> Vec<String> {
+        [&m.title.english, &m.title.romaji, &m.title.native]
+            .into_iter()
+            .flatten()
+            .chain(&m.synonyms)
+            .map(|t| title_key(t))
+            .collect()
+    };
+    let exact: Vec<&Media> = found.iter().filter(|m| titles(m).contains(&text)).collect();
+    let year = YEAR.captures(title).and_then(|c| c[1].parse::<u32>().ok());
+    if let Some(m) = exact.iter().find(|m| year.is_some() && m.season_year == year) {
+        return Some(m);
+    }
+    if let Some(m) = exact.first() {
+        return Some(m);
+    }
+    if !text.contains(' ') {
+        return None;
+    }
+    let first = found.first()?;
+    titles(first).iter().any(|t| t.strip_prefix(&text).is_some_and(|rest| rest.starts_with(' '))).then_some(first)
+}
+
 // ---------------------------------------------------------------------------
 // What AniList answers
 // ---------------------------------------------------------------------------
@@ -134,6 +202,14 @@ pub struct Media {
     pub synonyms: Vec<String>,
     /// Anime it is a sequel or prequel of (the chain one cast spans).
     pub sequels: Vec<u32>,
+}
+
+impl Media {
+    /// Its English title, else its romaji or native one.
+    pub fn name(&self) -> String {
+        let t = &self.title;
+        t.english.clone().or_else(|| t.romaji.clone()).or_else(|| t.native.clone()).unwrap_or_default()
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -513,6 +589,13 @@ pub struct AniList {
     /// Media this session has read, by id: a confirmed series' chain often
     /// needs no request at all after its search.
     seen: Mutex<HashMap<u32, Media>>,
+    /// Each anime's cast this session has read, by id: the look-up after
+    /// every episode's analysis needs no request for it again.
+    casts: Mutex<HashMap<u32, Vec<Character>>>,
+    /// Character portraits embedded this session, by AniList character id
+    /// (the engine is shared with the analysis: a look-up after every
+    /// episode embeds only who is new).
+    portraits: Mutex<HashMap<u32, Vec<f32>>>,
 }
 
 fn unreachable(e: impl std::fmt::Display) -> ProjectError {
@@ -522,6 +605,11 @@ fn unreachable(e: impl std::fmt::Display) -> ProjectError {
 
 fn busy() -> ProjectError {
     ProjectError::NotReady("AniList is busy. Try again in a few minutes.".into())
+}
+
+/// `Cancelled` once `cancel` is (the opt-in went off, say).
+fn going(cancel: &CancelToken) -> ProjectResult<()> {
+    if cancel.is_cancelled() { Err(ProjectError::Cancelled) } else { Ok(()) }
 }
 
 impl AniList {
@@ -536,7 +624,16 @@ impl AniList {
         api: Arc<Limiter>,
         images: Arc<Limiter>,
     ) -> Self {
-        Self { transport, clock, api, images, dir, seen: Mutex::default() }
+        Self {
+            transport,
+            clock,
+            api,
+            images,
+            dir,
+            seen: Mutex::default(),
+            casts: Mutex::default(),
+            portraits: Mutex::default(),
+        }
     }
 
     /// Where a character's image is cached, once loaded.
@@ -547,6 +644,8 @@ impl AniList {
     /// Forget everything: the media seen and every cached image.
     pub(crate) fn forget(&self) -> std::io::Result<()> {
         self.seen.lock().clear();
+        self.casts.lock().clear();
+        self.portraits.lock().clear();
         match std::fs::remove_dir_all(&self.dir) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
             _ => Ok(()),
@@ -587,6 +686,7 @@ impl AniList {
         }
         let data: SearchData = self.request(&search_query(), serde_json::json!({ "search": text }), cancel)?;
         let found: Vec<Media> = data.page.media.into_iter().flatten().map(Media::from).collect();
+        going(cancel)?;
         self.seen.lock().extend(found.iter().map(|m| (m.id, m.clone())));
         Ok(found)
     }
@@ -598,6 +698,7 @@ impl AniList {
         }
         let data: MediaData = self.request(&media_query(), serde_json::json!({ "id": id }), cancel)?;
         let media = Media::from(data.media.ok_or_else(|| not_on_anilist(id))?);
+        going(cancel)?;
         self.seen.lock().insert(id, media.clone());
         Ok(media)
     }
@@ -623,6 +724,9 @@ impl AniList {
     /// The main and supporting cast of anime `id`, page by page until AniList
     /// says there are no more: main first, in AniList's order.
     pub fn characters(&self, id: u32, cancel: &CancelToken) -> ProjectResult<Vec<Character>> {
+        if let Some(cast) = self.casts.lock().get(&id) {
+            return Ok(cast.clone());
+        }
         let query = cast_query();
         let mut out = Vec::new();
         for role in [Role::Main, Role::Supporting] {
@@ -637,6 +741,9 @@ impl AniList {
                 }
             }
         }
+        // Switched off meanwhile: nothing is kept.
+        going(cancel)?;
+        self.casts.lock().insert(id, out.clone());
         Ok(out)
     }
 
@@ -690,6 +797,7 @@ impl AniList {
             tracing::warn!(character = c.id, "anilist: the image isn't a picture");
             return Ok(None);
         };
+        going(cancel)?;
         std::fs::create_dir_all(&self.dir)?;
         let path = self.dir.join(format!("{}.{ext}", c.id));
         let part = self.dir.join(format!("{}.{ext}.part", c.id));
@@ -701,6 +809,19 @@ impl AniList {
     /// A character's cached image.
     pub fn cached(&self, id: u32) -> Option<PathBuf> {
         ["png", "jpg", "webp", "gif"].iter().map(|ext| self.dir.join(format!("{id}.{ext}"))).find(|p| p.is_file())
+    }
+
+    /// Character `id`'s portrait as embedded this session.
+    pub fn portrait(&self, id: u32) -> Option<Vec<f32>> {
+        self.portraits.lock().get(&id).cloned()
+    }
+
+    /// Keep character `id`'s embedded portrait for this session (not once
+    /// `cancel` is: the opt-in went off).
+    pub fn keep_portrait(&self, id: u32, embedding: &[f32], cancel: &CancelToken) {
+        if !cancel.is_cancelled() {
+            self.portraits.lock().insert(id, embedding.to_vec());
+        }
     }
 }
 
@@ -815,12 +936,28 @@ impl Project {
         Ok(self.db().set_meta(AUTO, if on { "true" } else { "false" })?)
     }
 
-    /// Keep `chain` (the confirmed series first) as this project's series;
-    /// none of it stays rejected.
-    pub fn confirm_anilist_media(&self, chain: &[u32]) -> ProjectResult<()> {
+    /// Keep `chain` (the confirmed series first) as this project's series,
+    /// confirmed by the person or `picked` by the app from the title; none
+    /// of it stays rejected.
+    pub fn confirm_anilist_media(&self, chain: &[u32], picked: bool) -> ProjectResult<()> {
         let rejected: Vec<u32> = self.anilist_rejected()?.into_iter().filter(|id| !chain.contains(id)).collect();
         self.set_anilist_ids(REJECTED, &rejected)?;
+        // Names found in another series' cast don't wait any longer.
+        if self.anilist_media()? != chain {
+            self.set_anilist_suggested(None)?;
+        }
+        if picked {
+            self.db().set_meta(PICKED, "true")?;
+        } else {
+            self.db().delete_meta(PICKED)?;
+        }
         self.set_anilist_ids(MEDIA, chain)
+    }
+
+    /// Whether the series was picked by the app from the title, not
+    /// confirmed by the person.
+    pub fn anilist_picked(&self) -> ProjectResult<bool> {
+        Ok(self.db().meta(PICKED)?.as_deref() == Some("true"))
     }
 
     /// Say series `id` isn't this one (and forget it if it was confirmed).
@@ -832,8 +969,103 @@ impl Project {
         self.set_anilist_ids(REJECTED, &rejected)?;
         if self.anilist_media()?.contains(&id) {
             self.set_anilist_ids(MEDIA, &[])?;
+            self.db().delete_meta(PICKED)?;
+            self.set_anilist_suggested(None)?;
         }
         Ok(())
+    }
+
+    /// The names a look-up found, still waiting for the person's yes: those
+    /// for characters still shown and unnamed (and not left out before), the
+    /// merges of characters both still shown. `None` without any, or once
+    /// another series is confirmed.
+    pub fn anilist_suggested(&self) -> ProjectResult<Option<Suggested>> {
+        let Some(mut s) = self.db().meta(SUGGESTED)?.and_then(|v| serde_json::from_str::<Suggested>(&v).ok()) else {
+            return Ok(None);
+        };
+        if s.media != self.anilist_media()? {
+            return Ok(None);
+        }
+        let characters = self.db().characters()?;
+        let shown = |id: as_core::CharacterId| characters.iter().find(|c| c.id == id && !c.hidden);
+        let refused = self.anilist_refused()?;
+        s.names.retain(|n| {
+            shown(n.character_id).is_some_and(|c| c.name.is_none())
+                && !refused.contains(&(n.character_id, n.anilist_id))
+        });
+        s.merges.retain(|m| {
+            m.from != m.into
+                && shown(m.from).is_some()
+                && shown(m.into).is_some()
+                && !refused.contains(&(m.from, m.anilist_id))
+                && !refused.contains(&(m.into, m.anilist_id))
+        });
+        Ok((!s.names.is_empty() || !s.merges.is_empty()).then_some(s))
+    }
+
+    /// Keep `s` waiting for the person's yes (`None`: nothing waits).
+    pub fn set_anilist_suggested(&self, s: Option<&Suggested>) -> ProjectResult<()> {
+        match s {
+            Some(s) => Ok(self.db().set_meta(SUGGESTED, &serde_json::to_string(s).expect("suggestions serialize"))?),
+            None => Ok(self.db().delete_meta(SUGGESTED)?),
+        }
+    }
+
+    /// Whether the app looked the names up by itself.
+    pub fn anilist_looked(&self) -> ProjectResult<bool> {
+        Ok(self.db().meta(LOOKED)?.as_deref() == Some("true"))
+    }
+
+    pub fn set_anilist_looked(&self) -> ProjectResult<()> {
+        Ok(self.db().set_meta(LOOKED, "true")?)
+    }
+
+    /// Names the person left out: `(character, AniList character)`.
+    pub fn anilist_refused(&self) -> ProjectResult<Vec<(as_core::CharacterId, u32)>> {
+        Ok(self.db().meta(REFUSED)?.and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default())
+    }
+
+    /// Give the waiting names and merges ([`Self::anilist_suggested`]) the
+    /// person saw and kept: names `give` and merges `merge`, each only while it
+    /// still waits as it was shown (a look-up that ran since gives nothing
+    /// the person didn't see). Those `left_out` (a name, or a merge as its
+    /// `from` and portrait) are never suggested again. Merges first, then
+    /// names; returns the merges and the names given, and nothing waits
+    /// afterwards.
+    pub fn accept_anilist_suggested(
+        &self,
+        give: &[(as_core::CharacterId, u32)],
+        merge: &[(as_core::CharacterId, as_core::CharacterId)],
+        left_out: &[(as_core::CharacterId, u32)],
+    ) -> ProjectResult<(usize, usize)> {
+        let Some(s) = self.anilist_suggested()? else {
+            return Err(ProjectError::NotReady("These names no longer wait: the series or the cast changed.".into()));
+        };
+        let mut refused = self.anilist_refused()?;
+        let waiting = |pair: &(as_core::CharacterId, u32)| {
+            s.names.iter().any(|n| (n.character_id, n.anilist_id) == *pair)
+                || s.merges.iter().any(|m| (m.from, m.anilist_id) == *pair)
+        };
+        for pair in left_out.iter().filter(|p| waiting(p)) {
+            if !refused.contains(pair) {
+                refused.push(*pair);
+            }
+        }
+        self.db().set_meta(REFUSED, &serde_json::to_string(&refused).expect("pairs serialize"))?;
+        let mut merged = 0;
+        for m in s.merges.iter().filter(|m| merge.contains(&(m.from, m.into))) {
+            self.cast_edit(&as_api::CastEdit::Merge { from: m.from, into: m.into })?;
+            merged += 1;
+        }
+        let mut named = 0;
+        for n in s.names.iter().filter(|n| give.contains(&(n.character_id, n.anilist_id))) {
+            if matches!(self.db().character_exists(n.character_id), Ok(true)) {
+                self.cast_edit(&as_api::CastEdit::Rename { character_id: n.character_id, name: Some(n.name.clone()) })?;
+                named += 1;
+            }
+        }
+        self.set_anilist_suggested(None)?;
+        Ok((merged, named))
     }
 }
 
@@ -863,7 +1095,7 @@ const MERGE_MIN_COS: f32 = 0.80;
 /// AniList says this character's name: the cast character, the match score
 /// (cosine of the portrait to the character's look) and the portrait file
 /// it came from.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NameSuggestion {
     pub character_id: as_core::CharacterId,
     pub anilist_id: u32,
@@ -874,11 +1106,31 @@ pub struct NameSuggestion {
 
 /// Two cast characters matched the same AniList one: `from` merges `into`
 /// the other (the stronger match keeps its id).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct MergeProposal {
     pub from: as_core::CharacterId,
     pub into: as_core::CharacterId,
     pub anilist_id: u32,
+}
+
+/// A project's series on AniList ([`Library::anilist_find_series`]): its
+/// title, its chain (the series first), and whether the app picked it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Series {
+    pub name: String,
+    pub media: Vec<u32>,
+    pub picked: bool,
+}
+
+/// What a look-up found for a project's cast, waiting for the person's yes
+/// ([`SUGGESTED`]): from the cast of series `series` (the chain `media`, the
+/// series first, as confirmed when it was made).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Suggested {
+    pub media: Vec<u32>,
+    pub series: String,
+    pub names: Vec<NameSuggestion>,
+    pub merges: Vec<MergeProposal>,
 }
 
 fn cosine(a: &[f32], b: &[f32]) -> f32 {
@@ -1040,6 +1292,7 @@ impl Project {
                 applied += 1;
             }
         }
+        self.set_anilist_suggested(None)?;
         Ok(applied)
     }
 }
@@ -1078,13 +1331,112 @@ impl Library {
         self.anilist_allowed()?;
         let project = self.project(id)?;
         let chain = self.anilist().chain(media, cancel)?;
-        project.confirm_anilist_media(&chain.iter().map(|m| m.id).collect::<Vec<_>>())?;
+        project.confirm_anilist_media(&chain.iter().map(|m| m.id).collect::<Vec<_>>(), false)?;
         Ok(chain)
     }
 
     /// Say series `media` isn't project `id`'s.
     pub fn anilist_reject(&self, id: ProjectId, media: u32) -> ProjectResult<()> {
         self.project(id)?.reject_anilist_media(media)
+    }
+
+    /// Whether project `id` is one AniList names: the opt-in is on, it was
+    /// made as anime, and someone shown is still unnamed.
+    pub fn anilist_wanted(&self, id: ProjectId) -> ProjectResult<bool> {
+        if !self.names_from_anilist() {
+            return Ok(false);
+        }
+        let project = self.project(id)?;
+        if project.content()? != as_api::ContentKind::Anime {
+            return Ok(false);
+        }
+        Ok(project.db().characters()?.iter().any(|c| !c.hidden && c.name.is_none()))
+    }
+
+    /// Project `id`'s series on AniList, found without asking: the one
+    /// confirmed, or else the one its title plainly names ([`pick_series`]),
+    /// then kept with its sequel chain (as picked by the app, see
+    /// [`PICKED`]). `None` when none plainly is (the person searches by hand
+    /// then). The project isn't held open while AniList answers.
+    pub fn anilist_find_series(&self, id: ProjectId, cancel: &CancelToken) -> ProjectResult<Option<Series>> {
+        self.anilist_allowed()?;
+        let confirmed = |lib: &Self| -> ProjectResult<Option<Series>> {
+            let project = lib.project(id)?;
+            let media = project.anilist_media()?;
+            let picked = project.anilist_picked()?;
+            drop(project);
+            let Some(&root) = media.first() else { return Ok(None) };
+            Ok(Some(Series { name: lib.anilist().media(root, cancel)?.name(), media, picked }))
+        };
+        if let Some(series) = confirmed(self)? {
+            return Ok(Some(series));
+        }
+        let title = self.summary(id)?.title;
+        let text = search_text(&title);
+        if text.is_empty() {
+            return Ok(None);
+        }
+        let rejected = self.project(id)?.anilist_rejected()?;
+        // Picked among all the answers: with the turned-down ones left out,
+        // the next answer would be taken for the title's.
+        let found = self.anilist().search(&text, cancel)?;
+        let Some(media) = pick_series(&title, &found) else {
+            tracing::info!(text, "anilist: no series plainly matches the title");
+            return Ok(None);
+        };
+        let chain = self.anilist().chain(media.id, cancel)?;
+        // Another season of a series the person turned down is still it.
+        if chain.iter().any(|m| rejected.contains(&m.id)) {
+            tracing::info!(series = media.id, "anilist: the title's series was turned down");
+            return Ok(None);
+        }
+        going(cancel)?;
+        // The person confirmed one meanwhile: theirs it is.
+        if let Some(series) = confirmed(self)? {
+            return Ok(Some(series));
+        }
+        let ids: Vec<u32> = chain.iter().map(|m| m.id).collect();
+        self.project(id)?.confirm_anilist_media(&ids, true)?;
+        tracing::info!(series = media.id, chain = chain.len(), "anilist: series found by the title");
+        Ok(Some(Series { name: media.name(), media: ids, picked: true }))
+    }
+
+    /// Give the names and merges waiting for project `id` that the person
+    /// kept (see [`Project::accept_anilist_suggested`]).
+    pub fn anilist_accept(
+        &self,
+        id: ProjectId,
+        give: &[(as_core::CharacterId, u32)],
+        merge: &[(as_core::CharacterId, as_core::CharacterId)],
+        left_out: &[(as_core::CharacterId, u32)],
+    ) -> ProjectResult<(usize, usize)> {
+        self.anilist_allowed()?;
+        self.project(id)?.accept_anilist_suggested(give, merge, left_out)
+    }
+
+    /// The names waiting for project `id`'s yes (none while the opt-in is
+    /// off).
+    pub fn anilist_suggested(&self, id: ProjectId) -> ProjectResult<Option<Suggested>> {
+        if !self.names_from_anilist() {
+            return Ok(None);
+        }
+        self.project(id)?.anilist_suggested()
+    }
+
+    /// The person said no to the waiting names: they stop waiting.
+    pub fn anilist_dismiss(&self, id: ProjectId) -> ProjectResult<()> {
+        self.project(id)?.set_anilist_suggested(None)
+    }
+
+    /// AniList character `id`'s portrait as embedded this session.
+    pub fn anilist_portrait(&self, id: u32) -> Option<Vec<f32>> {
+        self.anilist().portrait(id)
+    }
+
+    /// Keep AniList character `id`'s embedded portrait for the session (not
+    /// once `cancel` is).
+    pub fn keep_anilist_portrait(&self, id: u32, embedding: &[f32], cancel: &CancelToken) {
+        self.anilist().keep_portrait(id, embedding, cancel);
     }
 
     /// Give project `id`'s characters the suggested names (see
@@ -1594,7 +1946,7 @@ mod tests {
         project.reject_anilist_media(182255).unwrap();
         project.reject_anilist_media(182255).unwrap();
         assert_eq!(project.anilist_rejected().unwrap(), [170068, 182255]);
-        project.confirm_anilist_media(&[154587, 182255, 209939]).unwrap();
+        project.confirm_anilist_media(&[154587, 182255, 209939], false).unwrap();
         assert_eq!(project.anilist_media().unwrap(), [154587, 182255, 209939]);
         assert_eq!(project.anilist_rejected().unwrap(), [170068], "a confirmed season isn't rejected");
         project.set_anilist_auto(true).unwrap();
@@ -1739,5 +2091,208 @@ mod tests {
         assert!(names.iter().any(|n| n.anilist_id == 11 && n.character_id == c));
         assert_eq!(merges.len(), 1);
         assert_eq!((merges[0].from, merges[0].into, merges[0].anilist_id), (b, a, 10));
+    }
+
+    #[test]
+    fn a_series_is_picked_only_when_the_title_plainly_names_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (client, net, _) = client(dir.path());
+        net.frieren();
+        let found = client.search("Sousou no Frieren", &CancelToken::new()).unwrap();
+        let picked = |title: &str| pick_series(title, &found).map(|m| m.id);
+        // A title of the series, a release name, its English title (no
+        // matter the apostrophe), the first answer's title begun.
+        assert_eq!(picked("Sousou no Frieren"), Some(154587));
+        assert_eq!(picked("[SubsPlease] Sousou no Frieren - 03 (1080p) [A1B2C3D4]"), Some(154587));
+        assert_eq!(picked("Frieren - Beyond Journeys End"), Some(154587));
+        assert_eq!(picked("Sousou no"), Some(154587));
+        // One word begins too many titles: only one that is the title.
+        assert_eq!(picked("Frieren"), None);
+        assert_eq!(picked("Sousou no Frieren 2nd Season"), Some(182255));
+        // A year doesn't outweigh the title.
+        assert_eq!(picked("Sousou no Frieren (2026)"), Some(154587));
+        // Not whole words, another series, nothing.
+        assert_eq!(picked("Frie"), None);
+        assert_eq!(picked("Naruto"), None);
+        assert_eq!(picked(""), None);
+        assert_eq!(pick_series("Sousou no Frieren", &[]), None);
+
+        // Two series of one title: the year the title names picks.
+        let series = |id, year| Media {
+            id,
+            id_mal: None,
+            format: Some("TV".into()),
+            episodes: None,
+            season_year: Some(year),
+            title: Titles { english: Some("Hunter x Hunter".into()), romaji: None, native: None },
+            synonyms: vec![],
+            sequels: vec![],
+        };
+        let both = [series(136, 1999), series(11061, 2011)];
+        assert_eq!(pick_series("Hunter x Hunter (2011)", &both).map(|m| m.id), Some(11061));
+        assert_eq!(pick_series("Hunter x Hunter", &both).map(|m| m.id), Some(136));
+    }
+
+    #[test]
+    fn a_cast_is_read_once_a_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let (client, net, _) = client(dir.path());
+        net.frieren();
+        let first = client.characters(154587, &CancelToken::new()).unwrap();
+        let asked = net.bodies.lock().len();
+        assert_eq!(client.characters(154587, &CancelToken::new()).unwrap(), first);
+        assert_eq!(net.bodies.lock().len(), asked, "no request the second time");
+        client.forget().unwrap();
+        client.characters(154587, &CancelToken::new()).unwrap();
+        assert!(net.bodies.lock().len() > asked, "asked again once forgotten");
+    }
+
+    #[test]
+    fn the_title_finds_the_series_and_names_wait_for_a_yes() {
+        let dir = tempfile::tempdir().unwrap();
+        let (client, net, _) = client(dir.path());
+        net.frieren();
+        let lib = library(dir.path()).with_anilist(client);
+        let id = anime(&lib, "[SubsPlease] Sousou no Frieren - 03 (1080p)");
+        let cancel = lib.anilist_token();
+        assert!(matches!(lib.anilist_find_series(id, &cancel), Err(ProjectError::Invalid(_))), "off: nothing sent");
+        assert!(net.bodies.lock().is_empty());
+        lib.update_settings(&AppSettings { anilist: true, ..lib.settings().unwrap() }).unwrap();
+        assert!(!lib.anilist_wanted(id).unwrap(), "no one to name yet");
+
+        let series = lib.anilist_find_series(id, &cancel).unwrap().unwrap();
+        assert_eq!(series.name, "Frieren: Beyond Journey’s End");
+        assert_eq!(series.media, [154587, 182255, 209939]);
+        assert!(series.picked, "picked from the title");
+        let project = lib.project(id).unwrap();
+        assert_eq!(project.anilist_media().unwrap(), series.media);
+        assert!(project.anilist_picked().unwrap());
+        let body: serde_json::Value = serde_json::from_str(&net.bodies.lock()[0]).unwrap();
+        assert_eq!(body["variables"]["search"], "Sousou no Frieren", "the title's search text");
+        // Kept: no search again.
+        let asked = net.bodies.lock().len();
+        assert_eq!(lib.anilist_find_series(id, &cancel).unwrap().as_ref(), Some(&series));
+        assert_eq!(net.bodies.lock().len(), asked);
+        // Confirmed by the person: no longer picked.
+        project.confirm_anilist_media(&series.media, false).unwrap();
+        assert!(!lib.anilist_find_series(id, &cancel).unwrap().unwrap().picked);
+
+        // Three unnamed characters, one hidden.
+        let db = rusqlite::Connection::open(project.dir.join(crate::project::PROJECT_DB)).unwrap();
+        let [a, b, c] = [(); 3].map(|()| as_core::CharacterId::new());
+        for (n, (ch, hidden)) in [(a, 0), (b, 0), (c, 1)].into_iter().enumerate() {
+            db.execute(
+                "INSERT INTO characters (id, number, name, hidden, created_at) VALUES (?1, ?2, NULL, ?3, 0)",
+                rusqlite::params![ch.0.to_string(), n as i64 + 1, hidden],
+            )
+            .unwrap();
+        }
+        let name = |character_id, anilist_id: u32, name: &str| NameSuggestion {
+            character_id,
+            anilist_id,
+            name: name.into(),
+            score: 0.9,
+            image: None,
+        };
+        let waiting = Suggested {
+            media: series.media.clone(),
+            series: series.name.clone(),
+            names: vec![name(a, 176754, "Frieren"), name(b, 176755, "Fern"), name(c, 176756, "Stark")],
+            merges: vec![MergeProposal { from: c, into: a, anilist_id: 176754 }],
+        };
+        project.set_anilist_suggested(Some(&waiting)).unwrap();
+        // The hidden character's name and merge don't wait.
+        let back = lib.anilist_suggested(id).unwrap().unwrap();
+        assert_eq!(back.names.iter().map(|n| n.character_id).collect::<Vec<_>>(), [a, b]);
+        assert!(back.merges.is_empty());
+        lib.anilist_dismiss(id).unwrap();
+        assert!(lib.anilist_suggested(id).unwrap().is_none(), "said no to");
+        // A name given meanwhile: only the other waits (the cast changing
+        // doesn't make the rest go).
+        project.set_anilist_suggested(Some(&waiting)).unwrap();
+        project.cast_edit(&as_api::CastEdit::Rename { character_id: a, name: Some("Frieren".into()) }).unwrap();
+        let back = lib.anilist_suggested(id).unwrap().unwrap();
+        assert_eq!(back.names.iter().map(|n| n.character_id).collect::<Vec<_>>(), [b]);
+        project.cast_edit(&as_api::CastEdit::Rename { character_id: a, name: None }).unwrap();
+        // Another series confirmed: names from the old one's cast go.
+        project.confirm_anilist_media(&[154587, 182255, 209939], false).unwrap();
+        assert!(lib.anilist_suggested(id).unwrap().is_some(), "the same series again keeps them");
+        project.set_anilist_ids(MEDIA, &[154587]).unwrap();
+        assert!(lib.anilist_suggested(id).unwrap().is_none(), "made from another chain");
+        project.confirm_anilist_media(&series.media, false).unwrap();
+
+        // Given, but one left out: never suggested for them again.
+        project.set_anilist_suggested(Some(&waiting)).unwrap();
+        // Only what was shown and kept is given: a name no longer waiting
+        // as shown (another portrait for b) isn't.
+        assert_eq!(lib.anilist_accept(id, &[(a, 176754), (b, 999)], &[], &[(b, 176755)]).unwrap(), (0, 1));
+        let named = |ch| project.db().characters().unwrap().into_iter().find(|r| r.id == ch).unwrap().name;
+        assert_eq!((named(a).as_deref(), named(b)), (Some("Frieren"), None));
+        assert!(project.db().meta(SUGGESTED).unwrap().is_none());
+        assert_eq!(project.anilist_refused().unwrap(), [(b, 176755)]);
+        project.set_anilist_suggested(Some(&waiting)).unwrap();
+        assert!(lib.anilist_suggested(id).unwrap().is_none(), "Fern was left out for b, a is named");
+        assert!(matches!(lib.anilist_accept(id, &[], &[], &[]), Err(ProjectError::NotReady(_))));
+        // A merge left out doesn't come back; one resting on a name left out
+        // doesn't wait either.
+        let merging = Suggested {
+            names: vec![],
+            merges: vec![
+                MergeProposal { from: b, into: a, anilist_id: 5 },
+                MergeProposal { from: a, into: b, anilist_id: 176755 },
+            ],
+            ..waiting.clone()
+        };
+        project.set_anilist_suggested(Some(&merging)).unwrap();
+        let back = lib.anilist_suggested(id).unwrap().unwrap();
+        assert_eq!(back.merges.iter().map(|m| m.from).collect::<Vec<_>>(), [b], "b isn't Fern");
+        assert_eq!(lib.anilist_accept(id, &[], &[], &[(b, 5)]).unwrap(), (0, 0));
+        project.set_anilist_suggested(Some(&merging)).unwrap();
+        assert!(lib.anilist_suggested(id).unwrap().is_none());
+
+        // Hidden while the opt-in is off; a series turned down goes with
+        // its names.
+        let fresh = Suggested { names: vec![name(b, 1, "Himmel")], ..waiting.clone() };
+        project.set_anilist_suggested(Some(&fresh)).unwrap();
+        lib.update_settings(&AppSettings { anilist: false, ..lib.settings().unwrap() }).unwrap();
+        assert!(lib.anilist_suggested(id).unwrap().is_none());
+        lib.update_settings(&AppSettings { anilist: true, ..lib.settings().unwrap() }).unwrap();
+        assert!(lib.anilist_suggested(id).unwrap().is_some());
+        project.reject_anilist_media(154587).unwrap();
+        assert!(lib.anilist_suggested(id).unwrap().is_none());
+        assert!(!project.anilist_picked().unwrap());
+
+        // A season of a series turned down isn't picked by the title.
+        assert!(project.anilist_media().unwrap().is_empty());
+        let cancel = lib.anilist_token();
+        assert_eq!(lib.anilist_find_series(id, &cancel).unwrap(), None);
+        assert!(project.anilist_media().unwrap().is_empty());
+    }
+
+    #[test]
+    fn switching_it_off_stops_what_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let (client, net, _) = client(dir.path());
+        net.frieren();
+        let lib = library(dir.path()).with_anilist(client);
+        lib.update_settings(&AppSettings { anilist: true, ..lib.settings().unwrap() }).unwrap();
+        let id = anime(&lib, "Sousou no Frieren");
+        let running = lib.anilist_token();
+        lib.update_settings(&AppSettings { anilist: false, ..lib.settings().unwrap() }).unwrap();
+        lib.update_settings(&AppSettings { anilist: true, ..lib.settings().unwrap() }).unwrap();
+        // Switched on again meanwhile: what ran before still stops.
+        assert!(running.is_cancelled());
+        assert!(matches!(lib.anilist_find_series(id, &running), Err(ProjectError::Cancelled)));
+        assert!(net.bodies.lock().is_empty(), "nothing sent");
+        assert!(lib.project(id).unwrap().anilist_media().unwrap().is_empty());
+        // A new piece of work goes.
+        assert!(lib.anilist_find_series(id, &lib.anilist_token()).unwrap().is_some());
+        // Portraits are kept only while it is on.
+        lib.anilist().keep_portrait(1, &[1.0], &running);
+        assert_eq!(lib.anilist().portrait(1), None);
+        lib.anilist().keep_portrait(1, &[1.0], &lib.anilist_token());
+        assert_eq!(lib.anilist().portrait(1), Some(vec![1.0]));
+        lib.update_settings(&AppSettings { anilist: false, ..lib.settings().unwrap() }).unwrap();
+        assert_eq!(lib.anilist().portrait(1), None);
     }
 }

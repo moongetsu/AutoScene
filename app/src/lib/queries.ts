@@ -35,6 +35,9 @@ export const qk = {
   characterShots: (pid: ProjectId, cid: CharacterId) => ["cast", pid, "shots", cid] as const,
   // Under the cast: a pack is made from it, so every cast change refreshes it.
   pack: (pid: ProjectId, cid: CharacterId) => ["cast", pid, "pack", cid] as const,
+  // Under the cast: a name waits only for a character still shown and
+  // unnamed. The look-up says it began and ended with `anilist:changed`.
+  anilistNames: (pid: ProjectId) => ["cast", pid, "anilist"] as const,
   exportDir: (pid: ProjectId) => ["exportDir", pid] as const,
 }
 
@@ -91,6 +94,12 @@ export function useExportDir(pid: ProjectId) {
 /** The project's characters and where face analysis stands. */
 export function useCast(pid: ProjectId) {
   return useQuery({ queryKey: qk.cast(pid), queryFn: () => commands.castGet(pid) })
+}
+
+/** Names from AniList waiting for a yes, and whether the look-up runs (the
+ *  first ask starts it for a project never looked up). */
+export function useAniListNames(pid: ProjectId, enabled: boolean) {
+  return useQuery({ queryKey: qk.anilistNames(pid), queryFn: () => commands.anilistNames(pid), enabled })
 }
 
 export function useCastTracks(pid: ProjectId, filter: TrackFilter, enabled = true) {

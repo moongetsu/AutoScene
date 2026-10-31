@@ -85,7 +85,7 @@ export function GeneralSection() {
         </SettingRow>
         <SettingRow
           label="Character names from AniList"
-          description="Anime projects can fetch names for their characters from AniList. Sends the search text you confirm, and requests for this series' cast and images, to AniList (API and image server); AniList sees your IP address. Turning it off deletes every image kept from AniList."
+          description="Once an anime project's characters are found, AutoScene looks their names up on AniList and you give them with one click. Sends the project's title (or the search text you type), and requests for the matching series' cast and images, to AniList (API and image server); AniList sees your IP address. Turning it off deletes every image kept from AniList."
         >
           <Switch
             aria-label="Character names from AniList"

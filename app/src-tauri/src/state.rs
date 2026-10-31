@@ -51,6 +51,9 @@ pub struct AppState {
     pub portraits: Arc<parking_lot::Mutex<HashMap<ProjectId, bool>>>,
     /// Per project, the last decision that moved faces (see `work::cast_edited`).
     pub decisions: Arc<parking_lot::Mutex<HashMap<ProjectId, u64>>>,
+    /// Projects whose AniList look-up runs or failed this session (see
+    /// `commands::anilist::look_up`).
+    pub anilist: Arc<parking_lot::Mutex<HashMap<ProjectId, crate::commands::anilist::LookUp>>>,
     /// ffmpeg/ffprobe once found (see [`AppState::tools`]).
     tools: Arc<OnceLock<Arc<Tools>>>,
     /// The ffmpeg folder this build uses (see [`sidecar_dir`]).
@@ -99,6 +102,7 @@ impl AppState {
             analysis: Arc::default(),
             portraits: Arc::default(),
             decisions: Arc::default(),
+            anilist: Arc::default(),
             tools: Arc::new(OnceLock::new()),
             bundled_ffmpeg,
         }

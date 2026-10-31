@@ -66,6 +66,15 @@ pub struct CastChanged {
     pub project_id: ProjectId,
 }
 
+/// A project's AniList look-up began or ended: its names are asked for again
+/// (the cast itself is unchanged).
+#[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
+#[tauri_specta(event_name = "anilist:changed")]
+#[serde(rename_all = "camelCase")]
+pub struct AniListChanged {
+    pub project_id: ProjectId,
+}
+
 /// Character covers of a project got sharp portraits (the cast itself is
 /// unchanged: its lists needn't be fetched again).
 #[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]

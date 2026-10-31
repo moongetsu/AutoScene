@@ -565,6 +565,7 @@ fn run_faces(
     let characters = project.recluster().map_err(stage_error)?;
     log::info!("faces found; the cast has {characters} characters");
     cast_changed(app, project);
+    crate::commands::anilist::look_up(app, project.id, true);
     Ok(())
 }
 
@@ -837,10 +838,14 @@ pub fn queue_regroup(app: &AppHandle, project: &Arc<Project>) {
         move |j: &JobInfo| j.kind == JobKind::Regroup && j.project_id == Some(pid) && j.state == JobState::Queued;
     state.jobs.submit_unless(waiting, spec, move |ctx| {
         ctx.stage("Grouping characters");
-        if let Some(characters) = project.cast_upkeep(&ctx.cancel).map_err(job_error)? {
+        let regrouped = project.cast_upkeep(&ctx.cancel).map_err(job_error)?;
+        if let Some(characters) = regrouped {
             log::info!("characters grouped again; the cast has {characters} characters");
         }
         cast_changed(&app2, &project);
+        if regrouped.is_some() {
+            crate::commands::anilist::look_up(&app2, project.id, true);
+        }
         Ok(())
     });
 }

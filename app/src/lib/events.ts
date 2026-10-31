@@ -56,6 +56,9 @@ export function startEventBridge(): () => void {
       // next shown, not now (the face on screen stays).
       void queryClient.invalidateQueries({ queryKey: qk.portraits(payload.projectId), refetchType: "none" })
     }),
+    events.anilistChanged.listen(({ payload }) => {
+      void queryClient.invalidateQueries({ queryKey: qk.anilistNames(payload.projectId), exact: true })
+    }),
     events.portraitsChanged.listen(({ payload }) => {
       // Covers got sharp: the cast alone, not its lists.
       void queryClient.invalidateQueries({ queryKey: qk.cast(payload.projectId), exact: true })

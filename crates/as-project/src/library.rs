@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use as_api::{AppSettings, ContentKind, ImportCandidate, NewProject, ProjectKind, ProjectSummary, now_ms};
-use as_core::{AppPaths, MediaId, ProjectId};
+use as_core::{AppPaths, CancelToken, MediaId, ProjectId};
 use as_db::{LibraryDb, NewMedia, ProjectDb};
 use parking_lot::Mutex;
 
@@ -40,6 +40,9 @@ pub struct Library {
     find_bodies: Arc<AtomicBool>,
     /// Whether projects may ask AniList for names (checked between images).
     anilist_on: AtomicBool,
+    /// Cancelled when the opt-in goes off: whatever asks AniList stops (see
+    /// [`Library::anilist_token`]).
+    anilist_stop: Mutex<CancelToken>,
     anilist: AniList,
 }
 
@@ -50,12 +53,32 @@ impl Library {
         let find_bodies = Arc::new(AtomicBool::new(db.setting(KEY_FIND_BODIES)?.as_deref() == Some("1")));
         let anilist_on = AtomicBool::new(db.setting(KEY_ANILIST)?.as_deref() == Some("1"));
         let anilist = AniList::new(paths.anilist());
-        Ok(Self { db, open: Mutex::default(), opening: Mutex::default(), find_bodies, anilist_on, anilist })
+        Ok(Self {
+            db,
+            open: Mutex::default(),
+            opening: Mutex::default(),
+            find_bodies,
+            anilist_on,
+            anilist_stop: Mutex::default(),
+            anilist,
+        })
+    }
+
+    /// This library asking `anilist` instead (recorded answers).
+    #[cfg(test)]
+    pub(crate) fn with_anilist(self, anilist: AniList) -> Self {
+        Self { anilist, ..self }
     }
 
     /// Whether projects may ask AniList for names.
     pub fn names_from_anilist(&self) -> bool {
         self.anilist_on.load(Ordering::Relaxed)
+    }
+
+    /// The token a piece of AniList work runs under: cancelled once the
+    /// opt-in goes off, even when it goes on again meanwhile.
+    pub fn anilist_token(&self) -> CancelToken {
+        self.anilist_stop.lock().child()
     }
 
     pub(crate) fn anilist(&self) -> &AniList {
@@ -103,8 +126,10 @@ impl Library {
         self.db.set_setting(KEY_FAST_SCAN, if s.fast_scan { "1" } else { "0" })?;
         self.db.set_setting(KEY_ANILIST, if s.anilist { "1" } else { "0" })?;
         self.anilist_on.store(s.anilist, Ordering::Relaxed);
-        // Off: nothing from AniList stays (also what an earlier attempt left).
+        // Off: whatever asks AniList stops, and nothing from it stays (also
+        // what an earlier attempt left).
         if !s.anilist {
+            std::mem::take(&mut *self.anilist_stop.lock()).cancel();
             self.anilist.forget()?;
         }
         self.settings()

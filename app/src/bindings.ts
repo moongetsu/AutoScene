@@ -138,6 +138,25 @@ export const commands = {
 	anilistApply: (projectId: ProjectId, rev: number, names: AniListSuggestion[], merges: AniListMerge[]) => __TAURI_INVOKE<number>("anilist_apply", { projectId, rev, names, merges }),
 	/**  Whether names are given without asking (`anilist.auto`), or set it. */
 	anilistAuto: (projectId: ProjectId, on: boolean | null) => __TAURI_INVOKE<boolean>("anilist_auto", { projectId, on }),
+	/**
+	 *  The names from AniList waiting for project `id`'s yes, and whether the
+	 *  look-up runs. A project AniList names but never looked up (made before
+	 *  the look-up, or before the opt-in) is looked up now.
+	 */
+	anilistNames: (projectId: ProjectId) => __TAURI_INVOKE<AniListNames>("anilist_names", { projectId }),
+	/**
+	 *  The person said no to the names waiting for project `id`: they stop
+	 *  waiting (the look-up runs again once the characters are found anew).
+	 */
+	anilistDismiss: (projectId: ProjectId) => __TAURI_INVOKE<null>("anilist_dismiss", { projectId }),
+	/**
+	 *  Give the names and merges waiting for project `id` that the person saw
+	 *  and kept (`names`, `merges`; only while they still wait as shown). Those
+	 *  left out (`left_out`, `left_out_merges`) are never suggested again.
+	 *  Returns how many were given. Merged characters' faces are placed again,
+	 *  as after any merge.
+	 */
+	anilistAccept: (projectId: ProjectId, names: AniListSuggestion[], merges: AniListMerge[], leftOut: AniListSuggestion[], leftOutMerges: AniListMerge[]) => __TAURI_INVOKE<number>("anilist_accept", { projectId, names, merges, leftOut, leftOutMerges }),
 	castGet: (projectId: ProjectId) => __TAURI_INVOKE<Cast>("cast_get", { projectId }),
 	castTracks: (projectId: ProjectId, filter: TrackFilter) => __TAURI_INVOKE<FaceTrackItem[]>("cast_tracks", { projectId, filter }),
 	/**  Apply a decision about the cast. Returns the character it created, if any. */
@@ -219,6 +238,7 @@ export const commands = {
 /** Events */
 export const events = {
 	analysisChanged: makeEvent<AnalysisChanged>("analysis:changed"),
+	anilistChanged: makeEvent<AniListChanged>("anilist:changed"),
 	castChanged: makeEvent<CastChanged>("cast:changed"),
 	exportChanged: makeEvent<ExportChanged>("export:changed"),
 	jobChanged: makeEvent<JobChanged>("job:changed"),
@@ -245,6 +265,14 @@ export type AnalysisStage =
 /**  Faces and characters only. */
 "faces";
 
+/**
+ *  A project's AniList look-up began or ended: its names are asked for again
+ *  (the cast itself is unchanged).
+ */
+export type AniListChanged = {
+	projectId: ProjectId,
+};
+
 /**  An AniList series (a search result or one of a confirmed chain). */
 export type AniListMedia = {
 	id: number,
@@ -264,6 +292,28 @@ export type AniListMerge = {
 	from: CharacterId,
 	into: CharacterId,
 	anilistId: number,
+};
+
+/**
+ *  Names from AniList for a project's cast: the look-up the app does by
+ *  itself once the characters are found, and what it found.
+ */
+export type AniListNames = {
+	/**  The look-up is running. */
+	looking: boolean,
+	/**
+	 *  The series whose cast the names come from: its AniList id (the first
+	 *  of its chain) and title; `None` while no names wait.
+	 */
+	seriesId: number | null,
+	series: string | null,
+	/**
+	 *  Names waiting for the person's yes, for characters still shown and
+	 *  unnamed.
+	 */
+	names: AniListSuggestion[],
+	/**  Merges waiting for it, of characters both still shown. */
+	merges: AniListMerge[],
 };
 
 /**

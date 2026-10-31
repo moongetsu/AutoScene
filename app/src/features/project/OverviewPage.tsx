@@ -16,6 +16,7 @@ import { Hero } from "@/components/ui/hero"
 import { Page } from "@/components/ui/page"
 import { Section, Shelf } from "@/components/ui/shelf"
 import { TopBar } from "@/components/ui/topbar"
+import { AniListNames } from "@/features/cast/AniListNames"
 import { CharacterCard } from "@/features/cast/CharacterCard"
 import { plural, splitHidden } from "@/features/cast/cast"
 import { PickCharacter } from "@/features/cast/PickCharacter"
@@ -138,6 +139,7 @@ export function OverviewPage() {
 
       <div className="flex flex-col gap-10 pb-16">
         <MissingBanner pid={pid} media={media} movie={movie} className="mx-10" />
+        <AniListNames pid={pid} cast={cast} className="mx-10" />
         <Section
           title="Cast"
           count={shown.length || undefined}

@@ -124,11 +124,52 @@ const ANILIST_SERIES: AniListMedia[] = [
 const ANILIST_NAMES = ["Frieren", "Fern", "Stark", "Himmel"]
 
 /** Per-project AniList decisions (the real backend keeps them in project meta). */
-const anilistState = new Map<string, { media: AniListMedia[]; rejected: number[]; auto: boolean; rev: number }>()
+type MockAniList = {
+  media: AniListMedia[]
+  rejected: number[]
+  auto: boolean
+  rev: number
+  /** The app picked the series from the title (not the person). */
+  picked: boolean
+  /** The look-up ran / runs, the names it left waiting, and those left out
+   *  (`character:anilistId`). */
+  looked: boolean
+  looking: boolean
+  suggested: { names: AniListSuggestion[]; merges: AniListMerge[] } | null
+  refused: string[]
+}
+const anilistState = new Map<string, MockAniList>()
 function anilist(projectId: string) {
   let s = anilistState.get(projectId)
-  if (!s) anilistState.set(projectId, (s = { media: [], rejected: [], auto: false, rev: 1 }))
+  if (!s) {
+    s = {
+      media: [],
+      rejected: [],
+      auto: false,
+      rev: 1,
+      picked: false,
+      looked: false,
+      looking: false,
+      suggested: null,
+      refused: [],
+    }
+    anilistState.set(projectId, s)
+  }
   return s
+}
+/** The canned names for a project's first unnamed characters (by AniList's
+ *  order), like the matcher, which leaves named ones alone. */
+function anilistMatch(p: MockProject, s: MockAniList): AniListSuggestions {
+  const cast = castGet(String(p.id), p.media)
+  const unnamed = cast.characters.filter((c) => !c.hidden && !c.name)
+  const names: AniListSuggestion[] = unnamed.slice(0, ANILIST_NAMES.length).map((c, i) => ({
+    characterId: c.id,
+    anilistId: 1000 + i,
+    name: ANILIST_NAMES[i],
+    score: 0.9 - i * 0.1,
+    image: null,
+  }))
+  return { rev: s.rev, names, merges: [], auto: s.auto }
 }
 function anilistAllowed() {
   if (!settings.anilist) throw { code: "invalid", message: "Turn on names from AniList in Settings first." }
@@ -736,14 +777,20 @@ const handlers: Record<string, Handler> = {
     const s = anilist(String(projectId))
     const i = ANILIST_SERIES.findIndex((m) => m.id === media)
     const chain = i < 0 ? [] : ANILIST_SERIES.slice(i)
+    if (s.media[0]?.id !== chain[0]?.id) s.suggested = null
     s.media = chain
+    s.picked = false
     s.rejected = s.rejected.filter((id) => !chain.some((m) => m.id === id))
     return chain
   },
   anilist_reject: ({ projectId, media }) => {
     const s = anilist(String(projectId))
     if (!s.rejected.includes(media as number)) s.rejected.push(media as number)
-    if (s.media.some((m) => m.id === media)) s.media = []
+    if (s.media.some((m) => m.id === media)) {
+      s.media = []
+      s.picked = false
+      s.suggested = null
+    }
     return null
   },
   anilist_suggest: ({ projectId }) => {
@@ -751,16 +798,8 @@ const handlers: Record<string, Handler> = {
     const p = find(projectId)
     const s = anilist(String(projectId))
     if (s.media.length === 0) throw { code: "not_ready", message: "Confirm the series on AniList first." }
-    const cast = castGet(String(projectId), p.media)
-    const names: AniListSuggestion[] = cast.characters.slice(0, ANILIST_NAMES.length).map((c, i) => ({
-      characterId: c.id,
-      anilistId: 1000 + i,
-      name: ANILIST_NAMES[i],
-      score: 0.9 - i * 0.1,
-      image: null,
-    }))
-    const result: AniListSuggestions = { rev: s.rev, names, merges: [], auto: s.auto }
-    if (s.auto) applyAnilist(p, s, names, [])
+    const result = anilistMatch(p, s)
+    if (s.auto) applyAnilist(p, s, result.names, [])
     return result
   },
   anilist_apply: ({ projectId, rev, names, merges }) => {
@@ -768,7 +807,78 @@ const handlers: Record<string, Handler> = {
     const p = find(projectId)
     const s = anilist(String(projectId))
     if ((rev as number) !== s.rev) throw { code: "not_ready", message: "The cast changed; match the portraits again." }
+    s.suggested = null
     return applyAnilist(p, s, names as AniListSuggestion[], merges as AniListMerge[])
+  },
+  // The look-up by itself: the first canned series (picked from the title),
+  // a moment later.
+  anilist_names: ({ projectId }) => {
+    const p = find(projectId)
+    const s = anilist(String(p.id))
+    const characters = castGet(String(p.id), p.media).characters
+    const wanted = settings.anilist && p.content === "anime" && characters.some((c) => !c.hidden && !c.name)
+    if (wanted && !s.looked && !s.looking) {
+      s.looking = true
+      setTimeout(() => {
+        s.looking = false
+        try {
+          // Switched off meanwhile: nothing is kept (and it isn't looked yet).
+          if (!settings.anilist) return
+          s.looked = true
+          if (s.media.length === 0) {
+            // The title's series, unless turned down.
+            if (s.rejected.includes(ANILIST_SERIES[0].id)) return
+            s.media = ANILIST_SERIES
+            s.picked = true
+          }
+          const found = anilistMatch(p, s)
+          if (s.auto && !s.picked) applyAnilist(p, s, found.names, found.merges)
+          else s.suggested = { names: found.names, merges: found.merges }
+        } finally {
+          void emit("anilist:changed", { projectId: p.id })
+        }
+      }, 1500)
+    }
+    const open = (id: string) => characters.find((c) => c.id === id && !c.hidden)
+    const names = (wanted && s.suggested?.names) || []
+    const waiting = names.filter(
+      (n) => open(n.characterId) && !open(n.characterId)?.name && !s.refused.includes(`${n.characterId}:${n.anilistId}`),
+    )
+    const merges = ((wanted && s.suggested?.merges) || []).filter((m) => open(m.from) && open(m.into))
+    const any = waiting.length > 0 || merges.length > 0
+    return {
+      looking: s.looking,
+      seriesId: any ? (s.media[0]?.id ?? null) : null,
+      series: any ? (s.media[0]?.title ?? null) : null,
+      names: any ? waiting : [],
+      merges: any ? merges : [],
+    }
+  },
+  // Gives only what still waits as shown, like `Project::accept_anilist_suggested`.
+  anilist_accept: ({ projectId, names, merges, leftOut, leftOutMerges }) => {
+    anilistAllowed()
+    const p = find(projectId)
+    const s = anilist(String(p.id))
+    if (!s.suggested) throw { code: "not_ready", message: "These names no longer wait: the series or the cast changed." }
+    const characters = castGet(String(p.id), p.media).characters
+    const open = (id: string) => characters.find((c) => c.id === id && !c.hidden)
+    const pair = (n: AniListSuggestion) => `${n.characterId}:${n.anilistId}`
+    const waiting = s.suggested
+    const isWaiting = (n: AniListSuggestion) => waiting.names.some((w) => pair(w) === pair(n))
+    for (const n of leftOut as AniListSuggestion[]) if (isWaiting(n)) s.refused.push(pair(n))
+    for (const m of leftOutMerges as AniListMerge[]) s.refused.push(`${m.from}:${m.anilistId}`)
+    const give = (names as AniListSuggestion[]).filter(
+      (n) => isWaiting(n) && open(n.characterId) && !open(n.characterId)?.name && !s.refused.includes(pair(n)),
+    )
+    const merge = (merges as AniListMerge[]).filter((m) =>
+      waiting.merges.some((w) => w.from === m.from && w.into === m.into),
+    )
+    s.suggested = null
+    return applyAnilist(p, s, give, merge)
+  },
+  anilist_dismiss: ({ projectId }) => {
+    anilist(String(find(projectId).id)).suggested = null
+    return null
   },
   anilist_auto: ({ projectId, on }) => {
     const s = anilist(String(projectId))

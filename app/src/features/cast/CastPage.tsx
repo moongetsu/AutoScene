@@ -15,6 +15,7 @@ import { firstFailure, useCast, useMediaList, useProject, useSettings } from "@/
 import { cn } from "@/lib/utils"
 import { CharacterCard } from "./CharacterCard"
 import { AniListDialog } from "./AniListDialog"
+import { AniListNames } from "./AniListNames"
 import { plural, splitHidden, unplacedNote, useProjectAnalysis } from "./cast"
 
 /** Everyone the analysis found, most screen time first. */
@@ -104,6 +105,7 @@ export function CastPage() {
 
       <div className="px-10 pb-16">
         <AnalysisStatus pid={pid} className="mb-8" />
+        <AniListNames pid={pid} cast={cast} className="mb-8" />
         {unplaced && (
           <p className="mb-8 flex max-w-2xl items-start gap-2.5 rounded-lg border border-white/10 bg-white/[0.04] px-3.5 py-3 text-sm text-fg-2 [&_svg]:mt-0.5 [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-fg-1">
             <Info /> {unplaced}

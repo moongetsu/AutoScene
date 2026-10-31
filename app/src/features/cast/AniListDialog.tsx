@@ -13,8 +13,8 @@ type Stage = "search" | "chain" | "suggestions"
 /** Fetch names from AniList: the person confirms the series, then the
  *  series' cast portraits are matched to the project's characters and the
  *  names are suggested (or given at once when the project's auto flag is
- *  set). Only ever opened from the Cast page of an anime project while the
- *  AniList setting is on. */
+ *  set). Opened from the Cast page and the AniList names banner of an anime
+ *  project while the AniList setting is on. */
 export function AniListDialog({
   pid,
   characters,
@@ -35,6 +35,19 @@ export function AniListDialog({
   const [names, setNames] = useState<AniListSuggestion[]>([])
   const [merges, setMerges] = useState<AniListMerge[]>([])
   const [auto, setAuto] = useState(false)
+  // Each opening starts at the search: suggestions shown before may be from
+  // a series turned down since (the dialog stays mounted between openings).
+  const [wasOpen, setWasOpen] = useState(open)
+  if (open !== wasOpen) {
+    setWasOpen(open)
+    if (open) {
+      setStage("search")
+      setResults([])
+      setChain([])
+      setNames([])
+      setMerges([])
+    }
+  }
   const nameOf = (id: string) => characters.find((c) => c.id === id)?.label ?? "a character"
 
   // The suggested search text is filled once the dialog opens; nothing is
@@ -61,6 +74,8 @@ export function AniListDialog({
     run(async () => {
       setChain(await commands.anilistConfirm(pid, m.id))
       setStage("chain")
+      // Names found in another series' cast no longer wait.
+      void queryClient.invalidateQueries({ queryKey: qk.anilistNames(pid), exact: true })
     })
 
   const suggest = () =>

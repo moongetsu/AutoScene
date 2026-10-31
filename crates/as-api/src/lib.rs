@@ -458,6 +458,24 @@ pub struct AniListSuggestions {
     pub auto: bool,
 }
 
+/// Names from AniList for a project's cast: the look-up the app does by
+/// itself once the characters are found, and what it found.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AniListNames {
+    /// The look-up is running.
+    pub looking: bool,
+    /// The series whose cast the names come from: its AniList id (the first
+    /// of its chain) and title; `None` while no names wait.
+    pub series_id: Option<u32>,
+    pub series: Option<String>,
+    /// Names waiting for the person's yes, for characters still shown and
+    /// unnamed.
+    pub names: Vec<AniListSuggestion>,
+    /// Merges waiting for it, of characters both still shown.
+    pub merges: Vec<AniListMerge>,
+}
+
 /// One face followed through one shot.
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
