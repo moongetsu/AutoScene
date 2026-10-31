@@ -229,8 +229,26 @@ function JobRow({ job: j }: { job: JobInfo }) {
   )
 }
 
+/** How a finished job ended: a small round badge, centred on its title and subtitle. */
 function StateIcon({ job }: { job: JobInfo }) {
-  if (job.state === "done") return <Check className="mt-0.5 size-4 shrink-0 text-fg-3" aria-label="Done" />
-  if (job.state === "failed") return <Warning className="mt-0.5 size-4 shrink-0 text-danger" aria-label="Failed" />
-  return <Prohibit className="mt-0.5 size-4 shrink-0 text-fg-3" aria-label="Cancelled" />
+  const badge = "flex size-6 shrink-0 items-center justify-center self-center rounded-full [&_svg]:size-3.5"
+  if (job.state === "done") {
+    return (
+      <span role="img" aria-label="Done" className={cn(badge, "bg-ok/15 text-ok")}>
+        <Check weight="bold" />
+      </span>
+    )
+  }
+  if (job.state === "failed") {
+    return (
+      <span role="img" aria-label="Failed" className={cn(badge, "bg-danger-subtle text-danger")}>
+        <Warning weight="bold" />
+      </span>
+    )
+  }
+  return (
+    <span role="img" aria-label="Cancelled" className={cn(badge, "bg-white/[0.06] text-fg-3")}>
+      <Prohibit weight="bold" />
+    </span>
+  )
 }
