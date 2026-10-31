@@ -99,3 +99,15 @@ describe("an export finishing", () => {
     expect(action).toBeUndefined()
   })
 })
+
+describe("an export's job ending", () => {
+  it("reads the project's exports again, a cancel too", () => {
+    const read = vi.spyOn(queryClient, "invalidateQueries")
+    handlers.jobProgress({ payload: { id: "j1", rev: 2, progress: 0.5, stage: null, etaMs: null } })
+    expect(read).not.toHaveBeenCalled()
+    handlers.jobChanged({ payload: job({ state: "cancelled", rev: 3 }) })
+    expect(read).toHaveBeenCalledWith({ queryKey: ["exports", "p"] })
+    expect(toast.success).not.toHaveBeenCalled()
+    read.mockRestore()
+  })
+})

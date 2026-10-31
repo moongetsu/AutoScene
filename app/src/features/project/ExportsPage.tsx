@@ -1,7 +1,7 @@
 import { useNavigate, useParams } from "@tanstack/react-router"
 import { Check, CircleNotch, Clock, Copy, FolderOpen, Package, Play, Prohibit, ShieldWarning, Warning } from "@/components/icons"
 import { toast } from "sonner"
-import type { ExportItem, ExportStatus, ExportSummary, MediaItem, MergedFile } from "@/bindings"
+import type { ExportItem, ExportStatus, ExportSummary, JobInfo, MediaItem, MergedFile } from "@/bindings"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { ContextArea } from "@/components/ui/context-area"
@@ -76,7 +76,8 @@ export function ExportsPage() {
 function ExportCard({ pid, ex, media }: { pid: string; ex: ExportSummary; media: Map<string, MediaItem> }) {
   const job = useActivity((s) => s.order.map((id) => s.jobs[id]).find((j) => j.exportId === ex.id))
   const done = ex.items.filter((i) => i.status === "done").length
-  const running = ex.status === "running" || ex.status === "queued"
+  const status = exportStatus(ex, job)
+  const running = status === "running" || status === "queued"
   const file = ex.merged
   const unverified = file
     ? Number(file.path != null && !file.verified)
@@ -103,7 +104,7 @@ function ExportCard({ pid, ex, media }: { pid: string; ex: ExportSummary; media:
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2.5">
               <h2 className="truncate text-lg font-semibold text-fg-1">{ex.label ?? ex.preset.name}</h2>
-              <ExportStatusBadge ex={ex} unverified={unverified} />
+              <ExportStatusBadge ex={ex} status={status} unverified={unverified} />
             </div>
             <p className="mt-0.5 text-sm text-fg-3">
               {ex.label && `${ex.preset.name} · `}
@@ -122,7 +123,7 @@ function ExportCard({ pid, ex, media }: { pid: string; ex: ExportSummary; media:
           <span className="timecode w-12 text-right text-sm text-fg-2">{formatPercent(job.progress)}</span>
         </div>
       )}
-      {file && <FileRow ex={ex} file={file} />}
+      {file && <FileRow ex={ex} status={status} file={file} />}
       <ul className="p-2">
         {ex.items.map((it) => (
           <ItemRow key={it.id} pid={pid} item={it} media={media.get(it.mediaId)} ownFile={!file} />
@@ -132,18 +133,30 @@ function ExportCard({ pid, ex, media }: { pid: string; ex: ExportSummary; media:
   )
 }
 
-function ExportStatusBadge({ ex, unverified }: { ex: ExportSummary; unverified: number }) {
-  if (ex.status === "running" || ex.status === "queued") return <Badge tone="accent">{ex.status === "queued" ? "Queued" : "Exporting"}</Badge>
-  if (ex.status === "cancelled") return <Badge>Cancelled</Badge>
-  if (ex.status === "failed" && ex.merged?.error) return <Badge tone="danger">File not made</Badge>
-  if (ex.status === "failed") return <Badge tone="danger">Some clips failed</Badge>
+/**
+ * Where an export stands. Its job can end before its record says so (the
+ * list is read again a moment later, see `lib/events.ts`): a cancelled or
+ * failed job's card says so at once rather than going on showing it queued
+ * or running. A job done waits for the record, which knows what was made.
+ */
+function exportStatus(ex: ExportSummary, job: JobInfo | undefined): ExportStatus {
+  const unfinished = ex.status === "running" || ex.status === "queued"
+  const ended = job?.state === "cancelled" || job?.state === "failed"
+  return unfinished && ended ? job.state : ex.status
+}
+
+function ExportStatusBadge({ ex, status, unverified }: { ex: ExportSummary; status: ExportStatus; unverified: number }) {
+  if (status === "running" || status === "queued") return <Badge tone="accent">{status === "queued" ? "Queued" : "Exporting"}</Badge>
+  if (status === "cancelled") return <Badge>Cancelled</Badge>
+  if (status === "failed" && ex.merged?.error) return <Badge tone="danger">File not made</Badge>
+  if (status === "failed") return <Badge tone="danger">Some clips failed</Badge>
   if (unverified > 0) return <Badge tone="accent">{unverified} unverified</Badge>
   return null
 }
 
 /** The one file an export joins its clips into: there once every clip is rendered. */
-function FileRow({ ex, file }: { ex: ExportSummary; file: MergedFile }) {
-  const status: ExportStatus = file.path ? "done" : file.error || ex.status === "done" ? "failed" : ex.status
+function FileRow({ ex, status: ofExport, file }: { ex: ExportSummary; status: ExportStatus; file: MergedFile }) {
+  const status: ExportStatus = file.path ? "done" : file.error || ofExport === "done" ? "failed" : ofExport
   const chapters = ex.items.filter((i) => i.path != null && i.path === file.path).length
   const rendered = ex.items.every((i) => i.status !== "queued" && i.status !== "running")
   const what =

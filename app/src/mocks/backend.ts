@@ -990,7 +990,17 @@ const handlers: Record<string, Handler> = {
   },
   jobs_list: () => jobs,
   job_cancel: ({ jobId }) => {
-    cancelJobs((j) => j.id === jobId)
+    const j = jobs.find((x) => x.id === jobId)
+    const running = j?.state === "running"
+    cancelJobs((x) => x.id === jobId)
+    // As the backend does: the export and the clips it didn't make are cancelled.
+    const p = running ? projects.find((x) => x.id === j.projectId) : undefined
+    const ex = p?.exports.find((x) => x.id === j?.exportId)
+    if (p && ex) {
+      ex.status = "cancelled"
+      for (const it of ex.items) if (it.status === "queued" || it.status === "running") it.status = "cancelled"
+      void emit("export:changed", { projectId: p.id, exportId: ex.id })
+    }
     return null
   },
   jobs_clear_finished: () => {

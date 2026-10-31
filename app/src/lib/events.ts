@@ -1,6 +1,6 @@
 import { toast } from "sonner"
 import type { JobInfo } from "@/bindings"
-import { useActivity } from "@/state/activity"
+import { isFinished, useActivity } from "@/state/activity"
 import { commands, events } from "./ipc"
 import { reveal } from "./os"
 import { exportsQuery, qk, queryClient } from "./queries"
@@ -11,7 +11,7 @@ import { exportsQuery, qk, queryClient } from "./queries"
  *
  * | event            | effect                                             |
  * |------------------|----------------------------------------------------|
- * | job:changed      | activity store; toast when an export finishes      |
+ * | job:changed      | activity store; toast when an export finishes, exports(pid) when it ends |
  * | job:progress     | activity store (progress only)                     |
  * | library:changed  | projects, project(id), exportDir                   |
  * | media:changed    | media(pid), frameMap(pid, mid), project(pid)       |
@@ -28,7 +28,13 @@ export function startEventBridge(): () => void {
       const prev = useActivity.getState().jobs[payload.id]
       if (prev && prev.rev > payload.rev) return
       useActivity.getState().upsert(payload)
-      if (prev?.state !== payload.state) notifyFinished(payload)
+      if (prev?.state === payload.state) return
+      // An export's card reads it again when its job ends, should the
+      // export's own event be late or not come (cancelled while queued).
+      if (payload.kind === "export" && payload.projectId && isFinished(payload)) {
+        void queryClient.invalidateQueries({ queryKey: qk.exports(payload.projectId) })
+      }
+      notifyFinished(payload)
     }),
     events.jobProgress.listen(({ payload }) => useActivity.getState().progress(payload)),
     events.libraryChanged.listen(({ payload }) => {
