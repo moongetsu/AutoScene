@@ -21,12 +21,17 @@
 //! `NORMS=<floor>,<full>`, `MIN_TRACK_Q=<q>`, `CROP_SCALE=<k>`,
 //! `PERSON_HEAD=<share>`, `UNION_IOU=<iou>` and `UNION_COVER=<share>` override
 //! `Params::anime()`.
+//! `FAST=1` runs it with Fast Scan (`as_analysis::fast`, its frames
+//! decoded on the GPU where it can, `DECODER=cpu` in software; detectors one
+//! frame at a time); `LOW_CONFIDENCE=<score>` sets the head score below
+//! which a look's neighbours are looked at too.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use as_analysis::anime::{self, Anime, Params};
+use as_analysis::anime::{self, Anime, FastAnime, Params};
+use as_analysis::{FastParams, fast};
 use as_core::{CancelToken, FrameIndex, FrameRange};
 use as_infer::Runtime;
 use as_media::{MediaInfo, Source, Tools};
@@ -93,41 +98,66 @@ fn main() {
     let person_model = std::env::var("PERSON").ok().map(|v| {
         if v == "1" { models.join("anime_person_detection/person_detect_v1.3_s/model.onnx") } else { PathBuf::from(v) }
     });
-    let size = anime::frame_size(&info, &params);
-    let mut heads =
-        Yolo::load(&rt, &head_model, size, input("HEAD_INPUT", (640, 384)), as_analysis::DETECT_BATCH).unwrap();
+    let fast_params = std::env::var("FAST").is_ok_and(|v| v == "1").then(|| {
+        let mut p = FastParams::anime();
+        if std::env::var("DECODER").is_ok_and(|v| v == "cpu") {
+            p.decoder = as_media::frames::Decoder::Cpu;
+        }
+        if let Ok(v) = std::env::var("LOW_CONFIDENCE") {
+            p.low_confidence = v.parse().expect("LOW_CONFIDENCE=<score>");
+        }
+        p
+    });
+    let (size, batch) = match &fast_params {
+        Some(p) => (fast::frame_size(&info, p), 1),
+        None => (anime::frame_size(&info, &params), as_analysis::DETECT_BATCH),
+    };
+    let mut heads = Yolo::load(&rt, &head_model, size, input("HEAD_INPUT", (640, 384)), batch).unwrap();
     let ccip_batch: usize = std::env::var("CCIP_BATCH").map_or(32, |v| v.parse().unwrap());
     let mut ccip = Ccip::load(&rt, &ccip_model, ccip_batch).unwrap();
-    let mut persons = person_model
-        .map(|m| Yolo::load(&rt, &m, size, input("PERSON_INPUT", (1280, 736)), as_analysis::DETECT_BATCH).unwrap());
-    println!("anime pass at {size:?}, stride {}, person model {}", params.stride, persons.is_some());
+    let mut persons =
+        person_model.map(|m| Yolo::load(&rt, &m, size, input("PERSON_INPUT", (1280, 736)), batch).unwrap());
+    println!(
+        "anime pass at {size:?}, stride {}, person model {}, Fast Scan {}",
+        params.stride,
+        persons.is_some(),
+        fast_params.is_some()
+    );
     let t0 = Instant::now();
     let mut all = Vec::new();
     let mut chunks = std::fs::File::create(format!("{out}.chunks")).unwrap();
     let sprites = PathBuf::from(format!("{out}.sprites"));
     std::fs::create_dir_all(&sprites).unwrap();
     let (mut sprite_count, mut sprite_bytes) = (0usize, 0usize);
-    anime::face_tracks(
-        &tools,
-        Source { path: &path, info: &info, index: &index },
-        Anime { heads: &mut heads, persons: persons.as_mut(), ccip: &mut ccip },
-        &shots,
-        resume,
-        2400,
-        &params,
-        &CancelToken::new(),
-        |p| eprint!("\r{:5.1}% {:5.0}s", 100.0 * p, t0.elapsed().as_secs_f64()),
-        |c| {
-            writeln!(chunks, "{} {} {} {}", c.start, c.end, c.tracks.len(), c.sprites.len()).unwrap();
-            all.extend_from_slice(c.tracks);
-            for s in c.sprites {
-                std::fs::write(sprites.join(format!("{}.jpg", s.shot)), &s.jpeg).unwrap();
-                sprite_count += 1;
-                sprite_bytes += s.jpeg.len();
-            }
-            Ok(())
-        },
-    )
+    let src = Source { path: &path, info: &info, index: &index };
+    let models = Anime { heads: &mut heads, persons: persons.as_mut(), ccip: &mut ccip };
+    let cancel = CancelToken::new();
+    let progress = |p| eprint!("\r{:5.1}% {:5.0}s", 100.0 * p, t0.elapsed().as_secs_f64());
+    let on_chunk = |c: as_analysis::FaceChunk| {
+        writeln!(chunks, "{} {} {} {}", c.start, c.end, c.tracks.len(), c.sprites.len()).unwrap();
+        all.extend_from_slice(c.tracks);
+        for s in c.sprites {
+            std::fs::write(sprites.join(format!("{}.jpg", s.shot)), &s.jpeg).unwrap();
+            sprite_count += 1;
+            sprite_bytes += s.jpeg.len();
+        }
+        Ok(())
+    };
+    match &fast_params {
+        Some(p) => as_analysis::fast_face_tracks(
+            &tools,
+            src,
+            FastAnime { anime: models, params: &params },
+            &shots,
+            resume,
+            2400,
+            p,
+            &cancel,
+            progress,
+            on_chunk,
+        ),
+        None => anime::face_tracks(&tools, src, models, &shots, resume, 2400, &params, &cancel, progress, on_chunk),
+    }
     .unwrap();
     let secs = t0.elapsed().as_secs_f64();
     std::fs::write(format!("{out}.tracks"), as_analysis::tracks::encode(&all)).unwrap();

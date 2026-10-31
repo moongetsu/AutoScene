@@ -180,7 +180,9 @@ fn face_chunks_tile_the_media_even_across_a_kill() {
         eprintln!("anime models missing; run `cargo xtask fetch-models` (skipping)");
         return;
     }
-    face_chunks_tile(&engine, &m, FacesInput { anime: true, ..faces_input(&m, shots, false, None) });
+    face_chunks_tile(&engine, &m, FacesInput { anime: true, ..faces_input(&m, shots.clone(), false, None) });
+    // Anime with Fast Scan (the same models, a few looks per shot).
+    face_chunks_tile(&engine, &m, FacesInput { anime: true, fast: true, ..faces_input(&m, shots, false, None) });
 }
 
 fn face_chunks_tile(engine: &Engine, m: &Media, job: FacesInput) {

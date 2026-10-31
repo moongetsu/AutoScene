@@ -74,7 +74,7 @@ export function GeneralSection() {
         </SettingRow>
         <SettingRow
           label="Fast Scan"
-          description="Finds faces the way the Scener app does: smaller face models, and only a few frames of each shot. Much faster, but characters are told apart less surely, and no one is found without a visible face. Applies to projects you create while it is on; switch an existing project in Edit details… Fast Scan's models (MIT, Apache-2.0) may be used for any work; the full scan's face models come from InsightFace and may only be used for non-commercial work."
+          description="Finds faces the way the Scener app does: smaller face models, and only a few frames of each shot. Much faster, but characters are told apart less surely, and no one is found without a visible face. Anime keeps its own character models and only looks at those few frames. Applies to projects you create while it is on; switch an existing project in Edit details… Fast Scan's face models (MIT, Apache-2.0) may be used for any work; the full scan's face models come from InsightFace and may only be used for non-commercial work."
         >
           <Switch
             aria-label="Fast Scan"

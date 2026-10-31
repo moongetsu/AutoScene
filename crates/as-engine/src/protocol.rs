@@ -79,14 +79,14 @@ pub struct FacesJob {
     /// 3D animation: faces are searched as `FaceParams::animated` does.
     #[serde(default)]
     pub animated: bool,
-    /// Fast Scan: faces are found as `as_analysis::fast` does (YuNet,
-    /// SFace, a few frames per shot) whatever the footage; nobody is looked
-    /// for by their body.
+    /// Fast Scan: faces are found as `as_analysis::fast` does (a few frames
+    /// per shot) with YuNet and SFace, or on anime (`anime`) with its own
+    /// models; nobody is looked for by their body.
     #[serde(default)]
     pub fast: bool,
     /// Anime footage: heads are found and embedded as `as_analysis::anime`
-    /// does (anime head/person detectors, CCIP); `bodies`, `known`,
-    /// `animated` and `fast` don't apply.
+    /// does (anime head/person detectors, CCIP) — with `fast`, in the frames
+    /// Fast Scan picks; `bodies`, `known` and `animated` don't apply.
     #[serde(default)]
     pub anime: bool,
 }

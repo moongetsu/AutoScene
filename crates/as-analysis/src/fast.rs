@@ -13,6 +13,12 @@
 //! once. The faces then go to the same tracker and the same grouping as
 //! the full pass's.
 //!
+//! What finds and embeds the faces is a [`Finder`]: YuNet and SFace
+//! ([`FastModels`]) for faces, or — anime — the anime pass's head and person
+//! detectors and CCIP (`crate::anime::FastAnime`), which see drawn
+//! characters where a photo-trained face model sees nobody. Fast Scan picks
+//! the frames the same way for both.
+//!
 //! Like the full pass ([`crate::faces`]), chunks are whole shots and the
 //! candidates sit on an absolute grid of frames ([`FastParams::grid`]): what
 //! a shot looks at depends on the shot alone, so a resumed run produces the
@@ -26,7 +32,10 @@
 //! 22,319 frames). It groups what it finds about as well, but finds fewer
 //! faces: 78% of a live-action main cast's screen time ends up on their
 //! character (full pass 96%; Breaking Bad's 960×540 proxy), 59% of a CGI
-//! film's (94%).
+//! film's (94%). On anime (2026-10-31, a 1080p Demon Slayer episode): 2.7
+//! times as fast as the anime pass (156 s against 416 s), 96% of the main
+//! cast's heads the anime pass finds are found, 83% end up with the
+//! character it groups them as.
 
 use std::collections::VecDeque;
 
@@ -34,7 +43,7 @@ use as_core::{CancelToken, FrameIdx, FrameRange};
 use as_media::frames::Decoder;
 use as_media::{MediaInfo, Source, Tools};
 use as_vision::arcface;
-use as_vision::{FaceBox, SFace, YuNet, image};
+use as_vision::{SFace, YuNet, image};
 
 use crate::AnalysisError;
 use crate::faces::FaceChunk;
@@ -131,6 +140,28 @@ impl Default for FastParams {
 }
 
 impl FastParams {
+    /// Fast Scan on anime ([`crate::anime::FastAnime`]): frames decoded at
+    /// the anime pass's size (its detectors' frame), doubt read from the
+    /// least sure tenth of heads, and the small-face bars a head's. Which
+    /// heads count, their quality and the tracks kept follow the anime
+    /// pass's [`crate::anime::Params`] instead of the face fields here;
+    /// thumbnails and sprites are made the same size either way. The head
+    /// detector's scores sit where YuNet's do (a Demon Slayer episode:
+    /// median 0.88, Scener's 0.92 at the 80th percentile), but looking next
+    /// to that many looks found no more of the main cast's heads (96% of
+    /// the anime pass's either way) and took 7% longer. A face is about 0.6
+    /// of its head's height: the small bars are the face pass's over 0.6
+    /// (side) and 0.36 (area).
+    pub fn anime() -> Self {
+        Self {
+            decode_max: crate::anime::Params::anime().decode_max,
+            low_confidence: 0.7,
+            small_area: 0.033,
+            small_side: 0.133,
+            ..Self::default()
+        }
+    }
+
     /// Frames between candidates on the grid at `fps`.
     pub fn grid(&self, fps: f64) -> u32 {
         ((fps / self.grid_per_sec).round() as u32).max(1)
@@ -151,13 +182,19 @@ impl FastParams {
     /// apart and still be on screen. A face moving fast is followed over as
     /// many grid steps, at a quarter of the full pass's reach per step.
     pub fn tracker(&self, fps: f64) -> TrackerParams {
+        TrackerParams { reach: 0.4, ..self.sparse(fps, TrackerParams::new(self.grid(fps))) }
+    }
+
+    /// A full pass's link rules (`links`) for faces looked at this sparsely
+    /// (see [`FastParams::tracker`]), its reach per step left as it is.
+    pub fn sparse(&self, fps: f64, links: TrackerParams) -> TrackerParams {
         let gap = self.max_steps() as u32 * self.pool_steps(fps);
         TrackerParams {
+            stride: self.grid(fps),
             max_gap: gap,
-            reach: 0.4,
             reach_gap: gap,
             min_track_quality: self.min_track_quality,
-            ..TrackerParams::new(self.grid(fps))
+            ..links
         }
     }
 
@@ -212,10 +249,10 @@ pub struct Summary {
 
 impl Summary {
     /// The faces of a `w`×`h` frame (boxes in its pixels).
-    fn of(faces: &[FaceBox], (w, h): (usize, usize)) -> Self {
+    fn of(faces: &[Spot], (w, h): (usize, usize)) -> Self {
         let mut s = Self { faces: faces.len(), min_confidence: 1.0, min_area: 1.0, min_side: 1.0 };
         for f in faces {
-            let (fw, fh) = (f.width() / w as f32, f.height() / h as f32);
+            let (fw, fh) = ((f.bbox[2] - f.bbox[0]) / w as f32, (f.bbox[3] - f.bbox[1]) / h as f32);
             s.min_confidence = s.min_confidence.min(f.score);
             s.min_area = s.min_area.min(fw * fh);
             s.min_side = s.min_side.min(fw.min(fh));
@@ -391,11 +428,35 @@ struct Kept {
     rgb: Vec<u8>,
 }
 
-/// A face found in a look, waiting for its embedding.
+/// A face found in a look: its crop until it is embedded, then its
+/// embedding and norm.
 struct Found {
     det: FaceDet,
     crop: Vec<u8>,
     thumb: Vec<u8>,
+    embedding: Option<(Vec<f32>, f32)>,
+}
+
+/// Crops a shot keeps waiting before they are embedded mid-shot: an anime
+/// head's CCIP crop is 442 KB, and a long take (or footage no cut was found
+/// in) can hold hundreds of looks. Shots with fewer are embedded whole at
+/// their end, in frame order.
+const EMBED_AHEAD: usize = 64;
+
+/// Embed the faces of `looks` still waiting, in order; their crops go.
+fn embed_found(models: &mut impl Finder, looks: &mut [(FrameIdx, Vec<Found>)]) -> Result<(), AnalysisError> {
+    let mut waiting: Vec<&mut Found> =
+        looks.iter_mut().flat_map(|(_, found)| found.iter_mut()).filter(|x| x.embedding.is_none()).collect();
+    if waiting.is_empty() {
+        return Ok(());
+    }
+    let crops: Vec<&[u8]> = waiting.iter().map(|x| x.crop.as_slice()).collect();
+    let embeddings = models.embed(&crops)?;
+    for (x, e) in waiting.iter_mut().zip(embeddings) {
+        x.embedding = Some(e);
+        x.crop = Vec::new();
+    }
+    Ok(())
 }
 
 /// The shot being looked at.
@@ -408,7 +469,34 @@ struct Shot {
     kept: VecDeque<Kept>,
     previous: Option<Vec<f32>>,
     looks: Vec<(FrameIdx, Vec<Found>)>,
+    /// Crops of `looks` not yet embedded.
+    waiting: usize,
     sprite: Option<SpriteCanvas>,
+}
+
+/// A face (or head) a [`Finder`] found in a look: its box in the frame's
+/// pixels, how sure the detector is of it, and the crop its embedder takes.
+pub struct Spot {
+    pub bbox: [f32; 4],
+    pub score: f32,
+    pub crop: Vec<u8>,
+}
+
+/// What Fast Scan finds faces with in the frames it picks: a detector
+/// loaded for the media's [`frame_size`] and an embedder.
+pub trait Finder {
+    /// The frame size the detector takes.
+    fn frame_size(&self) -> (usize, usize);
+    /// The faces of one frame big enough to count, any order.
+    fn find(&mut self, rgb: &[u8], params: &FastParams) -> Result<Vec<Spot>, AnalysisError>;
+    /// Embed crops of [`Spot`]s: each one's vector as tracks keep it, and
+    /// its embedder's norm.
+    fn embed(&mut self, crops: &[&[u8]]) -> Result<Vec<(Vec<f32>, f32)>, AnalysisError>;
+    /// How much a face says about identity, 0..=1, from its norm, height
+    /// (share of the frame's) and score.
+    fn quality(&self, params: &FastParams, norm: f32, height: f32, score: f32) -> f32;
+    /// How the tracker follows them at `fps`.
+    fn tracker(&self, params: &FastParams, fps: f64) -> TrackerParams;
 }
 
 /// The models Fast Scan finds faces with: the detector loaded for the
@@ -418,9 +506,51 @@ pub struct FastModels<'a> {
     pub embedder: &'a mut SFace,
 }
 
-struct Pass<'a, C> {
+impl Finder for FastModels<'_> {
+    fn frame_size(&self) -> (usize, usize) {
+        self.detector.frame_size()
+    }
+
+    fn find(&mut self, rgb: &[u8], p: &FastParams) -> Result<Vec<Spot>, AnalysisError> {
+        let (w, h) = self.detector.frame_size();
+        Ok(self
+            .detector
+            .detect_many(&[rgb], p.det_threshold)?
+            .pop()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|b| b.height() >= p.min_height * h as f32)
+            .map(|b| Spot { bbox: b.bbox, score: b.score, crop: arcface::align(rgb, w, h, &b.kps) })
+            .collect())
+    }
+
+    fn embed(&mut self, crops: &[&[u8]]) -> Result<Vec<(Vec<f32>, f32)>, AnalysisError> {
+        Ok(self
+            .embedder
+            .embed(crops)?
+            .into_iter()
+            .map(|e| {
+                // Tracks keep the full pass's size: the rest stays zero and
+                // leaves every similarity as SFace's own.
+                let mut v = e.v;
+                v.resize(DIM, 0.0);
+                (v, e.norm)
+            })
+            .collect())
+    }
+
+    fn quality(&self, p: &FastParams, norm: f32, height: f32, score: f32) -> f32 {
+        p.quality(norm, height, score)
+    }
+
+    fn tracker(&self, p: &FastParams, fps: f64) -> TrackerParams {
+        p.tracker(fps)
+    }
+}
+
+struct Pass<'a, F, C> {
     params: &'a FastParams,
-    models: FastModels<'a>,
+    models: F,
     tracker: TrackerParams,
     size: (usize, usize),
     grid: u32,
@@ -438,7 +568,7 @@ struct Pass<'a, C> {
     looked: usize,
 }
 
-impl<C: FnMut(FaceChunk) -> Result<(), AnalysisError>> Pass<'_, C> {
+impl<F: Finder, C: FnMut(FaceChunk) -> Result<(), AnalysisError>> Pass<'_, F, C> {
     /// Take in grid frame `f`: open and close shots and chunks up to it,
     /// paint it into its shot's sprite, and look at it when its shot wants.
     fn take(&mut self, f: FrameIdx, rgb: &[u8]) -> Result<(), AnalysisError> {
@@ -462,6 +592,7 @@ impl<C: FnMut(FaceChunk) -> Result<(), AnalysisError>> Pass<'_, C> {
                     kept: VecDeque::new(),
                     previous: None,
                     looks: Vec::new(),
+                    waiting: 0,
                     sprite: SpriteCanvas::new(s, self.grid, p.sprite_cells, self.size, p.sprite_width),
                 });
             }
@@ -506,23 +637,16 @@ impl<C: FnMut(FaceChunk) -> Result<(), AnalysisError>> Pass<'_, C> {
     }
 
     /// Find the faces of frame `f` of the current shot; keep their crops and
-    /// thumbnails for embedding at the shot's end.
+    /// thumbnails for embedding at the shot's end (or once [`EMBED_AHEAD`]
+    /// crops wait).
     fn look_at(&mut self, f: FrameIdx, rgb: &[u8]) -> Result<Summary, AnalysisError> {
         let (w, h) = self.size;
         let p = self.params;
-        let faces: Vec<FaceBox> = self
-            .models
-            .detector
-            .detect_many(&[rgb], p.det_threshold)?
-            .pop()
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|b| b.height() >= p.min_height * h as f32)
-            .collect();
+        let faces = self.models.find(rgb, p)?;
         self.looked += 1;
         let summary = Summary::of(&faces, (w, h));
         let found = faces
-            .iter()
+            .into_iter()
             .map(|b| Found {
                 det: FaceDet {
                     frame: f,
@@ -531,16 +655,23 @@ impl<C: FnMut(FaceChunk) -> Result<(), AnalysisError>> Pass<'_, C> {
                     norm: 0.0,
                     quality: 0.0,
                 },
-                crop: arcface::align(rgb, w, h, &b.kps),
+                crop: b.crop,
                 thumb: image::jpeg(
                     &image::face_thumb(rgb, w, h, b.bbox, p.thumb_context, p.thumb_size),
                     p.thumb_size,
                     p.thumb_size,
                     85,
                 ),
+                embedding: None,
             })
-            .collect();
-        self.current.as_mut().expect("a shot is open").looks.push((f, found));
+            .collect::<Vec<_>>();
+        let cur = self.current.as_mut().expect("a shot is open");
+        cur.waiting += found.len();
+        cur.looks.push((f, found));
+        if cur.waiting >= EMBED_AHEAD {
+            embed_found(&mut self.models, &mut cur.looks)?;
+            cur.waiting = 0;
+        }
         Ok(summary)
     }
 
@@ -551,10 +682,7 @@ impl<C: FnMut(FaceChunk) -> Result<(), AnalysisError>> Pass<'_, C> {
             self.sprites.push(sprite.finish(self.params.sprite_quality));
         }
         shot.looks.sort_by_key(|(f, _)| *f);
-        let crops: Vec<&[u8]> =
-            shot.looks.iter().flat_map(|(_, found)| found.iter().map(|x| x.crop.as_slice())).collect();
-        let embeddings = if crops.is_empty() { Vec::new() } else { self.models.embedder.embed(&crops)? };
-        let mut embeddings = embeddings.into_iter();
+        embed_found(&mut self.models, &mut shot.looks)?;
         let p = self.params;
         let samples: Vec<(FrameIdx, Vec<Observation>)> = shot
             .looks
@@ -563,14 +691,10 @@ impl<C: FnMut(FaceChunk) -> Result<(), AnalysisError>> Pass<'_, C> {
                 let obs = found
                     .into_iter()
                     .map(|x| {
-                        let e = embeddings.next().expect("one embedding per face");
+                        let (embedding, norm) = x.embedding.expect("embedded before tracking");
                         let mut det = x.det;
-                        det.norm = e.norm;
-                        det.quality = p.quality(e.norm, det.height(), det.score);
-                        // Tracks keep the full pass's size: the rest stays zero
-                        // and leaves every similarity as SFace's own.
-                        let mut embedding = e.v;
-                        embedding.resize(DIM, 0.0);
+                        det.norm = norm;
+                        det.quality = self.models.quality(p, norm, det.height(), det.score);
                         Observation { det, embedding, thumb: x.thumb }
                     })
                     .collect();
@@ -597,17 +721,17 @@ impl<C: FnMut(FaceChunk) -> Result<(), AnalysisError>> Pass<'_, C> {
     }
 }
 
-/// [`crate::face_tracks`] the way Fast Scan finds faces: of `src` in
-/// `shots` (sorted, disjoint) from frame `resume` on — 0 or a chunk end
-/// handed out earlier — each finished chunk to `on_chunk`, chunks tiling
-/// `resume..index.len()` and ending at shot starts at least `chunk` frames
-/// after their own start (or at the end). Nobody is looked for by their
-/// body. `progress` gets 0..1.
+/// [`crate::face_tracks`] the way Fast Scan finds faces, with `models`: of
+/// `src` in `shots` (sorted, disjoint) from frame `resume` on — 0 or a
+/// chunk end handed out earlier — each finished chunk to `on_chunk`, chunks
+/// tiling `resume..index.len()` and ending at shot starts at least `chunk`
+/// frames after their own start (or at the end). Nobody is looked for by
+/// their body. `progress` gets 0..1.
 #[allow(clippy::too_many_arguments)]
 pub fn fast_face_tracks(
     tools: &Tools,
     src: Source,
-    models: FastModels,
+    models: impl Finder,
     shots: &[FrameRange],
     resume: FrameIdx,
     chunk: u32,
@@ -622,10 +746,10 @@ pub fn fast_face_tracks(
         return Ok(());
     }
     let size = frame_size(src.info, params);
-    if models.detector.frame_size() != size {
+    if models.frame_size() != size {
         return Err(AnalysisError::Internal(format!(
             "face detector loaded for {:?} frames, this media needs {size:?}",
-            models.detector.frame_size()
+            models.frame_size()
         )));
     }
     let fps = src.index.nominal_fps.to_f64();
@@ -635,8 +759,8 @@ pub fn fast_face_tracks(
     let started = std::time::Instant::now();
     let mut pass = Pass {
         params,
+        tracker: models.tracker(params, fps),
         models,
-        tracker: params.tracker(fps),
         size,
         grid,
         steps: params.pool_steps(fps),
@@ -785,7 +909,7 @@ mod tests {
 
     #[test]
     fn faces_are_summed_up_by_the_least_of_them() {
-        let face = |side: f32, score| FaceBox { bbox: [0.0, 0.0, side, side / 2.0], score, kps: [[0.0; 2]; 5] };
+        let face = |side: f32, score| Spot { bbox: [0.0, 0.0, side, side / 2.0], score, crop: Vec::new() };
         let s = Summary::of(&[face(100.0, 0.95), face(20.0, 0.88)], (200, 100));
         assert_eq!(s.faces, 2);
         assert_eq!((s.min_confidence, s.min_area, s.min_side), (0.88, 0.1 * 0.1, 0.1));
@@ -810,6 +934,12 @@ mod tests {
         let t = p.tracker(24.0);
         assert_eq!((t.stride, t.max_gap, t.reach_gap), (6, 8, 8));
         assert_eq!(t.min_track_quality, p.min_track_quality);
+        // The full pass's link rules otherwise, at a quarter of its reach.
+        let full = TrackerParams::new(6);
+        assert_eq!(
+            (t.reach, t.min_iou, t.min_cos_far, t.min_cos_near),
+            (0.4, full.min_iou, full.min_cos_far, full.min_cos_near)
+        );
         // At any frame rate, as far as two looks may lie apart.
         for fps in [5.0, 9.0, 23.976, 25.0, 29.97, 50.0, 59.94] {
             let t = p.tracker(fps);

@@ -63,8 +63,14 @@ describe("ProjectDetailsDialog", () => {
     expect(commands.projectSetFastScan).not.toHaveBeenCalled()
   })
 
-  it("has no Fast Scan for anime, which has its own pass", () => {
-    open({ ...film, content: "anime" })
-    expect(screen.queryByRole("switch", { name: "Fast Scan" })).toBeNull()
+  it("switches anime to Fast Scan too, which keeps its character models", async () => {
+    const user = userEvent.setup()
+    const onOpenChange = open({ ...film, content: "anime" })
+    expect(screen.getByText(/with the anime models every few frames/)).toBeTruthy()
+    await user.click(screen.getByRole("switch", { name: "Fast Scan" }))
+    expect(screen.getByText(/Characters are found again this way/)).toBeTruthy()
+    await user.click(screen.getByRole("button", { name: "Save" }))
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false))
+    expect(commands.projectSetFastScan).toHaveBeenCalledWith("p", true)
   })
 })

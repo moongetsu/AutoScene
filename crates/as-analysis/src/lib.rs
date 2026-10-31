@@ -17,12 +17,14 @@ pub mod sprites;
 pub mod tracker;
 pub mod tracks;
 
-pub use anime::{Anime, Params as AnimeParams, face_tracks as anime_face_tracks, frame_size as anime_frame_size};
+pub use anime::{
+    Anime, FastAnime, Params as AnimeParams, face_tracks as anime_face_tracks, frame_size as anime_frame_size,
+};
 pub use faces::{
     BodyModels, CLEAR_FACE, DETECT_BATCH, FaceChunk, FaceParams, Faces, Look, PERSON_INPUT, PeopleParams, Search,
     detect_looks, face_tracks, find_faces, frame_sizes,
 };
-pub use fast::{FastModels, FastParams, fast_face_tracks};
+pub use fast::{FastModels, FastParams, Finder, Spot, fast_face_tracks};
 pub use fusion::{FusionParams, Segment, SegmentKind, TransitionKind, fuse};
 pub use pipeline::{CHUNK, shot_signals};
 pub use portrait::{crowding, portrait_region};

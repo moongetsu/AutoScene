@@ -388,9 +388,10 @@ export type AppSettings = {
 	findBodies?: boolean,
 	/**
 	 *  Projects created while this is on find their faces the way the
-	 *  Scener app does (smaller models, a few frames per shot): much
-	 *  faster, less sure who is who. Each project keeps what it was created
-	 *  with (see [`ProjectSummary::fast_scan`]); off by default.
+	 *  Scener app does (smaller models, a few frames per shot; anime keeps
+	 *  its character models): much faster, less sure who is who. Each
+	 *  project keeps what it was created with (see
+	 *  [`ProjectSummary::fast_scan`]); off by default.
 	 */
 	fastScan?: boolean,
 	/**

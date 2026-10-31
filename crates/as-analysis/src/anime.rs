@@ -25,6 +25,10 @@
 //! choice the anime bench (`bench/anime`, DECISIONS.md) makes lands in one
 //! place.
 //!
+//! With Fast Scan, [`FastAnime`] lends these models to [`crate::fast`]:
+//! heads are found and embedded the same way, in the few frames of each
+//! shot Fast Scan picks instead of every `stride`-th one.
+//!
 //! Toward the engine this mirrors [`crate::faces::face_tracks`]: the same
 //! inputs — `tools`, `src`, `shots`, `resume`, `chunk`, `params`, `cancel`,
 //! `progress`, `on_chunk` — and the same [`FaceChunk`] handed out, except
@@ -44,6 +48,7 @@ use as_vision::yolo::{Det, Yolo};
 
 use crate::AnalysisError;
 use crate::faces::FaceChunk;
+use crate::fast::{FastParams, Finder, Spot};
 use crate::sprites::{ShotSprite, SpriteCanvas};
 use crate::tracker::{Observation, TrackerParams, track_shot};
 use crate::tracks::{FaceDet, FaceTrack};
@@ -157,6 +162,72 @@ pub struct Anime<'a> {
 pub fn frame_size(info: &MediaInfo, params: &Params) -> (usize, usize) {
     let (w, h) = as_media::frames::sample_size(info, params.decode_max, 4);
     (w as usize, h as usize)
+}
+
+/// The CCIP crop of a head box (x1, y1, x2, y2 in pixels) of a `w`×`h`
+/// frame: the square of `scale` box sides on its centre.
+fn head_crop(rgb: &[u8], w: usize, h: usize, bbox: [f32; 4], scale: f32) -> Vec<u8> {
+    let side = (bbox[2] - bbox[0]).max(bbox[3] - bbox[1]) * scale;
+    let (cx, cy) = ((bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0);
+    ccip::crop(rgb, w, h, cx - side / 2.0, cy - side / 2.0, side)
+}
+
+/// The anime models as Fast Scan's [`Finder`]: the heads of a frame and the
+/// implied heads of its people ([`union_heads`]), embedded with CCIP, all
+/// as the anime pass finds them ([`Params`]). The detectors are planned for
+/// Fast Scan's frames (`crate::fast::frame_size` with
+/// [`FastParams::anime`]).
+pub struct FastAnime<'a> {
+    pub anime: Anime<'a>,
+    pub params: &'a Params,
+}
+
+impl Finder for FastAnime<'_> {
+    fn frame_size(&self) -> (usize, usize) {
+        self.anime.heads.frame_size()
+    }
+
+    fn find(&mut self, rgb: &[u8], _: &FastParams) -> Result<Vec<Spot>, AnalysisError> {
+        let p = self.params;
+        let (w, h) = self.anime.heads.frame_size();
+        let heads = self.anime.heads.detect_many(&[rgb], p.det_threshold)?.pop().unwrap_or_default();
+        let persons = match self.anime.persons.as_mut() {
+            Some(d) if d.frame_size() != (w, h) => {
+                return Err(AnalysisError::Internal(format!(
+                    "person detector loaded for {:?} frames, the head detector for {:?}",
+                    d.frame_size(),
+                    (w, h)
+                )));
+            }
+            Some(d) => d.detect_many(&[rgb], p.person_threshold)?.pop().unwrap_or_default(),
+            None => Vec::new(),
+        };
+        Ok(union_heads(heads, &persons, p.person_head, p.union_iou, p.union_cover)
+            .into_iter()
+            .filter(|d| (d.bbox[3] - d.bbox[1]) / h as f32 >= p.min_height)
+            .map(|d| Spot { bbox: d.bbox, score: d.score, crop: head_crop(rgb, w, h, d.bbox, p.crop_scale) })
+            .collect())
+    }
+
+    fn embed(&mut self, crops: &[&[u8]]) -> Result<Vec<(Vec<f32>, f32)>, AnalysisError> {
+        Ok(self.anime.ccip.embed(crops)?.into_iter().map(|e| (e.v, e.norm)).collect())
+    }
+
+    fn quality(&self, _: &FastParams, norm: f32, height: f32, _: f32) -> f32 {
+        self.params.quality(norm, height)
+    }
+
+    fn tracker(&self, p: &FastParams, fps: f64) -> TrackerParams {
+        fast_tracker(p, self.params, fps)
+    }
+}
+
+/// How [`FastAnime`]'s heads are followed: the anime pass's link rules
+/// looked at as sparsely as Fast Scan looks, at a quarter of its reach per
+/// step as Fast Scan's faces have.
+fn fast_tracker(p: &FastParams, params: &Params, fps: f64) -> TrackerParams {
+    let links = TrackerParams::anime();
+    TrackerParams { reach: links.reach / 4.0, min_track_quality: params.min_track_quality, ..p.sparse(fps, links) }
 }
 
 /// The head a person box (x1, y1, x2, y2 in pixels) implies: its top
@@ -455,8 +526,6 @@ impl<C: FnMut(FaceChunk) -> Result<(), AnalysisError>> Pass<'_, C> {
             if height < p.min_height {
                 continue;
             }
-            let side = (d.bbox[2] - d.bbox[0]).max(d.bbox[3] - d.bbox[1]) * p.crop_scale;
-            let (cx, cy) = ((d.bbox[0] + d.bbox[2]) / 2.0, (d.bbox[1] + d.bbox[3]) / 2.0);
             let thumb = image::face_thumb(rgb, w, h, d.bbox, p.thumb_context, p.thumb_size);
             found.push(Found {
                 det: FaceDet {
@@ -466,7 +535,7 @@ impl<C: FnMut(FaceChunk) -> Result<(), AnalysisError>> Pass<'_, C> {
                     norm: 0.0,
                     quality: 0.0,
                 },
-                crop: ccip::crop(rgb, w, h, cx - side / 2.0, cy - side / 2.0, side),
+                crop: head_crop(rgb, w, h, d.bbox, p.crop_scale),
                 thumb: image::jpeg(&thumb, p.thumb_size, p.thumb_size, 85),
                 embedding: None,
             });
@@ -694,6 +763,21 @@ pub fn face_tracks(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fast_scan_follows_heads_by_the_anime_rules_at_its_own_grid() {
+        let (p, params) = (FastParams::anime(), Params { min_track_quality: 0.2, ..Params::anime() });
+        let (t, links, faces) = (fast_tracker(&p, &params, 24.0), TrackerParams::anime(), p.tracker(24.0));
+        assert_eq!((t.stride, t.max_gap, t.reach_gap), (faces.stride, faces.max_gap, faces.reach_gap));
+        assert_eq!((t.reach, t.min_track_quality), (0.3, 0.2));
+        assert_eq!(
+            (t.min_iou, t.min_cos_reach, t.min_cos_near, t.min_cos_far, t.min_quality_far),
+            (links.min_iou, links.min_cos_reach, links.min_cos_near, links.min_cos_far, links.min_quality_far)
+        );
+        // Its frames are the anime pass's: one detector size serves both.
+        let info = info(1920, 1080);
+        assert_eq!(crate::fast::frame_size(&info, &p), frame_size(&info, &Params::anime()));
+    }
 
     fn info(width: u32, height: u32) -> MediaInfo {
         use as_core::Rational;

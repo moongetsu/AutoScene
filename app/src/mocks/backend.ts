@@ -693,8 +693,8 @@ const handlers: Record<string, Handler> = {
     const r = req as NewProject
     const items = scan(r.files, r.kind).map((c) => media(c.fileName, [c.season, c.episode], { status: "queued", path: c.path }))
     const p = project(r.title, r.kind, r.content, items, 0)
-    // Like the library: projects made while Fast Scan is on keep it (anime has its own pass).
-    p.fastScan = (settings.fastScan ?? false) && r.content !== "anime"
+    // Like the library: projects made while Fast Scan is on keep it.
+    p.fastScan = settings.fastScan ?? false
     projects.unshift(p)
     items.forEach((m) => ingest(p, m))
     void emit("library:changed", { projectId: p.id })
@@ -717,7 +717,6 @@ const handlers: Record<string, Handler> = {
   },
   project_set_fast_scan: ({ projectId, fastScan }) => {
     const p = find(projectId)
-    if (fastScan && p.content === "anime") throw { code: "invalid", message: "Fast Scan doesn't work on anime." }
     p.fastScan = Boolean(fastScan)
     void emit("library:changed", { projectId: p.id })
     return summary(p)

@@ -156,8 +156,8 @@ pub struct FacesInput {
     /// (`as_analysis::fast`); `bodies` and `animated` don't apply.
     pub fast: bool,
     /// Anime footage: heads are found and embedded the way
-    /// `as_analysis::anime` does; `bodies`, `known`, `animated` and `fast`
-    /// don't apply.
+    /// `as_analysis::anime` does — with `fast`, in the frames Fast Scan
+    /// picks; `bodies`, `known` and `animated` don't apply.
     pub anime: bool,
 }
 

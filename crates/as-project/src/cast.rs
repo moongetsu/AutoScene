@@ -151,7 +151,8 @@ pub struct FacesPlan {
     /// Fast Scan finds the faces (`as_analysis::fast`).
     pub fast: bool,
     /// Anime footage: the character pass (`as_analysis::anime`) finds heads
-    /// and embeds them with CCIP — `fast` and `animated` don't apply.
+    /// and embeds them with CCIP — with `fast`, in the frames Fast Scan
+    /// picks; `animated` doesn't apply.
     pub anime: bool,
 }
 
@@ -164,12 +165,17 @@ const SCALES: &str = "+scales";
 /// crops), so faces found by the older pass are found again.
 const ANIME: &str = "+anime2";
 
-/// What a media's faces are recorded as found with: the embedder, and for
-/// 3D animation its search. Faces found one way are found again (their
-/// decisions kept) when the footage moves to or from 3D animation.
-fn faces_key(embedder: &str, animated: bool) -> String {
+/// Anime whose heads Fast Scan looked for, recorded after [`ANIME`] in
+/// [`faces_key`] (everywhere else, Fast Scan's own embedder says so).
+const FAST: &str = "+fast";
+
+/// What a media's faces are recorded as found with: the embedder, for 3D
+/// animation its search, and for anime whether Fast Scan picked the
+/// frames. Faces found one way are found again (their decisions kept) when
+/// the footage moves to or from 3D animation, or Fast Scan is switched.
+fn faces_key(embedder: &str, animated: bool, fast: bool) -> String {
     if embedder == as_models::ids::ANIME_CCIP {
-        format!("{embedder}{ANIME}")
+        format!("{embedder}{ANIME}{}", if fast { FAST } else { "" })
     } else if animated {
         format!("{embedder}{SCALES}")
     } else {
@@ -188,9 +194,14 @@ fn full_grid() -> Grid {
     (stride, TrackerParams::new(stride).max_gap)
 }
 
-/// Fast Scan's [`Grid`] at `fps`.
-fn fast_grid(fps: f64) -> Grid {
-    let t = FastParams::default().tracker(fps);
+/// Fast Scan's [`Grid`] at `fps`, on anime (`as_analysis::anime::FastAnime`)
+/// or faces.
+fn fast_grid(fps: f64, anime: bool) -> Grid {
+    let t = if anime {
+        FastParams::anime().sparse(fps, TrackerParams::anime())
+    } else {
+        FastParams::default().tracker(fps)
+    };
     (t.stride, t.max_gap)
 }
 
@@ -213,7 +224,14 @@ pub fn face_models(embedder: &str) -> &'static [&'static str] {
 
 /// The embedder of a [`faces_key`].
 fn embedder_of(key: &str) -> &str {
+    let key = key.strip_suffix(FAST).unwrap_or(key);
     key.strip_suffix(SCALES).or_else(|| key.strip_suffix(ANIME)).unwrap_or(key)
+}
+
+/// Whether the faces of a [`faces_key`] were looked for in the few frames
+/// Fast Scan picks.
+fn found_fast(key: &str) -> bool {
+    embedder_of(key) == as_models::ids::SFACE || key.ends_with(FAST)
 }
 
 fn mean_box(dets: &[FaceDet]) -> [f32; 4] {
@@ -806,12 +824,17 @@ impl Project {
         Ok(model != as_models::ids::SFACE && self.content()? == ContentKind::Animation)
     }
 
+    /// The [`faces_key`] of faces found with `model` the way this project
+    /// finds them now.
+    fn faces_key_now(&self, model: &str) -> ProjectResult<String> {
+        Ok(faces_key(model, self.searched_harder(model)?, self.fast_scan()))
+    }
+
     /// Whether the faces of `id` are being found (or were found) another way
     /// than this project finds them now (see [`faces_key`]): Fast Scan was
     /// switched, or the footage moved to or from 3D animation, during its pass.
     pub fn faces_outdated(&self, id: MediaId) -> ProjectResult<bool> {
-        let model = self.face_embedder();
-        let key = faces_key(model, self.searched_harder(model)?);
+        let key = self.faces_key_now(self.face_embedder())?;
         Ok(self.db().faces_model(id)?.is_some_and(|m| m != key))
     }
 
@@ -825,7 +848,7 @@ impl Project {
             return Err(ProjectError::NotReady("Shots of this media aren't found yet.".into()));
         }
         let animated = self.searched_harder(model)?;
-        let key = faces_key(model, animated);
+        let key = self.faces_key_now(model)?;
         if self.db().use_faces_model(id, &key)? {
             tracing::info!(file = %m.file_name, model = key, "faces are found with a new model");
         }
@@ -858,7 +881,7 @@ impl Project {
             resume,
             chunk: FACE_CHUNK,
             animated,
-            fast: model == as_models::ids::SFACE,
+            fast: found_fast(&key),
             anime: model == as_models::ids::ANIME_CCIP,
         })
     }
@@ -1054,7 +1077,7 @@ impl Project {
     /// Media whose faces another embedder than `model` found, or another
     /// search than this footage's (see [`faces_key`]), untouched.
     pub fn faces_by_other_model(&self, model: &str) -> ProjectResult<Vec<MediaId>> {
-        let key = faces_key(model, self.searched_harder(model)?);
+        let key = self.faces_key_now(model)?;
         Ok(self.db().faces_by_other_model(&key)?)
     }
 
@@ -1062,7 +1085,7 @@ impl Project {
     /// search than this footage's: their faces are forgotten (decisions are
     /// kept) so they are found again.
     pub fn refresh_outdated_faces(&self, model: &str) -> ProjectResult<Vec<MediaId>> {
-        let key = faces_key(model, self.searched_harder(model)?);
+        let key = self.faces_key_now(model)?;
         let ids = self.db().outdated_faces(&key)?;
         for &id in &ids {
             let _ = std::fs::remove_dir_all(self.media_faces_dir(id));
@@ -1165,14 +1188,16 @@ impl Project {
         Ok(models.first().is_some_and(|(_, m)| m.as_deref().is_some_and(|m| embedder_of(m) == as_models::ids::SFACE)))
     }
 
-    /// How the media Fast Scan found faces in were looked at (see [`Grid`]).
+    /// How the media Fast Scan or the anime pass found faces in were looked
+    /// at (see [`Grid`]).
     fn grids(&self) -> ProjectResult<HashMap<MediaId, Grid>> {
         let mut out = HashMap::new();
         for (id, model) in self.db().ready_faces_models()? {
-            if model.as_deref().is_some_and(|m| embedder_of(m) == as_models::ids::SFACE) {
+            let Some(model) = model else { continue };
+            if found_fast(&model) {
                 let fps = self.db().media(id)?.and_then(|m| m.fps).map_or(24.0, |r| r.to_f64());
-                out.insert(id, fast_grid(fps));
-            } else if model.as_deref().is_some_and(|m| embedder_of(m) == as_models::ids::ANIME_CCIP) {
+                out.insert(id, fast_grid(fps, embedder_of(&model) == as_models::ids::ANIME_CCIP));
+            } else if embedder_of(&model) == as_models::ids::ANIME_CCIP {
                 out.insert(id, anime_grid());
             }
         }
@@ -2246,20 +2271,65 @@ pub(crate) mod tests {
         assert_eq!(project.faces_plan(id, MODEL).unwrap().resume, 0);
         // The search is recorded after the embedder; the embedder alone
         // says whether two faces' embeddings compare.
-        assert_eq!(faces_key(MODEL, true), "test-embedder+scales");
+        assert_eq!(faces_key(MODEL, true, false), "test-embedder+scales");
         assert_eq!((embedder_of("test-embedder+scales"), embedder_of(MODEL)), (MODEL, MODEL));
     }
 
     #[test]
     fn faces_keys_round_trip_to_their_embedder() {
         for embedder in [as_models::ids::SFACE, as_models::ids::ARCFACE, as_models::ids::ANIME_CCIP, MODEL] {
-            for animated in [false, true] {
-                assert_eq!(embedder_of(&faces_key(embedder, animated)), embedder, "{embedder} animated={animated}");
+            for (animated, fast) in [(false, false), (true, false), (false, true), (true, true)] {
+                let key = faces_key(embedder, animated, fast);
+                assert_eq!(embedder_of(&key), embedder, "{embedder} animated={animated} fast={fast}");
             }
         }
         // The anime pass's version is its own key, not the bare embedder.
-        assert_ne!(faces_key(as_models::ids::ANIME_CCIP, false), as_models::ids::ANIME_CCIP);
-        assert_eq!(faces_key(as_models::ids::ANIME_CCIP, true), faces_key(as_models::ids::ANIME_CCIP, false));
+        let ccip = as_models::ids::ANIME_CCIP;
+        assert_ne!(faces_key(ccip, false, false), ccip);
+        assert_eq!(faces_key(ccip, true, false), faces_key(ccip, false, false));
+        // Fast Scan on anime is recorded after it; elsewhere its embedder says so.
+        assert_eq!(faces_key(ccip, false, true), format!("{}{FAST}", faces_key(ccip, false, false)));
+        assert!(found_fast(&faces_key(ccip, false, true)) && !found_fast(&faces_key(ccip, false, false)));
+        assert_eq!(faces_key(as_models::ids::SFACE, false, true), as_models::ids::SFACE);
+        assert!(found_fast(as_models::ids::SFACE) && !found_fast(&faces_key(MODEL, true, true)));
+    }
+
+    #[test]
+    fn anime_heads_are_found_again_when_the_project_moves_to_or_from_fast_scan() {
+        let frames = 400;
+        let (_dir, project, id) = project_with_media(frames);
+        let segments: Vec<Segment> = (0..frames)
+            .step_by(100)
+            .map(|s| Segment { start: s, end: s + 100, kind: SegmentKind::Shot, tiny: false })
+            .collect();
+        project.db().store_segments(id, &segments).unwrap();
+        project.db().set_meta("content", "anime").unwrap();
+        let find = |fast: bool| {
+            let model = project.face_embedder();
+            assert_eq!(model, as_models::ids::ANIME_CCIP, "anime keeps its models with Fast Scan");
+            let plan = project.faces_plan(id, model).unwrap();
+            assert_eq!((plan.anime, plan.fast, plan.animated, plan.resume), (true, fast, false, 0));
+            let found: Vec<FaceTrack> = (0..frames).step_by(100).map(|s| face(0, s, 0.1, 0.9)).collect();
+            project.store_face_chunk(id, 0, frames, &tracks::encode(&found), &[], &[]).unwrap();
+            project.finish_faces(id).unwrap();
+            assert!(project.faces_by_other_model(model).unwrap().is_empty());
+        };
+        find(false);
+        assert_eq!(project.grids().unwrap().get(&id), Some(&anime_grid()));
+
+        assert!(project.set_fast_scan(true).unwrap());
+        assert_eq!(face_models(project.face_embedder()), as_models::ids::ANIME);
+        // The full pass's heads are found again in the frames Fast Scan picks.
+        assert!(project.faces_outdated(id).unwrap());
+        assert_eq!(project.refresh_outdated_faces(as_models::ids::ANIME_CCIP).unwrap(), [id]);
+        find(true);
+        assert!(!project.faces_outdated(id).unwrap());
+        // On screen as Fast Scan looked; grouped as anime.
+        assert_eq!(project.grids().unwrap().get(&id), Some(&fast_grid(24.0, true)));
+        assert_eq!(project.identity_params().unwrap().link, Params::anime().link);
+        // And back.
+        assert!(project.set_fast_scan(false).unwrap());
+        assert_eq!(project.faces_by_other_model(as_models::ids::ANIME_CCIP).unwrap(), [id]);
     }
 
     #[test]

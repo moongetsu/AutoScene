@@ -229,8 +229,7 @@ impl Library {
             duration_sec: 0.0,
             poster: None,
             poster_small: None,
-            // Anime has its own pass; Fast Scan is for faces.
-            fast_scan: self.fast_scan()? && req.content != ContentKind::Anime,
+            fast_scan: self.fast_scan()?,
         };
         let project = Arc::new(Project::create(&summary, self.find_bodies.clone())?);
         self.db.insert_project(&summary)?;
@@ -307,9 +306,6 @@ impl Library {
     /// faces are to be found again.
     pub fn set_project_fast_scan(&self, id: ProjectId, on: bool) -> ProjectResult<(ProjectSummary, bool)> {
         let project = self.project(id)?;
-        if on && project.content()? == ContentKind::Anime {
-            return Err(ProjectError::Invalid("Fast Scan doesn't work on anime.".into()));
-        }
         // The library first: it is what shows, and the project's own word
         // is the one its faces follow.
         let before = self.summary(id)?.fast_scan;
@@ -859,11 +855,13 @@ mod tests {
         assert!(lib.update_settings(&on).unwrap().fast_scan);
         let (after, ..) = lib.create_project(&new("After", ContentKind::Animation)).unwrap();
         assert!(after.fast_scan && lib.project(after.id).unwrap().fast_scan());
-        // Projects made before keep how they were made; anime has its own pass.
+        // Projects made before keep how they were made.
         assert!(!lib.summary(before.id).unwrap().fast_scan);
+        // Anime too: its heads are found in the frames Fast Scan picks.
         let (anime, ..) = lib.create_project(&new("Anime", ContentKind::Anime)).unwrap();
-        assert!(!anime.fast_scan);
-        assert!(matches!(lib.set_project_fast_scan(anime.id, true), Err(ProjectError::Invalid(_))));
+        assert!(anime.fast_scan && lib.project(anime.id).unwrap().fast_scan());
+        let (summary, changed) = lib.set_project_fast_scan(anime.id, false).unwrap();
+        assert!(!summary.fast_scan && changed && !lib.project(anime.id).unwrap().fast_scan());
 
         // Each project can be switched on its own ("Edit details…").
         let (summary, changed) = lib.set_project_fast_scan(before.id, true).unwrap();
