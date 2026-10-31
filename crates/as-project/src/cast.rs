@@ -146,7 +146,7 @@ const SCALES: &str = "+scales";
 /// The anime pass's version, recorded after the CCIP id in [`faces_key`]:
 /// bump the number whenever the pass's output changes (new models, new
 /// crops), so faces found by the older pass are found again.
-const ANIME: &str = "+anime1";
+const ANIME: &str = "+anime2";
 
 /// What a media's faces are recorded as found with: the embedder, and for
 /// 3D animation its search. Faces found one way are found again (their

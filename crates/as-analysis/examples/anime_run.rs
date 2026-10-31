@@ -19,7 +19,8 @@
 //! batch (32).
 //! `STRIDE=<n>`, `DET_THRESHOLD=<score>`, `PERSON_THRESHOLD=<score>`,
 //! `NORMS=<floor>,<full>`, `MIN_TRACK_Q=<q>`, `CROP_SCALE=<k>`,
-//! `PERSON_HEAD=<share>` and `UNION_IOU=<iou>` override `Params::anime()`.
+//! `PERSON_HEAD=<share>`, `UNION_IOU=<iou>` and `UNION_COVER=<share>` override
+//! `Params::anime()`.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -82,6 +83,9 @@ fn main() {
     }
     if let Ok(v) = std::env::var("UNION_IOU") {
         params.union_iou = v.parse().expect("UNION_IOU=<iou>");
+    }
+    if let Ok(v) = std::env::var("UNION_COVER") {
+        params.union_cover = v.parse().expect("UNION_COVER=<share>");
     }
     let model = |var: &str, default: &str| std::env::var(var).map_or_else(|_| models.join(default), PathBuf::from);
     let head_model = model("HEAD", "anime_head_detection/head_detect_v2.0_s/model.onnx");

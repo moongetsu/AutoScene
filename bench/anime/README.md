@@ -159,7 +159,8 @@ Candidates are loaded from fixed Hugging Face commits (paths and SHA-256 in
 Code-complete behind `AUTOSCENE_ANIME_FACES` (Phase E/F): head/person YOLO
 and CCIP wrappers with the CPU golden self-check, the anime pass, 768-d
 tracking, `Params::anime()`, engine anime jobs and `Embed`, the cast arms
-(`faces_key` `+anime1`), and AniList suggestions behind the opt-in.
+(`faces_key` `+anime2` since the person-box union was fixed), and AniList
+suggestions behind the opt-in.
 
 Still open — each needs the bench media, a GPU and the labels:
 

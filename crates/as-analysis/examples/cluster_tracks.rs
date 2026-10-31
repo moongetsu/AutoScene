@@ -1,6 +1,7 @@
 //! Dev tool: cluster saved face tracks (from `faces_run`) into characters and
 //! dump each character's thumbnails for a contact sheet.
 //! `cargo run --release -p as-analysis --example cluster_tracks -- <file.tracks> <out_dir> [link] [assign]`
+//! `ANIME=1` groups with `Params::anime()` (tracks from `anime_run`).
 //! Writes `<out_dir>/c<rank>_<n>.jpg` (up to 16 tracks per character, spread
 //! over the episode) and `<out_dir>/characters.tsv`.
 
@@ -11,7 +12,7 @@ fn main() {
     let tracks = as_analysis::tracks::decode(&std::fs::read(&a[0]).unwrap()).unwrap();
     let out = std::path::Path::new(&a[1]);
     std::fs::create_dir_all(out).unwrap();
-    let mut p = Params::default();
+    let mut p = if std::env::var_os("ANIME").is_some() { Params::anime() } else { Params::default() };
     if let Some(v) = a.get(2) {
         p.link = v.parse().unwrap();
     }
