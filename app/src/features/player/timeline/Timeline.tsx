@@ -361,15 +361,23 @@ function Ruler({
   const { frames } = ticks(axis.view, axis.width, fps, axis.frameAt, axis.t, counting)
   return (
     <div className={cn("pointer-events-none absolute inset-x-0 bottom-0 h-3", under && "opacity-60")} aria-hidden>
-      {frames.map((f) => (
-        <span key={f} className="absolute bottom-0 flex items-end gap-1" style={{ left: xOf(axis.view, axis.t(f), axis.width) }}>
-          <span className="h-2 w-px bg-white/25" />
-          <span className="timecode -mb-0.5 text-[10px] leading-none text-fg-3">{tc(f)}</span>
-        </span>
-      ))}
+      {frames.map((f) => {
+        const x = xOf(axis.view, axis.t(f), axis.width)
+        return (
+          <span key={f} className="absolute bottom-0 flex items-end gap-1" style={{ left: x }}>
+            <span className="h-2 w-px bg-white/25" />
+            {/* A label that would run past the end keeps only its tick (it'd
+                spill over the panel beside the timeline, or be cut in half). */}
+            {axis.width - x >= LABEL_ROOM && <span className="timecode -mb-0.5 text-[10px] leading-none text-fg-3">{tc(f)}</span>}
+          </span>
+        )
+      })}
     </div>
   )
 }
+
+/** Width a ruler label takes after its tick: "00:45:00:00" in 10 px mono and the gap. */
+const LABEL_ROOM = 72
 
 /**
  * The whole episode as a thin bar while the timeline is zoomed: the part in
