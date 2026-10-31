@@ -1,5 +1,6 @@
+import { useId, useState } from "react"
 import { useNavigate, useParams } from "@tanstack/react-router"
-import { Check, CircleNotch, Clock, Copy, FolderOpen, Package, Play, Prohibit, ShieldWarning, Warning } from "@/components/icons"
+import { CaretDown, Check, CircleNotch, Clock, Copy, FolderOpen, Package, Play, Prohibit, ShieldWarning, Warning } from "@/components/icons"
 import { toast } from "sonner"
 import type { ExportItem, ExportStatus, ExportSummary, JobInfo, MediaItem, MergedFile } from "@/bindings"
 import { Badge } from "@/components/ui/badge"
@@ -10,11 +11,12 @@ import { EmptyState } from "@/components/ui/empty-state"
 import { Page } from "@/components/ui/page"
 import { Progress } from "@/components/ui/progress"
 import { Tooltip, TruncatedText } from "@/components/ui/tooltip"
-import { formatBytes, formatDateTime, formatPercent } from "@/lib/format"
+import { formatBytes, formatDateTime, formatDuration, formatPercent } from "@/lib/format"
 import { commands, errorMessage } from "@/lib/ipc"
 import { copyText, reveal } from "@/lib/os"
 import { firstFailure, useExports, useMediaList, useProject } from "@/lib/queries"
-import { isDropFrameRate, timecode } from "@/lib/timecode"
+import { fpsValue, isDropFrameRate, timecode } from "@/lib/timecode"
+import { cn } from "@/lib/utils"
 import { useActivity } from "@/state/activity"
 import { TopBar } from "@/components/ui/topbar"
 import { ProjectLoadError } from "./ProjectLoadError"
@@ -73,6 +75,9 @@ export function ExportsPage() {
   )
 }
 
+/** Above this many clips, a finished export's list starts folded: the cards stay short. */
+const FOLD_OVER = 4
+
 function ExportCard({ pid, ex, media }: { pid: string; ex: ExportSummary; media: Map<string, MediaItem> }) {
   const job = useActivity((s) => s.order.map((id) => s.jobs[id]).find((j) => j.exportId === ex.id))
   const done = ex.items.filter((i) => i.status === "done").length
@@ -82,6 +87,14 @@ function ExportCard({ pid, ex, media }: { pid: string; ex: ExportSummary; media:
   const unverified = file
     ? Number(file.path != null && !file.verified)
     : ex.items.filter((i) => i.status === "done" && !i.verified).length
+  // Open while it runs, to watch the clips get done; folded once it's history.
+  const foldable = ex.items.length > FOLD_OVER
+  const [unfolded, setUnfolded] = useState(running)
+  const open = !foldable || unfolded
+  // Folded, the clips that failed still show: their errors aren't hidden.
+  const listed = open ? ex.items : ex.items.filter((i) => i.status === "failed" || i.error != null)
+  const seconds = open ? null : runTime(ex.items, media)
+  const listId = useId()
 
   return (
     <section className="overflow-hidden rounded-3xl border border-white/[0.07] bg-white/[0.03]">
@@ -124,13 +137,41 @@ function ExportCard({ pid, ex, media }: { pid: string; ex: ExportSummary; media:
         </div>
       )}
       {file && <FileRow ex={ex} status={status} file={file} />}
-      <ul className="p-2">
-        {ex.items.map((it) => (
-          <ItemRow key={it.id} pid={pid} item={it} media={media.get(it.mediaId)} ownFile={!file} />
-        ))}
-      </ul>
+      <div className="p-2">
+        {foldable && (
+          <button
+            type="button"
+            aria-expanded={open}
+            aria-controls={listId}
+            onClick={() => setUnfolded(!open)}
+            className="flex w-full items-center gap-2.5 rounded-2xl px-4 py-2.5 text-left text-sm font-medium text-fg-2 transition-colors hover:bg-white/[0.04] hover:text-fg-1"
+          >
+            <CaretDown weight="bold" className={cn("size-3.5 transition-transform duration-[var(--dur-fast)]", !open && "-rotate-90")} />
+            <span>
+              {open ? "Hide clips" : `Show ${listed.length > 0 ? "all " : ""}${ex.items.length} clips`}
+              {seconds != null && <span className="font-normal text-fg-3"> · {formatDuration(seconds)}</span>}
+            </span>
+          </button>
+        )}
+        <ul id={listId}>
+          {listed.map((it) => (
+            <ItemRow key={it.id} pid={pid} item={it} media={media.get(it.mediaId)} ownFile={!file} />
+          ))}
+        </ul>
+      </div>
     </section>
   )
+}
+
+/** How long the clips run in all, in seconds; `null` while a clip's frame rate isn't known. */
+function runTime(items: ExportItem[], media: Map<string, MediaItem>): number | null {
+  let seconds = 0
+  for (const it of items) {
+    const fps = media.get(it.mediaId)?.fps
+    if (!fps) return null
+    seconds += (it.end - it.start) / fpsValue(fps)
+  }
+  return seconds
 }
 
 /**
