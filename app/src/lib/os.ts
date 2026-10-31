@@ -35,3 +35,13 @@ export async function readClipboard(): Promise<string | null> {
 export function reveal(path: string): void {
   commands.revealPath(path).catch((e) => toast.error("Couldn't show it", { description: errorMessage(e) }))
 }
+
+/** Open a URL in the user's default web browser. */
+export async function openExternalUrl(url: string): Promise<void> {
+  try {
+    const { openUrl } = await import("@tauri-apps/plugin-opener")
+    await openUrl(url)
+  } catch (e) {
+    toast.error("Couldn't open link", { description: errorMessage(e) })
+  }
+}

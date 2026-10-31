@@ -44,7 +44,7 @@ function currentProjectId(): string | undefined {
   return m?.[1]
 }
 
-export const SETTINGS_SECTIONS = ["general", "shortcuts", "updates", "about"] as const
+export const SETTINGS_SECTIONS = ["general", "shortcuts", "updates", "about", "contributors"] as const
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number]
 
 /** Wire global keyboard shortcuts (non-macOS-native) and macOS menu events to actions. */

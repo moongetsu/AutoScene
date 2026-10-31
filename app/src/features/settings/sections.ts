@@ -5,6 +5,7 @@ export const SETTINGS_LABELS: Record<SettingsSection, string> = {
   shortcuts: "Shortcuts",
   updates: "Updates",
   about: "About",
+  contributors: "Contributors",
 }
 
 export function settingsLabel(section: string): string {
