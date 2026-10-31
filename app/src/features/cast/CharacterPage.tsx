@@ -47,7 +47,7 @@ import { useAmbient } from "@/lib/ambient"
 import { useFittedTitle } from "@/lib/fit-text"
 import { assetUrl } from "@/lib/media"
 import { modKey } from "@/lib/platform"
-import { firstFailure, useCast, useCastTracks, useCharacterShots, useMediaList } from "@/lib/queries"
+import { firstFailure, useCast, useCastTracks, useCharacterShots, useMediaList, useProject } from "@/lib/queries"
 import { FACES_SHORTCUTS, useShortcuts } from "@/lib/shortcuts"
 import { cn } from "@/lib/utils"
 import { castEdit, formatScreenTime, plural } from "./cast"
@@ -66,8 +66,10 @@ let lastView: View = "shots"
 export function CharacterPage() {
   const { pid, cid } = useParams({ from: "/p/$pid/cast/$cid" })
   const navigate = useNavigate()
+  const projectQuery = useProject(pid)
   const castQuery = useCast(pid)
   const mediaQuery = useMediaList(pid)
+  const { data: project } = projectQuery
   const { data: cast } = castQuery
   const { data: media } = mediaQuery
   const everyone = cid === "unassigned"
@@ -117,7 +119,7 @@ export function CharacterPage() {
     <TopBar overlay back={{ label: "Cast", to: `/p/${pid}/cast` }} title={everyone ? "Everyone else" : (character?.label ?? " ")} />
   )
 
-  const failure = firstFailure(castQuery, mediaQuery, tracks)
+  const failure = firstFailure(projectQuery, castQuery, mediaQuery, tracks)
   if (failure) {
     return (
       <Page topbar={toolbar}>
@@ -209,9 +211,19 @@ export function CharacterPage() {
     })
   }
 
+  const pictured = project?.poster ? project : media?.find((m) => m.poster)
+  const backdrop = pictured?.poster ?? null
+
   return (
     <Page topbar={toolbar} menu={pageMenu}>
-      <Header pid={pid} character={character} everyone={everyone} faces={list.length} onMerge={() => setMergeOpen(true)} />
+      <Header
+        pid={pid}
+        character={character}
+        backdrop={backdrop}
+        everyone={everyone}
+        faces={list.length}
+        onMerge={() => setMergeOpen(true)}
+      />
 
       {!everyone && (maybe.data?.length ?? 0) > 0 && character && (
         <Maybe pid={pid} character={character} tracks={maybe.data!} media={mediaById} onOpen={open} />
@@ -384,19 +396,21 @@ function Shots({
 function Header({
   pid,
   character: c,
+  backdrop,
   everyone,
   faces,
   onMerge,
 }: {
   pid: string
   character?: Character
+  backdrop: string | null
   everyone: boolean
   faces: number
   onMerge: () => void
 }) {
   const [editing, setEditing] = useState(false)
-  // The backdrop is blurred: the small face does, and stays put when the portrait arrives.
-  const ambient = useAmbient(c?.coverSmall)
+  const heroPath = backdrop ?? c?.coverSmall
+  const ambient = useAmbient(heroPath)
   const [row, setRow] = useState<HTMLDivElement | null>(null)
 
   return (
@@ -406,7 +420,7 @@ function Header({
         c && <CharacterItems kit={contextKit} pid={pid} character={c} open={false} onRename={() => setEditing(true)} onMerge={onMerge} />
       }
     >
-      <Hero path={c?.coverSmall} ambient={ambient} blur className="min-h-[clamp(320px,44vh,460px)]">
+      <Hero path={heroPath} ambient={ambient} blur={!backdrop} className="min-h-[clamp(320px,44vh,460px)]">
         <div ref={setRow} className="flex flex-wrap items-end justify-between gap-8">
           <div className="flex min-w-0 items-end gap-7">
             <Artwork
