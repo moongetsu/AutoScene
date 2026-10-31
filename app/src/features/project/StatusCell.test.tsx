@@ -1,10 +1,11 @@
 import { QueryClientProvider } from "@tanstack/react-query"
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import type { MediaItem, StageState } from "@/bindings"
+import type { JobInfo, MediaItem, StageState } from "@/bindings"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { commands } from "@/lib/ipc"
 import { qk, queryClient } from "@/lib/queries"
+import { useActivity } from "@/state/activity"
 import { StatusCell } from "./StatusCell"
 
 vi.mock("@/lib/ipc", () => ({
@@ -13,6 +14,7 @@ vi.mock("@/lib/ipc", () => ({
     projectGet: vi.fn(() => Promise.resolve({ id: "p", fastScan: false })),
     mediaAnalyze: vi.fn(() => Promise.resolve(null)),
     mediaRetry: vi.fn(() => Promise.resolve(null)),
+    jobCancel: vi.fn(() => Promise.resolve(null)),
   },
   errorMessage: (e: unknown) => String(e),
 }))
@@ -27,6 +29,27 @@ afterEach(() => {
   cleanup()
   queryClient.clear()
   vi.clearAllMocks()
+  useActivity.setState({ jobs: {}, order: [] })
+})
+
+/** A job of the episode "m". */
+const job = (o: Partial<JobInfo>): JobInfo => ({
+  id: "j",
+  kind: "analyze",
+  title: "Analysing E01.mkv",
+  subtitle: null,
+  projectId: "p",
+  mediaId: "m",
+  exportId: null,
+  state: "running",
+  progress: 0.4,
+  stage: "Finding shots",
+  etaMs: null,
+  error: null,
+  createdAt: 1,
+  finishedAt: null,
+  rev: 1,
+  ...o,
 })
 
 /** An episode whose shots and faces are found, its people `bodies`. */
@@ -84,5 +107,28 @@ describe("StatusCell", () => {
     await waitFor(() => expect(queryClient.getQueryData(qk.settings)).toBeTruthy())
     await waitFor(() => expect(queryClient.getQueryData(qk.project("p"))).toBeTruthy())
     expect(screen.queryByText(/people/i)).toBeNull()
+  })
+
+  it("cancels the job whose progress it shows, named by its kind", async () => {
+    useActivity.getState().replaceAll([job({ id: "analysis" })])
+    const { unmount } = render(<StatusCell media={episode("pending")} projectId="p" />, { wrapper })
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel analysis" }))
+    expect(commands.jobCancel).toHaveBeenCalledWith("analysis")
+    unmount()
+    // A preview being built is never cancelled as "analysis".
+    useActivity.getState().replaceAll([job({ id: "preview", kind: "proxy", stage: null, createdAt: 2, rev: 2 })])
+    render(<StatusCell media={episode("pending")} projectId="p" />, { wrapper })
+    expect(screen.getByText("Preparing preview")).toBeTruthy()
+    fireEvent.click(screen.getByRole("button", { name: "Cancel preview" }))
+    expect(commands.jobCancel).toHaveBeenLastCalledWith("preview")
+    expect(screen.queryByRole("button", { name: "Cancel analysis" })).toBeNull()
+  })
+
+  it("cancels an indexing that waits its turn", async () => {
+    useActivity.getState().replaceAll([job({ id: "ingest", kind: "ingest", state: "queued", progress: null })])
+    render(<StatusCell media={{ id: "m", status: "queued", shots: "pending" } as MediaItem} projectId="p" />, { wrapper })
+    expect(screen.getByText("Queued")).toBeTruthy()
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel indexing" }))
+    expect(commands.jobCancel).toHaveBeenCalledWith("ingest")
   })
 })

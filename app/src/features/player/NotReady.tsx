@@ -1,6 +1,6 @@
 import type * as React from "react"
 import { Link } from "@tanstack/react-router"
-import { ArrowCounterClockwise, ArrowLeft, CircleNotch, MagnifyingGlass } from "@/components/icons"
+import { ArrowCounterClockwise, ArrowLeft, CircleNotch, MagnifyingGlass, X } from "@/components/icons"
 import { toast } from "sonner"
 import type { MediaItem } from "@/bindings"
 import { Button } from "@/components/ui/button"
@@ -8,6 +8,7 @@ import { Progress } from "@/components/ui/progress"
 import { locateFile } from "@/features/project/relink"
 import { formatPercent } from "@/lib/format"
 import { commands, errorMessage, isAppError } from "@/lib/ipc"
+import { cancelJob, cancelLabel } from "@/lib/jobs"
 import { assetUrl } from "@/lib/media"
 import { useMediaJob } from "@/state/activity"
 
@@ -29,8 +30,12 @@ export function NotReady({
   listError: unknown
   onRetryList: () => void
 }) {
-  const job = useMediaJob(m?.id)
   const needsPreview = m?.status === "ready" && isAppError(error) && error.code === "not_ready"
+  // The job playback waits for — its indexing or its preview — not an
+  // analysis running meanwhile: its progress shows, and Cancel stops it.
+  const ingest = useMediaJob(m?.id, "ingest")
+  const preview = useMediaJob(m?.id, "proxy")
+  const job = needsPreview ? preview : ingest
   let title = "Loading…"
   let body: React.ReactNode = null
   if (listError) {
@@ -78,6 +83,9 @@ export function NotReady({
               <span>{job.state === "queued" ? "Waiting…" : (job.stage ?? "")}</span>
               <span className="timecode">{formatPercent(job.progress)}</span>
             </div>
+            <Button className="mt-5" size="sm" onClick={() => cancelJob(job)}>
+              <X /> {cancelLabel(job.kind)}
+            </Button>
           </div>
         )}
         {!job && needsPreview && (

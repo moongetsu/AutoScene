@@ -1,10 +1,11 @@
-import { ArrowCounterClockwise, Check, Clock, FileX, Scissors, User, UserFocus, Warning } from "@/components/icons"
+import { ArrowCounterClockwise, Check, Clock, FileX, Scissors, User, UserFocus, Warning, X } from "@/components/icons"
 import { toast } from "sonner"
 import type { JobInfo, MediaItem } from "@/bindings"
 import { Progress } from "@/components/ui/progress"
 import { Tooltip } from "@/components/ui/tooltip"
 import { formatPercent } from "@/lib/format"
 import { commands, errorMessage } from "@/lib/ipc"
+import { cancelJob, cancelLabel } from "@/lib/jobs"
 import { useProject, useSettings } from "@/lib/queries"
 import { useMediaJob } from "@/state/activity"
 
@@ -39,6 +40,11 @@ export function StatusCell({ media: m, projectId }: { media: MediaItem; projectI
       .mediaAnalyze(projectId, m.id, null)
       .catch((err) => toast.error("Couldn't start the analysis", { description: errorMessage(err) }))
   }
+  // The job whose state is shown here, never another one of the media's.
+  const cancel = (job: JobInfo) => (e: React.MouseEvent) => {
+    e.stopPropagation()
+    cancelJob(job)
+  }
 
   if (m.status === "missing") {
     return (
@@ -65,19 +71,41 @@ export function StatusCell({ media: m, projectId }: { media: MediaItem; projectI
   }
   if (job && job.state === "running") {
     return (
-      <div className="flex w-40 flex-col gap-1.5">
-        <div className="flex justify-between text-xs text-fg-3">
-          <span className="truncate">{runningLabel(job)}</span>
-          <span className="timecode">{formatPercent(job.progress)}</span>
+      <div className="flex items-center gap-1.5">
+        <div className="flex w-36 flex-col gap-1.5">
+          <div className="flex justify-between gap-2 text-xs text-fg-3">
+            <span className="truncate">{runningLabel(job)}</span>
+            <span className="timecode shrink-0">{formatPercent(job.progress)}</span>
+          </div>
+          <Progress value={job.progress} />
         </div>
-        <Progress value={job.progress} />
+        <Tooltip label={cancelLabel(job.kind)}>
+          <button
+            aria-label={cancelLabel(job.kind)}
+            onClick={cancel(job)}
+            className="flex size-6 shrink-0 items-center justify-center rounded-full text-fg-3 hover:bg-white/[0.08] hover:text-fg-1"
+          >
+            <X className="size-3" />
+          </button>
+        </Tooltip>
       </div>
     )
   }
   if (m.status !== "ready" || job) {
     return (
-      <span className="inline-flex items-center gap-1.5 text-sm text-fg-3">
-        <Clock className="size-3.5" /> {queuedLabel(m, job)}
+      <span className="inline-flex items-center gap-2 text-sm">
+        <span className="inline-flex items-center gap-1.5 text-fg-3">
+          <Clock className="size-3.5" /> {queuedLabel(m, job)}
+        </span>
+        {job && (
+          <button
+            aria-label={cancelLabel(job.kind)}
+            onClick={cancel(job)}
+            className="inline-flex items-center gap-1 rounded-xs px-1 text-fg-3 hover:text-fg-1"
+          >
+            <X className="size-3" /> Cancel
+          </button>
+        )}
       </span>
     )
   }

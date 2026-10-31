@@ -1,14 +1,19 @@
-import { ArrowCounterClockwise, Copy, FolderOpen, MagnifyingGlass, Play, Scissors, Trash, UserFocus } from "@/components/icons"
+import { ArrowCounterClockwise, Copy, FolderOpen, MagnifyingGlass, Play, Scissors, Trash, UserFocus, X } from "@/components/icons"
 import { toast } from "sonner"
 import type { MediaItem } from "@/bindings"
 import type { MenuKit } from "@/components/ui/menu-actions"
 import { commands, errorMessage } from "@/lib/ipc"
+import { cancelJob, cancelLabel } from "@/lib/jobs"
 import { copyText, reveal } from "@/lib/os"
+import { useMediaJob } from "@/state/activity"
 import { locateFile } from "./relink"
 
 /**
  * What an episode (or a movie's file) offers wherever it is shown — its row,
- * its card, their ⋯ menus: open it, its file, analyse it again, remove it.
+ * its card, their ⋯ menus: open it, its file, stop or redo its work, remove
+ * it. The redo items and removal stay while it works: the backend restarts
+ * a running analysis once it has stopped, and stops its work before
+ * removing it.
  */
 export function EpisodeItems({
   kit,
@@ -27,6 +32,12 @@ export function EpisodeItems({
   openShortcut?: string[]
 }) {
   const { Item, Separator } = kit
+  // Its unfinished jobs by kind (it can have several at once): each item
+  // stops the one it names.
+  const ingest = useMediaJob(m.id, "ingest")
+  const analysis = useMediaJob(m.id, "analyze")
+  const preview = useMediaJob(m.id, "proxy")
+  const working = [ingest, analysis, preview].filter((j) => j !== undefined)
   const ready = m.status === "ready"
   const redo = (stage: "shots" | "faces") =>
     void commands
@@ -59,6 +70,11 @@ export function EpisodeItems({
           <ArrowCounterClockwise /> Index again
         </Item>
       )}
+      {working.map((j) => (
+        <Item key={j.id} onSelect={() => cancelJob(j)}>
+          <X /> {cancelLabel(j.kind)}
+        </Item>
+      ))}
       {ready && (
         <Item onSelect={() => redo("shots")}>
           <Scissors /> Find shots again

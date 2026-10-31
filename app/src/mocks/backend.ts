@@ -409,13 +409,18 @@ const summary = ({ media: _m, exports: _e, ...s }: MockProject): ProjectSummary 
 const jobs: JobInfo[] = []
 /** Mirrors the backend's job revisions (every change gets a higher one). */
 let rev = 0
+/**
+ * What a job's cancel leaves behind, by job, as the backend records it: a
+ * cancelled indexing fails its media, a cancelled analysis is stopped.
+ */
+const onCancel = new Map<string, () => void>()
 
 function startJob(
   kind: JobKind,
   title: string,
   p: MockProject,
   ms: number,
-  opts: { mediaId?: string; exportId?: string; stage: string },
+  opts: { mediaId?: string; exportId?: string; stage: string; cancelled?: () => void },
   done: () => void,
 ) {
   const job: JobInfo = {
@@ -436,6 +441,7 @@ function startJob(
     rev: ++rev,
   }
   jobs.unshift(job)
+  if (opts.cancelled) onCancel.set(job.id, opts.cancelled)
   void emit("job:changed", { ...job })
   const t0 = Date.now()
   const timer = window.setInterval(() => {
@@ -451,15 +457,39 @@ function startJob(
       job.finishedAt = Date.now()
       job.etaMs = null
       job.rev = ++rev
+      onCancel.delete(job.id)
       done()
       void emit("job:changed", { ...job })
     }
   }, 250)
 }
 
+/**
+ * Cancel the running jobs `of` matches. `record` false: without what a
+ * cancel leaves behind (a restart or a removal follows, as in the backend).
+ */
+function cancelJobs(of: (j: JobInfo) => boolean, record = true) {
+  for (const j of jobs) {
+    if (j.state !== "running" || !of(j)) continue
+    j.state = "cancelled"
+    j.rev = ++rev
+    j.finishedAt = Date.now()
+    const after = onCancel.get(j.id)
+    onCancel.delete(j.id)
+    void emit("job:changed", { ...j })
+    if (record) after?.()
+  }
+}
+
 function ingest(p: MockProject, m: MediaItem) {
   m.status = "indexing"
-  startJob("ingest", `Indexing ${m.label ? `${m.label} · ` : ""}${m.fileName}`, p, 6000, { mediaId: m.id, stage: "Indexing frames" }, () => {
+  const cancelled = () => {
+    Object.assign(m, { status: "failed", error: "Indexing was cancelled." })
+    refresh(p)
+    void emit("media:changed", { projectId: p.id, mediaId: m.id })
+    void emit("library:changed", { projectId: p.id })
+  }
+  startJob("ingest", `Indexing ${m.label ? `${m.label} · ` : ""}${m.fileName}`, p, 6000, { mediaId: m.id, stage: "Indexing frames", cancelled }, () => {
     Object.assign(m, media(m.fileName, [m.season, m.episode], {}), { id: m.id, path: m.path, poster: null, posterSmall: null })
     m.shots = "pending"
     m.shotCount = null
@@ -475,7 +505,12 @@ function analyze(p: MockProject, m: MediaItem) {
   if (facesOnly) m.faces = "running"
   else m.shots = "running"
   const stage = facesOnly ? "Finding characters" : "Finding shots"
-  startJob("analyze", `Analysing ${m.label ? `${m.label} · ` : ""}${m.fileName}`, p, 4000, { mediaId: m.id, stage }, () => {
+  const cancelled = () => {
+    if (m.shots === "running") m.shots = "stopped"
+    if (m.faces === "running") m.faces = "stopped"
+    void emit("media:changed", { projectId: p.id, mediaId: m.id })
+  }
+  startJob("analyze", `Analysing ${m.label ? `${m.label} · ` : ""}${m.fileName}`, p, 4000, { mediaId: m.id, stage, cancelled }, () => {
     m.shots = "ready"
     m.shotCount = SHOT_COUNT
     m.faces = "ready"
@@ -708,6 +743,8 @@ const handlers: Record<string, Handler> = {
   },
   media_remove: ({ projectId, mediaId }) => {
     const p = find(projectId)
+    // Its work stops first, as in the backend.
+    cancelJobs((j) => j.mediaId === mediaId, false)
     p.media = p.media.filter((m) => m.id !== mediaId)
     refresh(p)
     void emit("media:changed", { projectId: p.id, mediaId })
@@ -758,6 +795,8 @@ const handlers: Record<string, Handler> = {
   media_analyze: ({ projectId, mediaId, redo }) => {
     const p = find(projectId)
     const m = findMedia(p, mediaId)
+    // A running analysis restarts from the stage asked for, as in the backend.
+    if (redo) cancelJobs((j) => j.kind === "analyze" && j.mediaId === mediaId, false)
     if (redo === "shots") Object.assign(m, { shots: "pending", shotCount: null })
     if (redo) Object.assign(m, { faces: "pending", faceCount: null })
     analyze(p, m)
@@ -951,13 +990,7 @@ const handlers: Record<string, Handler> = {
   },
   jobs_list: () => jobs,
   job_cancel: ({ jobId }) => {
-    const j = jobs.find((x) => x.id === jobId)
-    if (j && j.state === "running") {
-      j.state = "cancelled"
-      j.rev = ++rev
-      j.finishedAt = Date.now()
-      void emit("job:changed", { ...j })
-    }
+    cancelJobs((j) => j.id === jobId)
     return null
   },
   jobs_clear_finished: () => {
