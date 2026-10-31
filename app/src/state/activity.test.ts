@@ -1,6 +1,7 @@
+import { act, renderHook } from "@testing-library/react"
 import { beforeEach, describe, expect, it } from "vitest"
 import type { JobInfo } from "@/bindings"
-import { useActivity } from "./activity"
+import { useActivity, useProjectIndexProgress } from "./activity"
 
 const job = (o: Partial<JobInfo>): JobInfo => ({
   id: "j1",
@@ -48,5 +49,25 @@ describe("activity store", () => {
     const st = useActivity.getState()
     expect(st.jobs.j1.state).toBe("done")
     expect(st.order).toEqual(["new", "j1"])
+  })
+})
+
+describe("a project's indexing", () => {
+  beforeEach(() => useActivity.setState({ jobs: {}, order: [] }))
+
+  it("is as far as its running indexing jobs are, on average", () => {
+    const { result } = renderHook(() => useProjectIndexProgress("p"))
+    expect(result.current).toBeNull()
+    act(() => {
+      const s = useActivity.getState()
+      s.upsert(job({ id: "a", kind: "ingest", state: "running", progress: 0.2 }))
+      s.upsert(job({ id: "b", kind: "ingest", state: "running", progress: 0.6 }))
+      // Not counted: waiting, no progress yet, not indexing, another project.
+      s.upsert(job({ id: "c", kind: "ingest", state: "queued", progress: null }))
+      s.upsert(job({ id: "d", kind: "ingest", state: "running", progress: null }))
+      s.upsert(job({ id: "e", kind: "analyze", state: "running", progress: 0.9 }))
+      s.upsert(job({ id: "f", kind: "ingest", state: "running", progress: 0.9, projectId: "q" }))
+    })
+    expect(result.current).toBeCloseTo(0.4)
   })
 })

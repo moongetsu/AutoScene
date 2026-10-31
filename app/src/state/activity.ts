@@ -77,22 +77,30 @@ export function useActiveCount(): number {
   return useActivity((s) => s.order.reduce((n, id) => n + (isFinished(s.jobs[id]) ? 0 : 1), 0))
 }
 
+/** The mean progress of the running jobs `of` takes that report one (`null`: none does yet). */
+function meanProgress(s: ActivityState, of: (j: JobInfo) => boolean): number | null {
+  let [sum, n] = [0, 0]
+  for (const id of s.order) {
+    const j = s.jobs[id]
+    if (j.state === "running" && j.progress != null && of(j)) {
+      sum += j.progress
+      n += 1
+    }
+  }
+  return n > 0 ? sum / n : null
+}
+
 /**
  * How far running work is, as one number: the mean progress of the running
  * jobs that report one (`null`: nothing reports progress yet).
  */
 export function useActiveProgress(): number | null {
-  return useActivity((s) => {
-    let [sum, n] = [0, 0]
-    for (const id of s.order) {
-      const j = s.jobs[id]
-      if (j.state === "running" && j.progress != null) {
-        sum += j.progress
-        n += 1
-      }
-    }
-    return n > 0 ? sum / n : null
-  })
+  return useActivity((s) => meanProgress(s, () => true))
+}
+
+/** How far the indexing of `projectId` running now is (`null`: none reports progress yet). */
+export function useProjectIndexProgress(projectId: string): number | null {
+  return useActivity((s) => meanProgress(s, (j) => j.projectId === projectId && j.kind === "ingest"))
 }
 
 /** Is any media of `projectId` being indexed right now? */

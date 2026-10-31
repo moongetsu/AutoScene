@@ -30,7 +30,7 @@ import { commands } from "@/lib/ipc"
 import { useProjects } from "@/lib/queries"
 import { shortcutKeys } from "@/lib/shortcuts"
 import { cn } from "@/lib/utils"
-import { useActiveCount, useActiveProgress, useActivity, useProjectIndexing } from "@/state/activity"
+import { useActiveCount, useActiveProgress, useActivity, useProjectIndexProgress, useProjectIndexing } from "@/state/activity"
 import { useNewProject } from "@/state/new-project"
 import { useUi } from "@/state/ui"
 
@@ -354,12 +354,27 @@ function ProjectTile({
                   </span>
                 }
               />
-              {indexing && (
-                <span className="absolute -right-0.5 -bottom-0.5 size-3 rounded-full border-2 border-canvas bg-accent" aria-hidden />
-              )}
+              {indexing && <IndexingBadge projectId={p.id} />}
             </Link>
           </Tooltip>
         </div>
     </ContextArea>
+  )
+}
+
+/**
+ * A project being indexed: a ring that fills, on a dark disc at the tile's
+ * corner. The disc cuts into the open tile's gold ring instead of sitting
+ * on it, so the two never run together.
+ */
+function IndexingBadge({ projectId }: { projectId: string }) {
+  const progress = useProjectIndexProgress(projectId)
+  return (
+    <span
+      aria-hidden
+      className="pointer-events-none absolute -right-1.5 -bottom-1.5 flex size-[18px] animate-pop-in items-center justify-center rounded-full bg-canvas"
+    >
+      <ProgressRing value={progress} className="size-3" />
+    </span>
   )
 }
