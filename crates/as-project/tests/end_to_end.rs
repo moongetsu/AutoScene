@@ -102,7 +102,7 @@ fn import_preview_and_export_three_episodes() {
     let (p, t, c) = (&project, &tools, &cancel);
     let ingested: Vec<_> = std::thread::scope(|s| {
         let handles: Vec<_> =
-            added.iter().map(|&id| s.spawn(move || p.ingest(t, id, "eng", c, &|_, _| {}).unwrap())).collect();
+            added.iter().map(|&id| s.spawn(move || p.ingest(t, id, "eng", c, &|_, _, _| {}).unwrap())).collect();
         handles.into_iter().map(|h| h.join().unwrap()).collect()
     });
     let mut pending = Vec::new();
@@ -270,7 +270,7 @@ fn bad_ranges_and_missing_files_are_refused() {
         })
         .unwrap();
     let id = added[0];
-    let m = project.ingest(&tools, id, "eng", &CancelToken::new(), &|_, _| {}).unwrap();
+    let m = project.ingest(&tools, id, "eng", &CancelToken::new(), &|_, _, _| {}).unwrap();
     assert_eq!(m.label, "E01");
     let preset = builtin_presets().remove(0);
     let req = |s, e| ExportRequest {
@@ -287,7 +287,7 @@ fn bad_ranges_and_missing_files_are_refused() {
     std::fs::remove_file(&copy).unwrap();
     assert_eq!(project.media(id).unwrap().status, MediaStatus::Missing);
     assert!(project.create_export(&req(0, 10), preset, &out).is_err(), "missing source");
-    let err = project.ingest(&tools, id, "eng", &CancelToken::new(), &|_, _| {}).unwrap_err();
+    let err = project.ingest(&tools, id, "eng", &CancelToken::new(), &|_, _, _| {}).unwrap_err();
     assert!(err.to_string().contains("can't be found"), "{err}");
 }
 
@@ -335,7 +335,7 @@ fn covers_get_portraits_from_the_exact_frame() {
         })
         .unwrap();
     let cancel = CancelToken::new();
-    let m = project.ingest(&tools, added[0], "eng", &cancel, &|_, _| {}).unwrap();
+    let m = project.ingest(&tools, added[0], "eng", &cancel, &|_, _, _| {}).unwrap();
 
     // One face, seen at 191, 200 and 209: clearest at 200. Another whose
     // detections lie past the end of the file (as when a file comes back
@@ -427,7 +427,7 @@ fn a_moved_episode_keeps_its_analysis() {
         .unwrap();
     let id = added[0];
     let cancel = CancelToken::new();
-    let m = project.ingest(&tools, id, "eng", &cancel, &|_, _| {}).unwrap();
+    let m = project.ingest(&tools, id, "eng", &cancel, &|_, _, _| {}).unwrap();
 
     // A face and a decision about it.
     let det = |frame| FaceDet { frame, bbox: [0.4, 0.3, 0.55, 0.6], score: 0.9, norm: 22.0, quality: 0.8 };
@@ -491,7 +491,7 @@ fn a_moved_episode_keeps_its_analysis() {
     assert!(remux.success());
     assert_ne!(std::fs::metadata(&copy).unwrap().len(), std::fs::metadata(&there).unwrap().len());
     assert_eq!(project.relink(&tools, id, &copy, false).unwrap(), Relink::Reindex);
-    project.ingest(&tools, id, "eng", &cancel, &|_, _| {}).unwrap();
+    project.ingest(&tools, id, "eng", &cancel, &|_, _, _| {}).unwrap();
     assert_eq!(walters(&project), 1, "the same frames keep their analysis");
     assert_eq!(project.cast().unwrap().characters[0].name.as_deref(), Some("Walter"));
 
@@ -528,7 +528,7 @@ fn a_moved_episode_keeps_its_analysis() {
     // Taken anyway: analysed again; the decision waits for a face like Walter's.
     assert_eq!(project.relink(&tools, id, &padded, true).unwrap(), Relink::Reindex);
     assert_eq!(project.media(id).unwrap().status, MediaStatus::Queued, "not cut on the old index meanwhile");
-    project.ingest(&tools, id, "eng", &cancel, &|_, _| {}).unwrap();
+    project.ingest(&tools, id, "eng", &cancel, &|_, _, _| {}).unwrap();
     assert_eq!(walters(&project), 0);
     assert_eq!(project.cast().unwrap().characters[0].name.as_deref(), Some("Walter"));
 }
@@ -565,7 +565,7 @@ fn a_clip_past_a_shortened_episode_is_left_out_of_the_file() {
         .unwrap();
     let id = added[0];
     let cancel = CancelToken::new();
-    project.ingest(&tools, id, "eng", &cancel, &|_, _| {}).unwrap();
+    project.ingest(&tools, id, "eng", &cancel, &|_, _, _| {}).unwrap();
     let clip = |start, end| ClipRequest { media_id: id, start, end, name: None };
     let prores = builtin_presets().into_iter().find(|p| p.id == "prores-hq").unwrap();
     let req = ExportRequest {
@@ -590,7 +590,7 @@ fn a_clip_past_a_shortened_episode_is_left_out_of_the_file() {
         .unwrap();
     assert!(cut.success());
     assert_eq!(project.relink(&tools, id, &short, true).unwrap(), Relink::Reindex);
-    let frames = project.ingest(&tools, id, "eng", &cancel, &|_, _| {}).unwrap().frames.unwrap();
+    let frames = project.ingest(&tools, id, "eng", &cancel, &|_, _, _| {}).unwrap().frames.unwrap();
     assert!(frames < 500, "{frames} frames");
 
     let ex = project.run_export(&tools, ex.id, &cancel, &|_, _| {}, &|| {}).unwrap();
@@ -655,7 +655,7 @@ fn a_merged_export_is_one_file_with_every_clip() {
         .unwrap();
     let cancel = CancelToken::new();
     for &id in &added {
-        project.ingest(&tools, id, "eng", &cancel, &|_, _| {}).unwrap();
+        project.ingest(&tools, id, "eng", &cancel, &|_, _, _| {}).unwrap();
     }
     let media = project.media_list().unwrap();
     // MP4, MPEG-TS with a start offset, VFR without sound.

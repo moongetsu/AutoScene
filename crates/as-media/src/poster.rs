@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 
 use as_core::{CancelToken, FrameIdx, FrameRange};
 
-use crate::filters::{deinterlace, picture_chain, scale_to_height};
-use crate::{MediaError, MediaResult, Source, Tools, run_ffmpeg};
+use crate::filters::{TONEMAP_SDR, deinterlace, picture_chain, scale_to_height};
+use crate::{HdrKind, MediaError, MediaInfo, MediaResult, Source, Tools, run_ffmpeg};
 
 /// Seconds of pre-roll before a cut point. Input seeking lands on the
 /// keyframe before `t - PREROLL`; `trim` then selects frames by timestamp.
@@ -105,6 +105,42 @@ pub fn extract_frame_jpegs(
         remove_parts();
     }
     result
+}
+
+/// Seconds of a media read for [`keyframe_jpeg`] before it gives up: a
+/// stream with no keyframe in them isn't decoded to its end.
+const KEYFRAME_WITHIN: f64 = 10.0;
+
+/// A glimpse of `src` at about `at_sec` (from its start) without its frame
+/// index: the keyframe at or before it, upright and SDR, `height` pixels
+/// tall, as a JPEG. Only that picture is decoded (the frames after a
+/// keyframe need the ones before them). A file without an index to seek
+/// with (a transport stream) may give the keyframe after it instead. `None`
+/// when no keyframe comes within [`KEYFRAME_WITHIN`].
+pub fn keyframe_jpeg(
+    tools: &Tools,
+    src: &Path,
+    info: &MediaInfo,
+    at_sec: f64,
+    height: u32,
+) -> MediaResult<Option<Vec<u8>>> {
+    // Tone mapped once small: a glimpse needn't be mapped at full size.
+    let mut chain = picture_chain(info, Some(height), false);
+    if info.video.hdr != HdrKind::None {
+        chain.push(TONEMAP_SDR.into());
+    }
+    let mut cmd = tools.ffmpeg();
+    cmd.args(["-v", "error", "-skip_frame", "nokey", "-noaccurate_seek", "-ss", &format!("{:.3}", at_sec.max(0.0))]);
+    // Paths as they are: a file name needn't be valid Unicode.
+    cmd.args(["-t", &KEYFRAME_WITHIN.to_string(), "-i"]).arg(src);
+    cmd.args(["-map", &format!("0:{}", info.video.index), "-frames:v", "1", "-vf", &chain.join(",")]);
+    cmd.args(["-c:v", "mjpeg", "-q:v", "4", "-f", "image2pipe", "-"]);
+    let out = crate::proc::output(&mut cmd)?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_owned();
+        return Err(MediaError::Ffmpeg(if err.is_empty() { format!("exit status {}", out.status) } else { err }));
+    }
+    Ok((!out.stdout.is_empty()).then_some(out.stdout))
 }
 
 /// How alike two pictures are: the structural similarity (SSIM) of their

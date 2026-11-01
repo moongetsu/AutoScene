@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use as_core::{CharacterId, ExportId, FrameIdx, JobId, MediaId, ProjectId, Rational};
+use as_core::{CharacterId, ExportId, FrameCount, FrameIdx, JobId, MediaId, ProjectId, Rational};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
@@ -1108,6 +1108,10 @@ pub struct JobInfo {
     pub progress: Option<f64>,
     pub stage: Option<String>,
     pub eta_ms: Option<i64>,
+    /// While the job reads a media's frames one by one (indexing): how
+    /// many so far, of about how many, and how fast.
+    #[serde(default)]
+    pub frames: Option<FrameCount>,
     pub error: Option<String>,
     pub created_at: i64,
     pub finished_at: Option<i64>,
@@ -1126,6 +1130,9 @@ pub struct JobProgress {
     pub progress: Option<f64>,
     pub stage: Option<String>,
     pub eta_ms: Option<i64>,
+    /// See [`JobInfo::frames`].
+    #[serde(default)]
+    pub frames: Option<FrameCount>,
 }
 
 /// Unix time in milliseconds.

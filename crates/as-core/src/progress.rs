@@ -1,5 +1,8 @@
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+use serde::{Deserialize, Serialize};
 
 /// One progress sample. `total == 0` means indeterminate.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -8,6 +11,27 @@ pub struct Progress {
     pub done: u64,
     pub total: u64,
     pub eta_ms: Option<u64>,
+    /// While the stage reads a media's frames one by one (indexing).
+    pub frames: Option<FrameCount>,
+}
+
+/// The frames of a media a stage has read, while it reads them one by one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct FrameCount {
+    /// Frames read so far: counted, not estimated.
+    pub done: u64,
+    /// About how many the media has, from its length and frame rate as its
+    /// file states them (only reading every one counts them exactly);
+    /// `None` when the file doesn't say.
+    pub total: Option<u64>,
+    /// The frames a second the media plays at, as its file states it: the
+    /// frames read a second over it is how many times real time they go.
+    pub rate: Option<f64>,
+    /// Frames read a second over the last few seconds, measured by the
+    /// [`ProgressSink`] (what the stage gives is replaced); `None` until
+    /// they have gone for long enough to tell.
+    pub per_sec: Option<f64>,
 }
 
 type Callback = dyn Fn(&Progress) + Send + Sync;
@@ -15,6 +39,10 @@ type Callback = dyn Fn(&Progress) + Send + Sync;
 /// How long a phase is watched, from its first move, before its time left
 /// is told: a first burst says little about its pace.
 const MEASURE_FOR: Duration = Duration::from_secs(2);
+
+/// The span frames read a second are measured over: a few of ffmpeg's
+/// samples (two a second), so the pace told is the one now, and steady.
+const PACE_OVER: Duration = Duration::from_secs(4);
 
 /// Throttled progress reporter. Producers call [`ProgressSink::update`] as
 /// often as they like; the callback fires at most once per `interval`, plus
@@ -45,6 +73,7 @@ struct State {
     last_emit: Option<Instant>,
     stage: String,
     phase: Option<Phase>,
+    pace: Pace,
 }
 
 /// Where and when the current phase began, and how far it got.
@@ -68,6 +97,40 @@ impl Phase {
     }
 }
 
+/// Frames read over the last [`PACE_OVER`]: how many at which moment.
+#[derive(Default)]
+struct Pace {
+    samples: VecDeque<(Instant, u64)>,
+    moved: bool,
+}
+
+impl Pace {
+    /// Add `done` frames read by `now`. Returns the frames read a second
+    /// since [`PACE_OVER`] ago, or since they first moved if that is later,
+    /// once that is [`MEASURE_FOR`] long. A stall reads as 0.
+    fn add(&mut self, now: Instant, done: u64) -> Option<f64> {
+        match self.samples.back() {
+            // Read from the start again (a pass started over): measured anew.
+            Some(&(_, last)) if done < last => {
+                self.samples.clear();
+                self.moved = false;
+            }
+            // Not moved yet: starting up says nothing about the pace.
+            Some(&(_, last)) if done == last && !self.moved => self.samples.clear(),
+            Some(_) => self.moved = true,
+            None => {}
+        }
+        self.samples.push_back((now, done));
+        // The oldest sample kept is the newest one at least PACE_OVER old.
+        while self.samples.len() > 2 && now.duration_since(self.samples[1].0) >= PACE_OVER {
+            self.samples.pop_front();
+        }
+        let (&(t0, d0), &(t1, d1)) = (self.samples.front()?, self.samples.back()?);
+        let span = t1.duration_since(t0);
+        (span >= MEASURE_FOR).then(|| (d1 - d0) as f64 / span.as_secs_f64())
+    }
+}
+
 /// Do two stages read the same with their numbers left out?
 fn same_phase(a: &str, b: &str) -> bool {
     let words = |s: &str| s.chars().filter(|c| !c.is_ascii_digit()).collect::<String>();
@@ -85,11 +148,25 @@ impl ProgressSink {
     }
 
     pub fn update(&self, stage: &str, done: u64, total: u64) {
-        self.update_at(stage, done, total, Instant::now());
+        self.update_at(stage, done, total, None, Instant::now());
     }
 
-    fn update_at(&self, stage: &str, done: u64, total: u64, now: Instant) {
+    /// [`update`](Self::update) of a stage that reads a media's frames one
+    /// by one: `frames` says how many so far, and the sink measures how
+    /// fast they go (its `per_sec`).
+    pub fn update_frames(&self, stage: &str, done: u64, total: u64, frames: FrameCount) {
+        self.update_at(stage, done, total, Some(frames), Instant::now());
+    }
+
+    fn update_at(&self, stage: &str, done: u64, total: u64, frames: Option<FrameCount>, now: Instant) {
         let mut st = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
+        let frames = match frames {
+            Some(f) => Some(FrameCount { per_sec: st.pace.add(now, f.done), ..f }),
+            None => {
+                st.pace = Pace::default();
+                None
+            }
+        };
         let stage_changed = st.stage != stage;
         let goes_on = st.phase.as_ref().is_some_and(|p| p.total == total && done >= p.last)
             && (!stage_changed || same_phase(&st.stage, stage));
@@ -113,7 +190,7 @@ impl ProgressSink {
         }
         st.last_emit = Some(now);
         drop(st);
-        (self.inner.cb)(&Progress { stage: stage.to_owned(), done, total, eta_ms });
+        (self.inner.cb)(&Progress { stage: stage.to_owned(), done, total, eta_ms, frames });
     }
 }
 
@@ -161,10 +238,20 @@ mod tests {
 
         /// The time left told for `done` of `total` at second `at`.
         fn eta_s(&self, at: f64, stage: &str, done: u64, total: u64) -> Option<f64> {
-            self.sink.update_at(stage, done, total, self.t0 + Duration::from_secs_f64(at));
+            self.sink.update_at(stage, done, total, None, self.t0 + Duration::from_secs_f64(at));
             let p = self.seen.lock().unwrap().last().cloned().expect("every sample is emitted");
             assert_eq!((p.stage.as_str(), p.done), (stage, done));
             p.eta_ms.map(|ms| ms as f64 / 1000.0)
+        }
+
+        /// The frames a second told for `done` frames read by second `at`.
+        fn per_sec(&self, at: f64, done: u64) -> Option<f64> {
+            let frames = FrameCount { done, total: Some(10_000), rate: Some(25.0), per_sec: None };
+            self.sink.update_at("Indexing frames", done, 10_000, Some(frames), self.t0 + Duration::from_secs_f64(at));
+            let p = self.seen.lock().unwrap().last().cloned().expect("every sample is emitted");
+            let f = p.frames.expect("frames are told");
+            assert_eq!((f.done, f.total, f.rate), (done, Some(10_000), Some(25.0)), "told as given");
+            f.per_sec
         }
     }
 
@@ -247,6 +334,52 @@ mod tests {
         assert_eq!(c.eta_s(30.0, "Grouping characters", 0, 0), None);
         assert_eq!(c.eta_s(31.0, "Finding people", 0, 1000), None);
         assert!(near(c.eta_s(41.0, "Finding people", 100, 1000), 90.0));
+    }
+
+    #[test]
+    fn frames_a_second_are_told_once_they_have_gone_for_a_while() {
+        // ffmpeg's samples, two a second: starting up for 3 s, then 100
+        // frames a second.
+        let c = Clocked::new();
+        for k in 0..=6 {
+            assert_eq!(c.per_sec(f64::from(k) * 0.5, 0), None, "starting up");
+        }
+        for k in 1..=3 {
+            assert_eq!(c.per_sec(3.0 + f64::from(k) * 0.5, k as u64 * 50), None, "too soon to tell");
+        }
+        assert!(near(c.per_sec(5.0, 200), 100.0), "the start-up isn't counted");
+        // It slows to 50 a second: told within the span the pace is measured over.
+        let mut done = 200;
+        for k in 1..=8 {
+            done += 25;
+            let pace = c.per_sec(5.0 + f64::from(k) * 0.5, done);
+            assert!(pace.is_some_and(|p| (50.0..=100.0).contains(&p)), "between the two at {k}: {pace:?}");
+        }
+        assert!(near(c.per_sec(9.5, done + 25), 50.0));
+        // A stall reads as none read, not as the pace before it.
+        for k in 1..=9 {
+            c.per_sec(9.5 + f64::from(k) * 0.5, done + 25);
+        }
+        assert_eq!(c.per_sec(14.5, done + 25), Some(0.0));
+    }
+
+    #[test]
+    fn frames_read_again_are_measured_anew() {
+        // A pass started over (in software, the GPU's had failed) counts
+        // from 0 again, at its own pace.
+        let c = Clocked::new();
+        for k in 0..=10 {
+            c.per_sec(f64::from(k) * 0.5, k as u64 * 100);
+        }
+        assert!(near(c.per_sec(5.5, 1100), 200.0));
+        assert_eq!(c.per_sec(6.0, 0), None);
+        assert_eq!(c.per_sec(7.0, 20), None);
+        assert!(near(c.per_sec(8.5, 50), 20.0), "from where it started over");
+        // A stage between them that reads no frames tells none, and the
+        // frames after it are measured anew.
+        c.sink.update_at("Creating poster", 960, 1000, None, c.t0 + Duration::from_secs(9));
+        assert_eq!(c.seen.lock().unwrap().last().and_then(|p| p.frames), None);
+        assert_eq!(c.per_sec(10.0, 60), None);
     }
 
     #[test]

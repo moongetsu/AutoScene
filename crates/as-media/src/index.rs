@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use as_core::{CancelToken, FrameIndex, Rational};
 
-use crate::{MediaError, MediaInfo, MediaResult, Tools, run_ffmpeg_counting};
+use crate::{FfProgress, MediaError, MediaInfo, MediaResult, Tools, run_ffmpeg_counting};
 
 /// What libavcodec logs (lowercased) when the GPU rejects a picture that the
 /// software decoder would still have produced (concealed). For H.264/HEVC,
@@ -29,13 +29,25 @@ fn hw_index_ok(codec: &str) -> bool {
     matches!(codec, "h264" | "hevc")
 }
 
+/// How far [`build_frame_index`] is.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct IndexProgress {
+    /// 0..1: where in the media it is.
+    pub fraction: f64,
+    /// Frames decoded so far. A pass started again (in software, when the
+    /// GPU's failed) counts from 0.
+    pub frames: u64,
+    /// Seconds into the media, from its first frame.
+    pub at_sec: f64,
+}
+
 pub fn build_frame_index(
     tools: &Tools,
     path: &Path,
     info: &MediaInfo,
     work_dir: &Path,
     cancel: &CancelToken,
-    mut progress: impl FnMut(f64),
+    mut progress: impl FnMut(IndexProgress),
 ) -> MediaResult<FrameIndex> {
     std::fs::create_dir_all(work_dir)?;
     // Unique per call: several media are indexed in parallel from one process.
@@ -46,7 +58,7 @@ pub fn build_frame_index(
     let duration = info.duration_sec.unwrap_or(0.0).max(0.001);
 
     // Returns how many pictures the hardware decoder rejected.
-    let attempt = |hw: bool, progress: &mut dyn FnMut(f64)| -> MediaResult<usize> {
+    let attempt = |hw: bool, progress: &mut dyn FnMut(IndexProgress)| -> MediaResult<usize> {
         let mut args: Vec<OsString> = ["-v", "error", "-y", "-copyts", "-threads", "0"].map(OsString::from).to_vec();
         if hw
             && hw_index_ok(&info.video.codec)
@@ -69,7 +81,13 @@ pub fn build_frame_index(
         args.push(stats.0.clone().into());
         args.extend(["-stats_enc_pre_fmt:v", "{ptsi} {tbi}", "-f", "null", "-"].map(OsString::from));
         let patterns = if hw { HW_PICTURE_FAILED } else { &[] };
-        run_ffmpeg_counting(tools, &args, cancel, |p| progress((p.out_time / duration).clamp(0.0, 1.0)), patterns)
+        // With -copyts too, ffmpeg tells the time from the first frame on.
+        let told = |p: &FfProgress| IndexProgress {
+            fraction: (p.out_time / duration).clamp(0.0, 1.0),
+            frames: p.frame,
+            at_sec: p.out_time.max(0.0),
+        };
+        run_ffmpeg_counting(tools, &args, cancel, |p| progress(told(p)), patterns)
     };
 
     // Hardware decoders can reject unusual codecs/profiles or single damaged

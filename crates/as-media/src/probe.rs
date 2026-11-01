@@ -107,6 +107,24 @@ impl MediaInfo {
         matches!(self.video.field_order.as_deref(), Some("tt" | "bb" | "tb" | "bt"))
     }
 
+    /// The frames a second the picture plays at, as the file states it: its
+    /// average rate where that is below `r_frame_rate` (which phone and
+    /// screen recordings set to their time base's ticks, `90000/1`), else
+    /// `r_frame_rate`. `None` when that is no rate pictures play at.
+    pub fn stated_fps(&self) -> Option<f64> {
+        let rate = self.video.r_frame_rate.to_f64();
+        let fps =
+            self.video.avg_frame_rate.map(Rational::to_f64).filter(|&avg| avg > 0.0 && avg < rate).unwrap_or(rate);
+        (fps > 0.0 && fps <= MAX_FPS).then_some(fps)
+    }
+
+    /// About how many frames the picture has: its length at
+    /// [`stated_fps`](Self::stated_fps). Only decoding every one counts
+    /// them exactly (the frame index).
+    pub fn frames_estimate(&self) -> Option<u64> {
+        Some((self.duration_sec.filter(|d| *d > 0.0)? * self.stated_fps()?).round() as u64)
+    }
+
     /// Default audio track: the one flagged default, else the first.
     pub fn default_audio(&self) -> Option<&AudioStream> {
         self.audio.iter().find(|a| a.default).or(self.audio.first())
@@ -608,6 +626,12 @@ mod tests {
         let old = phone("61.000000", None);
         assert_eq!(same_source(&old, &phone("61.002000", None)), Ok(()));
         assert!(same_source(&old, &phone("61.003000", None)).is_err());
+        // Its frames are about its length at 30 fps; without the average
+        // rate nothing tells how many.
+        assert_eq!((phone("61.000000", Some("30/1")).stated_fps(), old.stated_fps()), (Some(30.0), None));
+        assert_eq!((phone("61.000000", Some("30/1")).frames_estimate(), old.frames_estimate()), (Some(1830), None));
+        // An episode: its length at 24000/1001.
+        assert_eq!(episode("matroska,webm", 1920, "2531.400", &[]).frames_estimate(), Some(60_693));
     }
 
     #[test]

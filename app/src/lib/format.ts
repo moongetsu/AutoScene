@@ -26,6 +26,25 @@ export function formatDateTime(ms: number): string {
   return dateFmt.format(new Date(ms))
 }
 
+const countFmt = new Intl.NumberFormat("en-GB", { maximumFractionDigits: 0 })
+
+/** 14200 → "14,200". */
+export function formatCount(n: number): string {
+  return countFmt.format(n)
+}
+
+/**
+ * A measured pace (frames a second, times real time) to the digits it holds:
+ * a tenth below 10, whole up to 1,000, then three figures, as a pace measured
+ * over a few seconds wavers by about a percent. 7.46 → "7.5", 612.4 → "612",
+ * 2853 → "2,850".
+ */
+export function formatPace(v: number): string {
+  const tenths = Math.round(v * 10) / 10
+  if (tenths < 10) return tenths.toFixed(1)
+  return formatCount(v < 1000 ? v : Number(v.toPrecision(3)))
+}
+
 /** 0.4 → "40%". */
 export function formatPercent(v: number | null | undefined): string {
   return v == null ? "" : `${Math.round(v * 100)}%`

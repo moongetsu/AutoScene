@@ -146,7 +146,10 @@ pub fn queue_ingest(app: &AppHandle, project: &Arc<Project>, media_id: MediaId) 
             log::warn!("preferred audio language: {}", e.detail());
             String::new()
         });
-        let result = project.ingest(&tools, media_id, &language, &ctx.cancel, &|stage, p| ctx.report(stage, p));
+        let result = project.ingest(&tools, media_id, &language, &ctx.cancel, &|stage, p, frames| match frames {
+            Some(frames) => ctx.frames(stage, p, frames),
+            None => ctx.progress(stage, p),
+        });
         if matches!(result, Err(ProjectError::Cancelled))
             && !state.jobs.is_shutting_down()
             && let Err(e) = project.set_media_failed(media_id, "Indexing was cancelled.")

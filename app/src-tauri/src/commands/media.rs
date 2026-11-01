@@ -7,6 +7,8 @@ use as_api::{
     Segment, StageState,
 };
 use as_core::{MediaId, ProjectId};
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use tauri::{AppHandle, State};
 use tauri_specta::Event;
 
@@ -288,6 +290,23 @@ pub async fn media_relink_folder(
         work::cast_changed(&app, &project);
     }
     Ok(found.summary)
+}
+
+/// Where the indexing of a media is now, as a picture: the keyframe at
+/// about the place it has read to, small, as a `data:` URL. `None` while it
+/// isn't reading its frames (or no picture came). It is decoded only when
+/// asked: the player asks every few seconds while it waits for the indexing.
+#[tauri::command]
+#[specta::specta]
+pub async fn media_indexing_still(
+    state: State<'_, AppState>,
+    project_id: ProjectId,
+    media_id: MediaId,
+) -> AppResult<Option<String>> {
+    let lib = state.library.clone();
+    let tools = state.tools()?;
+    let jpeg = blocking(move || Ok(lib.project(project_id)?.indexing_still(&tools, media_id))).await?;
+    Ok(jpeg.map(|j| format!("data:image/jpeg;base64,{}", STANDARD.encode(j))))
 }
 
 /// Build (or rebuild) the preview of a media that needs one.

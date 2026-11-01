@@ -166,6 +166,44 @@ fn poster_extracts_the_exact_frame() {
     }
 }
 
+/// While a media is indexed: its frames counted as they are read (about as
+/// many as its file states), and a glimpse of where it is — the keyframe at
+/// about that place, small, for every kind of file.
+#[test]
+fn indexing_counts_its_frames_and_can_be_glimpsed() {
+    let Some((tools, truth)) = setup() else { return };
+    let work = tempfile::tempdir().unwrap();
+    for v in &truth.variants {
+        let path = fixtures_dir().join(&v.file);
+        let info = probe(&tools, &path).unwrap();
+        let mut told = Vec::new();
+        build_frame_index(&tools, &path, &info, work.path(), &CancelToken::new(), |p| told.push(p)).unwrap();
+        let last = told.last().expect("progress told");
+        assert_eq!(last.frames, u64::from(truth.frame_count), "{}: every frame counted", v.file);
+        assert!(told.iter().all(|p| p.at_sec <= 24.5 && (0.0..=1.0).contains(&p.fraction)), "{}: {told:?}", v.file);
+        if !v.vfr {
+            let estimate = info.frames_estimate().expect("the file states its length and rate") as f64;
+            let off = (estimate - truth.frame_count as f64).abs() / truth.frame_count as f64;
+            assert!(off < 0.05, "{}: about {estimate} frames, not {}", v.file, truth.frame_count);
+        }
+        for (at, frame) in [(0.0, 0u32), (10.0, 240)] {
+            let jpeg = poster::keyframe_jpeg(&tools, &path, &info, at, 288).unwrap().expect("a keyframe");
+            let out = work.path().join(format!("{}-{at}.jpg", v.file));
+            std::fs::write(&out, jpeg).unwrap();
+            assert_eq!(dimensions(&tools, &out), (512, 288), "{}: small, square pixels", v.file);
+            // Plain progressive pictures read their barcode (a combed or
+            // tone-mapped one needn't): the keyframe before the place, or in
+            // a transport stream (no index to seek with) maybe the next one.
+            if !v.interlaced && v.video_codec == "h264" && !v.vfr {
+                let code = barcodes(&tools, &out)[0].expect("barcode in the glimpse");
+                let after = if v.file.ends_with(".ts") { 48 } else { 0 };
+                assert!(code.frame as u32 <= frame + after, "{}: {code:?} at {at}", v.file);
+                assert!(at > 0.0 || code.frame == 0, "{}: {code:?} at the start", v.file);
+            }
+        }
+    }
+}
+
 /// Portraits are a part of the exact frame, at exactly the size asked for.
 #[test]
 fn portraits_are_cut_from_the_exact_frame() {

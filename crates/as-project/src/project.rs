@@ -10,7 +10,7 @@ use as_api::{
     ImportCandidate, MediaItem, MediaStatus, MergedFile, PresetSize, ProjectKind, ProjectSummary, ProxyState, Relink,
     RelinkSummary,
 };
-use as_core::{CancelToken, ExportId, FrameIndex, FrameRange, MediaId, ProjectId};
+use as_core::{CancelToken, ExportId, FrameCount, FrameIndex, FrameRange, MediaId, ProjectId};
 use as_db::{IngestRecord, NewExportItem, ProjectDb, Relinked};
 use as_export::LosslessCodec;
 use as_export::clip::PARTIAL_DIR;
@@ -51,6 +51,10 @@ fn left_over(e: &std::fs::DirEntry) -> bool {
 /// known for now (a clip failed and its share is skipped: the pace is
 /// measured anew from the next fraction).
 pub type Progress<'a> = &'a dyn Fn(&str, Option<f64>);
+
+/// Progress of an ingest: `(stage, fraction 0..1, frames)`, the frames read
+/// so far while it reads every one of them (`None` in the stages around).
+pub type IngestProgress<'a> = &'a dyn Fn(&str, f64, Option<FrameCount>);
 
 /// Share of a merged export's progress that rendering its clips takes; the
 /// join (a copy, and the sound encoded once) takes the rest.
@@ -112,6 +116,9 @@ pub struct Project {
     pub dir: PathBuf,
     db: ProjectDb,
     indexes: Mutex<HashMap<MediaId, Arc<FrameIndex>>>,
+    /// Media whose frames are being read for their index now, and how far
+    /// (see [`Project::indexing_still`]).
+    indexing: Mutex<HashMap<MediaId, Indexing>>,
     /// Latest proxy build per media. A replaced build that finishes (or
     /// fails) late must not overwrite the state of the one that replaced it.
     proxy_builds: Mutex<HashMap<MediaId, u64>>,
@@ -127,6 +134,27 @@ pub struct Project {
     /// Its faces are found with Fast Scan (meta [`SCAN`]).
     fast_scan: AtomicBool,
 }
+
+/// A media whose frames are being read for its index: its file, and how far
+/// into it the reading is.
+struct Indexing {
+    path: PathBuf,
+    info: Arc<MediaInfo>,
+    at_sec: f64,
+}
+
+/// Keeps a media listed as [`Indexing`] while it lives: however the reading
+/// of its frames ends, it is no longer.
+struct ReadingFrames<'a>(&'a Project, MediaId);
+
+impl Drop for ReadingFrames<'_> {
+    fn drop(&mut self) {
+        self.0.indexing.lock().remove(&self.1);
+    }
+}
+
+/// How tall [`Project::indexing_still`] is: a thumbnail's on a sharp screen.
+const INDEXING_STILL_HEIGHT: u32 = 288;
 
 /// How a project's faces are found (`fast`: Fast Scan; unset: in full).
 const SCAN: &str = "scan";
@@ -156,6 +184,7 @@ impl Project {
             dir,
             db,
             indexes: Mutex::default(),
+            indexing: Mutex::default(),
             proxy_builds: Mutex::default(),
             clustering: Mutex::default(),
             posters: Mutex::default(),
@@ -176,6 +205,7 @@ impl Project {
             dir,
             db,
             indexes: Mutex::default(),
+            indexing: Mutex::default(),
             proxy_builds: Mutex::default(),
             clustering: Mutex::default(),
             posters: Mutex::default(),
@@ -598,7 +628,7 @@ impl Project {
         id: MediaId,
         audio_language: &str,
         cancel: &CancelToken,
-        progress: Progress,
+        progress: IngestProgress,
     ) -> ProjectResult<MediaItem> {
         let result = self.ingest_inner(tools, id, audio_language, cancel, progress);
         match &result {
@@ -617,7 +647,7 @@ impl Project {
         id: MediaId,
         audio_language: &str,
         cancel: &CancelToken,
-        progress: Progress,
+        progress: IngestProgress,
     ) -> ProjectResult<MediaItem> {
         let m = self.media(id)?;
         let path = PathBuf::from(&m.path);
@@ -625,7 +655,7 @@ impl Project {
             return Err(ProjectError::NotFound(format!("{} can't be found.", m.file_name)));
         }
         self.db.set_media_status(id, MediaStatus::Indexing, None)?;
-        progress("Reading file", Some(0.0));
+        progress("Reading file", 0.0, None);
         let mut info = probe(tools, &path)?;
         cancel.check().map_err(|_| ProjectError::Cancelled)?;
         if info.video.field_order.is_none()
@@ -635,11 +665,20 @@ impl Project {
             info.video.field_order = Some(order.to_string());
         }
 
+        let indexing = Indexing { path: path.clone(), info: Arc::new(info.clone()), at_sec: 0.0 };
+        self.indexing.lock().insert(id, indexing);
+        let reading = ReadingFrames(self, id);
+        let (total, rate) = (info.frames_estimate(), info.stated_fps());
         let index = build_frame_index(tools, &path, &info, &self.tmp_dir(), cancel, |p| {
-            progress("Indexing frames", Some(p * 0.95))
+            if let Some(now) = self.indexing.lock().get_mut(&id) {
+                now.at_sec = p.at_sec;
+            }
+            let frames = FrameCount { done: p.frames, total, rate, per_sec: None };
+            progress("Indexing frames", p.fraction * 0.95, Some(frames));
         })?;
+        drop(reading);
 
-        progress("Creating poster", Some(0.96));
+        progress("Creating poster", 0.96, None);
         let src = Source { path: &path, info: &info, index: &index };
         let (poster, poster_small) = match self.write_posters(tools, id, src, cancel) {
             Ok(()) => {
@@ -678,6 +717,23 @@ impl Project {
         self.remove_stale_posters(&m, [rec.poster.as_deref(), rec.poster_small.as_deref()]);
         self.indexes.lock().insert(id, Arc::new(index));
         self.media(id)
+    }
+
+    /// Where the indexing of `id` is now, as a picture: the keyframe at
+    /// about the place it has read its frames to, small, as a JPEG. `None`
+    /// when it isn't reading them now, or no picture came (a glimpse that
+    /// fails is left out). Only that picture is decoded besides the
+    /// indexing, and only when asked: the indexing itself is untouched.
+    pub fn indexing_still(&self, tools: &Tools, id: MediaId) -> Option<Vec<u8>> {
+        let (path, info, at_sec) = {
+            let indexing = self.indexing.lock();
+            let now = indexing.get(&id)?;
+            (now.path.clone(), now.info.clone(), now.at_sec)
+        };
+        as_media::poster::keyframe_jpeg(tools, &path, &info, at_sec, INDEXING_STILL_HEIGHT)
+            .inspect_err(|e| tracing::debug!(error = %e.detail(), "no still of the indexing"))
+            .ok()
+            .flatten()
     }
 
     /// Choose the audio track used for playback and export. Returns `true`

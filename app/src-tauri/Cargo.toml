@@ -40,6 +40,7 @@ as-jobs.workspace = true
 as-media.workspace = true
 as-models.workspace = true
 as-project.workspace = true
+base64 = "=0.23.1"
 parking_lot.workspace = true
 serde.workspace = true
 serde_json.workspace = true

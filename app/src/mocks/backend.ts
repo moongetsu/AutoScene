@@ -420,7 +420,14 @@ function startJob(
   title: string,
   p: MockProject,
   ms: number,
-  opts: { mediaId?: string; exportId?: string; stage: string; cancelled?: () => void },
+  opts: {
+    mediaId?: string
+    exportId?: string
+    stage: string
+    cancelled?: () => void
+    /** Tells the job's stage, progress, time left and frames `elapsed` ms in, as its kind of work does. */
+    tick?: (job: JobInfo, elapsed: number) => void
+  },
   done: () => void,
 ) {
   const job: JobInfo = {
@@ -440,22 +447,27 @@ function startJob(
     finishedAt: null,
     rev: ++rev,
   }
+  opts.tick?.(job, 0)
   jobs.unshift(job)
   if (opts.cancelled) onCancel.set(job.id, opts.cancelled)
   void emit("job:changed", { ...job })
   const t0 = Date.now()
   const timer = window.setInterval(() => {
     if (job.state !== "running") return window.clearInterval(timer)
-    const f = Math.min(1, (Date.now() - t0) / ms)
+    const elapsed = Date.now() - t0
+    const f = Math.min(1, elapsed / ms)
     job.progress = f
-    job.etaMs = Math.max(0, ms - (Date.now() - t0))
+    job.etaMs = Math.max(0, ms - elapsed)
+    if (f < 1) opts.tick?.(job, elapsed)
     job.rev = ++rev
-    void emit("job:progress", { id: job.id, rev: job.rev, progress: f, stage: job.stage, etaMs: job.etaMs })
+    const { progress, stage, etaMs, frames } = job
+    void emit("job:progress", { id: job.id, rev: job.rev, progress, stage, etaMs, frames: frames ?? null })
     if (f >= 1) {
       window.clearInterval(timer)
       job.state = "done"
       job.finishedAt = Date.now()
       job.etaMs = null
+      job.frames = null
       job.rev = ++rev
       onCancel.delete(job.id)
       done()
@@ -489,7 +501,8 @@ function ingest(p: MockProject, m: MediaItem) {
     void emit("media:changed", { projectId: p.id, mediaId: m.id })
     void emit("library:changed", { projectId: p.id })
   }
-  startJob("ingest", `Indexing ${m.label ? `${m.label} · ` : ""}${m.fileName}`, p, 6000, { mediaId: m.id, stage: "Indexing frames", cancelled }, () => {
+  const title = `Indexing ${m.label ? `${m.label} · ` : ""}${m.fileName}`
+  startJob("ingest", title, p, INDEX_MS, { mediaId: m.id, stage: "Reading file", cancelled, tick: indexingTick }, () => {
     Object.assign(m, media(m.fileName, [m.season, m.episode], {}), { id: m.id, path: m.path, poster: null, posterSmall: null })
     m.shots = "pending"
     m.shotCount = null
@@ -498,6 +511,36 @@ function ingest(p: MockProject, m: MediaItem) {
     void emit("library:changed", { projectId: p.id })
     analyze(p, m)
   })
+}
+
+/** How long the mock indexes an episode: long enough to see its pace settle. */
+const INDEX_MS = 24_000
+/** A 23:40 episode at 23.976 fps: the frames its file states, and the ones read. */
+const STATED_FRAMES = 34_046
+const READ_FRAMES = 34_044
+/** Where the mock's indexing is, as a picture: stills of the episode being indexed (Frieren 04). */
+const INDEXING_STILLS = ["frieren-01", "frieren-02", "frieren-03"]
+
+/**
+ * An indexing as the backend tells it: the file read first, then its frames
+ * counted (their pace told once measured for 2 s, wavering a little as a
+ * real one does), then the poster made.
+ */
+function indexingTick(job: JobInfo, elapsed: number) {
+  const [from, to] = [400, INDEX_MS * 0.95]
+  job.frames = null
+  if (elapsed < from || elapsed >= to) {
+    job.stage = elapsed < from ? "Reading file" : "Creating poster"
+    job.etaMs = null
+    return
+  }
+  const read = (elapsed - from) / (to - from)
+  const pace = READ_FRAMES / ((to - from) / 1000)
+  const perSec = elapsed - from >= 2000 ? pace * (1 + 0.02 * Math.sin(elapsed / 900)) : null
+  job.stage = "Indexing frames"
+  job.progress = read * 0.95
+  job.etaMs = perSec == null ? null : INDEX_MS - elapsed
+  job.frames = { done: Math.round(READ_FRAMES * read), total: STATED_FRAMES, rate: 24000 / 1001, perSec }
 }
 
 function analyze(p: MockProject, m: MediaItem) {
@@ -778,6 +821,12 @@ const handlers: Record<string, Handler> = {
     }
     if (missing.length > 0) void emit("media:changed", { projectId: p.id, mediaId: null })
     return { same: missing.length, reindex: 0, missing: 0 }
+  },
+  media_indexing_still: ({ mediaId }) => {
+    const j = jobs.find((x) => x.mediaId === mediaId && x.kind === "ingest" && x.state === "running" && x.frames)
+    if (!j) return null
+    const i = Math.min(INDEXING_STILLS.length - 1, Math.floor(((j.progress ?? 0) / 0.95) * INDEXING_STILLS.length))
+    return `${FIXTURES}posters/${INDEXING_STILLS[i]}.jpg`
   },
   media_prepare_preview: () => null,
   media_set_audio: ({ projectId, mediaId, ordinal }) => {

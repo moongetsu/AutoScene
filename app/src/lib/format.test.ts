@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { formatEta, formatProgress, shortFormatName } from "./format"
+import { formatCount, formatEta, formatPace, formatProgress, shortFormatName } from "./format"
 
 describe("shortFormatName", () => {
   it("drops what the brackets add", () => {
@@ -11,6 +11,19 @@ describe("shortFormatName", () => {
   it("keeps a name without them, or that is nothing but them", () => {
     expect(shortFormatName("ProRes 422 HQ")).toBe("ProRes 422 HQ")
     expect(shortFormatName("(custom)")).toBe("(custom)")
+  })
+})
+
+describe("indexing numbers", () => {
+  it("groups counts and gives paces the digits they hold", () => {
+    expect(formatCount(14_200)).toBe("14,200")
+    expect(formatCount(88_499.6)).toBe("88,500")
+    expect(formatPace(612.4)).toBe("612")
+    expect(formatPace(2853.4)).toBe("2,850")
+    expect(formatPace(25.3)).toBe("25")
+    expect(formatPace(7.46)).toBe("7.5")
+    expect(formatPace(0.8)).toBe("0.8")
+    expect(formatPace(9.97)).toBe("10")
   })
 })
 

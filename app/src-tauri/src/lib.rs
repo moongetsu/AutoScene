@@ -58,6 +58,7 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::DynRuntime> {
             commands::media::media_retry,
             commands::media::media_relink,
             commands::media::media_relink_folder,
+            commands::media::media_indexing_still,
             commands::media::media_prepare_preview,
             commands::media::media_set_audio,
             commands::media::media_frame_map,

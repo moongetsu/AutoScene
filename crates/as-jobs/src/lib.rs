@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use as_api::{JobInfo, JobKind, JobProgress, JobState, now_ms};
-use as_core::{CancelToken, ExportId, JobId, MediaId, ProgressSink, ProjectId};
+use as_core::{CancelToken, ExportId, FrameCount, JobId, MediaId, ProgressSink, ProjectId};
 use parking_lot::{Condvar, Mutex};
 
 /// Resource classes. Each runs its jobs on its own fixed set of workers.
@@ -84,6 +84,14 @@ impl JobCtx {
     /// Report a stage whose length is unknown.
     pub fn stage(&self, stage: &str) {
         self.sink.update(stage, 0, 0);
+    }
+
+    /// [`progress`](Self::progress) of a stage that reads a media's frames
+    /// one by one: `frames` read so far, of about how many; how fast they
+    /// go is measured here.
+    pub fn frames(&self, stage: &str, fraction: f64, frames: FrameCount) {
+        let done = (fraction.clamp(0.0, 1.0) * PARTS as f64).round() as u64;
+        self.sink.update_frames(stage, done, PARTS, frames);
     }
 
     /// Report `fraction` of `stage`, or that how far it is isn't known for
@@ -260,6 +268,7 @@ impl JobRunner {
             progress: None,
             stage: None,
             eta_ms: None,
+            frames: None,
             error: None,
             created_at: now_ms(),
             finished_at: None,
@@ -460,6 +469,7 @@ impl Drop for Alive<'_> {
             e.info.state = JobState::Failed;
             e.info.error = Some("unexpected error".into());
             e.info.eta_ms = None;
+            e.info.frames = None;
             e.info.finished_at = Some(now_ms());
             e.info.rev = rev;
         }
@@ -503,6 +513,7 @@ fn run_worker(inner: &Arc<Inner>, class: Class) {
                 let progress = (p.total > 0).then(|| p.done as f64 / p.total as f64);
                 let stage = (!p.stage.is_empty()).then(|| p.stage.clone());
                 let eta_ms = p.eta_ms.map(|e| e as i64);
+                let frames = p.frames;
                 let rev = {
                     let mut st = inner.state.lock();
                     let rev = st.next_rev();
@@ -511,13 +522,14 @@ fn run_worker(inner: &Arc<Inner>, class: Class) {
                             e.info.progress = progress;
                             e.info.stage = stage.clone();
                             e.info.eta_ms = eta_ms;
+                            e.info.frames = frames;
                             e.info.rev = rev;
                             rev
                         }
                         None => return,
                     }
                 };
-                (inner.listener)(JobEvent::Progress(JobProgress { id, rev, progress, stage, eta_ms }));
+                (inner.listener)(JobEvent::Progress(JobProgress { id, rev, progress, stage, eta_ms, frames }));
             })
         };
         let ctx = JobCtx { id, cancel: cancel.clone(), sink };
@@ -549,6 +561,7 @@ fn run_worker(inner: &Arc<Inner>, class: Class) {
                 }
             }
             e.info.eta_ms = None;
+            e.info.frames = None;
             e.info.finished_at = Some(now_ms());
             let info = e.info.clone();
             trim_finished(&mut st);
@@ -638,6 +651,30 @@ mod tests {
         ctx.report("Clip 1 of 2", None);
         ctx.report("Clip 2 of 2", Some(0.5));
         assert_eq!(*seen.lock(), [(400, PARTS), (0, 0), (PARTS / 2, PARTS)]);
+    }
+
+    #[test]
+    fn frames_read_are_told_while_they_are_read() {
+        let (r, rx) = runner(&[(Class::Media, 1)]);
+        let id = r.submit(spec("index", Class::Media), |ctx| {
+            let frames = FrameCount { done: 1200, total: Some(34_000), rate: Some(23.976), per_sec: None };
+            ctx.frames("Indexing frames", 0.03, frames);
+            ctx.progress("Creating poster", 0.96);
+            Ok(())
+        });
+        let mut told = Vec::new();
+        let info = loop {
+            match rx.recv_timeout(Duration::from_secs(10)).expect("job event") {
+                JobEvent::Progress(p) => told.push((p.stage.unwrap_or_default(), p.frames)),
+                JobEvent::Changed(i) if i.state.is_finished() => break i,
+                JobEvent::Changed(_) => {}
+            }
+        };
+        let read = told[0].1.expect("the frames read");
+        assert_eq!((told[0].0.as_str(), read.done, read.total), ("Indexing frames", 1200, Some(34_000)));
+        assert_eq!(read.per_sec, None, "too soon to tell how fast");
+        assert_eq!(told[1], ("Creating poster".to_owned(), None), "a stage reading no frames tells none");
+        assert_eq!((info.id, info.frames), (id, None));
     }
 
     #[test]
@@ -896,6 +933,7 @@ mod tests {
                 progress: None,
                 stage: None,
                 eta_ms: None,
+                frames: None,
                 error: None,
                 created_at: now_ms(),
                 finished_at: None,

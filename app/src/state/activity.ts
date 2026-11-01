@@ -44,7 +44,8 @@ export const useActivity = create<ActivityState>((set) => ({
     set((s) => {
       const j = s.jobs[p.id]
       if (!j || isFinished(j) || j.rev > p.rev) return s
-      return { jobs: { ...s.jobs, [p.id]: { ...j, progress: p.progress, stage: p.stage, etaMs: p.etaMs, rev: p.rev } } }
+      const next = { ...j, progress: p.progress, stage: p.stage, etaMs: p.etaMs, frames: p.frames ?? null, rev: p.rev }
+      return { jobs: { ...s.jobs, [p.id]: next } }
     }),
   clearFinished: () =>
     set((s) => {

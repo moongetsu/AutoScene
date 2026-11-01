@@ -16,5 +16,5 @@ pub use cancel::CancelToken;
 pub use error::{CoreError, CoreResult, io_message};
 pub use ids::*;
 pub use paths::AppPaths;
-pub use progress::{Progress, ProgressSink};
+pub use progress::{FrameCount, Progress, ProgressSink};
 pub use time::{FrameIdx, FrameIndex, FrameRange, Rational, Timecode};

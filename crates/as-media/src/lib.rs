@@ -17,7 +17,7 @@ pub mod tools;
 
 pub use caps::{Caps, CodecFamily, HwDecode, HwEncoder, Vendor};
 pub use error::{MediaError, MediaResult};
-pub use index::build_frame_index;
+pub use index::{IndexProgress, build_frame_index};
 pub use probe::{
     AudioStream, ExactAudio, ExactFormat, HdrKind, MediaInfo, SubtitleStream, VideoStream, hdr_metadata, probe,
     probe_exact, same_source,

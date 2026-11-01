@@ -41,6 +41,16 @@ describe("activity store", () => {
     expect(useActivity.getState().jobs.j1.progress).toBe(0.7)
   })
 
+  it("keeps the frames a job reads only while it tells them", () => {
+    const s = useActivity.getState()
+    s.upsert(job({ kind: "ingest", state: "running", rev: 1 }))
+    const frames = { done: 1200, total: 34_000, rate: 23.976, perSec: null }
+    s.progress({ id: "j1", rev: 2, progress: 0.03, stage: "Indexing frames", etaMs: null, frames })
+    expect(useActivity.getState().jobs.j1.frames).toEqual(frames)
+    s.progress({ id: "j1", rev: 3, progress: 0.96, stage: "Creating poster", etaMs: null, frames: null })
+    expect(useActivity.getState().jobs.j1.frames).toBeNull()
+  })
+
   it("merges a late snapshot without losing newer events", () => {
     const s = useActivity.getState()
     s.upsert(job({ id: "new", state: "running", createdAt: 5, rev: 9 }))

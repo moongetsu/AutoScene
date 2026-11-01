@@ -87,6 +87,13 @@ export const commands = {
 	mediaRelink: (projectId: ProjectId, mediaId: MediaId, path: string, force: boolean) => __TAURI_INVOKE<Relink>("media_relink", { projectId, mediaId, path, force }),
 	/**  Look for every missing episode of a project in `dir` and its folders. */
 	mediaRelinkFolder: (projectId: ProjectId, dir: string) => __TAURI_INVOKE<RelinkSummary>("media_relink_folder", { projectId, dir }),
+	/**
+	 *  Where the indexing of a media is now, as a picture: the keyframe at
+	 *  about the place it has read to, small, as a `data:` URL. `None` while it
+	 *  isn't reading its frames (or no picture came). It is decoded only when
+	 *  asked: the player asks every few seconds while it waits for the indexing.
+	 */
+	mediaIndexingStill: (projectId: ProjectId, mediaId: MediaId) => __TAURI_INVOKE<string | null>("media_indexing_still", { projectId, mediaId }),
 	/**  Build (or rebuild) the preview of a media that needs one. */
 	mediaPreparePreview: (projectId: ProjectId, mediaId: MediaId) => __TAURI_INVOKE<null>("media_prepare_preview", { projectId, mediaId }),
 	/**  Choose the audio track for playback and export (`None` = the file's default). */
@@ -706,6 +713,29 @@ export type FaceTrackItem = {
 	score: number | null,
 };
 
+/**  The frames of a media a stage has read, while it reads them one by one. */
+export type FrameCount = {
+	/**  Frames read so far: counted, not estimated. */
+	done: number,
+	/**
+	 *  About how many the media has, from its length and frame rate as its
+	 *  file states them (only reading every one counts them exactly);
+	 *  `None` when the file doesn't say.
+	 */
+	total: number | null,
+	/**
+	 *  The frames a second the media plays at, as its file states it: the
+	 *  frames read a second over it is how many times real time they go.
+	 */
+	rate: number | null,
+	/**
+	 *  Frames read a second over the last few seconds, measured by the
+	 *  [`ProgressSink`] (what the stage gives is replaced); `None` until
+	 *  they have gone for long enough to tell.
+	 */
+	perSec: number | null,
+};
+
 /**
  *  Everything the player needs to map `<video>` time to source frames.
  * 
@@ -781,6 +811,11 @@ export type JobInfo = {
 	progress: number | null,
 	stage: string | null,
 	etaMs: number | null,
+	/**
+	 *  While the job reads a media's frames one by one (indexing): how
+	 *  many so far, of about how many, and how fast.
+	 */
+	frames?: FrameCount | null,
 	error: string | null,
 	createdAt: number,
 	finishedAt: number | null,
@@ -812,6 +847,8 @@ export type JobProgress = {
 	progress: number | null,
 	stage: string | null,
 	etaMs: number | null,
+	/**  See [`JobInfo::frames`]. */
+	frames?: FrameCount | null,
 };
 
 /**  Throttled progress of a running job. */
