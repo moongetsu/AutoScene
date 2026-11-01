@@ -24,11 +24,10 @@ import { FrameClock } from "@/lib/frame-clock"
 import { formatDuration } from "@/lib/format"
 import { assetUrl } from "@/lib/media"
 import { copyText, reveal } from "@/lib/os"
-import { modKey } from "@/lib/platform"
 import { lanesOf, useCharacterMap } from "@/lib/presence"
 import { useCast, usePresence, useSegments } from "@/lib/queries"
 import { nextShotStart, prevShotStart, shotAt } from "@/lib/segments"
-import { PLAYER_SHORTCUTS, useShortcuts } from "@/lib/shortcuts"
+import { PLAYER_SHORTCUTS, bindingsOf, keysText, matches, sameKey, shortcutOf, useShortcutKeys, useShortcuts } from "@/lib/shortcuts"
 import { frameAtCount, parseTimecode, timecode, timecodeCount } from "@/lib/timecode"
 import { NO_MARKS, useMarks } from "@/state/marks"
 import { usePlayback } from "@/state/playback"
@@ -45,6 +44,9 @@ import { Transport } from "./Transport"
 import { usePlayer } from "./use-player"
 
 const NO_SEGMENTS: Segment[] = []
+/** What the shuttle's three keys do, in their order (`player.shuttle`). */
+const SHUTTLE_KEYS: ShuttleKey[] = ["j", "k", "l"]
+const SHUTTLE_STOP = 1
 
 /**
  * A playable episode: the picture in its dark room, the transport, the
@@ -127,12 +129,17 @@ export function ReadyPlayer({
     summary: `${m.label ? `${m.label} · ` : ""}${tc(start)} – ${tc(end - 1)} · ${formatDuration(seconds)} (${length} frames)`,
   }
   // One mark alone runs the clip to the episode's edge: say so before an
-  // export of most of an episode starts.
+  // export of most of an episode starts (with the key that marks the other).
+  const keys = useShortcutKeys()
+  const markWith = (slot: number, otherwise: string) => {
+    const k = keys("player.mark", slot)
+    return k.length > 0 ? `press ${keysText(k)}` : otherwise
+  }
   const oneSided =
     inFrame != null && outFrame == null
-      ? "Only an in point is marked, so the clip runs to the end of the episode. To end it sooner, close this and press O where it should stop."
+      ? `Only an in point is marked, so the clip runs to the end of the episode. To end it sooner, close this and ${markWith(1, "mark the out point")} where it should stop.`
       : outFrame != null && inFrame == null
-        ? "Only an out point is marked, so the clip starts at the beginning of the episode. To start it later, close this and press I where it should begin."
+        ? `Only an out point is marked, so the clip starts at the beginning of the episode. To start it later, close this and ${markWith(0, "mark the in point")} where it should begin.`
         : undefined
   const canExport = hasMarks && length > 0
   const openExport = () => {
@@ -187,15 +194,17 @@ export function ReadyPlayer({
     v.muted = muted
   }, [videoRef, volume, muted])
 
-  // K held down: J and L step single frames instead of shuttling.
+  // Stop (K) held down: backwards and forwards (J, L) step single frames
+  // instead of shuttling.
   const kHeld = useRef(false)
   useEffect(() => {
+    const stopKeys = () => bindingsOf(shortcutOf("player.shuttle"), SHUTTLE_STOP)
     const down = (e: KeyboardEvent) => {
-      // Not a chord (Ctrl/⌘+K): its key-up may never come while ⌘ is down.
-      if (e.key.toLowerCase() === "k" && !e.ctrlKey && !e.metaKey && !e.altKey) kHeld.current = true
+      // Not a chord (⌘K): its key-up may never come while ⌘ is down.
+      if (stopKeys().some((b) => !b.mod && matches(b, e))) kHeld.current = true
     }
     const up = (e: KeyboardEvent) => {
-      if (e.key.toLowerCase() === "k") kHeld.current = false
+      if (stopKeys().some((b) => sameKey(b, e))) kHeld.current = false
     }
     const reset = () => (kHeld.current = false)
     window.addEventListener("keydown", down)
@@ -210,32 +219,34 @@ export function ReadyPlayer({
 
   // The player's keys (PLAYER_SHORTCUTS). A held arrow keeps stepping; a
   // held key that toggles or marks acts once.
+  // Each handler gets which of its keys it was: the first is back / in /
+  // previous, the second forward / out / next.
   const once =
-    (run: (e: KeyboardEvent) => unknown) =>
-    (e: KeyboardEvent): void => {
-      if (!e.repeat) run(e)
+    (run: (e: KeyboardEvent, slot: number) => unknown) =>
+    (e: KeyboardEvent, slot: number): void => {
+      if (!e.repeat) run(e, slot)
     }
   useShortcuts(
     PLAYER_SHORTCUTS,
     {
       playPause: once(() => toggle()),
-      shuttle: (e) => {
-        const k = e.key.toLowerCase() as ShuttleKey
+      shuttle: (e, slot) => {
+        const k = SHUTTLE_KEYS[slot]
         if (k !== "k" && kHeld.current) return step(k === "j" ? -1 : 1)
         if (e.repeat) return
         shuttle(k)
       },
-      frame: (e) => step(e.key === "ArrowLeft" ? -1 : 1),
-      second: (e) => step(e.key === "ArrowLeft" ? -oneSecond : oneSecond),
-      shot: (e) => {
+      frame: (_, slot) => step(slot === 0 ? -1 : 1),
+      second: (_, slot) => step(slot === 0 ? -oneSecond : oneSecond),
+      shot: (_, slot) => {
         if (shots.length === 0) return false
         const f = store.get()
-        goShot(e.key === "ArrowUp" ? prevShotStart(shots, f) : nextShotStart(shots, f))
+        goShot(slot === 0 ? prevShotStart(shots, f) : nextShotStart(shots, f))
       },
-      ends: (e) => seek(e.key === "Home" ? 0 : last),
-      mark: once((e) => (e.key.toLowerCase() === "i" ? markIn() : markOut())),
-      goToMark: (e) => {
-        const to = e.key.toLowerCase() === "i" ? inFrame : outFrame
+      ends: (_, slot) => seek(slot === 0 ? 0 : last),
+      mark: once((_, slot) => (slot === 0 ? markIn() : markOut())),
+      goToMark: (_, slot) => {
+        const to = slot === 0 ? inFrame : outFrame
         if (to != null) seek(to)
       },
       markShot: once(() => markShot()),
@@ -257,28 +268,28 @@ export function ReadyPlayer({
   const playing = rate !== 0
   const playerMenu = (
     <>
-      <ContextMenuItem onSelect={toggle} shortcut={["Space"]}>
+      <ContextMenuItem onSelect={toggle} shortcut={keys("player.playPause")}>
         {playing ? <Pause /> : <Play />} {playing ? "Pause" : "Play"}
       </ContextMenuItem>
       <ContextMenuSeparator />
-      <ContextMenuItem onSelect={() => markIn()} shortcut={["I"]}>
+      <ContextMenuItem onSelect={() => markIn()} shortcut={keys("player.mark", 0)}>
         <ArrowLineRight /> Mark in
       </ContextMenuItem>
-      <ContextMenuItem onSelect={() => markOut()} shortcut={["O"]}>
+      <ContextMenuItem onSelect={() => markOut()} shortcut={keys("player.mark", 1)}>
         <ArrowLineLeft /> Mark out
       </ContextMenuItem>
       {shots.length > 0 && (
-        <ContextMenuItem onSelect={() => markShot()} shortcut={["X"]}>
+        <ContextMenuItem onSelect={() => markShot()} shortcut={keys("player.markShot")}>
           <FilmStrip /> Mark the shot as the clip
         </ContextMenuItem>
       )}
       {hasMarks && (
-        <ContextMenuItem onSelect={clear} shortcut={["Alt", "X"]}>
+        <ContextMenuItem onSelect={clear} shortcut={keys("player.clearMarks")}>
           <X /> Clear in and out
         </ContextMenuItem>
       )}
       <ContextMenuSeparator />
-      <ContextMenuItem disabled={!canExport} onSelect={openExport} shortcut={[modKey, "E"]}>
+      <ContextMenuItem disabled={!canExport} onSelect={openExport} shortcut={keys("player.export")}>
         <Scissors /> Export clip…
       </ContextMenuItem>
       <ContextMenuItem onSelect={copyTimecodes}>
@@ -289,12 +300,12 @@ export function ReadyPlayer({
           pause()
           setGotoOpen(true)
         }}
-        shortcut={[modKey, "G"]}
+        shortcut={keys("player.goTo")}
       >
         <Clock /> Go to a timecode…
       </ContextMenuItem>
       <ContextMenuSeparator />
-      <ContextMenuItem onSelect={toggleMute} shortcut={["M"]}>
+      <ContextMenuItem onSelect={toggleMute} shortcut={keys("player.mute")}>
         {muted ? <SpeakerHigh /> : <SpeakerSlash />} {muted ? "Unmute" : "Mute"}
       </ContextMenuItem>
       <ContextMenuItem onSelect={() => useUi.getState().toggleInspector()}>

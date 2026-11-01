@@ -38,6 +38,7 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::DynRuntime> {
             commands::system::clipboard_write,
             commands::system::clipboard_read,
             commands::system::open_logs_dir,
+            commands::system::menu_set_keys,
             commands::system::media_tools,
             commands::system::models,
             commands::library::projects_list,

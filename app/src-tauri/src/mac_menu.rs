@@ -6,6 +6,8 @@
 //! which has a handler for every id below). Predefined items
 //! (copy/paste/quit/…) are handled by AppKit and never produce an event.
 
+use std::collections::HashMap;
+
 use tauri::menu::{
     AboutMetadataBuilder, HELP_SUBMENU_ID, Menu, MenuBuilder, MenuEvent, MenuItemBuilder, SubmenuBuilder,
     WINDOW_SUBMENU_ID,
@@ -97,6 +99,24 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .build()?;
 
     MenuBuilder::new(app).items(&[&app_menu, &file_menu, &edit_menu, &view_menu, &window_menu, &help_menu]).build()
+}
+
+/// Give the items named in `keys` the person's accelerators (`""`: none).
+/// Settings → Shortcuts sends those of the items a shortcut shares a key with,
+/// and none while it records a key (or the menu would take it first).
+pub fn set_keys<R: Runtime>(app: &AppHandle<R>, keys: &HashMap<String, String>) -> tauri::Result<()> {
+    let Some(menu) = app.menu() else { return Ok(()) };
+    for top in menu.items()? {
+        let Some(sub) = top.as_submenu() else { continue };
+        for item in sub.items()? {
+            let Some(item) = item.as_menuitem() else { continue };
+            let id: &str = item.id().as_ref();
+            if let Some(accel) = keys.get(id) {
+                item.set_accelerator((!accel.is_empty()).then_some(accel))?;
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn on_event<R: Runtime>(app: &AppHandle<R>, event: MenuEvent) {

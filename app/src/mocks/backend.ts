@@ -679,6 +679,7 @@ const handlers: Record<string, Handler> = {
   },
   clipboard_read: () => mockClipboard,
   open_logs_dir: () => null,
+  menu_set_keys: () => null,
   media_tools: () => ({ ready: true, version: "8.0.1-full_build-www.gyan.dev", path: String.raw`C:\ffmpeg\bin\ffmpeg.exe`, error: null }),
   models: () => MODELS,
   settings_get: () => settings,

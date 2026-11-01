@@ -24,3 +24,6 @@ export async function detectMaterial(): Promise<"mica" | "vibrancy" | null> {
 
 /** Primary modifier label for shortcuts: ⌘ on macOS, Ctrl elsewhere. */
 export const modKey = isMac ? "⌘" : "Ctrl"
+/** The other modifiers' labels, the way the platform writes them. */
+export const shiftKey = isMac ? "⇧" : "Shift"
+export const altKey = isMac ? "⌥" : "Alt"

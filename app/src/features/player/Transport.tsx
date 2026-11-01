@@ -18,7 +18,7 @@ import { ContextArea } from "@/components/ui/context-area"
 import { ContextMenuItem, ContextMenuRadioGroup, ContextMenuRadioItem, ContextMenuSeparator } from "@/components/ui/context-menu"
 import { Slider } from "@/components/ui/slider"
 import { Tooltip } from "@/components/ui/tooltip"
-import { modKey } from "@/lib/platform"
+import { useShortcutKeys } from "@/lib/shortcuts"
 import { cn } from "@/lib/utils"
 import { type FrameStore, useFrame } from "./frame-store"
 import { rateLabel } from "./shuttle"
@@ -74,6 +74,7 @@ export function Transport({
   onVolume: (v: number) => void
   onToggleMute: () => void
 }) {
+  const keys = useShortcutKeys()
   const playing = rate !== 0
   const shuttle = rateLabel(rate)
   return (
@@ -88,13 +89,13 @@ export function Transport({
       </div>
 
       <div className="flex items-center gap-1">
-        <TransportButton label="First frame" keys={["Home"]} onClick={() => onSeek(0)}>
+        <TransportButton label="First frame" keys={keys("player.ends", 0)} onClick={() => onSeek(0)}>
           <SkipBack weight="fill" />
         </TransportButton>
-        <TransportButton label="Previous frame" keys={["←"]} onClick={() => onStep(-1)}>
+        <TransportButton label="Previous frame" keys={keys("player.frame", 0)} onClick={() => onStep(-1)}>
           <CaretLineLeft weight="bold" />
         </TransportButton>
-        <Tooltip label={playing ? "Pause" : "Play"} shortcut={["Space"]}>
+        <Tooltip label={playing ? "Pause" : "Play"} shortcut={keys("player.playPause")}>
           <button
             onClick={onToggle}
             aria-label={playing ? "Pause" : "Play"}
@@ -103,26 +104,26 @@ export function Transport({
             {playing ? <Pause weight="fill" /> : <Play weight="fill" className="translate-x-px" />}
           </button>
         </Tooltip>
-        <TransportButton label="Next frame" keys={["→"]} onClick={() => onStep(1)}>
+        <TransportButton label="Next frame" keys={keys("player.frame", 1)} onClick={() => onStep(1)}>
           <CaretLineRight weight="bold" />
         </TransportButton>
-        <TransportButton label="Last frame" keys={["End"]} onClick={() => onSeek(last)}>
+        <TransportButton label="Last frame" keys={keys("player.ends", 1)} onClick={() => onSeek(last)}>
           <SkipForward weight="fill" />
         </TransportButton>
       </div>
 
       <div className="flex min-w-0 items-center justify-end gap-2">
-        <MarkChip label="In" value={inFrame} tc={tc} onMark={onMarkIn} onGo={onSeek} keyHint="I" />
-        <MarkChip label="Out" value={outFrame} tc={tc} onMark={onMarkOut} onGo={onSeek} keyHint="O" />
+        <MarkChip label="In" value={inFrame} tc={tc} onMark={onMarkIn} onGo={onSeek} slot={0} />
+        <MarkChip label="Out" value={outFrame} tc={tc} onMark={onMarkOut} onGo={onSeek} slot={1} />
         {showExport && (
-          <Tooltip label="Export clip" shortcut={[modKey, "E"]}>
+          <Tooltip label="Export clip" shortcut={keys("player.export")}>
             <Button size="icon" variant="primary" aria-label="Export clip" disabled={!canExport} onClick={onExport}>
               <Scissors weight="bold" />
             </Button>
           </Tooltip>
         )}
         <div className="ml-1 hidden items-center gap-1.5 @3xl:flex">
-          <Tooltip label={muted ? "Unmute" : "Mute"} shortcut={["M"]}>
+          <Tooltip label={muted ? "Unmute" : "Mute"} shortcut={keys("player.mute")}>
             <button
               onClick={onToggleMute}
               aria-label={muted ? "Unmute" : "Mute"}
@@ -165,6 +166,7 @@ function FrameReadout({
   onGoto: (open: boolean) => void
   onSeek: (f: number) => void
 }) {
+  const keys = useShortcutKeys()
   const frame = useFrame(store)
   const { mode, setMode } = useTimecodeMode()
   const field = useRef<HTMLInputElement>(null)
@@ -244,13 +246,13 @@ function FrameReadout({
                 <ContextMenuRadioItem value="percent">Percentage</ContextMenuRadioItem>
               </ContextMenuRadioGroup>
               <ContextMenuSeparator />
-              <ContextMenuItem onSelect={() => onGoto(true)} shortcut={[modKey, "G"]}>
+              <ContextMenuItem onSelect={() => onGoto(true)} shortcut={keys("player.goTo")}>
                 Go to timecode or frame…
               </ContextMenuItem>
             </>
           }
         >
-          <Tooltip label="Go to timecode or frame" hint="Right-click to show the time left, frames or percent" shortcut={[modKey, "G"]}>
+          <Tooltip label="Go to timecode or frame" hint="Right-click to show the time left, frames or percent" shortcut={keys("player.goTo")}>
             <button
               onClick={() => onGoto(true)}
               aria-label={`${readoutLabel(mode)}: ${formatReadout(frame, mode)}`}
@@ -303,23 +305,25 @@ function TransportButton({
 /** In or out point in the transport row: gold once set. */
 function MarkChip({
   label,
-  keyHint,
+  slot,
   value,
   tc,
   onMark,
   onGo,
 }: {
   label: string
-  keyHint: string
+  /** In (0) or out (1). */
+  slot: number
   value: number | null
   tc: (f: number) => string
   onMark: () => void
   onGo: (f: number) => void
 }) {
+  const keys = useShortcutKeys()
   return (
     <Tooltip
       label={value != null ? `Go to ${label.toLowerCase()} point` : `Mark ${label.toLowerCase()}`}
-      shortcut={value != null ? ["Shift", keyHint] : [keyHint]}
+      shortcut={value != null ? keys("player.goToMark", slot) : keys("player.mark", slot)}
     >
       <button
         onClick={value != null ? () => onGo(value) : onMark}

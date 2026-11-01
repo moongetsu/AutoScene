@@ -5,7 +5,7 @@ import { ProgressRing } from "@/components/ui/progress"
 import { Tooltip } from "@/components/ui/tooltip"
 import { plural } from "@/features/cast/cast"
 import { formatBytes, formatDuration, formatPercent } from "@/lib/format"
-import { modKey } from "@/lib/platform"
+import { useShortcutKeys } from "@/lib/shortcuts"
 
 /**
  * The pack at a glance, floating over the shots: how many, how long, about
@@ -39,6 +39,7 @@ export function PackFooter({
   /** Show the export's progress (in Activity). */
   onShowExport: () => void
 }) {
+  const keys = useShortcutKeys()
   return (
     <div className="glass-strong absolute bottom-6 left-1/2 z-30 flex -translate-x-1/2 animate-pop-in items-center gap-1 rounded-full py-1.5 pr-1.5 pl-5 whitespace-nowrap">
       <span className="text-md font-semibold text-fg-1">{plural(totals.clips, "shot")}</span>
@@ -67,7 +68,7 @@ export function PackFooter({
           </Button>
         </Tooltip>
       ) : (
-        <Tooltip label="Export the pack" shortcut={[modKey, "E"]}>
+        <Tooltip label="Export the pack" shortcut={keys("pack.export")}>
           <Button size="md" variant="primary" disabled={!canExport} onClick={onExport}>
             <Package weight="bold" /> Export
           </Button>

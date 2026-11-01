@@ -22,7 +22,7 @@ import { assetUrl } from "@/lib/media"
 import { copyText } from "@/lib/os"
 import { type Lane, nextAppearance } from "@/lib/presence"
 import { segmentIndexAt, shotNumbers } from "@/lib/segments"
-import { PLAYER_SHORTCUTS, useShortcuts } from "@/lib/shortcuts"
+import { PLAYER_SHORTCUTS, useShortcutKeys, useShortcuts } from "@/lib/shortcuts"
 import { cn } from "@/lib/utils"
 import { type FrameStore, useFrame, useFrameSelector } from "../frame-store"
 import { SEGMENT_LABEL } from "../labels"
@@ -210,15 +210,16 @@ export function Timeline({
   )
 
   const zoomed = view.span < length - 1e-9
+  const keys = useShortcutKeys()
   const zoomMenu = (
     <>
-      <ContextMenuItem disabled={view.span <= minSpan + 1e-9} onSelect={() => zoom(ZOOM_STEP)} shortcut={["+"]}>
+      <ContextMenuItem disabled={view.span <= minSpan + 1e-9} onSelect={() => zoom(ZOOM_STEP)} shortcut={keys("player.zoomIn")}>
         <MagnifyingGlassPlus /> Zoom in
       </ContextMenuItem>
-      <ContextMenuItem disabled={!zoomed} onSelect={() => zoom(1 / ZOOM_STEP)} shortcut={["−"]}>
+      <ContextMenuItem disabled={!zoomed} onSelect={() => zoom(1 / ZOOM_STEP)} shortcut={keys("player.zoomOut")}>
         <MagnifyingGlassMinus /> Zoom out
       </ContextMenuItem>
-      <ContextMenuItem disabled={!zoomed} onSelect={() => setView(fit(length))} shortcut={["Shift", "Z"]}>
+      <ContextMenuItem disabled={!zoomed} onSelect={() => setView(fit(length))} shortcut={keys("player.zoomFit")}>
         <ArrowsOutLineHorizontal /> The whole episode
       </ContextMenuItem>
     </>
@@ -232,13 +233,13 @@ export function Timeline({
         <Row
           label={
             <span className="flex items-center gap-0.5">
-              <ZoomButton label="Zoom out" keys={["−"]} onClick={() => zoom(1 / ZOOM_STEP)} disabled={!zoomed}>
+              <ZoomButton label="Zoom out" keys={keys("player.zoomOut")} onClick={() => zoom(1 / ZOOM_STEP)} disabled={!zoomed}>
                 <MagnifyingGlassMinus />
               </ZoomButton>
-              <ZoomButton label="Zoom in" keys={["+"]} onClick={() => zoom(ZOOM_STEP)} disabled={view.span <= minSpan + 1e-9}>
+              <ZoomButton label="Zoom in" keys={keys("player.zoomIn")} onClick={() => zoom(ZOOM_STEP)} disabled={view.span <= minSpan + 1e-9}>
                 <MagnifyingGlassPlus />
               </ZoomButton>
-              <ZoomButton label="The whole episode" keys={["Shift", "Z"]} onClick={() => setView(fit(length))} disabled={!zoomed}>
+              <ZoomButton label="The whole episode" keys={keys("player.zoomFit")} onClick={() => setView(fit(length))} disabled={!zoomed}>
                 <ArrowsOutLineHorizontal />
               </ZoomButton>
             </span>

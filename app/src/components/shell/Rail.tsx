@@ -28,7 +28,7 @@ import { NewProjectItems, ProjectItems } from "@/features/library/project-action
 import { useAppActions } from "@/lib/actions"
 import { commands } from "@/lib/ipc"
 import { useProjects } from "@/lib/queries"
-import { shortcutKeys } from "@/lib/shortcuts"
+import { useShortcutKeys } from "@/lib/shortcuts"
 import { cn } from "@/lib/utils"
 import { useActiveCount, useActiveProgress, useActivity, useProjectIndexProgress, useProjectIndexing } from "@/state/activity"
 import { useNewProject } from "@/state/new-project"
@@ -43,6 +43,7 @@ const RECENT = 7
  * search, background work and settings.
  */
 export function Rail() {
+  const keys = useShortcutKeys()
   const actions = useAppActions()
   const path = useRouterState({ select: (s) => s.location.pathname })
   const { data: projects } = useProjects()
@@ -74,7 +75,7 @@ export function Rail() {
         icon={<SquaresFour />}
         label="Library"
         active={path === "/"}
-        shortcut={shortcutKeys("library")}
+        shortcut={keys("global.library")}
         menu={<LibraryItems />}
       />
 
@@ -90,7 +91,7 @@ export function Rail() {
             onDelete={() => setDeleting(p)}
           />
         ))}
-        <Tooltip label="New project" shortcut={shortcutKeys("newProject")} side="right">
+        <Tooltip label="New project" shortcut={keys("global.newProject")} side="right">
           <ContextArea tail={false} menu={<NewProjectItems kit={contextKit} />}>
             <button
               onClick={() => useNewProject.getState().show()}
@@ -108,9 +109,9 @@ export function Rail() {
           icon={<MagnifyingGlass />}
           label="Search"
           onClick={actions.openPalette}
-          shortcut={shortcutKeys("palette")}
+          shortcut={keys("global.palette")}
           menu={
-            <ContextMenuItem onSelect={actions.openPalette} shortcut={shortcutKeys("palette")}>
+            <ContextMenuItem onSelect={actions.openPalette} shortcut={keys("global.palette")}>
               <MagnifyingGlass /> Command palette…
             </ContextMenuItem>
           }
@@ -121,7 +122,7 @@ export function Rail() {
           icon={<GearSix />}
           label="Settings"
           active={path.startsWith("/settings")}
-          shortcut={shortcutKeys("settings")}
+          shortcut={keys("global.settings")}
           menu={
             <>
               <ContextMenuItem onSelect={() => actions.goSettings("general")}>
@@ -153,13 +154,14 @@ export function Rail() {
 
 /** The library, and a new project: what the mark and the Library tile offer. */
 function LibraryItems() {
+  const keys = useShortcutKeys()
   const actions = useAppActions()
   return (
     <>
-      <ContextMenuItem onSelect={actions.goLibrary} shortcut={shortcutKeys("library")}>
+      <ContextMenuItem onSelect={actions.goLibrary} shortcut={keys("global.library")}>
         <SquaresFour /> Library
       </ContextMenuItem>
-      <ContextMenuItem onSelect={actions.newProject} shortcut={shortcutKeys("newProject")}>
+      <ContextMenuItem onSelect={actions.newProject} shortcut={keys("global.newProject")}>
         <Plus /> New project…
       </ContextMenuItem>
     </>
@@ -251,6 +253,7 @@ function RailButton({
 
 /** Background work: a ring fills as it runs; the count rides on the icon. */
 function ActivityButton() {
+  const keys = useShortcutKeys()
   const actions = useAppActions()
   const open = useUi((s) => s.activityOpen)
   const active = useActiveCount()
@@ -260,11 +263,11 @@ function ActivityButton() {
       icon={<Queue className={cn(active > 0 && "text-accent")} />}
       label="Activity"
       onClick={actions.toggleActivity}
-      shortcut={shortcutKeys("activity")}
+      shortcut={keys("global.activity")}
       pressed={open}
       menu={
         <>
-          <ContextMenuItem onSelect={actions.toggleActivity} shortcut={shortcutKeys("activity")}>
+          <ContextMenuItem onSelect={actions.toggleActivity} shortcut={keys("global.activity")}>
             <Queue /> {open ? "Hide activity" : "Show activity"}
           </ContextMenuItem>
           <ContextMenuItem

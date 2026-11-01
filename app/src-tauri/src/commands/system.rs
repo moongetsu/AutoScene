@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use as_api::{AppInfo, MediaToolsStatus, ModelInfo, Platform};
@@ -139,6 +140,22 @@ pub fn open_logs_dir() -> AppResult<()> {
         log::warn!("opening the logs folder: {e}");
         AppError::new(ErrorCode::Io, "The logs folder couldn't be opened.")
     })
+}
+
+/// Put the person's keys (Settings → Shortcuts) on the macOS menu, which
+/// answers them there before the page sees them: `keys` maps a menu item's id
+/// to its accelerator, `""` for none. Elsewhere there is no menu.
+#[tauri::command]
+#[specta::specta]
+pub fn menu_set_keys(app: AppHandle, keys: HashMap<String, String>) -> AppResult<()> {
+    #[cfg(target_os = "macos")]
+    crate::mac_menu::set_keys(&app, &keys).map_err(|e| {
+        log::warn!("setting the menu's keys: {e}");
+        AppError::internal("The menu's keys couldn't be changed.")
+    })?;
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, keys);
+    Ok(())
 }
 
 #[cfg(test)]

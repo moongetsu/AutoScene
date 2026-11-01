@@ -5,6 +5,7 @@ import { RelinkDialog } from "@/features/project/RelinkDialog"
 import { useGlobalBindings } from "@/lib/actions"
 import { installBrowserGuards } from "@/lib/browser-guards"
 import { startEventBridge } from "@/lib/events"
+import { useKeymapSync } from "@/lib/keymap"
 import { useLayerSafetyNet } from "@/lib/layers"
 import { isTauri, isWindows } from "@/lib/platform"
 import { startUpdateSchedule } from "@/state/updates"
@@ -26,6 +27,7 @@ import { WindowTitle } from "./WindowTitle"
  */
 export function AppShell() {
   useGlobalBindings()
+  useKeymapSync()
   useLayerSafetyNet()
   useEffect(() => startUpdateSchedule(), [])
   useEffect(() => startEventBridge(), [])

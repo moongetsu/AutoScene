@@ -11,6 +11,7 @@ import { formatPercent } from "@/lib/format"
 import { commands, errorMessage } from "@/lib/ipc"
 import { copyText } from "@/lib/os"
 import { nextShotStart, prevShotStart, segmentIndexAt, shotNumbers } from "@/lib/segments"
+import { useShortcutKeys } from "@/lib/shortcuts"
 import { useMediaJob } from "@/state/activity"
 import { type FrameStore, useFrameSelector } from "../frame-store"
 import { SEGMENT_LABEL } from "../labels"
@@ -34,6 +35,7 @@ export function ShotsPanel({
   onMark: () => void
   onGo: (f: number) => void
 }) {
+  const keys = useShortcutKeys()
   const job = useMediaJob(m.id, "analyze")
   const numbers = useMemo(() => shotNumbers(segments), [segments])
   const total = numbers.reduce((n, x) => (x >= 0 ? n + 1 : n), 0)
@@ -52,14 +54,14 @@ export function ShotsPanel({
     m.shots === "ready" && seg ? (
       <>
         {seg.kind === "shot" && (
-          <ContextMenuItem onSelect={onMark} shortcut={["X"]}>
+          <ContextMenuItem onSelect={onMark} shortcut={keys("player.markShot")}>
             <FilmStrip /> Mark the shot as the clip
           </ContextMenuItem>
         )}
-        <ContextMenuItem onSelect={() => go(prevShotStart(segments, store.get()))} shortcut={["↑"]}>
+        <ContextMenuItem onSelect={() => go(prevShotStart(segments, store.get()))} shortcut={keys("player.shot", 0)}>
           <CaretLeft /> Previous shot
         </ContextMenuItem>
-        <ContextMenuItem onSelect={() => go(nextShotStart(segments, store.get()))} shortcut={["↓"]}>
+        <ContextMenuItem onSelect={() => go(nextShotStart(segments, store.get()))} shortcut={keys("player.shot", 1)}>
           <CaretRight /> Next shot
         </ContextMenuItem>
         <ContextMenuItem onSelect={() => void copyText(`${tc(seg.start)} - ${tc(seg.end - 1)}`, "timecodes")}>
@@ -90,9 +92,9 @@ export function ShotsPanel({
           </p>
           <div className="mt-3 flex gap-2">
             <Button size="sm" variant="secondary" className="flex-1" onClick={onMark}>
-              Mark shot <Kbd keys={["X"]} className="ml-auto" />
+              Mark shot <Kbd keys={keys("player.markShot")} className="ml-auto" />
             </Button>
-            <Tooltip label="Previous shot" shortcut={["↑"]}>
+            <Tooltip label="Previous shot" shortcut={keys("player.shot", 0)}>
               <Button
                 size="icon-sm"
                 variant="ghost"
@@ -102,7 +104,7 @@ export function ShotsPanel({
                 <CaretLeft />
               </Button>
             </Tooltip>
-            <Tooltip label="Next shot" shortcut={["↓"]}>
+            <Tooltip label="Next shot" shortcut={keys("player.shot", 1)}>
               <Button size="icon-sm" variant="ghost" aria-label="Next shot" onClick={() => go(nextShotStart(segments, store.get()))}>
                 <CaretRight />
               </Button>

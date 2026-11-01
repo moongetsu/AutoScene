@@ -66,7 +66,7 @@ function TipContent({
       >
         <span className="flex items-center gap-2">
           <span>{label}</span>
-          {shortcut && <Kbd keys={shortcut} />}
+          {shortcut && shortcut.length > 0 && <Kbd keys={shortcut} />}
         </span>
         {hint && <span className="mt-0.5 block text-2xs font-normal text-fg-3">{hint}</span>}
       </T.Content>

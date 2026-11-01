@@ -26,7 +26,7 @@ import { type Area, type MenuContent, areasOf } from "@/lib/context-areas"
 import { layerOpen } from "@/lib/layers"
 import { copyText } from "@/lib/os"
 import { modKey } from "@/lib/platform"
-import { shortcutKeys } from "@/lib/shortcuts"
+import { useShortcutKeys } from "@/lib/shortcuts"
 import { textFieldAt } from "@/lib/text-edit"
 import { useTextMenu } from "@/state/text-menu"
 import { useUi } from "@/state/ui"
@@ -188,13 +188,14 @@ function AreaItems({ area }: { area: Area }) {
 
 /** Under an element's own actions. */
 export function ShortAppItems() {
+  const keys = useShortcutKeys()
   const actions = useAppActions()
   return (
     <>
-      <ContextMenuItem onSelect={actions.openPalette} shortcut={shortcutKeys("palette")}>
+      <ContextMenuItem onSelect={actions.openPalette} shortcut={keys("global.palette")}>
         <MagnifyingGlass /> Command palette…
       </ContextMenuItem>
-      <ContextMenuItem onSelect={() => actions.goSettings("general")} shortcut={shortcutKeys("settings")}>
+      <ContextMenuItem onSelect={() => actions.goSettings("general")} shortcut={keys("global.settings")}>
         <GearSix /> Settings
       </ContextMenuItem>
     </>
@@ -203,6 +204,7 @@ export function ShortAppItems() {
 
 /** On a page's empty space, under the page's own actions. */
 export function FullAppItems() {
+  const keys = useShortcutKeys()
   const actions = useAppActions()
   const canGoBack = useCanGoBack()
   const railHidden = useUi((s) => s.sidebarCollapsed)
@@ -211,25 +213,25 @@ export function FullAppItems() {
       <ContextMenuItem disabled={!canGoBack} onSelect={() => window.history.back()}>
         <ArrowLeft /> Back
       </ContextMenuItem>
-      <ContextMenuItem onSelect={actions.openPalette} shortcut={shortcutKeys("palette")}>
+      <ContextMenuItem onSelect={actions.openPalette} shortcut={keys("global.palette")}>
         <MagnifyingGlass /> Command palette…
       </ContextMenuItem>
-      <ContextMenuItem onSelect={actions.newProject} shortcut={shortcutKeys("newProject")}>
+      <ContextMenuItem onSelect={actions.newProject} shortcut={keys("global.newProject")}>
         <Plus /> New project…
       </ContextMenuItem>
-      <ContextMenuItem onSelect={actions.goLibrary} shortcut={shortcutKeys("library")}>
+      <ContextMenuItem onSelect={actions.goLibrary} shortcut={keys("global.library")}>
         <SquaresFour /> Library
       </ContextMenuItem>
-      <ContextMenuItem onSelect={actions.toggleActivity} shortcut={shortcutKeys("activity")}>
+      <ContextMenuItem onSelect={actions.toggleActivity} shortcut={keys("global.activity")}>
         <Queue /> Activity
       </ContextMenuItem>
-      <ContextMenuItem onSelect={actions.toggleSidebar} shortcut={shortcutKeys("sidebar")}>
+      <ContextMenuItem onSelect={actions.toggleSidebar} shortcut={keys("global.sidebar")}>
         <SidebarSimple /> {railHidden ? "Show the rail" : "Hide the rail"}
       </ContextMenuItem>
       <ContextMenuItem onSelect={() => actions.goSettings("shortcuts")}>
         <Keyboard /> Keyboard shortcuts
       </ContextMenuItem>
-      <ContextMenuItem onSelect={() => actions.goSettings("general")} shortcut={shortcutKeys("settings")}>
+      <ContextMenuItem onSelect={() => actions.goSettings("general")} shortcut={keys("global.settings")}>
         <GearSix /> Settings
       </ContextMenuItem>
       <ContextMenuItem onSelect={() => window.location.reload()}>

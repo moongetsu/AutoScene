@@ -140,6 +140,12 @@ Rules:
   and scrolls with the wheel; zoomed in, a thin overview of the episode shows the part in view. J/K/L shuttle
   like an editing suite (a gold chip shows the speed). Only the timecode, the playhead and the glow follow every
   video frame; shots and lanes are drawn on canvases.
+- **Settings → Shortcuts:** the keymap first — Keys like in AutoScene · Premiere Pro · DaVinci Resolve as a pill
+  (a card under each option lists where its keys differ) and Reset all — then every shortcut by place. A click on
+  a key listens for the new one (a gold pill, held modifiers shown, Esc stops); a key another shortcut in reach
+  had is taken from it (a toast says so, with Undo), one that can't be a shortcut there says why in red. Keys the
+  person chose are gold, with a reset beside them. Every tooltip, menu entry and the player's Keys card shows the
+  keys as set (`lib/shortcuts.ts`); on macOS the menu bar gets them too.
 
 ## Copy
 

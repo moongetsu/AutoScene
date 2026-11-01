@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button"
 import { ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-menu"
 import { Kbd } from "@/components/ui/kbd"
 import { Tooltip } from "@/components/ui/tooltip"
-import { modKey } from "@/lib/platform"
+import { keysText, useShortcutKeys } from "@/lib/shortcuts"
 import { cn } from "@/lib/utils"
 import { Card } from "./Card"
 
@@ -35,32 +35,34 @@ export function ClipCard({
   /** Copy the clip's in and out. */
   onCopy: () => void
 }) {
+  const keys = useShortcutKeys()
+  const shotKey = keys("player.markShot")
   const hasMarks = inFrame != null || outFrame != null
   const menu = (
     <>
-      <ContextMenuItem onSelect={onMarkIn} shortcut={["I"]}>
+      <ContextMenuItem onSelect={onMarkIn} shortcut={keys("player.mark", 0)}>
         <ArrowLineRight /> Mark in
       </ContextMenuItem>
-      <ContextMenuItem onSelect={onMarkOut} shortcut={["O"]}>
+      <ContextMenuItem onSelect={onMarkOut} shortcut={keys("player.mark", 1)}>
         <ArrowLineLeft /> Mark out
       </ContextMenuItem>
       {inFrame != null && (
-        <ContextMenuItem onSelect={() => onGo(inFrame)} shortcut={["Shift", "I"]}>
+        <ContextMenuItem onSelect={() => onGo(inFrame)} shortcut={keys("player.goToMark", 0)}>
           <Crosshair /> Go to the in point
         </ContextMenuItem>
       )}
       {outFrame != null && (
-        <ContextMenuItem onSelect={() => onGo(outFrame)} shortcut={["Shift", "O"]}>
+        <ContextMenuItem onSelect={() => onGo(outFrame)} shortcut={keys("player.goToMark", 1)}>
           <Crosshair /> Go to the out point
         </ContextMenuItem>
       )}
       {hasMarks && (
-        <ContextMenuItem onSelect={onClear} shortcut={["Alt", "X"]}>
+        <ContextMenuItem onSelect={onClear} shortcut={keys("player.clearMarks")}>
           <X /> Clear in and out
         </ContextMenuItem>
       )}
       <ContextMenuSeparator />
-      <ContextMenuItem disabled={!canExport} onSelect={onExport} shortcut={[modKey, "E"]}>
+      <ContextMenuItem disabled={!canExport} onSelect={onExport} shortcut={keys("player.export")}>
         <Scissors /> Export clip…
       </ContextMenuItem>
       {hasMarks && (
@@ -76,7 +78,7 @@ export function ClipCard({
       menu={menu}
       action={
         hasMarks && (
-          <Tooltip label="Clear in and out" shortcut={["Alt", "X"]}>
+          <Tooltip label="Clear in and out" shortcut={keys("player.clearMarks")}>
             <button
               onClick={onClear}
               aria-label="Clear in and out"
@@ -89,8 +91,8 @@ export function ClipCard({
       }
     >
       <div className="grid grid-cols-2 gap-2">
-        <MarkTile label="In" keyHint="I" value={inFrame} tc={tc} onMark={onMarkIn} onGo={onGo} />
-        <MarkTile label="Out" keyHint="O" value={outFrame} tc={tc} onMark={onMarkOut} onGo={onGo} />
+        <MarkTile label="In" slot={0} value={inFrame} tc={tc} onMark={onMarkIn} onGo={onGo} />
+        <MarkTile label="Out" slot={1} value={outFrame} tc={tc} onMark={onMarkOut} onGo={onGo} />
       </div>
       <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
         <dt className="text-fg-3">Duration</dt>
@@ -100,9 +102,13 @@ export function ClipCard({
       </dl>
       <Button variant="primary" size="lg" className="mt-4 w-full" disabled={!canExport} onClick={onExport}>
         <Scissors weight="bold" /> Export clip
-        <Kbd keys={[modKey, "E"]} className="ml-auto" />
+        <Kbd keys={keys("player.export")} className="ml-auto" />
       </Button>
-      {!hasMarks && <p className="mt-2.5 text-center text-xs text-fg-3">Mark an in or out point, or a whole shot (X).</p>}
+      {!hasMarks && (
+        <p className="mt-2.5 text-center text-xs text-fg-3">
+          Mark an in or out point, or a whole shot{shotKey.length > 0 && ` (${keysText(shotKey)})`}.
+        </p>
+      )}
     </Card>
   )
 }
@@ -110,19 +116,21 @@ export function ClipCard({
 /** In or out point in the details panel: set it, or go to it. */
 function MarkTile({
   label,
-  keyHint,
+  slot,
   value,
   tc,
   onMark,
   onGo,
 }: {
   label: string
-  keyHint: string
+  /** In (0) or out (1). */
+  slot: number
   value: number | null
   tc: (f: number) => string
   onMark: () => void
   onGo: (f: number) => void
 }) {
+  const keys = useShortcutKeys()
   return (
     <div
       className={cn(
@@ -132,7 +140,7 @@ function MarkTile({
     >
       <div className="flex items-center justify-between">
         <span className={cn("text-xs font-semibold", value != null ? "text-accent" : "text-fg-3")}>{label}</span>
-        <Kbd keys={[keyHint]} />
+        <Kbd keys={keys("player.mark", slot)} />
       </div>
       {value != null ? (
         <Tooltip label="Go to this frame" side="left">

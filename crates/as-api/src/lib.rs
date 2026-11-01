@@ -2,6 +2,8 @@
 //! `specta::Type`, and `app/src/bindings.ts` is generated from it — the UI
 //! never hand-writes a backend type.
 
+use std::collections::BTreeMap;
+
 use as_core::{CharacterId, ExportId, FrameIdx, JobId, MediaId, ProjectId, Rational};
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -102,6 +104,37 @@ pub struct AppSettings {
     /// sent. Off by default; switching it off deletes the pictures kept.
     #[serde(default)]
     pub anilist: bool,
+    /// The keyboard shortcuts as the person set them (Settings → Shortcuts).
+    #[serde(default)]
+    pub shortcuts: Shortcuts,
+}
+
+/// The keys the person chose: an editor's keys to start from, and their own
+/// changes on top. The UI owns what the names mean (`app/src/lib/shortcuts.ts`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct Shortcuts {
+    /// `premiere`, `resolve`, or `""` for AutoScene's own keys.
+    #[serde(default)]
+    pub preset: String,
+    /// Keys changed on top of the preset, by `<scope>.<shortcut>.<n>`
+    /// (`player.frame.1` is the next frame); an empty list leaves it without a key.
+    #[serde(default)]
+    pub keys: BTreeMap<String, Vec<KeyBinding>>,
+}
+
+/// A key press that triggers a shortcut: `KeyboardEvent.key` in lower case
+/// (a digit stands for the key that types it on a US layout) and the
+/// modifiers; `mod` is Ctrl (⌘ on macOS).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct KeyBinding {
+    pub key: String,
+    #[serde(rename = "mod", default)]
+    pub command: bool,
+    #[serde(default)]
+    pub shift: bool,
+    #[serde(default)]
+    pub alt: bool,
 }
 
 // ---------------------------------------------------------------------------

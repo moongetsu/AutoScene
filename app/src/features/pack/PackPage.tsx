@@ -1,4 +1,4 @@
-import { type ReactNode, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { Link, useNavigate, useParams } from "@tanstack/react-router"
 import { toast } from "sonner"
 import { ArrowCounterClockwise, ArrowLeft, Package, User, Users } from "@/components/icons"
@@ -20,10 +20,11 @@ import { TopBar } from "@/components/ui/topbar"
 import { VirtualGrid } from "@/components/ui/virtual-grid"
 import { castEdit, plural } from "@/features/cast/cast"
 import { ProjectLoadError } from "@/features/project/ProjectLoadError"
+import { EXPORT_REQUEST } from "@/lib/actions"
 import { shortFormatName } from "@/lib/format"
+import { exportWithMenu } from "@/lib/keymap"
 import { firstFailure, useCast, useMediaList, usePresets, useSettings } from "@/lib/queries"
-import { modKey } from "@/lib/platform"
-import { PACK_SHORTCUTS, useShortcuts } from "@/lib/shortcuts"
+import { PACK_SHORTCUTS, useShortcutKeys, useShortcuts } from "@/lib/shortcuts"
 import { type BodyVerdict } from "@/features/shots/shots"
 import { useUi } from "@/state/ui"
 import { PackCard } from "./PackCard"
@@ -101,6 +102,7 @@ function Builder({
   pack: ReturnType<typeof usePack>
   toolbar: ReactNode
 }) {
+  const keys = useShortcutKeys()
   const navigate = useNavigate()
   const { data: settings } = useSettings()
   const { data: presets } = usePresets()
@@ -118,6 +120,17 @@ function Builder({
   const format = presets?.find((p) => p.id === settings?.exportPresetId)?.name
 
   useShortcuts(PACK_SHORTCUTS, { export: () => (canExport ? setExportOpen(true) : false) })
+  // On macOS the menu's Export item exports the pack while it is open, with
+  // the pack's key, and asks for this.
+  useEffect(() => {
+    exportWithMenu("pack.export")
+    return () => exportWithMenu("player.export")
+  }, [])
+  useEffect(() => {
+    const onRequest = () => canExport && setExportOpen(true)
+    window.addEventListener(EXPORT_REQUEST, onRequest)
+    return () => window.removeEventListener(EXPORT_REQUEST, onRequest)
+  }, [canExport])
 
   // The cards call back with their index; these read the latest list (so
   // the cards, memoised, needn't draw again when it changes).
@@ -184,7 +197,7 @@ function Builder({
   // The pack's empty space: export it, give the hand-picked shots back, choose what shows.
   const pageMenu = (
     <>
-      <ContextMenuItem disabled={!canExport} onSelect={() => setExportOpen(true)} shortcut={[modKey, "E"]}>
+      <ContextMenuItem disabled={!canExport} onSelect={() => setExportOpen(true)} shortcut={keys("pack.export")}>
         <Package /> Export the pack…
       </ContextMenuItem>
       {picks.length > 0 && (

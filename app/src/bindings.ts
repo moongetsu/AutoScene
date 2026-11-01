@@ -29,6 +29,12 @@ export const commands = {
 	clipboardRead: () => __TAURI_INVOKE<string | null>("clipboard_read"),
 	/**  Open the logs folder (Settings → About, Help menu on Windows). */
 	openLogsDir: () => __TAURI_INVOKE<null>("open_logs_dir"),
+	/**
+	 *  Put the person's keys (Settings → Shortcuts) on the macOS menu, which
+	 *  answers them there before the page sees them: `keys` maps a menu item's id
+	 *  to its accelerator, `""` for none. Elsewhere there is no menu.
+	 */
+	menuSetKeys: (keys: { [key in string]: string }) => __TAURI_INVOKE<null>("menu_set_keys", { keys }),
 	/**  The media engine (ffmpeg) found on this machine — Settings → About. */
 	mediaTools: () => __TAURI_INVOKE<MediaToolsStatus>("media_tools"),
 	/**
@@ -402,6 +408,8 @@ export type AppSettings = {
 	 *  sent. Off by default; switching it off deletes the pictures kept.
 	 */
 	anilist?: boolean,
+	/**  The keyboard shortcuts as the person set them (Settings → Shortcuts). */
+	shortcuts?: Shortcuts,
 };
 
 export type AudioCodec = { codec: "none" } | 
@@ -810,6 +818,18 @@ export type JobProgress = {
 export type JobProgressEvent = JobProgress;
 
 export type JobState = "queued" | "running" | "done" | "failed" | "cancelled";
+
+/**
+ *  A key press that triggers a shortcut: `KeyboardEvent.key` in lower case
+ *  (a digit stands for the key that types it on a US layout) and the
+ *  modifiers; `mod` is Ctrl (⌘ on macOS).
+ */
+export type KeyBinding = {
+	key: string,
+	mod?: boolean,
+	shift?: boolean,
+	alt?: boolean,
+};
 
 /**  The project list or a project's summary changed. */
 export type LibraryChanged = {
@@ -1240,6 +1260,20 @@ export type SegmentKind = "shot" |
 "black" | 
 /**  A brief flash (muzzle flash, lightning, anime impact frame) inside a shot. */
 "flash";
+
+/**
+ *  The keys the person chose: an editor's keys to start from, and their own
+ *  changes on top. The UI owns what the names mean (`app/src/lib/shortcuts.ts`).
+ */
+export type Shortcuts = {
+	/**  `premiere`, `resolve`, or `""` for AutoScene's own keys. */
+	preset?: string,
+	/**
+	 *  Keys changed on top of the preset, by `<scope>.<shortcut>.<n>`
+	 *  (`player.frame.1` is the next frame); an empty list leaves it without a key.
+	 */
+	keys?: { [key in string]: KeyBinding[] },
+};
 
 /**  How big a face is in a shot, from its height in the frame. */
 export type ShotSize = "extreme_close_up" | "close_up" | "medium_close_up" | "medium" | "wide";

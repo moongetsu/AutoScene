@@ -9,7 +9,7 @@ import { WindowItems } from "@/components/shell/WindowControls"
 import { isTauri, isWindows } from "@/lib/platform"
 import { usePageScrolled } from "@/components/ui/page-scroll"
 import { Tooltip } from "@/components/ui/tooltip"
-import { shortcutKeys } from "@/lib/shortcuts"
+import { useShortcutKeys } from "@/lib/shortcuts"
 import { cn } from "@/lib/utils"
 import { useUi } from "@/state/ui"
 
@@ -40,6 +40,7 @@ export function TopBar({
   className?: string
   children?: React.ReactNode
 }) {
+  const keys = useShortcutKeys()
   const scrolled = usePageScrolled()
   const glass = !overlay || scrolled
   const railHidden = useUi((s) => s.sidebarCollapsed)
@@ -69,7 +70,7 @@ export function TopBar({
       >
         <div data-tauri-drag-region className="flex h-full min-w-0 items-center gap-3">
           {railHidden && (
-            <Tooltip label="Show the rail" shortcut={shortcutKeys("sidebar")}>
+            <Tooltip label="Show the rail" shortcut={keys("global.sidebar")}>
               <Button variant="glass" size="icon-sm" aria-label="Show the rail" onClick={showRail}>
                 <SidebarSimple />
               </Button>

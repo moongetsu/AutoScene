@@ -240,6 +240,7 @@ pub(crate) mod tests {
             find_bodies: false,
             fast_scan: false,
             anilist: false,
+            shortcuts: Default::default(),
         })
         .unwrap();
         let file = dir.path().join("Show - 01.mkv");

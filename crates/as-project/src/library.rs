@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use as_api::{AppSettings, ContentKind, ImportCandidate, NewProject, ProjectKind, ProjectSummary, now_ms};
+use as_api::{AppSettings, ContentKind, ImportCandidate, NewProject, ProjectKind, ProjectSummary, Shortcuts, now_ms};
 use as_core::{AppPaths, CancelToken, MediaId, ProjectId};
 use as_db::{LibraryDb, NewMedia, ProjectDb};
 use parking_lot::Mutex;
@@ -22,6 +22,8 @@ const KEY_AUDIO_LANGUAGE: &str = "audio_language";
 const KEY_FIND_BODIES: &str = "find_bodies";
 const KEY_FAST_SCAN: &str = "fast_scan";
 const KEY_ANILIST: &str = "anilist";
+/// The keyboard shortcuts the person changed, as JSON.
+const KEY_SHORTCUTS: &str = "shortcuts";
 /// Most series and films people cut are watched in their original English
 /// track; dubbed tracks are often flagged "default" too, so a language
 /// preference beats the file's flag.
@@ -138,7 +140,18 @@ impl Library {
             find_bodies: self.finds_bodies(),
             fast_scan: self.fast_scan()?,
             anilist: self.names_from_anilist(),
+            shortcuts: self.shortcuts()?,
         })
+    }
+
+    /// The keys the person chose; AutoScene's own when what is stored can't
+    /// be read (an older or a newer app's).
+    fn shortcuts(&self) -> ProjectResult<Shortcuts> {
+        let Some(json) = self.db.setting(KEY_SHORTCUTS)? else { return Ok(Shortcuts::default()) };
+        Ok(serde_json::from_str(&json).unwrap_or_else(|e| {
+            tracing::warn!("ignoring the stored shortcuts: {e}");
+            Shortcuts::default()
+        }))
     }
 
     /// Whether new projects find their faces with Fast Scan.
@@ -151,8 +164,14 @@ impl Library {
         if !root.is_absolute() {
             return Err(ProjectError::Invalid("Choose a full folder path for the library.".into()));
         }
-        std::fs::create_dir_all(&root)
-            .map_err(|e| ProjectError::Invalid(format!("Can't use {} as the library: {e}", root.display())))?;
+        // The folder in use may be on a drive that isn't there right now:
+        // other settings (keys, switches) are kept all the same.
+        let unchanged = root == self.library_root()?;
+        if let Err(e) = std::fs::create_dir_all(&root)
+            && !unchanged
+        {
+            return Err(ProjectError::Invalid(format!("Can't use {} as the library: {e}", root.display())));
+        }
         self.db.set_setting(KEY_LIBRARY_ROOT, &root.display().to_string())?;
         if as_export::builtin_presets().iter().any(|p| p.id == s.export_preset_id) {
             self.db.set_setting(KEY_EXPORT_PRESET, &s.export_preset_id)?;
@@ -164,6 +183,14 @@ impl Library {
         self.db.set_setting(KEY_FAST_SCAN, if s.fast_scan { "1" } else { "0" })?;
         self.db.set_setting(KEY_ANILIST, if s.anilist { "1" } else { "0" })?;
         self.anilist_on.store(s.anilist, Ordering::Relaxed);
+        // Keys a newer app stored, that this one can't read, stay unless
+        // they were changed here.
+        let unreadable =
+            self.db.setting(KEY_SHORTCUTS)?.is_some_and(|json| serde_json::from_str::<Shortcuts>(&json).is_err());
+        if !unreadable || s.shortcuts != Shortcuts::default() {
+            let shortcuts = serde_json::to_string(&s.shortcuts).expect("shortcuts serialize");
+            self.db.set_setting(KEY_SHORTCUTS, &shortcuts)?;
+        }
         // Off: whatever asks for names stops, and nothing from where they
         // come from stays (also what an earlier attempt left).
         if !s.anilist {
@@ -565,6 +592,7 @@ mod tests {
             find_bodies: false,
             fast_scan: false,
             anilist: false,
+            shortcuts: Default::default(),
         })
         .unwrap();
         assert_eq!(lib.audio_language().unwrap(), "deu", "stored as an ISO 639-2 code");
@@ -877,6 +905,52 @@ mod tests {
     }
 
     #[test]
+    fn keeps_the_keys_the_person_chose() {
+        let (dir, lib) = lib();
+        assert_eq!(lib.settings().unwrap().shortcuts, Shortcuts::default());
+        let ctrl = |k: &str| as_api::KeyBinding { key: k.into(), command: true, shift: false, alt: false };
+        let chosen = Shortcuts {
+            preset: "premiere".into(),
+            keys: [("player.export.0".to_string(), vec![ctrl("m")]), ("player.mute.0".to_string(), vec![])].into(),
+        };
+        let saved = lib.update_settings(&AppSettings { shortcuts: chosen.clone(), ..lib.settings().unwrap() }).unwrap();
+        assert_eq!(saved.shortcuts, chosen);
+        // Stored the way the UI names it.
+        let stored = lib.db.setting(KEY_SHORTCUTS).unwrap().unwrap();
+        assert!(stored.contains(r#"{"key":"m","mod":true,"shift":false,"alt":false}"#), "{stored}");
+        drop(lib);
+        let reopened = Library::open(&AppPaths::at(dir.path().join("data"))).unwrap();
+        assert_eq!(reopened.settings().unwrap().shortcuts, chosen);
+        // What can't be read gives AutoScene's own keys, never an error, and
+        // stays while other settings change.
+        reopened.db.set_setting(KEY_SHORTCUTS, "{not json").unwrap();
+        assert_eq!(reopened.settings().unwrap().shortcuts, Shortcuts::default());
+        reopened.update_settings(&AppSettings { fast_scan: true, ..reopened.settings().unwrap() }).unwrap();
+        assert_eq!(reopened.db.setting(KEY_SHORTCUTS).unwrap().as_deref(), Some("{not json"));
+        // Keys chosen here replace it.
+        reopened.update_settings(&AppSettings { shortcuts: chosen.clone(), ..reopened.settings().unwrap() }).unwrap();
+        assert_eq!(reopened.settings().unwrap().shortcuts, chosen);
+    }
+
+    #[test]
+    fn keeps_settings_while_the_library_drive_is_away() {
+        let (dir, lib) = lib();
+        // The library's folder is in use, then its drive goes: a file stands
+        // where the folder was, so it can't be made again.
+        let root = PathBuf::from(lib.settings().unwrap().library_root);
+        std::fs::remove_dir_all(&root).unwrap();
+        std::fs::write(&root, b"").unwrap();
+        let saved = lib.update_settings(&AppSettings { fast_scan: true, ..lib.settings().unwrap() }).unwrap();
+        assert!(saved.fast_scan);
+        // A new folder that can't be made is still refused.
+        let blocked = dir.path().join("blocked");
+        std::fs::write(&blocked, b"").unwrap();
+        let elsewhere =
+            AppSettings { library_root: blocked.join("Library").display().to_string(), ..lib.settings().unwrap() };
+        assert!(matches!(lib.update_settings(&elsewhere), Err(ProjectError::Invalid(_))));
+    }
+
+    #[test]
     fn rejects_relative_library_roots() {
         let (_dir, lib) = lib();
         let bad = AppSettings {
@@ -886,6 +960,7 @@ mod tests {
             find_bodies: false,
             fast_scan: false,
             anilist: false,
+            shortcuts: Default::default(),
         };
         assert!(matches!(lib.update_settings(&bad), Err(ProjectError::Invalid(_))));
         assert_eq!(lib.settings().unwrap().export_preset_id, "h264-edit");

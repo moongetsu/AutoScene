@@ -14,7 +14,7 @@ import { ProjectLoadError } from "@/features/project/ProjectLoadError"
 import { assetUrl } from "@/lib/media"
 import { firstFailure, portraitQuery, queryClient, useCast, useCastTracks, useMediaList, usePortrait } from "@/lib/queries"
 import { timecode } from "@/lib/timecode"
-import { REVIEW_SHORTCUTS, digitOf, useShortcuts } from "@/lib/shortcuts"
+import { REVIEW_SHORTCUTS, digitOf, useShortcutKeys, useShortcuts } from "@/lib/shortcuts"
 import { cn } from "@/lib/utils"
 import { castEdit, plural } from "./cast"
 
@@ -30,6 +30,7 @@ export function ReviewPage() {
   const { pid } = useParams({ from: "/p/$pid/cast/review" })
   const { c } = useSearch({ from: "/p/$pid/cast/review" })
   const navigate = useNavigate()
+  const keys = useShortcutKeys()
   const castQuery = useCast(pid)
   const mediaQuery = useMediaList(pid)
   const { data: cast } = castQuery
@@ -151,19 +152,19 @@ export function ReviewPage() {
   const answers = current && (
     <>
       {suggestion && (
-        <ContextMenuItem onSelect={() => void decide.yes()} shortcut={["Y"]}>
+        <ContextMenuItem onSelect={() => void decide.yes()} shortcut={keys("review.yes")}>
           <Check /> Yes, {suggestion.label}
         </ContextMenuItem>
       )}
       {suggestion && (
-        <ContextMenuItem onSelect={() => void decide.no()} shortcut={["N"]}>
+        <ContextMenuItem onSelect={() => void decide.no()} shortcut={keys("review.no")}>
           <X /> No, someone else
         </ContextMenuItem>
       )}
-      <ContextMenuItem onSelect={() => void decide.notFace()} shortcut={["X"]}>
+      <ContextMenuItem onSelect={() => void decide.notFace()} shortcut={keys("review.notFace")}>
         <Prohibit /> Not a face
       </ContextMenuItem>
-      <ContextMenuItem onSelect={() => void decide.skip()} shortcut={["→"]}>
+      <ContextMenuItem onSelect={() => void decide.skip()} shortcut={keys("review.skip")}>
         <CaretRight /> Skip for now
       </ContextMenuItem>
       <ContextMenuSeparator />
@@ -317,7 +318,7 @@ export function ReviewPage() {
                     }
                   >
                     <Check weight="bold" /> Yes, {suggestion.label}
-                    <Kbd keys={["Y"]} className="ml-1" />
+                    <Kbd keys={keys("review.yes")} className="ml-1" />
                   </Button>
                   <Button
                     size="lg"
@@ -329,7 +330,7 @@ export function ReviewPage() {
                       )
                     }
                   >
-                    No, someone else <Kbd keys={["N"]} className="ml-1" />
+                    No, someone else <Kbd keys={keys("review.no")} className="ml-1" />
                   </Button>
                 </>
               )}
@@ -339,10 +340,10 @@ export function ReviewPage() {
                 disabled={busy}
                 onClick={() => void answer(current.id, () => castEdit(pid, { op: "not_a_face", tracks: [current.id] }))}
               >
-                Not a face <Kbd keys={["X"]} className="ml-1" />
+                Not a face <Kbd keys={keys("review.notFace")} className="ml-1" />
               </Button>
               <Button size="lg" variant="ghost" onClick={() => setSkipped((s) => new Set(s).add(current.id))}>
-                Skip <Kbd keys={["→"]} className="ml-1" />
+                Skip <Kbd keys={keys("review.skip")} className="ml-1" />
               </Button>
             </div>
           </>

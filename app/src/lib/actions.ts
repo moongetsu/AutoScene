@@ -5,10 +5,11 @@ import { useNewProject } from "@/state/new-project"
 import { useUi } from "@/state/ui"
 import { useUpdates } from "@/state/updates"
 import { commands, errorMessage, events } from "./ipc"
+import { menuAnswers } from "./keymap"
 import { layerOpen } from "./layers"
 import { pickVideoFiles } from "./media"
-import { isMac, isTauri } from "./platform"
-import { GLOBAL_SHORTCUTS, useShortcuts } from "./shortcuts"
+import { isTauri } from "./platform"
+import { GLOBAL_SHORTCUTS, type GlobalId, useShortcuts } from "./shortcuts"
 
 /** App-level actions shared by the command palette, keyboard shortcuts and the macOS menu. */
 export function useAppActions() {
@@ -51,18 +52,25 @@ export type SettingsSection = (typeof SETTINGS_SECTIONS)[number]
 export function useGlobalBindings() {
   const a = useAppActions()
 
-  // On macOS desktop the native menu owns these accelerators and emits menu events instead.
+  // On macOS desktop the native menu owns these accelerators and emits menu
+  // events instead — except for a key the person chose that it can't carry.
+  const page =
+    (id: GlobalId, run: () => void) =>
+    (): boolean | void => {
+      if (menuAnswers(`global.${id}`)) return false
+      run()
+    }
   useShortcuts(
     GLOBAL_SHORTCUTS,
     {
-      palette: a.openPalette,
-      activity: a.toggleActivity,
-      sidebar: a.toggleSidebar,
-      settings: () => a.goSettings(),
-      library: a.goLibrary,
-      newProject: a.newProject,
+      palette: page("palette", a.openPalette),
+      activity: page("activity", a.toggleActivity),
+      sidebar: page("sidebar", a.toggleSidebar),
+      settings: page("settings", () => a.goSettings()),
+      library: page("library", a.goLibrary),
+      newProject: page("newProject", a.newProject),
     },
-    { enabled: !(isMac && isTauri), anywhere: ["palette", "activity"] },
+    { anywhere: ["palette", "activity"] },
   )
 
   useEffect(() => {

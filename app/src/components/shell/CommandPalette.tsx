@@ -25,7 +25,7 @@ import { Artwork } from "@/components/ui/artwork"
 import { Kbd } from "@/components/ui/kbd"
 import { useAppActions } from "@/lib/actions"
 import { useCast, useMediaList, useProjects } from "@/lib/queries"
-import { shortcutKeys } from "@/lib/shortcuts"
+import { useShortcutKeys } from "@/lib/shortcuts"
 import { useUi } from "@/state/ui"
 import { type ProjectEntry, characterEntries, episodeEntries } from "./palette-items"
 
@@ -51,6 +51,7 @@ const MATCHES = 30
 
 /** Everything the app can do or go to, behind one search field. */
 export function CommandPalette() {
+  const keys = useShortcutKeys()
   const open = useUi((s) => s.paletteOpen)
   const setOpen = useUi((s) => s.setPaletteOpen)
   const a = useAppActions()
@@ -74,8 +75,8 @@ export function CommandPalette() {
       ]
     : []
   const go: Item[] = [
-    { id: "library", label: "Library", icon: <SquaresFour />, run: a.goLibrary, keys: shortcutKeys("library") },
-    { id: "settings", label: "Settings", icon: <GearSix />, run: () => a.goSettings(), keys: shortcutKeys("settings") },
+    { id: "library", label: "Library", icon: <SquaresFour />, run: a.goLibrary, keys: keys("global.library") },
+    { id: "settings", label: "Settings", icon: <GearSix />, run: () => a.goSettings(), keys: keys("global.settings") },
     { id: "shortcuts", label: "Keyboard shortcuts", icon: <Keyboard />, run: () => a.goSettings("shortcuts") },
     { id: "about", label: "About AutoScene", icon: <Info />, run: () => a.goSettings("about") },
   ]
@@ -88,9 +89,9 @@ export function CommandPalette() {
     run: () => a.goProject(p.id),
   }))
   const actions: Item[] = [
-    { id: "new-project", label: "New project…", icon: <Plus />, run: a.newProject, keys: shortcutKeys("newProject") },
-    { id: "activity", label: "Show activity", icon: <Queue />, run: a.toggleActivity, keys: shortcutKeys("activity") },
-    { id: "sidebar", label: "Show or hide the rail", icon: <SidebarSimple />, run: a.toggleSidebar, keys: shortcutKeys("sidebar") },
+    { id: "new-project", label: "New project…", icon: <Plus />, run: a.newProject, keys: keys("global.newProject") },
+    { id: "activity", label: "Show activity", icon: <Queue />, run: a.toggleActivity, keys: keys("global.activity") },
+    { id: "sidebar", label: "Show or hide the rail", icon: <SidebarSimple />, run: a.toggleSidebar, keys: keys("global.sidebar") },
     { id: "updates", label: "Check for updates", icon: <DownloadSimple />, run: a.checkUpdates },
     { id: "logs", label: "Open logs folder", icon: <FileText />, run: () => void a.openLogs() },
   ]

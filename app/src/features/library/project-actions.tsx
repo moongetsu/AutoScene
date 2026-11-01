@@ -4,7 +4,7 @@ import type { MenuKit } from "@/components/ui/menu-actions"
 import { useAppActions } from "@/lib/actions"
 import { pickFolder, pickVideoFiles } from "@/lib/media"
 import { reveal } from "@/lib/os"
-import { shortcutKeys } from "@/lib/shortcuts"
+import { useShortcutKeys } from "@/lib/shortcuts"
 import { useNewProject } from "@/state/new-project"
 
 /**
@@ -59,12 +59,13 @@ export function ProjectItems({
  * the app's own entries below.
  */
 export function NewProjectItems({ kit, page = false }: { kit: MenuKit; page?: boolean }) {
+  const keys = useShortcutKeys()
   const { Item } = kit
   const show = (paths: string[]) => useNewProject.getState().show(paths)
   return (
     <>
       {!page && (
-        <Item onSelect={() => show([])} shortcut={shortcutKeys("newProject")}>
+        <Item onSelect={() => show([])} shortcut={keys("global.newProject")}>
           <Plus /> New project…
         </Item>
       )}
