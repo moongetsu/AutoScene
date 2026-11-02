@@ -52,6 +52,7 @@ import type {
   ExportPreset,
   ExportRequest,
   ExportSummary,
+  InstalledExtension,
   FrameMap,
   ImportCandidate,
   JobInfo,
@@ -1069,6 +1070,24 @@ const handlers: Record<string, Handler> = {
   }),
   update_install: () => null,
   update_relaunch: () => false,
+  open_extensions_dir: () => null,
+  extensions_list: (): InstalledExtension[] => [
+    {
+      manifest: {
+        id: "autoscene.sample.export-logger",
+        name: "Export Summary Logger",
+        version: "1.0.0",
+        description: "Logs export details, clip counts, and output files to a summary log file.",
+        author: "AutoScene Team",
+        kind: "post-processor",
+        entrypoint: "run.sh",
+        capabilities: ["filesystem-write-export"],
+        triggers: ["post-export"],
+      },
+      path: "/Users/you/Library/Application Support/AutoScene/extensions/export-summary-logger",
+      entrypointPath: "/Users/you/Library/Application Support/AutoScene/extensions/export-summary-logger/run.sh",
+    },
+  ],
   // Dialog plugin: pretend the user picked something sensible.
   "plugin:dialog|open": ({ options }) => {
     const o = (options ?? {}) as { directory?: boolean; multiple?: boolean; title?: string }
