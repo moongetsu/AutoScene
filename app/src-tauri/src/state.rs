@@ -21,8 +21,11 @@ use crate::paths;
 /// Concurrent jobs per resource class. Two decode-heavy jobs keep a GPU busy
 /// without starving the UI's preview; exports run one at a time so encoder
 /// sessions are never oversubscribed; the engine analyses one media at a time;
-/// upkeep (one still at a time) runs beside all of them.
-const LIMITS: &[(Class, usize)] = &[(Class::Media, 2), (Class::Export, 1), (Class::Analysis, 1), (Class::Upkeep, 1)];
+/// upkeep (one still at a time) runs beside all of them; and so do plugins,
+/// one run at a time (one that uses the GPU waits its turn as analysis). A
+/// class missing here has no worker: its jobs would wait forever.
+const LIMITS: &[(Class, usize)] =
+    &[(Class::Media, 2), (Class::Export, 1), (Class::Analysis, 1), (Class::Upkeep, 1), (Class::Plugin, 1)];
 
 /// Which media an analysis job is working on, and the restarts asked for
 /// meanwhile. Both change under one lock, so a restart is either handed to
@@ -248,6 +251,23 @@ pub async fn blocking<T: Send + 'static>(f: impl FnOnce() -> AppResult<T> + Send
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_class_has_a_worker() {
+        // Each class names the next in a match, so a new class won't build
+        // here until it's in the chain, and fails here until it has a limit.
+        let next = |c: Option<Class>| match c {
+            None => Some(Class::Media),
+            Some(Class::Media) => Some(Class::Export),
+            Some(Class::Export) => Some(Class::Analysis),
+            Some(Class::Analysis) => Some(Class::Upkeep),
+            Some(Class::Upkeep) => Some(Class::Plugin),
+            Some(Class::Plugin) => None,
+        };
+        for class in std::iter::successors(next(None), |&c| next(Some(c))) {
+            assert!(LIMITS.iter().any(|&(c, n)| c == class && n > 0), "{class:?} has no worker");
+        }
+    }
 
     #[test]
     fn an_installed_app_uses_only_its_own_sidecars() {

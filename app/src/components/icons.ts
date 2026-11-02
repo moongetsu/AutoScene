@@ -60,6 +60,7 @@ export {
   Play,
   Plus,
   Prohibit,
+  PuzzlePiece,
   Queue,
   Scan,
   Scissors,

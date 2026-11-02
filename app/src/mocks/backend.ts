@@ -444,6 +444,7 @@ function startJob(
     stage: opts.stage,
     etaMs: ms,
     error: null,
+    message: null,
     createdAt: Date.now(),
     finishedAt: null,
     rev: ++rev,

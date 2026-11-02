@@ -11,7 +11,7 @@ import { exportsQuery, qk, queryClient } from "./queries"
  *
  * | event            | effect                                             |
  * |------------------|----------------------------------------------------|
- * | job:changed      | activity store; toast when an export finishes, exports(pid) when it ends |
+ * | job:changed      | activity store; toast when an export finishes or a plugin says something, exports(pid) when an export ends |
  * | job:progress     | activity store (progress only)                     |
  * | library:changed  | projects, project(id), exportDir                   |
  * | media:changed    | media(pid), frameMap(pid, mid), project(pid)       |
@@ -85,12 +85,17 @@ export function startEventBridge(): () => void {
   return () => unlisten.forEach((p) => void p.then((un) => un()))
 }
 
-/** Exports finish in the background; say so wherever the user is. */
+/**
+ * Exports finish in the background; say so wherever the user is. A plugin's
+ * job that finishes says its message the same way.
+ */
 function notifyFinished(job: JobInfo) {
   if (job.kind !== "export") {
     if (job.state === "failed") {
       const title = job.title.replace(/^Indexing/, "Couldn't index").replace(/^Analysing/, "Couldn't analyse")
       toast.error(title, { description: job.error ?? undefined })
+    } else if (job.kind === "plugin" && job.state === "done" && job.message) {
+      toast(job.title, { description: job.message })
     }
     return
   }

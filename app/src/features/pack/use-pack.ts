@@ -234,14 +234,17 @@ export function packExportStarted(pid: ProjectId, cid: CharacterId, exportId: Ex
   started.setState((s) => ({ [key]: [...(s[key] ?? []), exportId] }))
 }
 
-/** The job of the pack's newest export while it waits or runs, if any. */
+/**
+ * The job of the pack's newest export while it waits or runs, if any. A
+ * plugin's run on that export names it too, but isn't its job.
+ */
 export function usePackExport(pid: ProjectId, cid: CharacterId): JobInfo | undefined {
   const ids = started((s) => s[packKey(pid, cid)])
   return useActivity((s) => {
     if (!ids) return undefined
     for (const id of s.order) {
       const j = s.jobs[id]
-      if (j.exportId && ids.includes(j.exportId) && !isFinished(j)) return j
+      if (j.kind === "export" && j.exportId && ids.includes(j.exportId) && !isFinished(j)) return j
     }
     return undefined
   })

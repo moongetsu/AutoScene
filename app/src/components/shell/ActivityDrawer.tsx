@@ -10,6 +10,7 @@ import {
   Package,
   Play,
   Prohibit,
+  PuzzlePiece,
   Queue,
   Scan,
   Scissors,
@@ -30,6 +31,7 @@ import { Sheet, SheetContent } from "@/components/ui/sheet"
 import { Tooltip, TruncatedText } from "@/components/ui/tooltip"
 import { formatProgress } from "@/lib/format"
 import { commands, errorMessage } from "@/lib/ipc"
+import { stopWord } from "@/lib/jobs"
 import { copyText } from "@/lib/os"
 import { cn } from "@/lib/utils"
 import { isFinished, useActivity, useJobs } from "@/state/activity"
@@ -43,9 +45,10 @@ const KIND_ICON: Record<JobInfo["kind"], React.ReactNode> = {
   posters: <Image />,
   portraits: <UserFocus />,
   regroup: <Users />,
+  plugin: <PuzzlePiece />,
 }
 
-/** Global view of background work (indexing, previews, analysis, exports). */
+/** Global view of background work (indexing, previews, analysis, exports, plugins). */
 export function ActivityDrawer() {
   const open = useUi((s) => s.activityOpen)
   const setOpen = useUi((s) => s.setActivityOpen)
@@ -128,6 +131,7 @@ function JobRow({ job: j }: { job: JobInfo }) {
   }
   const pid = j.projectId
   const mid = j.mediaId
+  const stop = stopWord(j.kind)
   const menu = (
     <>
       {!done && (
@@ -136,7 +140,7 @@ function JobRow({ job: j }: { job: JobInfo }) {
             void commands.jobCancel(j.id).catch((e) => toast.error("Couldn't cancel the job", { description: errorMessage(e) }))
           }
         >
-          <X /> Cancel
+          <X /> {stop}
         </ContextMenuItem>
       )}
       {canOpen && (
@@ -162,6 +166,11 @@ function JobRow({ job: j }: { job: JobInfo }) {
       {j.state === "failed" && j.error && (
         <ContextMenuItem onSelect={() => void copyText(j.error ?? "", "error")}>
           <Copy /> Copy the error
+        </ContextMenuItem>
+      )}
+      {j.state === "done" && j.message && (
+        <ContextMenuItem onSelect={() => void copyText(j.message ?? "", "message")}>
+          <Copy /> Copy the message
         </ContextMenuItem>
       )}
     </>
@@ -195,9 +204,9 @@ function JobRow({ job: j }: { job: JobInfo }) {
               {j.subtitle && <div className="truncate text-sm text-fg-3">{j.subtitle}</div>}
             </div>
             {!done ? (
-              <Tooltip label="Cancel">
+              <Tooltip label={stop}>
                 <button
-                  aria-label={`Cancel ${j.title}`}
+                  aria-label={`${stop} ${j.title}`}
                   onClick={(e) => {
                     e.stopPropagation()
                     void commands
@@ -223,6 +232,7 @@ function JobRow({ job: j }: { job: JobInfo }) {
             </div>
           )}
           {j.state === "failed" && j.error && <p className="mt-1.5 line-clamp-3 text-sm break-words text-danger">{j.error}</p>}
+          {j.state === "done" && j.message && <p className="mt-1.5 line-clamp-3 text-sm break-words text-fg-2">{j.message}</p>}
         </div>
       </li>
     </ContextArea>

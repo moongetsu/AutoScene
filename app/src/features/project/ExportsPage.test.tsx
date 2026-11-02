@@ -91,6 +91,19 @@ describe("an export's card", () => {
     expect(screen.getByText("Cancelled")).toBeTruthy()
     expect(screen.queryByText("Queued")).toBeNull()
   })
+
+  it("goes by its own job, never a plugin's run on that export", () => {
+    const run = (state: JobInfo["state"], progress: number | null = null) =>
+      ({ ...job(state, progress), id: "j2", kind: "plugin", title: "Post to Discord" }) as JobInfo
+    show(exported("running", [item(1, "done"), item(2, "running")]), run("running", 0.7))
+    expect(screen.getByText("Exporting")).toBeTruthy()
+    expect(screen.queryByText("70%")).toBeNull()
+    cleanup()
+
+    show(exported("running", [item(1, "done"), item(2, "running")]), run("cancelled"))
+    expect(screen.getByText("Exporting")).toBeTruthy()
+    expect(screen.queryByText("Cancelled")).toBeNull()
+  })
 })
 
 describe("an export's clip list", () => {

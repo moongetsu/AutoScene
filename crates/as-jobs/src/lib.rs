@@ -36,6 +36,8 @@ pub enum Class {
     /// Quiet upkeep of existing projects (posters made again at new sizes):
     /// its own worker, so it never holds up new work.
     Upkeep,
+    /// Plugin runs (one at a time; GPU plugins run as Analysis).
+    Plugin,
 }
 
 /// What to show for a job and what it belongs to.
@@ -65,11 +67,13 @@ impl<E: std::error::Error> From<E> for JobError {
 
 pub type JobResult = Result<(), JobError>;
 
-/// Handed to running work: cancellation and progress reporting.
+/// Handed to running work: cancellation, progress reporting and what it
+/// has to say once it's done.
 pub struct JobCtx {
     pub id: JobId,
     pub cancel: CancelToken,
     sink: ProgressSink,
+    message: Mutex<Option<String>>,
 }
 
 impl JobCtx {
@@ -101,6 +105,14 @@ impl JobCtx {
             Some(f) => self.progress(stage, f),
             None => self.stage(stage),
         }
+    }
+
+    /// What the job has to say once it's done (a plugin's result): the last
+    /// one counts. A job that fails or is cancelled says none of it. It is
+    /// shown as it is, in a toast and the Activity drawer, and kept with the
+    /// finished job: text the app didn't write comes here cleaned and capped.
+    pub fn message(&self, text: &str) {
+        *self.message.lock() = Some(text.to_owned());
     }
 }
 
@@ -270,6 +282,7 @@ impl JobRunner {
             eta_ms: None,
             frames: None,
             error: None,
+            message: None,
             created_at: now_ms(),
             finished_at: None,
             rev: 0,
@@ -532,12 +545,13 @@ fn run_worker(inner: &Arc<Inner>, class: Class) {
                 (inner.listener)(JobEvent::Progress(JobProgress { id, rev, progress, stage, eta_ms, frames }));
             })
         };
-        let ctx = JobCtx { id, cancel: cancel.clone(), sink };
+        let ctx = JobCtx { id, cancel: cancel.clone(), sink, message: Mutex::new(None) };
         let result = catch_unwind(AssertUnwindSafe(|| work(&ctx))).unwrap_or_else(|panic| {
             let msg = panic_message(&*panic);
             tracing::error!(%id, %msg, "job panicked");
             Err(JobError::Failed(msg))
         });
+        let message = ctx.message.lock().take();
 
         let info = {
             let mut st = inner.state.lock();
@@ -549,6 +563,7 @@ fn run_worker(inner: &Arc<Inner>, class: Class) {
                 Ok(()) => {
                     e.info.state = JobState::Done;
                     e.info.progress = Some(1.0);
+                    e.info.message = message;
                 }
                 // A cancelled job's work often fails with an I/O or ffmpeg error
                 // on the way out; the cancel flag decides what it was.
@@ -639,6 +654,54 @@ mod tests {
     }
 
     #[test]
+    fn a_finished_job_keeps_its_message() {
+        let (r, rx) = runner(&[(Class::Plugin, 1)]);
+        let id = r.submit(spec("Post to Discord", Class::Plugin), |ctx| {
+            ctx.message("Posting");
+            ctx.message("Posted 12 clips.");
+            Ok(())
+        });
+        let info = finished(&rx, id);
+        assert_eq!(
+            (info.state, info.message.as_deref()),
+            (JobState::Done, Some("Posted 12 clips.")),
+            "the last one counts"
+        );
+        assert_eq!(r.jobs()[0].message.as_deref(), Some("Posted 12 clips."), "the list has it too");
+        let quiet = r.submit(spec("quiet", Class::Plugin), |_| Ok(()));
+        assert_eq!(finished(&rx, quiet).message, None);
+    }
+
+    #[test]
+    fn a_failed_job_has_no_message() {
+        let (r, rx) = runner(&[(Class::Plugin, 1)]);
+        let failed = r.submit(spec("broken", Class::Plugin), |ctx| {
+            ctx.message("Posted 12 clips.");
+            Err(JobError::Failed("no webhook".into()))
+        });
+        let info = finished(&rx, failed);
+        assert_eq!((info.state, info.message), (JobState::Failed, None));
+        let panicked = r.submit(spec("panic", Class::Plugin), |ctx| {
+            ctx.message("Posted 12 clips.");
+            panic!("boom")
+        });
+        assert_eq!(finished(&rx, panicked).message, None);
+        let (started_tx, started_rx) = mpsc::channel();
+        let cancelled = r.submit(spec("cancelled", Class::Plugin), move |ctx| {
+            ctx.message("Posted 12 clips.");
+            started_tx.send(()).unwrap();
+            while !ctx.cancel.is_cancelled() {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(JobError::Cancelled)
+        });
+        started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        r.cancel(cancelled);
+        let info = finished(&rx, cancelled);
+        assert_eq!((info.state, info.message), (JobState::Cancelled, None));
+    }
+
+    #[test]
     fn progress_is_told_in_fine_steps_and_unknown_when_it_is() {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let s = seen.clone();
@@ -646,6 +709,7 @@ mod tests {
             id: JobId::new(),
             cancel: CancelToken::new(),
             sink: ProgressSink::new(Duration::ZERO, move |p| s.lock().push((p.done, p.total))),
+            message: Mutex::new(None),
         };
         ctx.progress("Clip 1 of 2", 0.000_4);
         ctx.report("Clip 1 of 2", None);
@@ -935,6 +999,7 @@ mod tests {
                 eta_ms: None,
                 frames: None,
                 error: None,
+                message: None,
                 created_at: now_ms(),
                 finished_at: None,
                 rev,

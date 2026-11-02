@@ -283,4 +283,14 @@ describe("the pack's export", () => {
     act(() => useActivity.getState().upsert(job("j1", "e1", "cancelled", 2)))
     expect(result.current).toBeUndefined()
   })
+
+  it("is never a plugin's run on that export", () => {
+    useActivity.setState({ jobs: {}, order: [] })
+    const { result } = renderHook(() => usePackExport("p", "walter"))
+    act(() => {
+      packExportStarted("p", "walter", "e1")
+      useActivity.getState().upsert({ ...job("j4", "e1", "running", 3), kind: "plugin" })
+    })
+    expect(result.current).toBeUndefined()
+  })
 })

@@ -80,7 +80,8 @@ export function ExportsPage() {
 const FOLD_OVER = 4
 
 function ExportCard({ pid, ex, media }: { pid: string; ex: ExportSummary; media: Map<string, MediaItem> }) {
-  const job = useActivity((s) => s.order.map((id) => s.jobs[id]).find((j) => j.exportId === ex.id))
+  // A plugin's run on this export names it too, but isn't its job.
+  const job = useActivity((s) => s.order.map((id) => s.jobs[id]).find((j) => j.kind === "export" && j.exportId === ex.id))
   const done = ex.items.filter((i) => i.status === "done").length
   const status = exportStatus(ex, job)
   const running = status === "running" || status === "queued"

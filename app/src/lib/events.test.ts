@@ -111,3 +111,21 @@ describe("an export's job ending", () => {
     read.mockRestore()
   })
 })
+
+describe("a plugin job that finishes", () => {
+  const plugin = (o: Partial<JobInfo>) =>
+    job({ id: "j2", kind: "plugin", title: "Post to Discord", subtitle: "Discord notify", exportId: null, rev: 2, ...o })
+
+  it("says its message", () => {
+    handlers.jobChanged({ payload: plugin({ state: "running" }) })
+    handlers.jobChanged({ payload: plugin({ state: "done", message: "Posted 12 clips.", rev: 3 }) })
+    expect(toast).toHaveBeenCalledExactlyOnceWith("Post to Discord", { description: "Posted 12 clips." })
+    expect(toast.success).not.toHaveBeenCalled()
+  })
+
+  it("says nothing when it has nothing to say", () => {
+    handlers.jobChanged({ payload: plugin({ state: "done", message: null }) })
+    expect(toast).not.toHaveBeenCalled()
+    expect(toast.success).not.toHaveBeenCalled()
+  })
+})

@@ -129,6 +129,7 @@ dependencies = [
  "as-export",
  "as-media",
  "serde",
+ "serde_json",
  "specta",
 ]
 

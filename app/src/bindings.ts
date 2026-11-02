@@ -822,6 +822,8 @@ export type JobInfo = {
 	 */
 	frames?: FrameCount | null,
 	error: string | null,
+	/**  What a finished job had to say (a plugin's result). */
+	message?: string | null,
 	createdAt: number,
 	finishedAt: number | null,
 	/**
@@ -842,7 +844,9 @@ export type JobKind = "ingest" | "proxy" | "export" |
  *  A project's characters grouped again: the grouping got better since
  *  they were grouped (the user's decisions stay).
  */
-"regroup";
+"regroup" | 
+/**  A plugin's action (an export action or a palette command). */
+"plugin";
 
 /**  Throttled progress for a running job (≤ 4 Hz per job). */
 export type JobProgress = {

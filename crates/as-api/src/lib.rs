@@ -1096,6 +1096,8 @@ pub enum JobKind {
     /// A project's characters grouped again: the grouping got better since
     /// they were grouped (the user's decisions stay).
     Regroup,
+    /// A plugin's action (an export action or a palette command).
+    Plugin,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -1134,6 +1136,9 @@ pub struct JobInfo {
     #[serde(default)]
     pub frames: Option<FrameCount>,
     pub error: Option<String>,
+    /// What a finished job had to say (a plugin's result).
+    #[serde(default)]
+    pub message: Option<String>,
     pub created_at: i64,
     pub finished_at: Option<i64>,
     /// Increases with every change to any job. Events can arrive out of
@@ -1159,4 +1164,24 @@ pub struct JobProgress {
 /// Unix time in milliseconds.
 pub fn now_ms() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_job_from_before_messages_still_reads() {
+        let old = format!(
+            r#"{{"id":"{}","kind":"export","title":"Exporting","subtitle":null,"projectId":null,"mediaId":null,"exportId":null,"state":"done","progress":1.0,"stage":null,"etaMs":null,"error":null,"createdAt":1,"finishedAt":2,"rev":3}}"#,
+            JobId::new()
+        );
+        let job: JobInfo = serde_json::from_str(&old).unwrap();
+        assert_eq!((job.kind, job.message), (JobKind::Export, None));
+        let plugin = old
+            .replace(r#""kind":"export""#, r#""kind":"plugin""#)
+            .replace(r#""error":null"#, r#""error":null,"message":"Posted 12 clips.""#);
+        let job: JobInfo = serde_json::from_str(&plugin).unwrap();
+        assert_eq!((job.kind, job.message.as_deref()), (JobKind::Plugin, Some("Posted 12 clips.")));
+    }
 }

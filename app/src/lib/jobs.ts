@@ -15,8 +15,13 @@ export function cancelLabel(kind: JobInfo["kind"]): string {
     case "proxy":
       return "Cancel preview"
     default:
-      return "Cancel"
+      return stopWord(kind)
   }
+}
+
+/** The word for stopping a job beside its title: a plugin's run is stopped, other work cancelled. */
+export function stopWord(kind: JobInfo["kind"]): "Stop" | "Cancel" {
+  return kind === "plugin" ? "Stop" : "Cancel"
 }
 
 /** Stop `job`, as the Activity drawer does; a toast says so when it can't. */
