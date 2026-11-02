@@ -205,6 +205,11 @@ export const commands = {
 	exportPlan: (projectId: ProjectId, clips: ClipRequest[]) => __TAURI_INVOKE<ExportPlan>("export_plan", { projectId, clips }),
 	/**  Newest first. */
 	exportsList: (projectId: ProjectId) => __TAURI_INVOKE<ExportSummary[]>("exports_list", { projectId }),
+	/**
+	 *  Save an export's clips as an EDL or a cut list (CSV) at `path` (see
+	 *  `list_path`, `Project::export_list_file`).
+	 */
+	exportSaveList: (projectId: ProjectId, exportId: ExportId, format: ListFormat, path: string) => __TAURI_INVOKE<SavedList>("export_save_list", { projectId, exportId, format, path }),
 	/**  A character's pack settings as last used (the defaults the first time). */
 	packGet: (projectId: ProjectId, characterId: CharacterId) => __TAURI_INVOKE<PackState>("pack_get", { projectId, characterId }),
 	/**  Keep a character's pack settings for next time. */
@@ -873,6 +878,16 @@ export type LibraryChanged = {
 	projectId: ProjectId | null,
 };
 
+/**  What an export's clips are saved as for other apps. */
+export type ListFormat = 
+/**
+ *  A CMX 3600 EDL: editors (DaVinci Resolve, Premiere Pro, Avid) build
+ *  the cut from the episodes with it.
+ */
+"edl" | 
+/**  A cut list (CSV): the same timecodes, a row per clip, for reading. */
+"csv";
+
 /**  Media of a project changed (added, indexed, preview ready, removed). */
 export type MediaChanged = {
 	projectId: ProjectId,
@@ -1281,6 +1296,14 @@ export type RelinkSummary = {
 	reindex: number,
 	/**  Still missing. */
 	missing: number,
+};
+
+/**  An export's clips saved as a list (see [`ListFormat`]). */
+export type SavedList = {
+	/**  Where it was saved. */
+	path: string,
+	/**  Clips left out: their episode was removed from the project. */
+	leftOut: number,
 };
 
 /**

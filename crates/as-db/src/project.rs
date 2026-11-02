@@ -774,6 +774,34 @@ impl ProjectDb {
         })
     }
 
+    /// The media was probed before AutoScene read start timecodes: its info
+    /// has no `startTimecode` at all, where one probed since (or read with
+    /// [`Self::set_start_timecode`]) holds `null` for a file without one.
+    pub fn start_timecode_unread(&self, id: MediaId) -> DbResult<bool> {
+        self.0.read(|c| {
+            let unread = c
+                .query_row(
+                    "SELECT json_type(info, '$.startTimecode') IS NULL FROM media WHERE id = ?1 AND info IS NOT NULL",
+                    [id.to_string()],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            Ok(unread.unwrap_or(false))
+        })
+    }
+
+    /// Keep the start timecode read from the file of media probed before
+    /// (`None`: it has none), so it's read once.
+    pub fn set_start_timecode(&self, id: MediaId, timecode: Option<&str>) -> DbResult<()> {
+        self.0.write(|tx| {
+            tx.execute(
+                "UPDATE media SET info = json_set(info, '$.startTimecode', ?2) WHERE id = ?1 AND info IS NOT NULL",
+                params![id.to_string(), timecode],
+            )?;
+            Ok(())
+        })
+    }
+
     pub fn remove_media(&self, id: MediaId) -> DbResult<()> {
         self.0.write(|tx| {
             tx.execute("DELETE FROM media WHERE id = ?1", [id.to_string()])?;
@@ -1238,6 +1266,52 @@ pub(crate) mod tests {
         db.remove_media(e1.id).unwrap();
         assert!(db.frame_index_blob(e1.id).unwrap().is_none(), "frame index cascades");
         assert!(!db.set_posters(e1.id, "/a.jpg", "/b.jpg").unwrap(), "a removed media gets no posters");
+    }
+
+    #[test]
+    fn a_start_timecode_read_later_is_kept() {
+        let db = ProjectDb::memory();
+        let m = new_media("/s/Show - 01.mkv", None, Some(1));
+        db.add_media(std::slice::from_ref(&m)).unwrap();
+        // Not probed yet: nothing to read it into.
+        assert!(!db.start_timecode_unread(m.id).unwrap());
+        let rec = IngestRecord {
+            info: info(),
+            frames: 240,
+            duration_sec: 10.0,
+            fps: Rational::new(24, 1),
+            vfr: false,
+            interlaced: false,
+            proxy: ProxyState::NotNeeded,
+            poster: None,
+            poster_small: None,
+            index_blob: vec![],
+            audio_ordinal: None,
+        };
+        db.record_ingest(m.id, &rec).unwrap();
+        // Probed now, the file has none.
+        assert!(!db.start_timecode_unread(m.id).unwrap());
+
+        // Probed before timecodes were read: the info doesn't say.
+        let forget = |db: &ProjectDb| {
+            db.0.write(|tx| {
+                tx.execute("UPDATE media SET info = json_remove(info, '$.startTimecode')", [])?;
+                Ok(())
+            })
+            .unwrap()
+        };
+        forget(&db);
+        assert!(db.start_timecode_unread(m.id).unwrap());
+        db.set_start_timecode(m.id, Some("01:00:00;00")).unwrap();
+        assert!(!db.start_timecode_unread(m.id).unwrap());
+        let info = db.media(m.id).unwrap().unwrap().info.unwrap();
+        assert_eq!(info.start_timecode.as_deref(), Some("01:00:00;00"));
+        assert_eq!(info.audio[0].language.as_deref(), Some("jpn"), "the rest stays");
+        forget(&db);
+        db.set_start_timecode(m.id, None).unwrap();
+        assert!(!db.start_timecode_unread(m.id).unwrap());
+        assert_eq!(db.media(m.id).unwrap().unwrap().info.unwrap().start_timecode, None);
+        assert!(!db.start_timecode_unread(MediaId::new()).unwrap());
     }
 
     #[test]

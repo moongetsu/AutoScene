@@ -85,6 +85,7 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::DynRuntime> {
             commands::export::export_start,
             commands::export::export_plan,
             commands::export::exports_list,
+            commands::export::export_save_list,
             commands::pack::pack_get,
             commands::pack::pack_save,
             commands::pack::pack_preview,

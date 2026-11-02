@@ -1,8 +1,8 @@
 import { useId, useState } from "react"
 import { useNavigate, useParams } from "@tanstack/react-router"
-import { CaretDown, Check, CircleNotch, Clock, Copy, FolderOpen, Package, Play, Prohibit, ShieldWarning, Warning } from "@/components/icons"
+import { CaretDown, Check, CircleNotch, Clock, Copy, FileText, FolderOpen, Package, Play, Prohibit, ShieldWarning, Table, Warning } from "@/components/icons"
 import { toast } from "sonner"
-import type { ExportItem, ExportStatus, ExportSummary, JobInfo, MediaItem, MergedFile } from "@/bindings"
+import type { ExportItem, ExportStatus, ExportSummary, JobInfo, ListFormat, MediaItem, MergedFile } from "@/bindings"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { ContextArea } from "@/components/ui/context-area"
@@ -13,6 +13,7 @@ import { Progress } from "@/components/ui/progress"
 import { Tooltip, TruncatedText } from "@/components/ui/tooltip"
 import { formatBytes, formatDateTime, formatDuration, formatPercent } from "@/lib/format"
 import { commands, errorMessage } from "@/lib/ipc"
+import { pickSaveFile } from "@/lib/media"
 import { copyText, reveal } from "@/lib/os"
 import { firstFailure, useExports, useMediaList, useProject } from "@/lib/queries"
 import { fpsValue, isDropFrameRate, timecode } from "@/lib/timecode"
@@ -84,6 +85,8 @@ function ExportCard({ pid, ex, media }: { pid: string; ex: ExportSummary; media:
   const status = exportStatus(ex, job)
   const running = status === "running" || status === "queued"
   const file = ex.merged
+  // A list names what was made: the clips in the one file, or those done.
+  const listable = file ? file.path != null : done > 0
   const unverified = file
     ? Number(file.path != null && !file.verified)
     : ex.items.filter((i) => i.status === "done" && !i.verified).length
@@ -106,6 +109,13 @@ function ExportCard({ pid, ex, media }: { pid: string; ex: ExportSummary; media:
             </ContextMenuItem>
             <ContextMenuItem onSelect={() => void copyText(ex.outDir, "folder path")}>
               <Copy /> Copy folder path
+            </ContextMenuItem>
+            <ContextMenuSeparator />
+            <ContextMenuItem disabled={!listable} onSelect={() => void saveList(pid, ex, "edl")}>
+              <FileText /> Save EDL…
+            </ContextMenuItem>
+            <ContextMenuItem disabled={!listable} onSelect={() => void saveList(pid, ex, "csv")}>
+              <Table /> Save cut list (CSV)…
             </ContextMenuItem>
           </>
         }
@@ -161,6 +171,33 @@ function ExportCard({ pid, ex, media }: { pid: string; ex: ExportSummary; media:
       </div>
     </section>
   )
+}
+
+const LISTS = {
+  edl: { title: "Save EDL", noun: "EDL", filter: { name: "EDL", extensions: ["edl"] } },
+  csv: { title: "Save cut list", noun: "cut list", filter: { name: "CSV", extensions: ["csv"] } },
+} satisfies Record<ListFormat, { title: string; noun: string; filter: { name: string; extensions: string[] } }>
+
+/** Save an export's clips as an EDL or a cut list, beside its files unless the person picks another place. */
+async function saveList(pid: string, ex: ExportSummary, format: ListFormat) {
+  const { title, noun, filter } = LISTS[format]
+  const name = (ex.merged?.name ?? ex.label ?? ex.preset.name).replace(/[\\/:*?"<>|]+/g, " ").trim() || "AutoScene"
+  const dir = ex.outDir.replace(/[\\/]+$/, "")
+  const sep = dir.includes("\\") ? "\\" : "/"
+  try {
+    const path = await pickSaveFile(title, `${dir}${sep}${name}.${filter.extensions[0]}`, filter)
+    if (!path) return
+    const saved = await commands.exportSaveList(pid, ex.id, format, path)
+    const leftOut =
+      saved.leftOut === 1
+        ? "1 clip was left out: its episode was removed."
+        : saved.leftOut > 1
+          ? `${saved.leftOut} clips were left out: their episodes were removed.`
+          : undefined
+    toast(`Saved the ${noun}`, { description: leftOut, action: { label: "Show in folder", onClick: () => reveal(saved.path) } })
+  } catch (e) {
+    toast.error(`Couldn't save the ${noun}`, { description: errorMessage(e) })
+  }
 }
 
 /** How long the clips run in all, in seconds; `null` while a clip's frame rate isn't known. */

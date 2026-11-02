@@ -1,12 +1,14 @@
 //! Export: turning frame ranges into files editors can trust.
 
 pub mod clip;
+pub mod edl;
 pub mod estimate;
 pub mod lossless;
 pub mod merge;
 pub mod preset;
 
 pub use clip::{ClipJob, ClipOutcome, Part, export_clip};
+pub use edl::{EdlError, EdlEvent, reel_names, write_cmx3600, write_csv};
 pub use estimate::{EstimateClip, estimate_bytes};
 pub use lossless::{LosslessCodec, exact_format};
 pub use merge::{

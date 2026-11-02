@@ -1,5 +1,5 @@
 import { convertFileSrc } from "@tauri-apps/api/core"
-import { open } from "@tauri-apps/plugin-dialog"
+import { open, save } from "@tauri-apps/plugin-dialog"
 import type { MediaInfo, MediaItem } from "@/bindings"
 import { isTauri } from "./platform"
 
@@ -214,6 +214,11 @@ export async function pickVideoFile(title?: string): Promise<string | null> {
 export async function pickFolder(title?: string): Promise<string | null> {
   const picked = await open({ directory: true, multiple: false, title })
   return typeof picked === "string" ? picked : null
+}
+
+/** Where to save a file of `filter`'s kind, starting at `defaultPath`; `null` when cancelled. A file there is replaced (the dialog asks first). */
+export async function pickSaveFile(title: string, defaultPath: string, filter: { name: string; extensions: string[] }): Promise<string | null> {
+  return (await save({ title, defaultPath, filters: [filter] })) ?? null
 }
 
 /** Last path component, for titles suggested from a dropped folder. */

@@ -818,6 +818,27 @@ pub struct ExportSummary {
     pub merged: Option<MergedFile>,
 }
 
+/// What an export's clips are saved as for other apps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum ListFormat {
+    /// A CMX 3600 EDL: editors (DaVinci Resolve, Premiere Pro, Avid) build
+    /// the cut from the episodes with it.
+    Edl,
+    /// A cut list (CSV): the same timecodes, a row per clip, for reading.
+    Csv,
+}
+
+/// An export's clips saved as a list (see [`ListFormat`]).
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedList {
+    /// Where it was saved.
+    pub path: String,
+    /// Clips left out: their episode was removed from the project.
+    pub left_out: u32,
+}
+
 // ---------------------------------------------------------------------------
 // Packs
 // ---------------------------------------------------------------------------

@@ -991,6 +991,7 @@ const handlers: Record<string, Handler> = {
   export_plan: ({ projectId, clips }) => exportPlan(find(projectId), clips as ClipRequest[]),
   // A copy, as IPC hands one over: the same array changed in place reads as unchanged.
   exports_list: ({ projectId }) => structuredClone(find(projectId).exports),
+  export_save_list: ({ path }) => ({ path: String(path), leftOut: 0 }),
   pack_get: ({ projectId, characterId }) => packGet(find(projectId).id, String(characterId)),
   pack_save: ({ projectId, characterId, pack }) => {
     packSave(find(projectId).id, String(characterId), pack as PackState)
@@ -1076,6 +1077,7 @@ const handlers: Record<string, Handler> = {
     const files = [String.raw`D:\Video\Spy x Family - 01 [1080p].mkv`, String.raw`D:\Video\Spy x Family - 02 [1080p].mkv`]
     return o.multiple ? files : files[0]
   },
+  "plugin:dialog|save": ({ options }) => (options as { defaultPath?: string } | undefined)?.defaultPath ?? null,
 }
 
 export function installMockBackend() {

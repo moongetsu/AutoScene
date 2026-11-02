@@ -1,17 +1,32 @@
 import type * as React from "react"
-import { cleanup, fireEvent, render, screen } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { toast } from "sonner"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { ExportItem, ExportStatus, ExportSummary, JobInfo, MediaItem } from "@/bindings"
+import { AppMenu } from "@/components/shell/AppMenu"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { useActivity } from "@/state/activity"
 import { ExportsPage } from "./ExportsPage"
 
-const { list } = vi.hoisted(() => ({ list: { exports: [] as ExportSummary[], media: [] as MediaItem[] } }))
+const { list, pickSaveFile, exportSaveList, reveal } = vi.hoisted(() => ({
+  list: { exports: [] as ExportSummary[], media: [] as MediaItem[] },
+  pickSaveFile: vi.fn(),
+  exportSaveList: vi.fn(),
+  reveal: vi.fn(),
+}))
 
 vi.mock("@tanstack/react-router", () => ({
   useParams: () => ({ pid: "p" }),
   useNavigate: () => vi.fn(),
+  useCanGoBack: () => false,
 }))
+vi.mock("@/lib/media", async (importOriginal) => ({ ...(await importOriginal<typeof import("@/lib/media")>()), pickSaveFile }))
+vi.mock("@/lib/ipc", async (importOriginal) => {
+  const ipc = await importOriginal<typeof import("@/lib/ipc")>()
+  return { ...ipc, commands: { ...ipc.commands, exportSaveList } }
+})
+vi.mock("@/lib/os", async (importOriginal) => ({ ...(await importOriginal<typeof import("@/lib/os")>()), reveal }))
+vi.mock("sonner", () => ({ toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn() }) }))
 // The page around it scrolls and collects menus; here only the cards matter.
 vi.mock("@/components/ui/page", () => ({ Page: ({ children }: { children: React.ReactNode }) => <main>{children}</main> }))
 vi.mock("@/lib/queries", () => ({
@@ -34,10 +49,26 @@ function show(ex: ExportSummary, j?: JobInfo, media: MediaItem[] = []) {
   list.exports = [ex]
   list.media = media
   useActivity.setState(j ? { jobs: { [j.id]: j }, order: [j.id] } : { jobs: {}, order: [] })
-  render(<ExportsPage />, { wrapper: TooltipProvider })
+  render(
+    <AppMenu>
+      <div>
+        <ExportsPage />
+      </div>
+    </AppMenu>,
+    { wrapper: TooltipProvider },
+  )
 }
 
-beforeEach(() => useActivity.setState({ jobs: {}, order: [] }))
+/** The export card's menu, opened from its header. */
+async function openMenu() {
+  fireEvent.contextMenu(screen.getByRole("heading", { level: 2 }), { clientX: 40, clientY: 40 })
+  await screen.findByRole("menu")
+}
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  useActivity.setState({ jobs: {}, order: [] })
+})
 afterEach(cleanup)
 
 describe("an export's card", () => {
@@ -96,5 +127,88 @@ describe("an export's clip list", () => {
     show(exported("done", six("done").slice(0, 4)))
     expect(screen.queryByRole("button", { name: /clips/ })).toBeNull()
     expect(screen.getAllByText(/^Clip_/)).toHaveLength(4)
+  })
+})
+
+describe("an export's edit lists", () => {
+  const entry = (name: string) => screen.getByRole("menuitem", { name })
+  const merged = (path: string | null): ExportSummary => ({
+    ...exported("running", [item(1, "done")]),
+    merged: { name: "Walter", path, verified: false, bytes: null, error: null },
+  })
+
+  it("offers Save EDL… once a clip is done", async () => {
+    show(exported("running", [item(1, "running"), item(2, "queued")]), job("running", 0.1))
+    await openMenu()
+    expect(entry("Save EDL…").getAttribute("aria-disabled")).toBe("true")
+    expect(entry("Save cut list (CSV)…").getAttribute("aria-disabled")).toBe("true")
+    cleanup()
+
+    show(exported("running", [item(1, "done"), item(2, "running")]), job("running", 0.6))
+    await openMenu()
+    expect(entry("Save EDL…").getAttribute("aria-disabled")).toBeNull()
+    expect(entry("Save cut list (CSV)…").getAttribute("aria-disabled")).toBeNull()
+    cleanup()
+
+    // One file: not before it's made, however many clips are done.
+    show(merged(null), job("running", 0.9))
+    await openMenu()
+    expect(entry("Save EDL…").getAttribute("aria-disabled")).toBe("true")
+    cleanup()
+
+    show(merged(String.raw`C:\Out\Walter.mp4`), job("done", 1))
+    await openMenu()
+    expect(entry("Save EDL…").getAttribute("aria-disabled")).toBeNull()
+    expect(entry("Save cut list (CSV)…").getAttribute("aria-disabled")).toBeNull()
+  })
+
+  it("saves the EDL where the person chose", async () => {
+    pickSaveFile.mockResolvedValue(String.raw`D:\Edit\Walter.edl`)
+    exportSaveList.mockResolvedValue({ path: String.raw`D:\Edit\Walter.edl`, leftOut: 0 })
+    show({ ...exported("done", [item(1, "done")]), label: "Walter · scenepack" })
+    await openMenu()
+    fireEvent.click(entry("Save EDL…"))
+    // Offered beside the export's files, named after it.
+    await waitFor(() => expect(exportSaveList).toHaveBeenCalledWith("p", "e1", "edl", String.raw`D:\Edit\Walter.edl`))
+    expect(pickSaveFile).toHaveBeenCalledWith("Save EDL", String.raw`C:\Out\Walter · scenepack.edl`, { name: "EDL", extensions: ["edl"] })
+    // Said, with the way to it.
+    await waitFor(() => expect(toast).toHaveBeenCalledOnce())
+    const [title, options] = vi.mocked(toast).mock.calls[0] as [string, { description?: string; action: { label: string; onClick: () => void } }]
+    expect([title, options.description, options.action.label]).toEqual(["Saved the EDL", undefined, "Show in folder"])
+    options.action.onClick()
+    expect(reveal).toHaveBeenCalledWith(String.raw`D:\Edit\Walter.edl`)
+  })
+
+  it("saves a cut list as a CSV, and says which clips it left out", async () => {
+    pickSaveFile.mockResolvedValue("/home/me/Walter.csv")
+    exportSaveList.mockResolvedValue({ path: "/home/me/Walter.csv", leftOut: 2 })
+    show({ ...exported("done", [item(1, "done")]), outDir: "/home/me/Out/" })
+    await openMenu()
+    fireEvent.click(entry("Save cut list (CSV)…"))
+    await waitFor(() => expect(exportSaveList).toHaveBeenCalledWith("p", "e1", "csv", "/home/me/Walter.csv"))
+    expect(pickSaveFile).toHaveBeenCalledWith("Save cut list", "/home/me/Out/ProRes 422 HQ.csv", { name: "CSV", extensions: ["csv"] })
+    await waitFor(() =>
+      expect(toast).toHaveBeenCalledWith("Saved the cut list", expect.objectContaining({ description: "2 clips were left out: their episodes were removed." })),
+    )
+  })
+
+  it("says why a list couldn't be saved, and nothing when the dialog is closed", async () => {
+    pickSaveFile.mockResolvedValue(null)
+    show(exported("done", [item(1, "done")]))
+    await openMenu()
+    fireEvent.click(entry("Save EDL…"))
+    await waitFor(() => expect(pickSaveFile).toHaveBeenCalledOnce())
+    expect(exportSaveList).not.toHaveBeenCalled()
+    cleanup()
+
+    pickSaveFile.mockResolvedValue(String.raw`D:\Edit\Walter.edl`)
+    exportSaveList.mockRejectedValue({ code: "invalid", message: "Clips of different frame rates can't share one EDL." })
+    show(exported("done", [item(1, "done")]))
+    await openMenu()
+    fireEvent.click(entry("Save EDL…"))
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith("Couldn't save the EDL", { description: "Clips of different frame rates can't share one EDL." }),
+    )
+    expect(toast).not.toHaveBeenCalled()
   })
 })

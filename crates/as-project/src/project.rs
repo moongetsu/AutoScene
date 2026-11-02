@@ -7,17 +7,18 @@ use std::time::SystemTime;
 
 use as_api::{
     ClipRequest, ContentKind, ExportItem, ExportPlan, ExportRequest, ExportStatus, ExportSummary, FrameMap,
-    ImportCandidate, MediaItem, MediaStatus, MergedFile, PresetSize, ProjectKind, ProjectSummary, ProxyState, Relink,
-    RelinkSummary,
+    ImportCandidate, ListFormat, MediaItem, MediaStatus, MergedFile, PresetSize, ProjectKind, ProjectSummary,
+    ProxyState, Relink, RelinkSummary,
 };
-use as_core::{CancelToken, ExportId, FrameCount, FrameIndex, FrameRange, MediaId, ProjectId};
+use as_core::{CancelToken, ExportId, FrameCount, FrameIndex, FrameRange, MediaId, ProjectId, Timecode};
 use as_db::{IngestRecord, NewExportItem, ProjectDb, Relinked};
 use as_export::LosslessCodec;
 use as_export::clip::PARTIAL_DIR;
-use as_export::preset::VideoCodec;
+use as_export::preset::{AudioCodec, VideoCodec};
 use as_export::{
-    ClipJob, EstimateClip, ExportPreset, JoinJob, JoinPart, MergeSource, Part, estimate_bytes, exact_format,
-    export_clip, join_parts, lossless_merge_blocker, plan_lossless_merge, plan_merge,
+    ClipJob, EdlError, EdlEvent, EstimateClip, ExportPreset, JoinJob, JoinPart, MergeSource, Part, estimate_bytes,
+    exact_format, export_clip, join_parts, lossless_merge_blocker, plan_lossless_merge, plan_merge, reel_names,
+    write_cmx3600, write_csv,
 };
 use as_media::poster::{StillSize, extract_frame_jpegs};
 use as_media::{Caps, MediaInfo, MediaResult, Source, Tools, build_frame_index, idet, probe, proxy};
@@ -1171,6 +1172,120 @@ impl Project {
         Ok(self.db.exports(self.id)?)
     }
 
+    /// An export's clips as a list for other apps (see [`as_export::edl`]):
+    /// the clips in its one file, or those of a file per clip that are done,
+    /// in their order, pointing at their episodes (also ones missing for
+    /// now), with how many clips were left out because their episode was
+    /// removed from the project. An episode's start timecode is the one its
+    /// info has; for one probed before AutoScene read it, its file's, read
+    /// once when `tools` are given and the file is there, and kept.
+    pub fn export_list_file(
+        &self,
+        id: ExportId,
+        format: ListFormat,
+        tools: Option<&Tools>,
+    ) -> ProjectResult<(String, u32)> {
+        let list = match format {
+            ListFormat::Edl => "EDL",
+            ListFormat::Csv => "cut list",
+        };
+        let ex = self.export(id)?;
+        let made: Vec<&ExportItem> = match &ex.merged {
+            Some(file) => ex.items.iter().filter(|i| file.path.is_some() && i.path == file.path).collect(),
+            None => ex.items.iter().filter(|i| i.status == ExportStatus::Done).collect(),
+        };
+        if made.is_empty() {
+            return Err(ProjectError::Invalid("No clip of this export has finished yet.".into()));
+        }
+        // Each episode once, however many clips it gives, with its start.
+        let mut episodes: HashMap<MediaId, (MediaItem, Option<Timecode>)> = HashMap::new();
+        let mut removed = HashSet::new();
+        let mut names = Vec::new();
+        let mut rates = HashSet::new();
+        for item in &made {
+            if removed.contains(&item.media_id) {
+                continue;
+            }
+            let std::collections::hash_map::Entry::Vacant(e) = episodes.entry(item.media_id) else { continue };
+            let m = match self.media(item.media_id) {
+                Ok(m) => m,
+                // Removed from the project since: there's nothing to point at.
+                Err(ProjectError::NotFound(_)) => {
+                    removed.insert(item.media_id);
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
+            rates
+                .insert(m.fps.ok_or_else(|| ProjectError::Invalid("An episode of this export isn't indexed.".into()))?);
+            names.push((m.id, episode_name(&m)));
+            e.insert((m, None));
+        }
+        let items: Vec<&ExportItem> = made.iter().copied().filter(|i| !removed.contains(&i.media_id)).collect();
+        if items.is_empty() {
+            return Err(ProjectError::Invalid("This export's episodes were removed from the project.".into()));
+        }
+        let left_out = (made.len() - items.len()) as u32;
+        let rate = match rates.into_iter().collect::<Vec<_>>()[..] {
+            [rate] => rate,
+            _ => return Err(ProjectError::Invalid(format!("Clips of different frame rates can't share one {list}."))),
+        };
+        for (m, start) in episodes.values_mut() {
+            let path = Path::new(&m.path);
+            let mut tag = m.info.as_ref().and_then(|i| i.start_timecode.clone());
+            if tag.is_none()
+                && let Some(tools) = tools
+                && self.db.start_timecode_unread(m.id)?
+                && path.is_file()
+            {
+                match probe::start_timecode(tools, path) {
+                    Ok(read) => {
+                        self.db.set_start_timecode(m.id, read.as_deref())?;
+                        tag = read;
+                    }
+                    Err(e) => {
+                        tracing::warn!(file = %m.file_name, error = %e.detail(), "couldn't read a start timecode")
+                    }
+                }
+            }
+            // A tag that is no timecode at the episode's rate counts as none.
+            *start = tag.and_then(|t| Timecode::parse(&t, rate).ok());
+        }
+        let reels = reel_names(&names);
+        let sound = !matches!(ex.preset.audio, AudioCodec::None);
+        let events: Vec<EdlEvent> = items
+            .iter()
+            .map(|i| {
+                let (m, start) = &episodes[&i.media_id];
+                EdlEvent {
+                    reel: reels[&m.id].clone(),
+                    clip_name: m.file_name.clone(),
+                    source_path: m.path.clone(),
+                    fps: rate,
+                    src_start: *start,
+                    start: u64::from(i.start),
+                    end: u64::from(i.end),
+                    audio: sound && m.info.as_ref().is_some_and(|info| !info.audio.is_empty()),
+                }
+            })
+            .collect();
+        let text = match format {
+            ListFormat::Edl => write_cmx3600(ex.label.as_deref().unwrap_or(&ex.preset.name), &events).map_err(|e| {
+                ProjectError::Invalid(match e {
+                    EdlError::PastMidnight(i) => {
+                        format!(
+                            "{} runs past midnight in its episode's timecode, which an EDL can't hold.",
+                            items[i].name
+                        )
+                    }
+                    EdlError::TooLong => "These clips run longer than the 23 hours an EDL can hold.".into(),
+                })
+            })?,
+            ListFormat::Csv => write_csv(&events),
+        };
+        Ok((text, left_out))
+    }
+
     /// Render every clip of an export (and join them into one file, if it
     /// asks for that). A failing clip doesn't stop the others; cancelling
     /// marks the remaining clips cancelled. `changed` runs whenever a clip
@@ -1866,6 +1981,289 @@ mod tests {
         project.db().set_export_status(ex.id, ExportStatus::Running).unwrap();
         project.cancel_unstarted_export(ex.id).unwrap();
         assert_eq!(project.export(ex.id).unwrap().status, ExportStatus::Running);
+    }
+
+    /// `m` indexed as 2400 frames at `fps`, its file starting at `timecode`.
+    fn index_at(project: &Project, m: MediaId, fps: Rational, timecode: Option<&str>) {
+        index_with(
+            project,
+            m,
+            fps,
+            MediaInfo { start_timecode: timecode.map(Into::into), ..crate::analysis::tests::info() },
+        );
+    }
+
+    /// `m` indexed as 2400 frames at `fps`, with `info`.
+    fn index_with(project: &Project, m: MediaId, fps: Rational, info: MediaInfo) {
+        let rec = as_db::IngestRecord {
+            info,
+            frames: 2400,
+            duration_sec: 2400.0 / fps.to_f64(),
+            fps,
+            vfr: false,
+            interlaced: false,
+            proxy: ProxyState::NotNeeded,
+            poster: None,
+            poster_small: None,
+            index_blob: FrameIndex::cfr(fps.recip(), fps, 0, 2400).to_bytes(),
+            audio_ordinal: None,
+        };
+        project.db().record_ingest(m, &rec).unwrap();
+    }
+
+    /// An export of `clips` (episode, start, end) with the H.264 preset;
+    /// `file`: joined into one of that name.
+    fn record_export(
+        project: &Project,
+        out: &Path,
+        file: Option<&str>,
+        clips: &[(MediaId, u32, u32)],
+    ) -> ExportSummary {
+        let preset = as_export::builtin_presets().into_iter().find(|p| p.id == "h264-edit").unwrap();
+        record_export_as(project, &preset, out, file, clips)
+    }
+
+    fn record_export_as(
+        project: &Project,
+        preset: &ExportPreset,
+        out: &Path,
+        file: Option<&str>,
+        clips: &[(MediaId, u32, u32)],
+    ) -> ExportSummary {
+        let merged =
+            file.map(|name| MergedFile { name: name.into(), path: None, verified: false, bytes: None, error: None });
+        let items: Vec<NewExportItem> = clips
+            .iter()
+            .enumerate()
+            .map(|(i, &(media_id, start, end))| NewExportItem {
+                media_id,
+                start,
+                end,
+                name: format!("Clip {}", i + 1),
+                audio_ordinal: None,
+            })
+            .collect();
+        let id = ExportId::new();
+        let out = out.display().to_string();
+        project.db().insert_export(id, preset, &out, Some("Walter · scenepack"), merged.as_ref(), &items).unwrap();
+        project.export(id).unwrap()
+    }
+
+    /// Every clip of `ex` done.
+    fn all_done(project: &Project, ex: &ExportSummary) {
+        for item in &ex.items {
+            project.db().update_export_item(item.id, ExportStatus::Done, None, None).unwrap();
+        }
+    }
+
+    fn add_episode(project: &Project, dir: &Path, name: &str) -> MediaId {
+        let file = dir.join(name);
+        std::fs::write(&file, b"x").unwrap();
+        let new = as_db::NewMedia {
+            id: MediaId::new(),
+            path: file.display().to_string(),
+            file_name: name.into(),
+            size_bytes: 1,
+            mtime: None,
+            season: Some(1),
+            episode: Some(2),
+        };
+        project.db().add_media(&[new]).unwrap()[0]
+    }
+
+    #[test]
+    fn edl_lists_only_the_clips_in_the_merged_file() {
+        let (dir, project, m) = crate::analysis::tests::project_with_media(2400);
+        index_at(&project, m, Rational::new(24, 1), Some("01:00:00:00"));
+        let ex = record_export(&project, dir.path(), Some("Cut"), &[(m, 0, 24), (m, 48, 96), (m, 240, 264)]);
+        // Until the file is made there's nothing to list.
+        let e = project.export_list_file(ex.id, ListFormat::Edl, None).unwrap_err();
+        assert!(matches!(&e, ProjectError::Invalid(s) if s == "No clip of this export has finished yet."), "{e:?}");
+
+        // The second clip failed: the file was made without it.
+        let file = MergedFile { path: Some(dir.path().join("Cut.mp4").display().to_string()), ..ex.merged.unwrap() };
+        project.db().set_export_merged(ex.id, &file, &[ex.items[0].id, ex.items[2].id]).unwrap();
+        let source = project.media(m).unwrap().path;
+        let (edl, left_out) = project.export_list_file(ex.id, ListFormat::Edl, None).unwrap();
+        assert_eq!(left_out, 0);
+        assert_eq!(
+            edl,
+            format!(
+                "TITLE: Walter _ scenepack\r\n\
+                 FCM: NON-DROP FRAME\r\n\
+                 \r\n\
+                 001  E01      V     C        01:00:00:00 01:00:01:00 01:00:00:00 01:00:01:00\r\n\
+                 * FROM CLIP NAME: Show - 01.mkv\r\n\
+                 * SOURCE FILE: {source}\r\n\
+                 \r\n\
+                 002  E01      V     C        01:00:10:00 01:00:11:00 01:00:01:00 01:00:02:00\r\n\
+                 * FROM CLIP NAME: Show - 01.mkv\r\n\
+                 * SOURCE FILE: {source}\r\n\
+                 \r\n"
+            )
+        );
+        let (csv, _) = project.export_list_file(ex.id, ListFormat::Csv, None).unwrap();
+        let rows: Vec<&str> = csv.split("\r\n").skip(1).filter(|r| !r.is_empty()).collect();
+        assert_eq!(rows.len(), 2);
+        assert!(rows[1].starts_with("2,E01,Show - 01.mkv,"), "{csv}");
+        assert!(rows[1].ends_with(",01:00:10:00,01:00:11:00,01:00:01:00,01:00:02:00,00:00:01:00,24,No,"), "{csv}");
+    }
+
+    #[test]
+    fn edl_refuses_clips_of_different_rates() {
+        let (dir, project, m) = crate::analysis::tests::project_with_media(2400);
+        let other = add_episode(&project, dir.path(), "Show - 02.mkv");
+        // One not indexed yet has no rate to count at.
+        let ex = record_export(&project, dir.path(), None, &[(m, 0, 24), (other, 0, 24)]);
+        all_done(&project, &ex);
+        let e = project.export_list_file(ex.id, ListFormat::Edl, None).unwrap_err();
+        assert!(matches!(&e, ProjectError::Invalid(s) if s == "An episode of this export isn't indexed."), "{e:?}");
+
+        index_at(&project, other, Rational::new(25, 1), None);
+        let e = project.export_list_file(ex.id, ListFormat::Edl, None).unwrap_err();
+        assert!(matches!(&e, ProjectError::Invalid(s) if s == "Clips of different frame rates can't share one EDL."));
+        let e = project.export_list_file(ex.id, ListFormat::Csv, None).unwrap_err();
+        assert_eq!(e.to_string(), "Clips of different frame rates can't share one cut list.");
+
+        // At one rate they share one, each with its own reel.
+        index_at(&project, other, Rational::new(24, 1), None);
+        let (edl, _) = project.export_list_file(ex.id, ListFormat::Edl, None).unwrap();
+        assert!(edl.contains("\r\n001  E01      V "), "{edl}");
+        assert!(edl.contains("\r\n002  S01E02   V "), "{edl}");
+    }
+
+    #[test]
+    fn edl_works_while_an_episode_is_missing() {
+        let (dir, project, m) = crate::analysis::tests::project_with_media(2400);
+        let ex = record_export(&project, dir.path(), None, &[(m, 0, 24), (m, 48, 96)]);
+        project.db().update_export_item(ex.items[1].id, ExportStatus::Done, None, None).unwrap();
+        let source = project.media(m).unwrap().path;
+        std::fs::remove_file(&source).unwrap();
+        assert_eq!(project.media(m).unwrap().status, MediaStatus::Missing);
+        // Only the clip that is done, from an episode whose start isn't known.
+        let (edl, _) = project.export_list_file(ex.id, ListFormat::Edl, None).unwrap();
+        assert!(
+            edl.ends_with(&format!(
+                "\r\n001  E01      V     C        00:00:02:00 00:00:04:00 01:00:00:00 01:00:02:00\r\n\
+                 * FROM CLIP NAME: Show - 01.mkv\r\n\
+                 * SOURCE FILE: {source}\r\n\
+                 * NOTE: SOURCE TIMECODE UNKNOWN, COUNTED FROM 00:00:00:00\r\n\
+                 \r\n"
+            )),
+            "{edl}"
+        );
+    }
+
+    #[test]
+    fn edl_leaves_out_the_clips_of_removed_episodes() {
+        let (dir, project, m) = crate::analysis::tests::project_with_media(2400);
+        let other = add_episode(&project, dir.path(), "Show - 02.mkv");
+        index_at(&project, other, Rational::new(24, 1), None);
+        let ex = record_export(&project, dir.path(), None, &[(other, 0, 24), (m, 0, 24), (other, 48, 72)]);
+        all_done(&project, &ex);
+        project.remove_media(other).unwrap();
+        // The other clips still go in, one after another.
+        let (edl, left_out) = project.export_list_file(ex.id, ListFormat::Edl, None).unwrap();
+        assert_eq!(left_out, 2);
+        let events: Vec<&str> = edl.split("\r\n").filter(|l| l.starts_with(|c: char| c.is_ascii_digit())).collect();
+        assert_eq!(events, ["001  E01      V     C        00:00:00:00 00:00:01:00 01:00:00:00 01:00:01:00"]);
+
+        project.remove_media(m).unwrap();
+        let e = project.export_list_file(ex.id, ListFormat::Csv, None).unwrap_err();
+        assert!(
+            matches!(&e, ProjectError::Invalid(s) if s == "This export's episodes were removed from the project."),
+            "{e:?}"
+        );
+    }
+
+    #[test]
+    fn edl_gives_sound_and_a_drop_frame_start() {
+        let (dir, project, m) = crate::analysis::tests::project_with_media(2400);
+        let ntsc = Rational::new(30000, 1001);
+        let audio = as_api::AudioStream {
+            index: 1,
+            ordinal: 0,
+            codec: "aac".into(),
+            profile: None,
+            channels: 2,
+            channel_layout: None,
+            sample_rate: 48000,
+            language: None,
+            title: None,
+            default: true,
+            commentary: false,
+        };
+        let info = MediaInfo {
+            start_timecode: Some("00:59:59;28".into()),
+            audio: vec![audio],
+            ..crate::analysis::tests::info()
+        };
+        index_with(&project, m, ntsc, info);
+        // The H.264 preset has sound, and so has the episode.
+        let ex = record_export(&project, dir.path(), None, &[(m, 0, 30)]);
+        all_done(&project, &ex);
+        let (edl, _) = project.export_list_file(ex.id, ListFormat::Edl, None).unwrap();
+        assert!(edl.contains("\r\nFCM: DROP FRAME\r\n"), "{edl}");
+        assert!(
+            edl.contains("\r\n001  E01      AA/V  C        00:59:59;28 01:00:00;28 01:00:00;00 01:00:01;00\r\n"),
+            "{edl}"
+        );
+        assert!(!edl.contains("NOTE"), "{edl}");
+        // A preset without sound makes none.
+        let silent = ExportPreset { audio: AudioCodec::None, ..ex.preset.clone() };
+        let ex = record_export_as(&project, &silent, dir.path(), None, &[(m, 0, 30)]);
+        all_done(&project, &ex);
+        let (edl, _) = project.export_list_file(ex.id, ListFormat::Edl, None).unwrap();
+        assert!(edl.contains("\r\n001  E01      V     C        00:59:59;28 "), "{edl}");
+    }
+
+    #[test]
+    fn edl_names_a_clip_that_runs_past_midnight() {
+        let (dir, project, m) = crate::analysis::tests::project_with_media(2400);
+        index_at(&project, m, Rational::new(24, 1), Some("23:59:59:00"));
+        // The first ends on the day's last frame.
+        let ex = record_export(&project, dir.path(), None, &[(m, 0, 23), (m, 0, 48)]);
+        all_done(&project, &ex);
+        let e = project.export_list_file(ex.id, ListFormat::Edl, None).unwrap_err();
+        assert_eq!(e.to_string(), "Clip 2 runs past midnight in its episode's timecode, which an EDL can't hold.");
+        // A cut list gives it as it is.
+        let (csv, _) = project.export_list_file(ex.id, ListFormat::Csv, None).unwrap();
+        assert!(csv.contains("\r\n2,E01,Show - 01.mkv,"), "{csv}");
+        assert!(csv.contains(",23:59:59:00,00:00:01:00,01:00:00:23,01:00:02:23,"), "{csv}");
+    }
+
+    #[test]
+    fn edl_reads_the_start_timecode_of_an_older_episode_once() {
+        let tools = Tools::locate(None).expect("ffmpeg on PATH");
+        let (dir, project, m) = crate::analysis::tests::project_with_media(2400);
+        let ntsc = Rational::new(30000, 1001);
+        let source = project.media(m).unwrap().path;
+        // A MOV with a timecode track, under the episode's name.
+        let made = tools
+            .ffmpeg()
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=duration=1:size=64x64:rate=30000/1001"])
+            .args(["-c:v", "mpeg4", "-timecode", "01:00:00;00", "-f", "mov"])
+            .arg(&source)
+            .output()
+            .unwrap();
+        assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
+        index_at(&project, m, ntsc, None);
+        let ex = record_export(&project, dir.path(), None, &[(m, 0, 30)]);
+        all_done(&project, &ex);
+        // Probed since AutoScene reads timecodes: the file had none then, and isn't asked again.
+        let (edl, _) = project.export_list_file(ex.id, ListFormat::Edl, Some(&tools)).unwrap();
+        assert!(edl.contains(" 00:00:00;00 00:00:01;00 01:00:00;00 01:00:01;00\r\n"), "{edl}");
+        assert!(edl.contains("* NOTE: SOURCE TIMECODE UNKNOWN"), "{edl}");
+
+        // Probed before: read from the file, and kept.
+        let db = rusqlite::Connection::open(project.dir.join(crate::project::PROJECT_DB)).unwrap();
+        db.execute("UPDATE media SET info = json_remove(info, '$.startTimecode')", []).unwrap();
+        let (edl, _) = project.export_list_file(ex.id, ListFormat::Edl, Some(&tools)).unwrap();
+        assert!(edl.contains(" 01:00:00;00 01:00:01;00 01:00:00;00 01:00:01;00\r\n"), "{edl}");
+        assert!(!edl.contains("NOTE"), "{edl}");
+        assert_eq!(project.media(m).unwrap().info.unwrap().start_timecode.as_deref(), Some("01:00:00;00"));
+        std::fs::remove_file(&source).unwrap();
+        assert_eq!(project.export_list_file(ex.id, ListFormat::Edl, Some(&tools)).unwrap().0, edl);
     }
 
     #[test]

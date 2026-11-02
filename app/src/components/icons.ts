@@ -74,6 +74,7 @@ export {
   SpeakerSlash,
   Square,
   SquaresFour,
+  Table,
   Television,
   Trash,
   User,
