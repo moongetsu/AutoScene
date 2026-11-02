@@ -84,7 +84,17 @@ pub fn run_hook(
         c
     } else {
         let mut c = Command::new("sh");
-        c.args(["-c", &expanded_cmd]);
+        // Check if the command starts with an existing file (like a script path with spaces)
+        let trimmed_cmd = expanded_cmd.trim();
+        let path = Path::new(trimmed_cmd);
+        if path.exists() {
+            c.arg("-c");
+            c.arg("\"$1\"");
+            c.arg("--");
+            c.arg(trimmed_cmd);
+        } else {
+            c.args(["-c", trimmed_cmd]);
+        }
         c
     };
 
