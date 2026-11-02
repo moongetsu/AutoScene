@@ -1,28 +1,19 @@
 #!/usr/bin/env sh
 set -e
 
-# AutoScene Export Summary Logger
-# Receives the export metadata JSON via the AUTOSCENE_META environment variable or argument.
+# AutoScene Desktop Notification & Sound Extension
+# Plays a sound and shows a native macOS notification dialog when run.
 
-META_FILE="${AUTOSCENE_META:-$1}"
+TITLE="AutoScene Extension"
+MESSAGE="Export completed! Extension executed successfully."
 
-echo "========================================"
-echo " [AutoScene Extension] Export Logger"
-echo "========================================"
-
-if [ -f "$META_FILE" ]; then
-    echo "Metadata payload located at: $META_FILE"
-    echo "Contents:"
-    cat "$META_FILE"
-    echo ""
-    # Write a summary log in the output directory
-    echo "Export completed successfully at $(date)" > "export_summary.log"
-    echo "Logged to export_summary.log"
-else
-    echo "No metadata file provided, executing standalone test."
-    echo "Current working directory: $(pwd)"
+# 1. Native macOS Notification Banner
+if command -v osascript >/dev/null 2>&1; then
+    osascript -e "display notification \"$MESSAGE\" with title \"$TITLE\" sound name \"Glass\""
 fi
 
-echo "Extension finished successfully."
-exit 0
+# 2. Touch a proof file in the current folder
+echo "Extension ran at $(date)" > "extension_test_success.txt"
 
+echo "Extension execution complete!"
+exit 0

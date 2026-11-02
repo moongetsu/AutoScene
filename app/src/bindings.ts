@@ -33,6 +33,8 @@ export const commands = {
 	openExtensionsDir: () => __TAURI_INVOKE<null>("open_extensions_dir"),
 	/**  List extensions installed in the extensions folder. */
 	extensionsList: () => __TAURI_INVOKE<InstalledExtension_Serialize[]>("extensions_list"),
+	/**  Run an extension directly to test its execution. */
+	extensionTest: (id: string) => __TAURI_INVOKE<string>("extension_test", { id }),
 	/**
 	 *  Put the person's keys (Settings → Shortcuts) on the macOS menu, which
 	 *  answers them there before the page sees them: `keys` maps a menu item's id

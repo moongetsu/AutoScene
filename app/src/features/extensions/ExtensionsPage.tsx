@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react"
-import { ArrowCounterClockwise, FolderOpen, MagnifyingGlass, Package } from "@/components/icons"
+import { ArrowCounterClockwise, FolderOpen, MagnifyingGlass, Package, Play } from "@/components/icons"
 import { toast } from "sonner"
 import type { ExtensionKind, InstalledExtension } from "@/bindings"
 import { Button } from "@/components/ui/button"
@@ -219,6 +219,19 @@ function ExtensionCard({
   onToggle: (enabled: boolean) => void
 }) {
   const { manifest } = extension
+  const [testing, setTesting] = useState(false)
+
+  const runTest = async () => {
+    setTesting(true)
+    try {
+      const res = await commands.extensionTest(manifest.id)
+      toast.success(res)
+    } catch (e) {
+      toast.error("Extension test failed", { description: errorMessage(e) })
+    } finally {
+      setTesting(false)
+    }
+  }
 
   return (
     <div
@@ -253,19 +266,27 @@ function ExtensionCard({
         <p className="mt-3 text-sm leading-relaxed text-fg-3">{manifest.description}</p>
       </div>
 
-      <div className="mt-4 pt-3 border-t border-white/[0.06]">
-        <div className="flex items-center justify-between text-xs text-fg-4">
-          <span className="font-mono truncate">{manifest.entrypoint}</span>
-          <div className="flex flex-wrap gap-1">
-            {manifest.capabilities.map((cap) => (
-              <span
-                key={cap}
-                className="rounded border border-white/[0.08] bg-white/[0.03] px-1.5 py-0.5 text-[10px] text-fg-3"
-              >
-                {cap}
-              </span>
-            ))}
-          </div>
+      <div className="mt-4 pt-3 border-t border-white/[0.06] flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={runTest}
+            disabled={!enabled || testing}
+          >
+            <Play /> {testing ? "Running…" : "Run Test"}
+          </Button>
+          <span className="font-mono text-xs text-fg-4 truncate max-w-[150px]">{manifest.entrypoint}</span>
+        </div>
+        <div className="flex flex-wrap gap-1">
+          {manifest.capabilities.map((cap) => (
+            <span
+              key={cap}
+              className="rounded border border-white/[0.08] bg-white/[0.03] px-1.5 py-0.5 text-[10px] text-fg-3"
+            >
+              {cap}
+            </span>
+          ))}
         </div>
       </div>
     </div>

@@ -152,6 +152,35 @@ pub fn extensions_list() -> Vec<as_api::InstalledExtension> {
     as_export::discover_extensions(&dir)
 }
 
+/// Run an extension directly to test its execution.
+#[tauri::command]
+#[specta::specta]
+pub fn extension_test(id: String) -> AppResult<String> {
+    let dir = AppPaths::resolve().extensions();
+    let installed = as_export::discover_extensions(&dir);
+    let ext = installed
+        .into_iter()
+        .find(|e| e.manifest.id == id)
+        .ok_or_else(|| AppError::new(ErrorCode::NotFound, "Extension not found"))?;
+
+    let dummy_payload = as_export::PostExportPayload {
+        export_id: "test-run".into(),
+        project_id: "manual-test".into(),
+        project_title: Some("Manual Test Run".into()),
+        out_dir: ext.path.clone(),
+        clip_count: 1,
+        output_files: vec![],
+        completed_at: as_api::now_ms() as u64,
+    };
+
+    let cancel = as_core::CancelToken::new();
+    let scratch = AppPaths::resolve().cache().join("test_extension");
+    as_export::run_hook(&ext.entrypoint_path, &dummy_payload, &scratch, &cancel, Some(std::time::Duration::from_secs(10)))
+        .map_err(|e| AppError::new(ErrorCode::Invalid, format!("Extension failed: {e}")))?;
+
+    Ok("Extension test ran successfully!".into())
+}
+
 /// Open the logs folder (Settings → About, Help menu on Windows).
 #[tauri::command]
 #[specta::specta]
