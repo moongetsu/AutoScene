@@ -6,11 +6,13 @@ pub mod hook;
 pub mod lossless;
 pub mod merge;
 pub mod preset;
+pub mod timeline;
 
 pub use clip::{ClipJob, ClipOutcome, Part, export_clip};
 pub use estimate::{EstimateClip, estimate_bytes};
 pub use hook::{PostExportPayload, run_hook};
 pub use lossless::{LosslessCodec, exact_format};
+pub use timeline::{TimelineClip, export_cmx3600_edl, export_davinci_csv};
 pub use merge::{
     JoinJob, JoinPart, LosslessShape, MergePlan, MergeShape, MergeSource, PartTiming, join_parts,
     lossless_merge_blocker, plan_lossless_merge, plan_merge,
