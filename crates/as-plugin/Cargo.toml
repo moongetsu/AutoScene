@@ -15,4 +15,10 @@ serde.workspace = true
 serde_json.workspace = true
 specta.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 semver.workspace = true
+sha2.workspace = true
+zip.workspace = true
+
+[dev-dependencies]
+tempfile = "3.27"

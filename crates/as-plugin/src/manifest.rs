@@ -890,14 +890,14 @@ pub(crate) fn shown(s: &str) -> String {
     cut(&clean(s), 40)
 }
 
-fn invalid(message: impl Into<String>) -> PluginError {
+pub(crate) fn invalid(message: impl Into<String>) -> PluginError {
     PluginError::Invalid(message.into())
 }
 
 /// The first key an object of a JSON text names twice, at any depth.
 /// serde_json keeps the last value; a person or another reader of the file
 /// may go by the first and see another id or other permissions.
-struct Twice(Option<String>);
+pub(crate) struct Twice(pub(crate) Option<String>);
 
 impl<'de> Deserialize<'de> for Twice {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
