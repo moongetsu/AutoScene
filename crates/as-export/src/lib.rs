@@ -2,6 +2,7 @@
 
 pub mod clip;
 pub mod estimate;
+pub mod extension;
 pub mod hook;
 pub mod lossless;
 pub mod merge;
@@ -10,6 +11,10 @@ pub mod timeline;
 
 pub use clip::{ClipJob, ClipOutcome, Part, export_clip};
 pub use estimate::{EstimateClip, estimate_bytes};
+pub use extension::{
+    ExtensionCapability, ExtensionError, ExtensionKind, ExtensionManifest, ExtensionResult, InstalledExtension,
+    discover_extensions,
+};
 pub use hook::{PostExportPayload, run_hook};
 pub use lossless::{LosslessCodec, exact_format};
 pub use timeline::{TimelineClip, export_cmx3600_edl, export_davinci_csv};
