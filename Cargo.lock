@@ -262,6 +262,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "as-plugin"
+version = "1.0.3-BETA"
+dependencies = [
+ "as-core",
+ "as-db",
+ "semver",
+ "serde",
+ "serde_json",
+ "specta",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "as-project"
 version = "1.0.3-BETA"
 dependencies = [

@@ -1,0 +1,18 @@
+[package]
+name = "as-plugin"
+description = "AutoScene plugins: what a plugin declares and how AutoScene checks it"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+as-core.workspace = true
+as-db.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+specta.workspace = true
+thiserror.workspace = true
+semver.workspace = true

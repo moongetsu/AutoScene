@@ -45,6 +45,7 @@ dirs = "7.0"
 rusqlite = { version = "0.40", features = ["bundled"] }
 rusqlite_migration = "2.6"
 libc = "=0.2.191"
+semver = "=1.0.28"
 
 [profile.dev]
 # Media/vision code is unusable unoptimised; keep debug info but optimise deps.
