@@ -29,6 +29,10 @@ export const commands = {
 	clipboardRead: () => __TAURI_INVOKE<string | null>("clipboard_read"),
 	/**  Open the logs folder (Settings → About, Help menu on Windows). */
 	openLogsDir: () => __TAURI_INVOKE<null>("open_logs_dir"),
+	/**  Open the extensions folder (Settings → Extensions). */
+	openExtensionsDir: () => __TAURI_INVOKE<null>("open_extensions_dir"),
+	/**  List extensions installed in the extensions folder. */
+	extensionsList: () => __TAURI_INVOKE<InstalledExtension[]>("extensions_list"),
 	/**
 	 *  Put the person's keys (Settings → Shortcuts) on the macOS menu, which
 	 *  answers them there before the page sees them: `keys` maps a menu item's id
@@ -380,6 +384,7 @@ export type AppInfo = {
 	dataDir: string,
 	logsDir: string,
 	libraryRoot: string,
+	extensionsDir: string,
 };
 
 /**  User preferences stored in `library.db`. */
@@ -694,6 +699,25 @@ export type ExportSummary = {
 	merged: MergedFile | null,
 };
 
+/**  Declared capability permissions an extension can request. */
+export type ExtensionCapability = "filesystem-read-project" | "filesystem-write-export" | "network-webhook" | "gpu";
+
+/**  Extension type and lifecycle target. */
+export type ExtensionKind = "exporter" | "post-processor" | "webhook" | "custom";
+
+/**  The `extension.json` manifest structure. */
+export type ExtensionManifest = {
+	id: string,
+	name: string,
+	version: string,
+	description: string,
+	author: string,
+	kind: ExtensionKind,
+	entrypoint: string,
+	capabilities: ExtensionCapability[],
+	triggers?: string[],
+};
+
 /**  One face followed through one shot. */
 export type FaceTrackItem = {
 	id: number,
@@ -791,6 +815,13 @@ export type ImportCandidate = {
 	 *  path in. Such a file is listed, never added.
 	 */
 	refused: string | null,
+};
+
+/**  Discovered extension installed in the system. */
+export type InstalledExtension = {
+	manifest: ExtensionManifest,
+	path: string,
+	entrypointPath: string,
 };
 
 /**  A job was queued, started or finished. */

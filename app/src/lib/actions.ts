@@ -20,6 +20,7 @@ export function useAppActions() {
       toggleActivity: () => useUi.getState().setActivityOpen(!useUi.getState().activityOpen),
       toggleSidebar: () => useUi.getState().toggleSidebar(),
       goLibrary: () => void navigate({ to: "/" }),
+      goExtensions: () => void navigate({ to: "/extensions" }),
       newProject: () => useNewProject.getState().show(),
       goProject: (pid: string, page: "overview" | "episodes" | "cast" | "exports" = "overview") =>
         void navigate({ to: page === "overview" ? "/p/$pid" : `/p/$pid/${page}`, params: { pid } }),

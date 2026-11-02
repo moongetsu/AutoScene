@@ -9,6 +9,7 @@ import {
   Info,
   Keyboard,
   MagnifyingGlass,
+  Package,
   Plus,
   Queue,
   SquaresFour,
@@ -117,6 +118,22 @@ export function Rail() {
           }
         />
         <ActivityButton />
+        <RailLink
+          to="/extensions"
+          icon={<Package />}
+          label="Extensions"
+          active={path.startsWith("/extensions")}
+          menu={
+            <>
+              <ContextMenuItem onSelect={actions.goExtensions}>
+                <Package /> Extensions
+              </ContextMenuItem>
+              <ContextMenuItem onSelect={() => void commands.openExtensionsDir()}>
+                <DownloadSimple /> Open extensions folder
+              </ContextMenuItem>
+            </>
+          }
+        />
         <RailLink
           to="/settings/general"
           icon={<GearSix />}

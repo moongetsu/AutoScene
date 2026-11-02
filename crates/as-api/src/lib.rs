@@ -8,7 +8,9 @@ use as_core::{CharacterId, ExportId, FrameCount, FrameIdx, JobId, MediaId, Proje
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
-pub use as_export::{ClipOutcome, ExportPreset};
+pub use as_export::{
+    ClipOutcome, ExportPreset, ExtensionCapability, ExtensionKind, ExtensionManifest, InstalledExtension,
+};
 pub use as_media::{AudioStream, HdrKind, MediaInfo, SubtitleStream, VideoStream};
 
 /// Static facts about the running app, shown in Settings → About and used by
@@ -22,6 +24,7 @@ pub struct AppInfo {
     pub data_dir: String,
     pub logs_dir: String,
     pub library_root: String,
+    pub extensions_dir: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]

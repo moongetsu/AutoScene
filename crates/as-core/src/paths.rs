@@ -46,6 +46,9 @@ impl AppPaths {
     pub fn cache(&self) -> PathBuf {
         self.data.join("cache")
     }
+    pub fn extensions(&self) -> PathBuf {
+        self.data.join("extensions")
+    }
     /// Character images from AniList, by AniList character id (only while
     /// names from AniList are on).
     pub fn anilist(&self) -> PathBuf {

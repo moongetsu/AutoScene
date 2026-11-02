@@ -39,6 +39,11 @@ export const qk = {
   // unnamed. The look-up says it began and ended with `anilist:changed`.
   anilistNames: (pid: ProjectId) => ["cast", pid, "anilist"] as const,
   exportDir: (pid: ProjectId) => ["exportDir", pid] as const,
+  extensions: ["extensions"] as const,
+}
+
+export function useExtensions() {
+  return useQuery({ queryKey: qk.extensions, queryFn: () => commands.extensionsList() })
 }
 
 export function useAppInfo() {

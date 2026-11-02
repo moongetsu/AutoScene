@@ -26,6 +26,7 @@ pub fn app_info(app: AppHandle, state: State<'_, AppState>) -> AppInfo {
             .unwrap_or_else(|_| AppPaths::default_library_root())
             .display()
             .to_string(),
+        extensions_dir: paths.extensions().display().to_string(),
     }
 }
 
@@ -128,6 +129,27 @@ pub async fn clipboard_read(app: AppHandle) -> AppResult<Option<String>> {
         Ok(app.clipboard().read_text().inspect_err(|e| log::debug!("clipboard has no text: {e}")).ok())
     })
     .await
+}
+
+/// Open the extensions folder (Settings → Extensions).
+#[tauri::command]
+#[specta::specta]
+pub fn open_extensions_dir() -> AppResult<()> {
+    let dir = AppPaths::resolve().extensions();
+    std::fs::create_dir_all(&dir)?;
+    tauri_plugin_opener::open_path(dir.display().to_string(), None::<&str>).map_err(|e| {
+        log::warn!("opening the extensions folder: {e}");
+        AppError::new(ErrorCode::Io, "The extensions folder couldn't be opened.")
+    })
+}
+
+/// List extensions installed in the extensions folder.
+#[tauri::command]
+#[specta::specta]
+pub fn extensions_list() -> Vec<as_api::InstalledExtension> {
+    let dir = AppPaths::resolve().extensions();
+    let _ = std::fs::create_dir_all(&dir);
+    as_export::discover_extensions(&dir)
 }
 
 /// Open the logs folder (Settings → About, Help menu on Windows).

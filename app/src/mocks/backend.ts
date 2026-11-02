@@ -111,6 +111,7 @@ const appInfo: AppInfo = {
   dataDir: String.raw`C:\Users\you\AppData\Local\AutoScene`,
   logsDir: String.raw`C:\Users\you\AppData\Local\AutoScene\logs`,
   libraryRoot: ROOT,
+  extensionsDir: String.raw`C:\Users\you\AppData\Local\AutoScene\extensions`,
 }
 
 let mockClipboard: string | null = null
