@@ -1,0 +1,15 @@
+{
+  "id": "autoscene.sample.export-logger",
+  "name": "Export Summary Logger",
+  "version": "1.0.0",
+  "description": "Logs export details, clip counts, and output files to a summary log file.",
+  "author": "AutoScene Team",
+  "kind": "post-processor",
+  "entrypoint": "run.sh",
+  "capabilities": [
+    "filesystem:write-export"
+  ],
+  "triggers": [
+    "post-export"
+  ]
+}
