@@ -25,7 +25,7 @@ flate2 = "=1.1.10"
 windows-sys = { version = "=0.61.2", features = ["Win32_Storage_FileSystem"] }
 
 [target.'cfg(unix)'.dependencies]
-libc = "=0.2.190"
+libc.workspace = true
 
 [dev-dependencies]
 tempfile = "3.27"
