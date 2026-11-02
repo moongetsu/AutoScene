@@ -499,8 +499,7 @@ impl Timecode {
     /// Timecode of frame `f` counted at nominal rate `fps`. 29.97/59.94 use
     /// drop-frame counting when `drop_frame` is requested.
     pub fn from_frame(f: u64, fps: Rational, drop_frame: bool) -> Self {
-        let base = fps.to_f64().round().max(1.0) as u64;
-        let is_ntsc = fps.den == 1001 && (base == 30 || base == 60);
+        let (base, is_ntsc) = counting(fps);
         let df = drop_frame && is_ntsc;
         let mut n = f;
         if df {
@@ -520,6 +519,74 @@ impl Timecode {
             drop_frame: df,
         }
     }
+
+    /// The frame this timecode labels at `fps`, counted from 00:00:00:00:
+    /// the inverse of [`from_frame`](Self::from_frame). A label drop frame
+    /// skips (00:01:00;00 at 29.97) gives the frame that comes instead.
+    pub fn to_frame(self, fps: Rational) -> u64 {
+        let (base, is_ntsc) = counting(fps);
+        let minutes = 60 * u64::from(self.hours) + u64::from(self.minutes);
+        let n = (minutes * 60 + u64::from(self.seconds)) * base + u64::from(self.frames);
+        if !(self.drop_frame && is_ntsc) {
+            return n;
+        }
+        let drop = base / 15;
+        let skipped =
+            if minutes % 10 != 0 && self.seconds == 0 { drop.saturating_sub(u64::from(self.frames)) } else { 0 };
+        n + skipped - drop * (minutes - minutes / 10)
+    }
+
+    /// Frames in a day of timecode at `fps`, after which it starts over at
+    /// 00:00:00:00. [`from_frame`](Self::from_frame) counts on past 24
+    /// hours, so a count that may pass midnight is taken modulo this first.
+    pub fn day_frames(fps: Rational, drop_frame: bool) -> u64 {
+        Self { hours: 24, minutes: 0, seconds: 0, frames: 0, drop_frame }.to_frame(fps)
+    }
+
+    /// Read a timecode as files, cameras and editors write it: `01:00:00:00`
+    /// counts every frame; `;`, `.` or `,` before the frames (`01:00:00;00`,
+    /// or between every field, `01;00;00;00`) is drop frame. Past 100 fps the
+    /// frames take three digits, as FFmpeg writes them (`01:00:00:000`). A
+    /// timecode that can't occur at `fps` is refused: a field past its range,
+    /// a label drop frame skips, drop frame at a rate that drops no labels.
+    /// As everywhere in AutoScene, only 29.97 and 59.94 drop labels, so
+    /// FFmpeg's drop frame at 119.88 is refused too.
+    pub fn parse(text: &str, fps: Rational) -> CoreResult<Self> {
+        let text = text.trim();
+        let bad = || CoreError::BadTimecode(text.to_owned());
+        let marks: Vec<char> = text.chars().filter(|c| !c.is_ascii_digit()).collect();
+        let drop_frame = match *marks.as_slice() {
+            [':', ':', ':'] => false,
+            [a, b, m @ (';' | '.' | ',')] if (a, b) == (':', ':') || (a, b) == (m, m) => true,
+            _ => return Err(bad()),
+        };
+        let (base, is_ntsc) = counting(fps);
+        // One or two digits each, the frames as many as the rate needs: no signs, no spaces.
+        let widest = (base - 1).to_string().len().max(2);
+        let field = |f: &str, widest: usize| (1..=widest).contains(&f.len()).then(|| f.parse::<u32>().ok()).flatten();
+        let fields: Vec<&str> = text.split(|c: char| !c.is_ascii_digit()).collect();
+        let [h, m, s, f] = fields[..] else { return Err(bad()) };
+        let (Some(hours), Some(minutes), Some(seconds), Some(frames)) =
+            (field(h, 2), field(m, 2), field(s, 2), field(f, widest))
+        else {
+            return Err(bad());
+        };
+        if hours >= 24 || minutes >= 60 || seconds >= 60 || u64::from(frames) >= base {
+            return Err(bad());
+        }
+        let skipped = minutes % 10 != 0 && seconds == 0 && u64::from(frames) < base / 15;
+        if drop_frame && (!is_ntsc || skipped) {
+            return Err(bad());
+        }
+        Ok(Self { hours, minutes, seconds, frames, drop_frame })
+    }
+}
+
+/// The frames a timecode second counts at `fps` (the rate rounded), and
+/// whether drop frame applies to the rate (29.97 and 59.94).
+fn counting(fps: Rational) -> (u64, bool) {
+    let base = fps.to_f64().round().max(1.0) as u64;
+    (base, fps.den == 1001 && (base == 30 || base == 60))
 }
 
 impl std::fmt::Display for Timecode {
@@ -763,6 +830,125 @@ mod tests {
         assert_eq!(a.intersect(&b), Some(FrameRange::new(15, 20)));
         assert!((a.iou(&b) - 5.0 / 20.0).abs() < 1e-6);
         assert!(!a.contains(20));
+    }
+
+    const NTSC: Rational = Rational { num: 30000, den: 1001 };
+    const NTSC_60: Rational = Rational { num: 60000, den: 1001 };
+
+    #[test]
+    fn drop_frame_timecodes_count_back_to_their_frame() {
+        let frame = |text: &str, fps: Rational| Timecode::parse(text, fps).unwrap().to_frame(fps);
+        assert_eq!(frame("00:01:00;02", NTSC), 1800);
+        assert_eq!(frame("00:10:00;00", NTSC), 17_982);
+        assert_eq!(frame("00:01:00;04", NTSC_60), 3600);
+        assert_eq!(Timecode::from_frame(3600, NTSC_60, true).to_string(), "00:01:00;04");
+        // Every frame of a day, there and back, counting dropped or not, and
+        // its label read back as written.
+        for (fps, df) in [(NTSC, true), (NTSC_60, true), (NTSC, false), (FPS, false), (Rational::new(25, 1), false)] {
+            for f in 0..Timecode::day_frames(fps, df) {
+                let tc = Timecode::from_frame(f, fps, df);
+                assert_eq!(tc.to_frame(fps), f, "{f} at {fps}");
+                assert_eq!(Timecode::parse(&tc.to_string(), fps).ok(), Some(tc), "{f} at {fps}");
+            }
+        }
+        // And no label besides: a day at 29.97 has as many as it has frames.
+        let labels = (0..24 * 3600 * 30)
+            .map(|n| Timecode { drop_frame: true, ..Timecode::from_frame(n, Rational::new(30, 1), false) })
+            .filter(|tc| Timecode::parse(&tc.to_string(), NTSC).is_ok())
+            .count();
+        assert_eq!(labels as u64, Timecode::day_frames(NTSC, true));
+        // A label drop frame skips stands for the frame that comes instead.
+        let skipped = Timecode { hours: 0, minutes: 1, seconds: 0, frames: 1, drop_frame: true };
+        assert_eq!(skipped.to_frame(NTSC), 1800);
+    }
+
+    #[test]
+    fn timecode_text_is_read_in_every_spelling() {
+        let df = Timecode { hours: 1, minutes: 2, seconds: 3, frames: 4, drop_frame: true };
+        for text in ["01:02:03;04", "01:02:03.04", "01:02:03,04", "01;02;03;04", "01.02.03.04", " 1:2:3;4 "] {
+            assert_eq!(Timecode::parse(text, NTSC).unwrap(), df, "{text}");
+        }
+        assert_eq!(Timecode::parse("01:02:03.04", NTSC).unwrap().to_string(), "01:02:03;04");
+        let ndf = Timecode { drop_frame: false, ..df };
+        assert_eq!(Timecode::parse("01:02:03:04", NTSC).unwrap(), ndf);
+        assert_eq!(Timecode::parse("01:02:03:04", Rational::new(25, 1)).unwrap(), ndf);
+        // Non-drop at 29.97 counts every label.
+        assert_eq!(ndf.to_frame(NTSC), (3600 + 2 * 60 + 3) * 30 + 4);
+        // Past 100 fps FFmpeg writes three frame digits.
+        let hfr = Rational::new(120, 1);
+        for (text, frames) in [("01:00:00:000", 0), ("01:00:00:005", 5), ("01:00:00:05", 5), ("01:00:00:119", 119)] {
+            assert_eq!(
+                Timecode::parse(text, hfr).unwrap(),
+                Timecode { hours: 1, minutes: 0, seconds: 0, frames, drop_frame: false }
+            );
+        }
+        assert_eq!(Timecode::parse("01:00:00:119", hfr).unwrap().to_frame(hfr), 120 * 3600 + 119);
+    }
+
+    #[test]
+    fn impossible_timecodes_are_refused() {
+        let pal = Rational::new(25, 1);
+        for (text, fps) in [
+            // A frame past the second's last.
+            ("00:00:00:25", pal),
+            ("00:00:00;30", NTSC),
+            // Labels drop frame skips.
+            ("00:01:00;00", NTSC),
+            ("00:01:00;01", NTSC),
+            ("00:01:00;03", NTSC_60),
+            // Drop frame where no labels are dropped.
+            ("01:00:00;00", pal),
+            ("01:00:00;00", Rational::new(30, 1)),
+            ("00:00:60:00", pal),
+            ("00:60:00:00", pal),
+            ("24:00:00:00", pal),
+            ("-01:00:00:00", pal),
+            ("01:00:00:+1", pal),
+            ("001:00:00:00", pal),
+            ("01:00:00", pal),
+            ("01:00:00:00:00", pal),
+            ("01:00:00;", NTSC),
+            ("01;00:00:00", pal),
+            ("01-00-00-00", pal),
+            ("", pal),
+            // The drop frame mark before the frames only, or between every field.
+            ("01;00:00;00", NTSC),
+            ("01:00;00;00", NTSC),
+            ("01;00;00:00", NTSC),
+            ("01;00;00,00", NTSC),
+            // Three frame digits only past 100 fps, and no more than the rate needs.
+            ("01:00:00:000", pal),
+            ("01:00:00:0000", Rational::new(120, 1)),
+            ("01:00:00:120", Rational::new(120, 1)),
+            // FFmpeg's drop frame at 119.88, which AutoScene doesn't count.
+            ("01:00:00;000", Rational::new(120_000, 1001)),
+        ] {
+            assert!(Timecode::parse(text, fps).is_err(), "{text:?} at {fps}");
+        }
+        // Every tenth minute keeps its labels; the others keep all but the first.
+        for text in ["00:10:00;00", "00:01:00;02", "00:01:01;00", "23:59:59;29"] {
+            assert!(Timecode::parse(text, NTSC).is_ok(), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_day_has_the_right_number_of_frames() {
+        assert_eq!(Timecode::day_frames(NTSC, true), 2_589_408);
+        assert_eq!(Timecode::day_frames(NTSC_60, true), 5_178_816);
+        assert_eq!(Timecode::day_frames(NTSC, false), 2_592_000);
+        assert_eq!(Timecode::day_frames(FPS, true), 2_073_600, "23.976 drops nothing");
+        let day = Timecode::day_frames(NTSC, true);
+        assert_eq!(Timecode::from_frame(day - 1, NTSC, true).to_string(), "23:59:59;29");
+        // from_frame counts on past midnight.
+        assert_eq!(Timecode::from_frame(day, NTSC, true).to_string(), "24:00:00;00");
+        // An hour, where an edit's record side starts.
+        let hour = |fps: Rational, df: bool| {
+            Timecode { hours: 1, minutes: 0, seconds: 0, frames: 0, drop_frame: df }.to_frame(fps)
+        };
+        assert_eq!(
+            [hour(NTSC, true), hour(Rational::new(30, 1), false), hour(Rational::new(25, 1), false), hour(FPS, false)],
+            [107_892, 108_000, 90_000, 86_400]
+        );
     }
 
     #[test]

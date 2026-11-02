@@ -786,6 +786,7 @@ mod tests {
             container: "matroska,webm".into(),
             duration_sec: Some(10.0),
             start_sec: 0.0,
+            start_timecode: None,
             size_bytes: None,
             bit_rate: None,
             video: VideoStream {

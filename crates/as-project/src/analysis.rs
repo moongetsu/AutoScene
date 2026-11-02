@@ -202,6 +202,7 @@ pub(crate) mod tests {
             container: "matroska,webm".into(),
             duration_sec: Some(10.0),
             start_sec: 0.0,
+            start_timecode: None,
             size_bytes: Some(1.0),
             bit_rate: None,
             video: VideoStream {

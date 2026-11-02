@@ -887,6 +887,15 @@ export type MediaInfo = {
 	container: string,
 	durationSec: number | null,
 	startSec: number | null,
+	/**
+	 *  The timecode of the first frame, from the file's tags (a MOV's
+	 *  timecode track, an MXF's header), as [`Timecode`] writes it:
+	 *  `01:00:00:00`, or `01:00:00;00` for drop frame. `None` when the file
+	 *  carries none, or was probed before AutoScene read it (see
+	 *  [`start_timecode`]). It is checked at the stream's stated or average
+	 *  rate; read at another rate, one that doesn't parse counts as none.
+	 */
+	startTimecode?: string | null,
 	sizeBytes: number | null,
 	bitRate: number | null,
 	video: VideoStream,

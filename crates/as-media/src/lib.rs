@@ -20,7 +20,7 @@ pub use error::{MediaError, MediaResult};
 pub use index::{IndexProgress, build_frame_index};
 pub use probe::{
     AudioStream, ExactAudio, ExactFormat, HdrKind, MediaInfo, SubtitleStream, VideoStream, hdr_metadata, probe,
-    probe_exact, same_source,
+    probe_exact, same_source, start_timecode,
 };
 pub use run::{FfProgress, run_ffmpeg, run_ffmpeg_counting};
 pub use tools::Tools;

@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use as_core::Rational;
+use as_core::{Rational, Timecode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use specta::Type;
@@ -95,6 +95,14 @@ pub struct MediaInfo {
     pub container: String,
     pub duration_sec: Option<f64>,
     pub start_sec: f64,
+    /// The timecode of the first frame, from the file's tags (a MOV's
+    /// timecode track, an MXF's header), as [`Timecode`] writes it:
+    /// `01:00:00:00`, or `01:00:00;00` for drop frame. `None` when the file
+    /// carries none, or was probed before AutoScene read it (see
+    /// [`start_timecode`]). It is checked at the stream's stated or average
+    /// rate; read at another rate, one that doesn't parse counts as none.
+    #[serde(default)]
+    pub start_timecode: Option<String>,
     pub size_bytes: Option<f64>,
     pub bit_rate: Option<f64>,
     pub video: VideoStream,
@@ -224,6 +232,30 @@ pub fn probe(tools: &Tools, path: &Path) -> MediaResult<MediaInfo> {
         fill_colour_from_first_frame(tools, path, &mut info.video);
     }
     Ok(info)
+}
+
+/// The [`MediaInfo::start_timecode`] of `path` alone, for media probed
+/// before AutoScene read it: the tags only, no frame is decoded.
+pub fn start_timecode(tools: &Tools, path: &Path) -> MediaResult<Option<String>> {
+    let err = |message: String| MediaError::Probe { path: path.display().to_string(), message };
+    let out = crate::proc::output(
+        tools
+            .ffprobe()
+            .args([
+                "-show_entries",
+                "format_tags=timecode:stream=codec_type,r_frame_rate,avg_frame_rate:stream_tags=timecode:\
+                 stream_disposition=attached_pic",
+                "-of",
+                "json",
+            ])
+            .arg(path),
+    )?;
+    if !out.status.success() {
+        let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(err(if msg.is_empty() { "unreadable file".into() } else { msg }));
+    }
+    let v: Value = serde_json::from_slice(&out.stdout).map_err(|e| err(e.to_string()))?;
+    Ok(timecode_tag(&v))
 }
 
 /// Containers don't always carry the colour description — FFmpeg 9's
@@ -407,6 +439,31 @@ fn tag(v: &Value, k: &str) -> Option<String> {
     v.get("tags").and_then(|t| t.get(k)).and_then(Value::as_str).map(str::to_owned)
 }
 
+/// The first frame's timecode in a probe's tags: the picture's stream's
+/// (MOV copies its timecode track's there), else the container's (MXF),
+/// else a data stream's (a timecode track the picture doesn't name). A tag
+/// that is no timecode at the picture's rate is passed over.
+fn timecode_tag(v: &Value) -> Option<String> {
+    let streams = v.get("streams").and_then(Value::as_array)?;
+    let is = |st: &&Value, ty: &str| st.get("codec_type").and_then(Value::as_str) == Some(ty);
+    let video = streams.iter().find(|st| is(st, "video") && !disposition(st, "attached_pic"))?;
+    // The rate VideoStream reads (24 when the stream states none). An
+    // interlaced stream may state its field rate; its average is the frames'.
+    let rates =
+        [Some(rational(video, "r_frame_rate").unwrap_or(Rational::new(24, 1))), rational(video, "avg_frame_rate")];
+    // Matroska spells the key "TIMECODE".
+    let timecode = |st: &Value| {
+        let tags = st.get("tags")?.as_object()?;
+        tags.iter().find(|(k, _)| k.eq_ignore_ascii_case("timecode"))?.1.as_str().map(str::to_owned)
+    };
+    std::iter::once(video)
+        .chain(v.get("format"))
+        .chain(streams.iter().filter(|st| is(st, "data")))
+        .filter_map(timecode)
+        .find_map(|text| rates.iter().flatten().find_map(|&fps| Timecode::parse(&text, fps).ok()))
+        .map(|tc| tc.to_string())
+}
+
 fn disposition(v: &Value, k: &str) -> bool {
     v.get("disposition").and_then(|d| d.get(k)).and_then(Value::as_i64) == Some(1)
 }
@@ -544,6 +601,7 @@ fn parse(v: &Value) -> Option<MediaInfo> {
         container: s(format, "format_name").unwrap_or_default(),
         duration_sec: finite(format, "duration"),
         start_sec: finite(format, "start_time").unwrap_or(0.0),
+        start_timecode: timecode_tag(v),
         size_bytes: finite(format, "size"),
         bit_rate: finite(format, "bit_rate"),
         video,
@@ -657,6 +715,91 @@ mod tests {
             video.sar = Rational::new(num, den);
             assert_eq!(video.pixel_aspect(), 1.0, "{num}/{den}");
         }
+    }
+
+    #[test]
+    fn start_timecode_prefers_the_video_stream_tag() {
+        let mut v = json!({
+            "format": { "format_name": "mov,mp4,m4a,3gp,3g2,mj2", "tags": { "timecode": "10:00:00:00" } },
+            "streams": [
+                { "index": 0, "codec_type": "video", "codec_name": "mjpeg", "width": 64, "height": 64,
+                  "disposition": { "attached_pic": 1 }, "tags": { "timecode": "02:00:00:00" } },
+                { "index": 1, "codec_type": "video", "codec_name": "prores", "width": 1920, "height": 1080,
+                  "r_frame_rate": "30000/1001", "avg_frame_rate": "30000/1001", "tags": { "timecode": "01:00:00;00" } },
+                { "index": 2, "codec_type": "data", "tags": { "timecode": "03:00:00;00" } }
+            ]
+        });
+        let start = |v: &Value| parse(v).unwrap().start_timecode;
+        assert_eq!(start(&v).as_deref(), Some("01:00:00;00"));
+        // Stored in one spelling, whichever the file uses.
+        v["streams"][1]["tags"]["timecode"] = json!("01:00:00.00");
+        assert_eq!(start(&v).as_deref(), Some("01:00:00;00"));
+        // A field rate (interlaced): the frames' rate is the average.
+        v["streams"][1]["r_frame_rate"] = json!("60000/1001");
+        v["streams"][1]["tags"]["timecode"] = json!("00:01:00;02");
+        assert_eq!(start(&v).as_deref(), Some("00:01:00;02"));
+        // No timecode at the picture's rate: the container's.
+        v["streams"][1]["tags"]["timecode"] = json!("01:00:00:60");
+        assert_eq!(start(&v).as_deref(), Some("10:00:00:00"));
+        // Then the timecode track's, then none.
+        v["format"]["tags"] = json!({});
+        assert_eq!(start(&v).as_deref(), Some("03:00:00;00"));
+        v["streams"][2]["tags"] = json!({});
+        assert_eq!(start(&v), None);
+        // Matroska spells the key in capitals, on the container and on a
+        // remux's picture.
+        v["format"]["tags"] = json!({ "TIMECODE": "10:00:00:00" });
+        assert_eq!(start(&v).as_deref(), Some("10:00:00:00"));
+        v["streams"][1]["tags"] = json!({ "TIMECODE": "01:00:00;00" });
+        assert_eq!(start(&v).as_deref(), Some("01:00:00;00"));
+        // A stream that states no rate is read at 24, as VideoStream reads it.
+        for k in ["r_frame_rate", "avg_frame_rate"] {
+            v["streams"][1][k] = json!("0/0");
+        }
+        v["streams"][1]["tags"] = json!({ "timecode": "01:00:00:23" });
+        assert_eq!(start(&v).as_deref(), Some("01:00:00:23"));
+    }
+
+    #[test]
+    fn media_probed_before_timecodes_were_read_still_loads() {
+        let mut stored = serde_json::to_value(parse(&stream(None)).unwrap()).unwrap();
+        assert_eq!(stored["startTimecode"], Value::Null);
+        stored.as_object_mut().unwrap().remove("startTimecode");
+        let info: MediaInfo = serde_json::from_value(stored).unwrap();
+        assert_eq!(info.start_timecode, None);
+    }
+
+    #[test]
+    fn a_files_timecode_is_read_by_probe_and_on_its_own() {
+        let tools = Tools::locate(None).expect("ffmpeg on PATH");
+        let tmp = tempfile::tempdir().unwrap();
+        let read = |name: &str, mut make: std::process::Command, timecode: Option<&str>| {
+            let file = tmp.path().join(name);
+            let made = crate::proc::output(make.arg(&file)).unwrap();
+            assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
+            assert_eq!(probe(&tools, &file).unwrap().start_timecode.as_deref(), timecode, "{name}");
+            assert_eq!(start_timecode(&tools, &file).unwrap().as_deref(), timecode, "{name}");
+        };
+        for (name, rate, codec, timecode) in [
+            // On the video stream and its timecode track.
+            ("a.mov", "30000/1001", "mpeg4", Some("01:00:00;00")),
+            // On the container.
+            ("b.mxf", "25", "mpeg2video", Some("10:00:00:00")),
+            // On the container, as "TIMECODE".
+            ("c.mkv", "25", "mpeg4", Some("10:00:00:00")),
+            // Three frame digits, "01:00:00:000".
+            ("d.mov", "120", "mpeg4", Some("01:00:00:00")),
+            ("e.mkv", "24", "mpeg4", None),
+        ] {
+            let mut make = tools.ffmpeg();
+            make.args(["-v", "error", "-f", "lavfi", "-i", &format!("testsrc=duration=1:size=64x64:rate={rate}")]);
+            make.args(["-c:v", codec]).args(timecode.map(|t| ["-timecode", t]).into_iter().flatten());
+            read(name, make, timecode);
+        }
+        // A remux into Matroska keeps it on the video stream, as "TIMECODE".
+        let mut remux = tools.ffmpeg();
+        remux.args(["-v", "error", "-i"]).arg(tmp.path().join("a.mov")).args(["-c", "copy"]);
+        read("f.mkv", remux, Some("01:00:00;00"));
     }
 
     #[test]

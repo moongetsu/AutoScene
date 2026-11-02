@@ -236,6 +236,7 @@ function info(codec: string, width: number, height: number, audio: [string | nul
     container: codec === "h264" ? "mov,mp4,m4a,3gp,3g2,mj2" : "matroska,webm",
     durationSec: FRAMES / 24,
     startSec: 0,
+    startTimecode: null,
     sizeBytes: 0,
     bitRate: null,
     video: {

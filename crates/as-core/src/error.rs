@@ -8,6 +8,8 @@ pub enum CoreError {
     Cancelled,
     #[error("invalid rational '{0}'")]
     BadRational(String),
+    #[error("invalid timecode '{0}'")]
+    BadTimecode(String),
     #[error("frame index is empty")]
     EmptyIndex,
     #[error("frame index timestamps are not strictly increasing at frame {0}")]
