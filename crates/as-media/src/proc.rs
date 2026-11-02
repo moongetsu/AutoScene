@@ -8,13 +8,101 @@
 //! open during an update or writing a half-finished file.
 
 use std::io;
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
+use std::time::{Duration, Instant};
+
+use as_core::CancelToken;
 
 /// Start `cmd` and tie the child's lifetime to ours.
+///
+/// On Unix, child processes are placed in their own process group (`process_group(0)`)
+/// so that signal propagation (e.g. SIGTERM/SIGKILL) cleanly terminates any child
+/// trees without leaving orphaned processes.
 pub fn spawn(cmd: &mut Command) -> io::Result<Child> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
     let child = cmd.spawn()?;
     track(&child);
     Ok(child)
+}
+
+/// Terminate a child process and its entire process tree if running.
+///
+/// On Unix, sends SIGTERM then SIGKILL to `-pgid` to clean up sub-workers.
+/// On Windows, the process is already bound to the kill-on-close job object.
+pub fn kill_tree(child: &mut Child) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        let pid = child.id() as i32;
+        // Kill the whole process group (-pid)
+        unsafe {
+            libc_kill_pgid(pid);
+        }
+    }
+    child.kill()
+}
+
+#[cfg(unix)]
+unsafe fn libc_kill_pgid(pid: i32) {
+    unsafe extern "C" {
+        fn kill(pid: i32, sig: i32) -> i32;
+    }
+    const SIGTERM: i32 = 15;
+    const SIGKILL: i32 = 9;
+    // Attempt graceful SIGTERM first, followed by SIGKILL
+    unsafe {
+        kill(-pid, SIGTERM);
+        kill(-pid, SIGKILL);
+    }
+}
+
+/// Run a command to completion while respecting cancellation and timeouts.
+///
+/// If `cancel` fires or `timeout` expires, terminates the process tree immediately.
+pub fn run_supervised(
+    cmd: &mut Command,
+    cancel: &CancelToken,
+    timeout: Option<Duration>,
+) -> io::Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
+    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = spawn(cmd)?;
+    let started = Instant::now();
+
+    loop {
+        if cancel.is_cancelled() {
+            let _ = kill_tree(&mut child);
+            let _ = child.wait();
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "operation cancelled"));
+        }
+
+        if let Some(limit) = timeout
+            && started.elapsed() > limit
+        {
+            let _ = kill_tree(&mut child);
+            let _ = child.wait();
+            return Err(io::Error::new(io::ErrorKind::TimedOut, "process execution timed out"));
+        }
+
+        match child.try_wait()? {
+            Some(status) => {
+                let mut stdout_buf = Vec::new();
+                let mut stderr_buf = Vec::new();
+                if let Some(mut out) = child.stdout.take() {
+                    let _ = std::io::copy(&mut out, &mut stdout_buf);
+                }
+                if let Some(mut err) = child.stderr.take() {
+                    let _ = std::io::copy(&mut err, &mut stderr_buf);
+                }
+                return Ok((status, stdout_buf, stderr_buf));
+            }
+            None => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
 }
 
 /// Like [`Command::output`], with the child tied to our lifetime.
@@ -87,10 +175,11 @@ fn track(child: &Child) {
 #[cfg(not(windows))]
 fn track(_child: &Child) {}
 
-#[cfg(all(test, windows))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
     #[test]
     fn children_join_the_kill_on_close_job() {
         use std::os::windows::io::AsRawHandle;
@@ -104,5 +193,39 @@ mod tests {
         assert_ne!(inside, 0, "child is in our kill-on-close job");
         child.kill().ok();
         child.wait().ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn supervised_process_terminates_on_cancel() {
+        let cancel = CancelToken::new();
+        let cancel_clone = cancel.clone();
+
+        // Spawn a thread that cancels shortly after launch
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            cancel_clone.cancel();
+        });
+
+        let mut cmd = Command::new("sleep");
+        cmd.arg("10");
+
+        let res = run_supervised(&mut cmd, &cancel, Some(Duration::from_secs(5)));
+        assert!(res.is_err(), "expected cancelled process to return error");
+        let err = res.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::Interrupted);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn supervised_process_times_out() {
+        let cancel = CancelToken::new();
+        let mut cmd = Command::new("sleep");
+        cmd.arg("10");
+
+        let res = run_supervised(&mut cmd, &cancel, Some(Duration::from_millis(150)));
+        assert!(res.is_err(), "expected timed out process to return error");
+        let err = res.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
     }
 }
