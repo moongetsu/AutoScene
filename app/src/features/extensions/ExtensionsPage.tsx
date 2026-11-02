@@ -5,9 +5,10 @@ import type { ExtensionKind, InstalledExtension } from "@/bindings"
 import { Button } from "@/components/ui/button"
 import { ContextArea } from "@/components/ui/context-area"
 import { ContextMenuItem } from "@/components/ui/context-menu"
+import { Switch } from "@/components/ui/switch"
 import { TopBar } from "@/components/ui/topbar"
 import { commands, errorMessage } from "@/lib/ipc"
-import { qk, queryClient, useAppInfo, useExtensions } from "@/lib/queries"
+import { qk, queryClient, useAppInfo, useExtensions, useSettings } from "@/lib/queries"
 import { cn } from "@/lib/utils"
 
 const KINDS: { id: ExtensionKind | "all"; label: string }[] = [
@@ -20,13 +21,18 @@ const KINDS: { id: ExtensionKind | "all"; label: string }[] = [
 
 export function ExtensionsPage() {
   const { data: info } = useAppInfo()
-  const { data: extensions = [] } = useExtensions()
+  const { data: settings } = useSettings()
+  const { data: extensions = [], isFetching } = useExtensions()
   const [filter, setFilter] = useState<ExtensionKind | "all">("all")
   const [search, setSearch] = useState("")
 
   const reload = async () => {
-    await queryClient.invalidateQueries({ queryKey: qk.extensions })
-    toast.success("Refreshed extensions")
+    try {
+      await queryClient.invalidateQueries({ queryKey: qk.extensions })
+      toast.success("Extensions reloaded")
+    } catch (e) {
+      toast.error("Couldn't reload extensions", { description: errorMessage(e) })
+    }
   }
 
   const openFolder = async () => {
@@ -36,6 +42,27 @@ export function ExtensionsPage() {
       toast.error("Couldn't open extensions directory", { description: errorMessage(e) })
     }
   }
+
+  const toggleExtension = async (id: string, enabled: boolean) => {
+    if (!settings) return
+    const currentDisabled = settings.disabledExtensions ?? []
+    const nextDisabled = enabled
+      ? currentDisabled.filter((x) => x !== id)
+      : Array.from(new Set([...currentDisabled, id]))
+
+    try {
+      const updated = await commands.settingsUpdate({
+        ...settings,
+        disabledExtensions: nextDisabled,
+      })
+      queryClient.setQueryData(qk.settings, updated)
+      toast.success(enabled ? "Extension enabled" : "Extension disabled")
+    } catch (e) {
+      toast.error("Couldn't update extension state", { description: errorMessage(e) })
+    }
+  }
+
+  const disabledSet = useMemo(() => new Set(settings?.disabledExtensions ?? []), [settings?.disabledExtensions])
 
   const filtered = useMemo(() => {
     return extensions.filter((ext) => {
@@ -66,8 +93,9 @@ export function ExtensionsPage() {
     <div className="flex h-full flex-col">
       <TopBar title="Extensions">
         <div className="flex items-center gap-2">
-          <Button size="sm" variant="ghost" onClick={reload}>
-            <ArrowCounterClockwise /> Reload
+          <Button size="sm" variant="ghost" onClick={reload} disabled={isFetching}>
+            <ArrowCounterClockwise className={isFetching ? "animate-spin" : undefined} />
+            {isFetching ? "Refreshing…" : "Refresh"}
           </Button>
           <Button size="sm" variant="ghost" onClick={openFolder}>
             <FolderOpen /> Open folder
@@ -93,8 +121,12 @@ export function ExtensionsPage() {
                 )}
               </div>
               <div className="flex shrink-0 gap-3">
+                <Button variant="secondary" onClick={reload} disabled={isFetching}>
+                  <ArrowCounterClockwise className={isFetching ? "animate-spin" : undefined} />
+                  Refresh
+                </Button>
                 <Button variant="primary" onClick={openFolder}>
-                  <FolderOpen /> Open Extensions Folder
+                  <FolderOpen /> Open Folder
                 </Button>
               </div>
             </div>
@@ -144,17 +176,30 @@ export function ExtensionsPage() {
                     ? `No extension matches "${search}". Try searching for another keyword or clear the filter.`
                     : "Add extensions by placing an extension directory with an extension.json manifest inside your extensions folder."}
                 </p>
-                {!search && (
-                  <Button variant="secondary" size="sm" className="mt-4" onClick={openFolder}>
-                    <FolderOpen /> Open Folder
+                <div className="mt-4 flex items-center gap-2">
+                  <Button variant="ghost" size="sm" onClick={reload}>
+                    <ArrowCounterClockwise /> Refresh
                   </Button>
-                )}
+                  {!search && (
+                    <Button variant="secondary" size="sm" onClick={openFolder}>
+                      <FolderOpen /> Open Folder
+                    </Button>
+                  )}
+                </div>
               </div>
             ) : (
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                {filtered.map((ext) => (
-                  <ExtensionCard key={ext.manifest.id} extension={ext} />
-                ))}
+                {filtered.map((ext) => {
+                  const enabled = !disabledSet.has(ext.manifest.id)
+                  return (
+                    <ExtensionCard
+                      key={ext.manifest.id}
+                      extension={ext}
+                      enabled={enabled}
+                      onToggle={(next) => void toggleExtension(ext.manifest.id, next)}
+                    />
+                  )
+                })}
               </div>
             )}
           </div>
@@ -164,11 +209,24 @@ export function ExtensionsPage() {
   )
 }
 
-function ExtensionCard({ extension }: { extension: InstalledExtension }) {
+function ExtensionCard({
+  extension,
+  enabled,
+  onToggle,
+}: {
+  extension: InstalledExtension
+  enabled: boolean
+  onToggle: (enabled: boolean) => void
+}) {
   const { manifest } = extension
 
   return (
-    <div className="flex flex-col justify-between rounded-2xl border border-white/[0.08] bg-white/[0.02] p-5 transition-colors hover:border-white/[0.14] hover:bg-white/[0.03]">
+    <div
+      className={cn(
+        "flex flex-col justify-between rounded-2xl border border-white/[0.08] p-5 transition-colors",
+        enabled ? "bg-white/[0.02] hover:border-white/[0.14] hover:bg-white/[0.03]" : "bg-black/20 opacity-60",
+      )}
+    >
       <div>
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
@@ -180,9 +238,16 @@ function ExtensionCard({ extension }: { extension: InstalledExtension }) {
             </div>
             <div className="mt-0.5 text-xs text-fg-4">By {manifest.author}</div>
           </div>
-          <span className="shrink-0 rounded-full border border-white/[0.08] bg-white/[0.04] px-2.5 py-0.5 text-[11px] uppercase tracking-wider text-fg-3">
-            {manifest.kind}
-          </span>
+          <div className="flex items-center gap-3">
+            <span className="shrink-0 rounded-full border border-white/[0.08] bg-white/[0.04] px-2.5 py-0.5 text-[11px] uppercase tracking-wider text-fg-3">
+              {manifest.kind}
+            </span>
+            <Switch
+              checked={enabled}
+              onCheckedChange={onToggle}
+              aria-label={`Toggle ${manifest.name}`}
+            />
+          </div>
         </div>
 
         <p className="mt-3 text-sm leading-relaxed text-fg-3">{manifest.description}</p>
@@ -206,3 +271,4 @@ function ExtensionCard({ extension }: { extension: InstalledExtension }) {
     </div>
   )
 }
+

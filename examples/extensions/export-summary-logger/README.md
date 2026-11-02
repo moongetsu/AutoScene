@@ -17,3 +17,4 @@ Copy this folder into your AutoScene extensions directory:
 - **Windows**: `%LOCALAPPDATA%\AutoScene\extensions\export-summary-logger`
 
 Open AutoScene, click **Extensions** in the left navigation rail, and you will see **Export Summary Logger** listed!
+

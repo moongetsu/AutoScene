@@ -22,6 +22,7 @@ const KEY_AUDIO_LANGUAGE: &str = "audio_language";
 const KEY_FIND_BODIES: &str = "find_bodies";
 const KEY_FAST_SCAN: &str = "fast_scan";
 const KEY_ANILIST: &str = "anilist";
+const KEY_DISABLED_EXTENSIONS: &str = "disabled_extensions";
 /// The keyboard shortcuts the person changed, as JSON.
 const KEY_SHORTCUTS: &str = "shortcuts";
 /// Most series and films people cut are watched in their original English
@@ -141,7 +142,14 @@ impl Library {
             fast_scan: self.fast_scan()?,
             anilist: self.names_from_anilist(),
             shortcuts: self.shortcuts()?,
+            disabled_extensions: self.disabled_extensions()?,
         })
+    }
+
+    /// Extension IDs the user has disabled.
+    fn disabled_extensions(&self) -> ProjectResult<Vec<String>> {
+        let Some(json) = self.db.setting(KEY_DISABLED_EXTENSIONS)? else { return Ok(Vec::new()) };
+        Ok(serde_json::from_str(&json).unwrap_or_default())
     }
 
     /// The keys the person chose; AutoScene's own when what is stored can't
@@ -191,6 +199,8 @@ impl Library {
             let shortcuts = serde_json::to_string(&s.shortcuts).expect("shortcuts serialize");
             self.db.set_setting(KEY_SHORTCUTS, &shortcuts)?;
         }
+        let disabled = serde_json::to_string(&s.disabled_extensions).expect("disabled extensions serialize");
+        self.db.set_setting(KEY_DISABLED_EXTENSIONS, &disabled)?;
         // Off: whatever asks for names stops, and nothing from where they
         // come from stays (also what an earlier attempt left).
         if !s.anilist {
@@ -593,6 +603,7 @@ mod tests {
             fast_scan: false,
             anilist: false,
             shortcuts: Default::default(),
+            disabled_extensions: Vec::new(),
         })
         .unwrap();
         assert_eq!(lib.audio_language().unwrap(), "deu", "stored as an ISO 639-2 code");
@@ -961,6 +972,7 @@ mod tests {
             fast_scan: false,
             anilist: false,
             shortcuts: Default::default(),
+            disabled_extensions: Vec::new(),
         };
         assert!(matches!(lib.update_settings(&bad), Err(ProjectError::Invalid(_))));
         assert_eq!(lib.settings().unwrap().export_preset_id, "h264-edit");

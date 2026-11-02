@@ -115,7 +115,7 @@ const appInfo: AppInfo = {
 }
 
 let mockClipboard: string | null = null
-let settings: AppSettings = { libraryRoot: ROOT, exportPresetId: "prores-hq", audioLanguage: "eng" }
+let settings: AppSettings = { libraryRoot: ROOT, exportPresetId: "prores-hq", audioLanguage: "eng", disabledExtensions: [] }
 
 /** Canned AniList answers (no network in the mock). */
 const ANILIST_SERIES: AniListMedia[] = [

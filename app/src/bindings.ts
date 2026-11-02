@@ -422,6 +422,8 @@ export type AppSettings = {
 	anilist?: boolean,
 	/**  The keyboard shortcuts as the person set them (Settings → Shortcuts). */
 	shortcuts?: Shortcuts,
+	/**  Extension IDs that the user has disabled. */
+	disabledExtensions?: string[],
 };
 
 export type AudioCodec = { codec: "none" } | 

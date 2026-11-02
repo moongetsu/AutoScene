@@ -241,6 +241,7 @@ pub(crate) mod tests {
             fast_scan: false,
             anilist: false,
             shortcuts: Default::default(),
+            disabled_extensions: Vec::new(),
         })
         .unwrap();
         let file = dir.path().join("Show - 01.mkv");

@@ -25,3 +25,4 @@ fi
 
 echo "Extension finished successfully."
 exit 0
+

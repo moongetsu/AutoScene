@@ -110,6 +110,9 @@ pub struct AppSettings {
     /// The keyboard shortcuts as the person set them (Settings → Shortcuts).
     #[serde(default)]
     pub shortcuts: Shortcuts,
+    /// Extension IDs that the user has disabled.
+    #[serde(default)]
+    pub disabled_extensions: Vec<String>,
 }
 
 /// The keys the person chose: an editor's keys to start from, and their own
