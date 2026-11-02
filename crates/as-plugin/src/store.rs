@@ -51,6 +51,8 @@ use crate::manifest::{
     shown,
 };
 use crate::package::{self, FilesLock, LOCK, LOCK_VERSION, LockedFile, MANIFEST, MAX_LOCK_BYTES, Unpacked, file_in};
+use crate::protocol::{ActionContext, AppContext, PluginContext, RunMessage, ToolPaths};
+use crate::runtime::RunSpec;
 use crate::trust::{self, AuthorKey, Keys, Trust, Verdict};
 
 /// The [`Record`] version this AutoScene reads and writes. A row of another
@@ -546,6 +548,55 @@ impl Store {
     /// Where the runs of `id` write their log.
     pub fn log_path(&self, id: &PluginId) -> PathBuf {
         self.logs.join(format!("{id}.log"))
+    }
+
+    /// A run of `action` of `p`, as [`crate::runtime::run`] takes it: its
+    /// command from its folder, started in [`Store::data_dir`] and logged to
+    /// [`Store::log_path`], and a run line with a new run id that names the
+    /// plugin, this AutoScene, the app's FFmpeg (`ffmpeg` and `ffprobe`, of
+    /// `ffmpeg_version`) and each of its settings, as [`Store::values`] gives
+    /// them. The project and the export it runs on are the host's to add. A
+    /// broken plugin can't run.
+    pub fn run_spec(
+        &self,
+        p: &Installed,
+        action: ActionContext,
+        ffmpeg: &Path,
+        ffprobe: &Path,
+        ffmpeg_version: &str,
+    ) -> PluginResult<RunSpec> {
+        let m = manifest_of(p)?;
+        let id = &p.record.id;
+        let data_dir = self.data_dir(id);
+        let message = RunMessage {
+            protocol: manifest::PROTOCOL,
+            run_id: Uuid::now_v7().to_string(),
+            plugin: PluginContext {
+                id: id.clone(),
+                version: p.record.version.clone(),
+                data_dir: data_dir.to_string_lossy().into_owned(),
+            },
+            app: AppContext { version: self.app.to_string(), platform: current_platform().into() },
+            tools: ToolPaths {
+                ffmpeg: ffmpeg.to_string_lossy().into_owned(),
+                ffprobe: ffprobe.to_string_lossy().into_owned(),
+                ffmpeg_version: ffmpeg_version.into(),
+            },
+            settings: merged(&m.settings, &self.stored_values(id)?.unwrap_or_default()),
+            action,
+            project: None,
+            export: None,
+        };
+        Ok(RunSpec {
+            name: m.name.clone(),
+            dir: p.dir.clone(),
+            launch: m.launch()?,
+            data_dir,
+            log_path: self.log_path(id),
+            ffmpeg: ffmpeg.into(),
+            ffprobe: ffprobe.into(),
+            message,
+        })
     }
 
     /// The icon of `p` as a `data:` URL, while it is the picture its

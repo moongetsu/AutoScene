@@ -8,13 +8,20 @@
 //! The installed plugins, and what the person set for them, are kept by
 //! [`store`].
 //!
+//! A run ([`runtime`]) starts the plugin's program and speaks the protocol
+//! ([`protocol`]) with it over its stdin and stdout; what else it writes
+//! goes to its log ([`log`]).
+//!
 //! What a plugin says it does (its permissions) is shown before install, and
 //! is not enforced: a process plugin runs with the person's user rights.
 
 pub mod error;
 pub mod keys;
+pub mod log;
 pub mod manifest;
 pub mod package;
+pub mod protocol;
+pub mod runtime;
 pub mod store;
 pub mod trust;
 
@@ -24,5 +31,10 @@ pub use manifest::{
     SettingKind, SettingSpec, SettingValue, current_platform,
 };
 pub use package::{FilesLock, LockedFile, Unpacked};
+pub use protocol::{
+    ActionContext, ActionKind, AppContext, ClipContext, ExportContext, PluginContext, ProjectContext, RunMessage,
+    ToolPaths, Trigger,
+};
+pub use runtime::RunSpec;
 pub use store::{Installed, Record, Source, Store, Ticket};
 pub use trust::{AuthorKey, Keys, Trust, Verdict};

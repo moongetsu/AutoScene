@@ -269,6 +269,7 @@ dependencies = [
  "as-api",
  "as-core",
  "as-db",
+ "as-media",
  "base64 0.23.1",
  "minisign",
  "minisign-verify 0.3.0",

@@ -866,7 +866,7 @@ fn is_platform(p: &str) -> bool {
 /// Text for people: without control characters or the invisible ones (see
 /// [`invisible`]), whitespace collapsed to single spaces. Joiners stay, as
 /// emoji and some scripts need them, but never make a text on their own.
-fn clean(s: &str) -> String {
+pub(crate) fn clean(s: &str) -> String {
     let s: String = s.chars().filter(|c| !invisible(*c)).map(|c| if c.is_control() { ' ' } else { c }).collect();
     if s.chars().all(|c| c.is_whitespace() || matches!(c, '\u{200C}' | '\u{200D}')) {
         return String::new();
@@ -904,7 +904,7 @@ fn invisible(c: char) -> bool {
 }
 
 /// `s` cut to `max` characters, the last one an ellipsis.
-fn cut(s: &str, max: usize) -> String {
+pub(crate) fn cut(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_owned();
     }

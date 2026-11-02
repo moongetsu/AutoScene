@@ -9,12 +9,19 @@ rust-version.workspace = true
 license.workspace = true
 
 # The tool plugin authors pack and sign with (`cargo install --path
-# crates/as-plugin --features cli`). Behind a feature, so the app doesn't
-# build minisign's signing side and password prompt.
+# crates/as-plugin --features cli --bin asp`). Behind a feature, so the app
+# doesn't build minisign's signing side and password prompt.
 [[bin]]
 name = "asp"
 path = "src/bin/asp.rs"
 required-features = ["cli"]
+
+# A stand-in plugin for the runtime tests (tests/runtime.rs), never shipped.
+[[bin]]
+name = "asp_test_plugin"
+path = "src/bin/asp_test_plugin.rs"
+test = false
+doc = false
 
 [features]
 cli = ["dep:minisign", "dep:tempfile"]
@@ -23,6 +30,7 @@ cli = ["dep:minisign", "dep:tempfile"]
 as-core.workspace = true
 as-api.workspace = true
 as-db.workspace = true
+as-media.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 specta.workspace = true
