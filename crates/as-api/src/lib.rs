@@ -107,6 +107,11 @@ pub struct AppSettings {
     /// The keyboard shortcuts as the person set them (Settings → Shortcuts).
     #[serde(default)]
     pub shortcuts: Shortcuts,
+    /// Lets plugins be installed and run that AutoScene has not reviewed:
+    /// unsigned ones, and ones only their author signed. They run with your
+    /// user rights. Off by default.
+    #[serde(default)]
+    pub allow_unreviewed_plugins: bool,
 }
 
 /// The keys the person chose: an editor's keys to start from, and their own

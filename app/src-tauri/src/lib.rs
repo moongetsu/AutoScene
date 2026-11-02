@@ -13,6 +13,7 @@ mod keep_awake;
 #[cfg(target_os = "macos")]
 mod mac_menu;
 mod paths;
+mod plugins;
 mod state;
 mod updater;
 mod window;
@@ -92,6 +93,17 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::DynRuntime> {
             commands::pack::pack_override,
             commands::pack::pack_plan,
             commands::pack::pack_export,
+            commands::plugins::plugins_list,
+            commands::plugins::plugin_inspect,
+            commands::plugins::plugin_inspect_folder,
+            commands::plugins::plugin_install,
+            commands::plugins::plugin_discard,
+            commands::plugins::plugin_uninstall,
+            commands::plugins::plugin_set_enabled,
+            commands::plugins::plugin_set_after_export,
+            commands::plugins::plugin_settings_get,
+            commands::plugins::plugin_settings_set,
+            commands::plugins::plugin_run,
             commands::jobs::jobs_list,
             commands::jobs::job_cancel,
             commands::jobs::jobs_clear_finished,
@@ -111,6 +123,7 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::DynRuntime> {
             events::AniListChanged,
             events::PortraitsChanged,
             events::PackChanged,
+            events::PluginsChanged,
             updater::UpdateProgress,
         ])
 }

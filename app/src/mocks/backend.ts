@@ -114,7 +114,12 @@ const appInfo: AppInfo = {
 }
 
 let mockClipboard: string | null = null
-let settings: AppSettings = { libraryRoot: ROOT, exportPresetId: "prores-hq", audioLanguage: "eng" }
+let settings: AppSettings = { libraryRoot: ROOT, exportPresetId: "prores-hq", audioLanguage: "eng", allowUnreviewedPlugins: false }
+
+/** What the backend says of a plugin that isn't installed (none is, in the mock). */
+const notInstalled: Handler = ({ pluginId }) => {
+  throw { code: "not_found", message: `${String(pluginId)} isn't installed.` }
+}
 
 /** Canned AniList answers (no network in the mock). */
 const ANILIST_SERIES: AniListMedia[] = [
@@ -1041,6 +1046,28 @@ const handlers: Record<string, Handler> = {
       merge: r.naming.merge ? packFileName(p.id, cid, p.title, r.naming) : null,
     })
   },
+  // Plugins: none is installed, as after a fresh install, and the browser
+  // can't read a package or a folder.
+  plugins_list: () => [],
+  plugin_inspect: () => {
+    throw { code: "invalid", message: "The mock backend can't read plugin packages." }
+  },
+  plugin_inspect_folder: () => {
+    if (!settings.allowUnreviewedPlugins) {
+      throw { code: "invalid", message: "Plugins that AutoScene has not reviewed are turned off in Settings." }
+    }
+    throw { code: "invalid", message: "The mock backend can't read plugin folders." }
+  },
+  plugin_install: () => {
+    throw { code: "not_found", message: "This plugin waited too long to be installed. Open it again." }
+  },
+  plugin_discard: () => null,
+  plugin_uninstall: notInstalled,
+  plugin_set_enabled: notInstalled,
+  plugin_set_after_export: notInstalled,
+  plugin_settings_get: notInstalled,
+  plugin_settings_set: notInstalled,
+  plugin_run: notInstalled,
   jobs_list: () => jobs,
   job_cancel: ({ jobId }) => {
     const j = jobs.find((x) => x.id === jobId)

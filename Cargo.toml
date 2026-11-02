@@ -28,6 +28,7 @@ as-vision = { path = "crates/as-vision" }
 as-analysis = { path = "crates/as-analysis" }
 as-engine = { path = "crates/as-engine" }
 as-identity = { path = "crates/as-identity" }
+as-plugin = { path = "crates/as-plugin" }
 
 # shared third-party
 anyhow = "1.0.104"

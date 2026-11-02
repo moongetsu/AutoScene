@@ -39,6 +39,7 @@ as-export.workspace = true
 as-jobs.workspace = true
 as-media.workspace = true
 as-models.workspace = true
+as-plugin.workspace = true
 as-project.workspace = true
 base64 = "=0.23.1"
 parking_lot.workspace = true
@@ -60,6 +61,10 @@ tauri-plugin-dialog = "=3.0.0-alpha.3"
 tauri-plugin-updater = "=3.0.0-alpha.2"
 tauri-plugin-single-instance = "=3.0.0-alpha.2"
 tauri-plugin-window-state = "=3.0.0-alpha.2"
+
+[dev-dependencies]
+# The plugin host's tests open a plugin store for an AutoScene version.
+semver.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 # Keep the PC awake while analysis runs.

@@ -23,7 +23,7 @@ use tauri_specta::Event;
 use crate::events::{AnalysisChanged, CastChanged, ExportChanged, LibraryChanged, PortraitsChanged};
 use crate::state::AppState;
 
-fn job_error(e: ProjectError) -> JobError {
+pub(crate) fn job_error(e: ProjectError) -> JobError {
     match e {
         ProjectError::Cancelled => JobError::Cancelled,
         e => {
@@ -1047,6 +1047,9 @@ pub fn queue_export(app: &AppHandle, project: &Arc<Project>, export: &ExportSumm
         if failed > 0 {
             return Err(JobError::Failed(failed_message(failed, summary.items.len(), summary.merged.is_some())));
         }
+        // Only a whole export: what plugins run after it is queued apart,
+        // and never fails it.
+        crate::plugins::queue_after_export(&app2, &project, &summary);
         Ok(())
     });
 }

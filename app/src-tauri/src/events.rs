@@ -94,6 +94,16 @@ pub struct PackChanged {
     pub character_id: CharacterId,
 }
 
+/// The installed plugins changed (one installed, uninstalled, turned on or
+/// off, its after-export actions or its settings), or whether plugins
+/// AutoScene hasn't reviewed may run did. `None` when it is all of them.
+#[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
+#[tauri_specta(event_name = "plugins:changed")]
+#[serde(rename_all = "camelCase")]
+pub struct PluginsChanged {
+    pub plugin_id: Option<String>,
+}
+
 pub fn emit_media_changed(app: &tauri::AppHandle, project_id: ProjectId, media_id: Option<MediaId>) {
     let _ = MediaChanged { project_id, media_id }.emit(app);
 }

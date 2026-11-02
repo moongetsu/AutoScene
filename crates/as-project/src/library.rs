@@ -24,6 +24,7 @@ const KEY_FAST_SCAN: &str = "fast_scan";
 const KEY_ANILIST: &str = "anilist";
 /// The keyboard shortcuts the person changed, as JSON.
 const KEY_SHORTCUTS: &str = "shortcuts";
+const KEY_ALLOW_UNREVIEWED: &str = "allow_unreviewed_plugins";
 /// Most series and films people cut are watched in their original English
 /// track; dubbed tracks are often flagged "default" too, so a language
 /// preference beats the file's flag.
@@ -147,7 +148,13 @@ impl Library {
             fast_scan: self.fast_scan()?,
             anilist: self.names_from_anilist(),
             shortcuts: self.shortcuts()?,
+            allow_unreviewed_plugins: self.allows_unreviewed_plugins()?,
         })
+    }
+
+    /// Whether plugins AutoScene has not reviewed may be installed and run.
+    pub fn allows_unreviewed_plugins(&self) -> ProjectResult<bool> {
+        Ok(self.db.setting(KEY_ALLOW_UNREVIEWED)?.as_deref() == Some("1"))
     }
 
     /// The keys the person chose; AutoScene's own when what is stored can't
@@ -189,6 +196,7 @@ impl Library {
         self.db.set_setting(KEY_FAST_SCAN, if s.fast_scan { "1" } else { "0" })?;
         self.db.set_setting(KEY_ANILIST, if s.anilist { "1" } else { "0" })?;
         self.anilist_on.store(s.anilist, Ordering::Relaxed);
+        self.db.set_setting(KEY_ALLOW_UNREVIEWED, if s.allow_unreviewed_plugins { "1" } else { "0" })?;
         // Keys a newer app stored, that this one can't read, stay unless
         // they were changed here.
         let unreadable =
@@ -599,6 +607,7 @@ mod tests {
             fast_scan: false,
             anilist: false,
             shortcuts: Default::default(),
+            allow_unreviewed_plugins: false,
         })
         .unwrap();
         assert_eq!(lib.audio_language().unwrap(), "deu", "stored as an ISO 639-2 code");
@@ -939,6 +948,30 @@ mod tests {
     }
 
     #[test]
+    fn unreviewed_plugins_are_off_by_default_and_kept() {
+        let (dir, lib) = lib();
+        assert!(!lib.settings().unwrap().allow_unreviewed_plugins);
+        assert!(!lib.allows_unreviewed_plugins().unwrap());
+        let on = AppSettings { allow_unreviewed_plugins: true, ..lib.settings().unwrap() };
+        assert!(lib.update_settings(&on).unwrap().allow_unreviewed_plugins);
+        // Other settings saved after it keep it.
+        lib.update_settings(&AppSettings { fast_scan: true, ..lib.settings().unwrap() }).unwrap();
+        drop(lib);
+        let reopened = Library::open(&AppPaths::at(dir.path().join("data"))).unwrap();
+        assert!(reopened.allows_unreviewed_plugins().unwrap());
+        let off = AppSettings { allow_unreviewed_plugins: false, ..reopened.settings().unwrap() };
+        assert!(!reopened.update_settings(&off).unwrap().allow_unreviewed_plugins);
+        assert!(!reopened.allows_unreviewed_plugins().unwrap());
+        // A page that sends no answer (an older one) turns them off.
+        let older: AppSettings = serde_json::from_value(serde_json::json!({
+            "libraryRoot": dir.path().join("Library").display().to_string(),
+            "exportPresetId": "h264-edit",
+        }))
+        .unwrap();
+        assert!(!older.allow_unreviewed_plugins);
+    }
+
+    #[test]
     fn keeps_settings_while_the_library_drive_is_away() {
         let (dir, lib) = lib();
         // The library's folder is in use, then its drive goes: a file stands
@@ -967,6 +1000,7 @@ mod tests {
             fast_scan: false,
             anilist: false,
             shortcuts: Default::default(),
+            allow_unreviewed_plugins: false,
         };
         assert!(matches!(lib.update_settings(&bad), Err(ProjectError::Invalid(_))));
         assert_eq!(lib.settings().unwrap().export_preset_id, "h264-edit");

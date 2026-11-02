@@ -8,8 +8,8 @@ use tauri::{AppHandle, State};
 use tauri_specta::Event;
 
 use crate::commands::media::stop_jobs;
-use crate::error::AppResult;
-use crate::events::LibraryChanged;
+use crate::error::{AppError, AppResult};
+use crate::events::{LibraryChanged, PluginsChanged};
 use crate::paths;
 use crate::state::{AppState, allow_asset_dir, blocking};
 use crate::work;
@@ -167,17 +167,34 @@ pub async fn settings_update(
     state: State<'_, AppState>,
     settings: AppSettings,
 ) -> AppResult<AppSettings> {
-    let lib = state.library.clone();
+    let (lib, plugins, jobs) = (state.library.clone(), state.plugins.clone(), state.jobs.clone());
     let before = lib.finds_bodies();
-    let saved = blocking(move || {
+    let (saved, allowed, allows) = blocking(move || {
         // Only a new library folder is checked: every other change sends
         // back the one in use.
         if settings.library_root.trim() != lib.library_root()?.display().to_string() {
             paths::check(settings.library_root.trim())?;
         }
-        Ok(lib.update_settings(&settings)?)
+        let allowed = lib.allows_unreviewed_plugins()?;
+        let saved = lib.update_settings(&settings).map_err(AppError::from);
+        // As stored now, also when the save stopped half-way: the setting
+        // may be written already. One that can't be read counts as off.
+        let allows = match &saved {
+            Ok(saved) => saved.allow_unreviewed_plugins,
+            Err(_) => lib.allows_unreviewed_plugins().unwrap_or(false),
+        };
+        // Plugins AutoScene hasn't reviewed stop at once when they may no
+        // longer run (and are refused when they start).
+        if let Some(plugins) = plugins {
+            plugins.allow_changed(&jobs, allowed, allows);
+        }
+        Ok((saved, allowed, allows))
     })
     .await?;
+    if allows != allowed {
+        let _ = PluginsChanged { plugin_id: None }.emit(&app);
+    }
+    let saved = saved?;
     // Finding people by their bodies changes every cast.
     if saved.find_bodies != before {
         work::bodies_setting_changed(&app, saved.find_bodies);

@@ -5,4 +5,5 @@ pub mod jobs;
 pub mod library;
 pub mod media;
 pub mod pack;
+pub mod plugins;
 pub mod system;

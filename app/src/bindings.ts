@@ -231,6 +231,52 @@ export const commands = {
 	 *  events, results as `export:changed`.
 	 */
 	packExport: (projectId: ProjectId, characterId: CharacterId, req: PackExportRequest) => __TAURI_INVOKE<ExportSummary>("pack_export", { projectId, characterId, req }),
+	/**  Every installed plugin, by id (also the broken ones). */
+	pluginsList: () => __TAURI_INVOKE<PluginInfo[]>("plugins_list"),
+	/**
+	 *  Unpack and check the plugin package at `path`, for the review dialog,
+	 *  which answers with `plugin_install` or `plugin_discard`.
+	 */
+	pluginInspect: (path: string) => __TAURI_INVOKE<PluginReview>("plugin_inspect", { path }),
+	/**
+	 *  Check the plugin in the folder `path` to load it where it is (a
+	 *  developer's), for the review dialog. Only while plugins AutoScene hasn't
+	 *  reviewed are allowed: a folder is never reviewed.
+	 */
+	pluginInspectFolder: (path: string) => __TAURI_INVOKE<PluginReview>("plugin_inspect_folder", { path }),
+	/**
+	 *  Install the plugin the review `ticket_id` showed. One AutoScene hasn't
+	 *  reviewed needs the setting, and `accept_unreviewed`: the person typed its
+	 *  name. Refused while the version it replaces runs.
+	 */
+	pluginInstall: (ticketId: string, acceptUnreviewed: boolean) => __TAURI_INVOKE<PluginInfo>("plugin_install", { ticketId, acceptUnreviewed }),
+	/**
+	 *  Drop the review `ticket_id` (the dialog was closed), and the files it
+	 *  unpacked. One that is gone already is no error.
+	 */
+	pluginDiscard: (ticketId: string) => __TAURI_INVOKE<null>("plugin_discard", { ticketId }),
+	/**
+	 *  Uninstall a plugin, with what it kept when `delete_data`. A folder it was
+	 *  loaded from stays. Refused while it runs; its runs still waiting go.
+	 */
+	pluginUninstall: (pluginId: string, deleteData: boolean) => __TAURI_INVOKE<null>("plugin_uninstall", { pluginId, deleteData }),
+	/**  Turn a plugin on or off. Off, its runs stop, and those still waiting go. */
+	pluginSetEnabled: (pluginId: string, enabled: boolean) => __TAURI_INVOKE<PluginInfo>("plugin_set_enabled", { pluginId, enabled }),
+	/**  Turn a plugin's export action on or off for after every export. */
+	pluginSetAfterExport: (pluginId: string, actionId: string, on: boolean) => __TAURI_INVOKE<PluginInfo>("plugin_set_after_export", { pluginId, actionId, on }),
+	/**  A plugin's settings: the person's value of each, else its default. */
+	pluginSettingsGet: (pluginId: string) => __TAURI_INVOKE<{ [key in string]: SettingValue }>("plugin_settings_get", { pluginId }),
+	/**
+	 *  Change some of a plugin's settings, each checked against what it may
+	 *  be; gives all of them as they are now.
+	 */
+	pluginSettingsSet: (pluginId: string, values: { [key in string]: SettingValue }) => __TAURI_INVOKE<{ [key in string]: SettingValue }>("plugin_settings_set", { pluginId, values }),
+	/**
+	 *  Run a plugin's export action on an export (from its menu), or its
+	 *  command (from the palette), in the project when it needs one. `None`
+	 *  when that run waits or runs already. It reports as a job.
+	 */
+	pluginRun: (pluginId: string, actionId: string, kind: ActionKind, projectId: string | null, exportId: string | null) => __TAURI_INVOKE<string | null>("plugin_run", { pluginId, actionId, kind, projectId, exportId }),
 	/**  Newest first. Live updates arrive as `job:changed` / `job:progress`. */
 	jobsList: () => __TAURI_INVOKE<JobInfo[]>("jobs_list"),
 	jobCancel: (jobId: JobId) => __TAURI_INVOKE<void>("job_cancel", { jobId }),
@@ -268,11 +314,15 @@ export const events = {
 	mediaChanged: makeEvent<MediaChanged>("media:changed"),
 	menuAction: makeEvent<MenuAction>("menu:action"),
 	packChanged: makeEvent<PackChanged>("pack:changed"),
+	pluginsChanged: makeEvent<PluginsChanged>("plugins:changed"),
 	portraitsChanged: makeEvent<PortraitsChanged>("portraits:changed"),
 	updateProgress: makeEvent<UpdateProgress>("update:progress"),
 };
 
 /* Types */
+/**  Which of a plugin's contributions a run is for. */
+export type ActionKind = "exportAction" | "command";
+
 /**  Analysis results of a media changed (shots or faces found, or reset). */
 export type AnalysisChanged = {
 	projectId: ProjectId,
@@ -422,6 +472,12 @@ export type AppSettings = {
 	anilist?: boolean,
 	/**  The keyboard shortcuts as the person set them (Settings → Shortcuts). */
 	shortcuts?: Shortcuts,
+	/**
+	 *  Lets plugins be installed and run that AutoScene has not reviewed:
+	 *  unsigned ones, and ones only their author signed. They run with your
+	 *  user rights. Off by default.
+	 */
+	allowUnreviewedPlugins?: boolean,
 };
 
 export type AudioCodec = { codec: "none" } | 
@@ -576,6 +632,15 @@ export type ClipRequest = {
 	end: number,
 	/**  Output file name without extension; generated when empty. */
 	name: string | null,
+};
+
+/**  An entry of the command palette. */
+export type CommandSpec = {
+	id: string,
+	title: string,
+	description: string | null,
+	/**  Offered only while a project is open, and run with it. */
+	needsProject: boolean,
 };
 
 export type Container = "mov" | "mp4";
@@ -1198,7 +1263,120 @@ export type PackTotals = {
 	seconds: number | null,
 };
 
+/**
+ *  What a plugin says it does. Shown before install and declared by the
+ *  author, not enforced: a process plugin runs with the person's user rights.
+ */
+export type Permission = 
+/**  Reads the exported clips. */
+"exports:read" | 
+/**  Changes or adds files beside the exported clips. */
+"exports:write" | 
+/**  Reads the project: its episodes and characters. */
+"project:read" | 
+/**  Talks to the internet (`network.hosts` names where). */
+"network";
+
 export type Platform = "windows" | "macos" | "linux";
+
+/**  An entry a plugin adds to each export's menu. */
+export type PluginExportAction = {
+	id: string,
+	title: string,
+	description: string | null,
+	/**  It runs after every export that finishes. */
+	afterExport: boolean,
+};
+
+/**  An installed plugin, as Settings → Plugins shows it. */
+export type PluginInfo = {
+	id: string,
+	name: string,
+	version: string,
+	description: string,
+	/**  Its author's name. */
+	author: string,
+	license: string | null,
+	/**  An `https://` link. */
+	repository: string | null,
+	trust: Trust,
+	/**  The key its updates must be signed with, as minisign shows it. */
+	authorKeyId: string | null,
+	source: PluginSource,
+	/**  Its folder: its package's, or the one it was loaded from. */
+	folder: string,
+	enabled: boolean,
+	/**  Turned on, not broken, and allowed to run: its actions are offered. */
+	active: boolean,
+	/**
+	 *  Why it can't run while it is turned on (the setting keeps plugins
+	 *  AutoScene hasn't reviewed from running).
+	 */
+	blockedReason: string | null,
+	/**
+	 *  Why it can't run at all: its files are missing or changed, or it
+	 *  needs another AutoScene.
+	 */
+	broken: string | null,
+	/**  What it says it does: declared by its author, not enforced. */
+	permissions: Permission[],
+	networkHosts: string[],
+	/**  It uses the GPU, so its runs wait for the analysis. */
+	gpu: boolean,
+	exportActions: PluginExportAction[],
+	commands: CommandSpec[],
+	settings: SettingSpec[],
+	/**  A `data:` URL of its icon (PNG or SVG), when it has a sound one. */
+	icon: string | null,
+	/**  Where its runs write their log. */
+	logPath: string,
+	/**  What was skipped or changed in its `plugin.json`. */
+	warnings: string[],
+};
+
+/**
+ *  A package (or folder) checked for install, for the person to say yes
+ *  (`plugin_install`) or no (`plugin_discard`).
+ */
+export type PluginReview = {
+	ticketId: string,
+	/**  The plugin as it would be once installed. */
+	plugin: PluginInfo,
+	/**  What changes from the installed version, when it replaces one. */
+	update: PluginUpdate | null,
+	/**
+	 *  AutoScene hasn't reviewed it: it needs the setting, and the person's
+	 *  typed yes.
+	 */
+	needsUnreviewed: boolean,
+	/**  It may be installed now (reviewed, or the setting is on). */
+	allowed: boolean,
+};
+
+/**  Where a plugin's files are. */
+export type PluginSource = 
+/**  Installed from a package. */
+"package" | 
+/**  Loaded from a developer's folder, used where it is. */
+"folder";
+
+/**  What an update changes. */
+export type PluginUpdate = {
+	fromVersion: string,
+	trustBefore: Trust,
+	/**  Permissions it says it needs that the installed version didn't. */
+	addedPermissions: Permission[],
+	addedHosts: string[],
+};
+
+/**
+ *  The installed plugins changed (one installed, uninstalled, turned on or
+ *  off, its after-export actions or its settings), or whether plugins
+ *  AutoScene hasn't reviewed may run did. `None` when it is all of them.
+ */
+export type PluginsChanged = {
+	pluginId: string | null,
+};
 
 /**
  *  Character covers of a project got sharp portraits (the cast itself is
@@ -1334,6 +1512,24 @@ export type SegmentKind = "shot" |
 /**  A brief flash (muzzle flash, lightning, anime impact frame) inside a shot. */
 "flash";
 
+export type SelectOption = {
+	value: string,
+	label: string,
+};
+
+export type SettingKind = { type: "string"; default: string | null; placeholder: string | null; maxLength: number } | { type: "number"; default: number | null; min: number | null; max: number | null; step: number | null; integer: boolean } | { type: "boolean"; default: boolean } | { type: "select"; options: SelectOption[]; default: string | null };
+
+/**  A setting AutoScene shows on the plugin's page and hands to each run. */
+export type SettingSpec = {
+	key: string,
+	title: string,
+	description: string | null,
+	kind: SettingKind,
+};
+
+/**  A setting's value, as it is stored and handed to a run. */
+export type SettingValue = boolean | number | null | string;
+
 /**
  *  The keys the person chose: an editor's keys to start from, and their own
  *  changes on top. The UI owns what the names mean (`app/src/lib/shortcuts.ts`).
@@ -1391,6 +1587,15 @@ export type TrackFilter =
 { kind: "all_unsure" } | 
 /**  Tracks of nobody. */
 { kind: "unassigned" };
+
+/**  Who stands behind a plugin. */
+export type Trust = 
+/**  AutoScene reviewed it: an AutoScene Plugins key signed it. */
+"reviewed" | 
+/**  Its author signed it, with the key its first install pinned. */
+"pinned" | 
+/**  Nobody AutoScene knows signed it. */
+"unreviewed";
 
 /**
  *  Download progress. `downloaded == 0 && total == None` after the download

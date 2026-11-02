@@ -3,13 +3,15 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
-use as_api::{AnalysisStage, MediaToolsStatus};
+use as_api::{AnalysisStage, JobInfo, JobKind, JobState, MediaToolsStatus};
 use as_core::{AppPaths, MediaId, ProjectId};
 use as_engine::{Engine, Launch};
 use as_jobs::{Class, JobEvent, JobRunner};
 use as_media::Tools;
 use as_models::ModelStore;
+use as_plugin::runtime;
 use as_project::Library;
 use tauri::{AppHandle, Manager};
 use tauri_specta::Event;
@@ -17,6 +19,7 @@ use tauri_specta::Event;
 use crate::error::{AppError, AppResult, ErrorCode};
 use crate::events::{JobChanged, JobProgressEvent};
 use crate::paths;
+use crate::plugins::PluginHost;
 
 /// Concurrent jobs per resource class. Two decode-heavy jobs keep a GPU busy
 /// without starving the UI's preview; exports run one at a time so encoder
@@ -57,6 +60,9 @@ pub struct AppState {
     /// Projects whose AniList look-up runs or failed this session (see
     /// `commands::anilist::look_up`).
     pub anilist: Arc<parking_lot::Mutex<HashMap<ProjectId, crate::commands::anilist::LookUp>>>,
+    /// The installed plugins and their runs; none when they couldn't start
+    /// (see `plugins::open`).
+    pub plugins: Option<Arc<PluginHost>>,
     /// ffmpeg/ffprobe once found (see [`AppState::tools`]).
     tools: Arc<OnceLock<Arc<Tools>>>,
     /// The ffmpeg folder this build uses (see [`sidecar_dir`]).
@@ -97,6 +103,7 @@ impl AppState {
         let mut args = vec!["--engine".into()];
         args.extend(as_engine::args(&engine_cfg));
         let engine = Arc::new(Engine::new(Launch { program, args }));
+        let plugins = crate::plugins::open(app, &library, paths);
         Self {
             library: Arc::new(library),
             jobs,
@@ -106,6 +113,7 @@ impl AppState {
             portraits: Arc::default(),
             decisions: Arc::default(),
             anilist: Arc::default(),
+            plugins,
             tools: Arc::new(OnceLock::new()),
             bundled_ffmpeg,
         }
@@ -174,11 +182,31 @@ fn found<T, E>(cell: &OnceLock<T>, find: impl FnOnce() -> Result<T, E>) -> Resul
 }
 
 /// Stop all background work before the process goes away (quit, restart,
-/// update install), so no ffmpeg is left running or writing a file.
+/// update install), so no ffmpeg or plugin is left running or writing a file.
 pub fn shutdown_work(app: &AppHandle) {
     if let Some(state) = app.try_state::<AppState>() {
-        state.jobs.shutdown(std::time::Duration::from_secs(3));
+        end_jobs(&state.jobs, SHUTDOWN_GRACE, PLUGIN_SHUTDOWN_GRACE);
         state.engine.shutdown();
+    }
+}
+
+/// How long [`shutdown_work`] waits for the jobs to stop.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
+
+/// How long it waits for a plugin's run: a plugin may take its cancel grace
+/// to stop, and its processes the system's once they are ended. On macOS
+/// and Linux nothing ends them once the app is gone.
+const PLUGIN_SHUTDOWN_GRACE: Duration =
+    Duration::from_secs(runtime::CANCEL_GRACE.as_secs() + runtime::TERM_GRACE.as_secs() + 1);
+
+/// Cancels every job, and waits up to `grace` for them to stop, and up to
+/// `plugin_grace` (from the start) for plugin runs.
+fn end_jobs(jobs: &JobRunner, grace: Duration, plugin_grace: Duration) {
+    let deadline = Instant::now() + plugin_grace;
+    jobs.shutdown(grace);
+    let plugin_runs = |j: &JobInfo| j.kind == JobKind::Plugin && j.state == JobState::Running;
+    while jobs.is_active(plugin_runs) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
     }
 }
 
@@ -311,5 +339,43 @@ mod tests {
         // Once found, kept.
         assert_eq!(found(&cell, || Err::<i32, _>("never asked")), Ok(&7));
         assert_eq!(looks, 2);
+    }
+
+    #[test]
+    fn quitting_waits_for_a_plugin_to_stop() {
+        let jobs = JobRunner::new(&[(Class::Plugin, 1), (Class::Export, 1)], |_| {});
+        let (tx, started) = std::sync::mpsc::channel();
+        // Each takes a while to stop once cancelled, the export longer.
+        let slow = |kind, class, stopping: Duration| {
+            let tx = tx.clone();
+            let spec = as_jobs::JobSpec {
+                kind,
+                class,
+                title: "Slow".into(),
+                subtitle: None,
+                project_id: None,
+                media_id: None,
+                export_id: None,
+            };
+            jobs.submit(spec, move |ctx| {
+                tx.send(()).unwrap();
+                while !ctx.cancel.is_cancelled() {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                std::thread::sleep(stopping);
+                Err(as_jobs::JobError::Cancelled)
+            })
+        };
+        let plugin = slow(JobKind::Plugin, Class::Plugin, Duration::from_millis(300));
+        let export = slow(JobKind::Export, Class::Export, Duration::from_secs(5));
+        for _ in 0..2 {
+            started.recv_timeout(Duration::from_secs(10)).unwrap();
+        }
+        let start = Instant::now();
+        end_jobs(&jobs, Duration::from_millis(20), Duration::from_secs(5));
+        let state = |id| jobs.jobs().into_iter().find(|j| j.id == id).unwrap().state;
+        // The plugin's run had the time it needed; the rest only the grace.
+        assert_eq!((state(plugin), state(export)), (JobState::Cancelled, JobState::Running));
+        assert!(start.elapsed() < Duration::from_secs(4), "waited {:?}", start.elapsed());
     }
 }
