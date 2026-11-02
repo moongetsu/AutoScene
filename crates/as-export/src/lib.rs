@@ -2,12 +2,14 @@
 
 pub mod clip;
 pub mod estimate;
+pub mod hook;
 pub mod lossless;
 pub mod merge;
 pub mod preset;
 
 pub use clip::{ClipJob, ClipOutcome, Part, export_clip};
 pub use estimate::{EstimateClip, estimate_bytes};
+pub use hook::{PostExportPayload, run_hook};
 pub use lossless::{LosslessCodec, exact_format};
 pub use merge::{
     JoinJob, JoinPart, LosslessShape, MergePlan, MergeShape, MergeSource, PartTiming, join_parts,
