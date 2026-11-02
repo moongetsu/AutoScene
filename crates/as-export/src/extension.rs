@@ -31,11 +31,14 @@ pub enum ExtensionError {
 
 /// Declared capability permissions an extension can request.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
-#[serde(rename_all = "kebab-case")]
 pub enum ExtensionCapability {
+    #[serde(rename = "filesystem:read-project", alias = "filesystem-read-project")]
     FilesystemReadProject,
+    #[serde(rename = "filesystem:write-export", alias = "filesystem-write-export")]
     FilesystemWriteExport,
+    #[serde(rename = "network:webhook", alias = "network-webhook")]
     NetworkWebhook,
+    #[serde(rename = "gpu")]
     Gpu,
 }
 
@@ -136,23 +139,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn serializes_and_deserializes_manifest() {
-        let manifest = ExtensionManifest {
-            id: "my-ext".into(),
-            name: "My Ext".into(),
-            version: "0.1.0".into(),
-            description: "Test".into(),
-            author: "Dev".into(),
-            kind: ExtensionKind::Exporter,
-            entrypoint: "main.py".into(),
-            capabilities: vec![ExtensionCapability::FilesystemWriteExport],
-            triggers: vec![],
-        };
-        let serialized = serde_json::to_string(&manifest).unwrap();
-        let parsed = serde_json::from_str::<ExtensionManifest>(&serialized).unwrap();
-        assert_eq!(parsed.id, "my-ext");
-        assert_eq!(parsed.kind, ExtensionKind::Exporter);
-        assert_eq!(parsed.capabilities, vec![ExtensionCapability::FilesystemWriteExport]);
+    fn test_sample_json_deserialization() {
+        let json = r#"{
+          "id": "autoscene.sample.export-logger",
+          "name": "Export Summary Logger",
+          "version": "1.0.0",
+          "description": "Logs export details, clip counts, and output files to a summary log file.",
+          "author": "AutoScene Team",
+          "kind": "post-processor",
+          "entrypoint": "run.sh",
+          "capabilities": [
+            "filesystem:write-export"
+          ],
+          "triggers": [
+            "post-export"
+          ]
+        }"#;
+
+        let res = serde_json::from_str::<ExtensionManifest>(json);
+        match &res {
+            Ok(m) => println!("Success: {:?}", m),
+            Err(e) => println!("Error: {:?}", e),
+        }
+        assert!(res.is_ok(), "Failed to deserialize sample: {:?}", res.err());
     }
 
     #[test]

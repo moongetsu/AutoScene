@@ -32,7 +32,7 @@ export const commands = {
 	/**  Open the extensions folder (Settings → Extensions). */
 	openExtensionsDir: () => __TAURI_INVOKE<null>("open_extensions_dir"),
 	/**  List extensions installed in the extensions folder. */
-	extensionsList: () => __TAURI_INVOKE<InstalledExtension[]>("extensions_list"),
+	extensionsList: () => __TAURI_INVOKE<InstalledExtension_Serialize[]>("extensions_list"),
 	/**
 	 *  Put the person's keys (Settings → Shortcuts) on the macOS menu, which
 	 *  answers them there before the page sees them: `keys` maps a menu item's id
@@ -702,13 +702,22 @@ export type ExportSummary = {
 };
 
 /**  Declared capability permissions an extension can request. */
-export type ExtensionCapability = "filesystem-read-project" | "filesystem-write-export" | "network-webhook" | "gpu";
+export type ExtensionCapability = ExtensionCapability_Serialize | ExtensionCapability_Deserialize;
+
+/**  Declared capability permissions an extension can request. */
+export type ExtensionCapability_Deserialize = "filesystem:read-project" | "filesystem-read-project" | "filesystem:write-export" | "filesystem-write-export" | "network:webhook" | "network-webhook" | "gpu";
+
+/**  Declared capability permissions an extension can request. */
+export type ExtensionCapability_Serialize = "filesystem:read-project" | "filesystem:write-export" | "network:webhook" | "gpu";
 
 /**  Extension type and lifecycle target. */
 export type ExtensionKind = "exporter" | "post-processor" | "webhook" | "custom";
 
 /**  The `extension.json` manifest structure. */
-export type ExtensionManifest = {
+export type ExtensionManifest = ExtensionManifest_Serialize | ExtensionManifest_Deserialize;
+
+/**  The `extension.json` manifest structure. */
+export type ExtensionManifest_Deserialize = {
 	id: string,
 	name: string,
 	version: string,
@@ -716,8 +725,21 @@ export type ExtensionManifest = {
 	author: string,
 	kind: ExtensionKind,
 	entrypoint: string,
-	capabilities: ExtensionCapability[],
+	capabilities: ExtensionCapability_Deserialize[],
 	triggers?: string[],
+};
+
+/**  The `extension.json` manifest structure. */
+export type ExtensionManifest_Serialize = {
+	id: string,
+	name: string,
+	version: string,
+	description: string,
+	author: string,
+	kind: ExtensionKind,
+	entrypoint: string,
+	capabilities: ExtensionCapability_Serialize[],
+	triggers: string[],
 };
 
 /**  One face followed through one shot. */
@@ -820,8 +842,18 @@ export type ImportCandidate = {
 };
 
 /**  Discovered extension installed in the system. */
-export type InstalledExtension = {
-	manifest: ExtensionManifest,
+export type InstalledExtension = InstalledExtension_Serialize | InstalledExtension_Deserialize;
+
+/**  Discovered extension installed in the system. */
+export type InstalledExtension_Deserialize = {
+	manifest: ExtensionManifest_Deserialize,
+	path: string,
+	entrypointPath: string,
+};
+
+/**  Discovered extension installed in the system. */
+export type InstalledExtension_Serialize = {
+	manifest: ExtensionManifest_Serialize,
 	path: string,
 	entrypointPath: string,
 };
