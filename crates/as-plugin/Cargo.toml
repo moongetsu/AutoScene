@@ -8,6 +8,17 @@ authors.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+# The tool plugin authors pack and sign with (`cargo install --path
+# crates/as-plugin --features cli`). Behind a feature, so the app doesn't
+# build minisign's signing side and password prompt.
+[[bin]]
+name = "asp"
+path = "src/bin/asp.rs"
+required-features = ["cli"]
+
+[features]
+cli = ["dep:minisign", "dep:tempfile"]
+
 [dependencies]
 as-core.workspace = true
 as-db.workspace = true
@@ -21,7 +32,9 @@ sha2.workspace = true
 zip.workspace = true
 minisign-verify.workspace = true
 base64.workspace = true
+minisign = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
 
 [dev-dependencies]
 minisign.workspace = true
-tempfile = "3.27"
+tempfile.workspace = true

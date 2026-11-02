@@ -33,7 +33,7 @@ use zip::result::ZipError;
 use zip::{CompressionMethod, ExtraField, ZipArchive};
 
 use crate::error::{PluginError, PluginResult};
-use crate::manifest::{Twice, invalid, shown};
+use crate::manifest::{Launch, Twice, invalid, shown};
 
 /// The largest package file.
 pub const MAX_PACKAGE_BYTES: u64 = 1 << 30;
@@ -60,6 +60,10 @@ pub const MAX_LOCK_BYTES: u64 = 1 << 20;
 pub const MAX_SIG_BYTES: u64 = 4 << 10;
 /// The largest `author.pub`.
 pub const MAX_KEY_BYTES: u64 = 1 << 10;
+/// The largest `.png` icon.
+pub const MAX_ICON_PNG: u64 = 256 << 10;
+/// The largest `.svg` icon.
+pub const MAX_ICON_SVG: u64 = 64 << 10;
 /// The `lockVersion` this AutoScene reads and writes.
 pub const LOCK_VERSION: u32 = 1;
 pub const LOCK: &str = "files.lock";
@@ -225,6 +229,55 @@ pub fn verify_dir(dir: &Path, lock: &FilesLock) -> PluginResult<()> {
         }
     }
     Ok(())
+}
+
+/// Checks that the package of `lock` holds what `launch` starts on
+/// `platform` (a key of [`PLATFORMS`](crate::manifest::PLATFORMS)): the
+/// program, marked to run unless on Windows, or the script and its lock.
+pub fn check_launch(lock: &FilesLock, launch: &Launch, platform: &str) -> PluginResult<()> {
+    for file in launch.files() {
+        let Some(f) = lock.files.iter().find(|f| f.path == file) else {
+            return Err(invalid(format!("The plugin package is missing {}, which its command needs.", shown(&file))));
+        };
+        if matches!(launch, Launch::Exe { .. }) && !f.exec && !platform.starts_with("windows-") {
+            return Err(invalid(format!("The plugin's files.lock doesn't mark {} to run.", shown(&file))));
+        }
+    }
+    Ok(())
+}
+
+/// Checks the plugin's icon, the `.png` or `.svg` package path `icon`, in
+/// the folder `dir` that holds the files of `lock`: it is listed, no larger
+/// than [`MAX_ICON_PNG`] or [`MAX_ICON_SVG`], and starts as its kind does
+/// (PNG's signature; SVG text with `<svg` or `<?xml`).
+pub fn check_icon(dir: &Path, lock: &FilesLock, icon: &str) -> PluginResult<()> {
+    let svg = icon.to_ascii_lowercase().ends_with(".svg");
+    let (kind, max) = if svg { ("SVG", MAX_ICON_SVG) } else { ("PNG", MAX_ICON_PNG) };
+    let Some(f) = lock.files.iter().find(|f| f.path == icon) else {
+        return Err(invalid(format!("The plugin package is missing its icon, {}.", shown(icon))));
+    };
+    if f.size > max {
+        return Err(invalid(format!("The plugin's icon is larger than {}.", size_text(max))));
+    }
+    let mut start = Vec::new();
+    File::open(file_in(dir, icon))?.take(256).read_to_end(&mut start)?;
+    let text = start.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&start).trim_ascii_start();
+    let fits = if svg {
+        text.starts_with(b"<svg") || text.starts_with(b"<?xml")
+    } else {
+        start.starts_with(b"\x89PNG\r\n\x1a\n")
+    };
+    if !fits {
+        return Err(invalid(format!("The plugin's icon {} isn't a {kind} image.", shown(icon))));
+    }
+    Ok(())
+}
+
+/// Whether `size` bytes packed into `packed` are packed tighter than a
+/// package may hold them: more than [`RATIO_FROM`] bytes, over
+/// [`MAX_RATIO`] times smaller. It holds for each file, and for all of them.
+pub fn packed_too_tightly(size: u64, packed: u64) -> bool {
+    size > RATIO_FROM && size / packed.max(1) > MAX_RATIO
 }
 
 /// Lists the plugin folder `dir` for its `files.lock`, as `asp pack` does:
@@ -510,7 +563,7 @@ fn check_listing<R: Read + Seek>(zip: &ZipArchive<R>, listing: &Listing, lock: &
         if entry.size() != f.size {
             return Err(wrong_size(&f.path));
         }
-        if f.size > RATIO_FROM && f.size / entry.compressed_size().max(1) > MAX_RATIO {
+        if packed_too_tightly(f.size, entry.compressed_size()) {
             return Err(invalid(format!(
                 "The plugin package's {} unpacks to over {MAX_RATIO} times its packed size.",
                 shown(&f.path)
@@ -519,7 +572,7 @@ fn check_listing<R: Read + Seek>(zip: &ZipArchive<R>, listing: &Listing, lock: &
         size = size.saturating_add(f.size);
         packed = packed.saturating_add(entry.compressed_size());
     }
-    if size > RATIO_FROM && size / packed.max(1) > MAX_RATIO {
+    if packed_too_tightly(size, packed) {
         return Err(invalid(format!("The plugin package unpacks to over {MAX_RATIO} times its packed size.")));
     }
     Ok(())
@@ -805,6 +858,62 @@ mod tests {
         let left = Cell::new(MAX_LISTING_BYTES);
         assert_eq!(open(Cursor::new(zip), &left).unwrap().len(), MAX_ENTRIES);
         assert_eq!(left.get(), u64::MAX, "the cap is lifted for unpacking");
+    }
+
+    fn lock_of(files: &[(&str, u64, bool)]) -> FilesLock {
+        let files = files.iter().map(|&(path, size, exec)| LockedFile {
+            path: path.into(),
+            size,
+            sha256: sha256_hex(b""),
+            exec,
+        });
+        FilesLock { lock_version: LOCK_VERSION, files: files.collect() }
+    }
+
+    #[test]
+    fn a_command_needs_its_files_in_the_lock() {
+        let lock = lock_of(&[("bin/tool", 2, false), ("bin/tool.exe", 2, true), ("main.py", 2, false)]);
+        let exe = |program: &str| Launch::Exe { program: program.into(), args: Vec::new() };
+        assert!(check_launch(&lock, &exe("bin/tool.exe"), "linux-x86_64").is_ok());
+        // Only Windows runs a program the lock doesn't mark.
+        assert!(check_launch(&lock, &exe("bin/tool"), "windows-x86_64").is_ok());
+        let Err(PluginError::Invalid(m)) = check_launch(&lock, &exe("bin/tool"), "macos-aarch64") else { panic!() };
+        assert_eq!(m, "The plugin's files.lock doesn't mark bin/tool to run.");
+        let Err(PluginError::Invalid(m)) = check_launch(&lock, &exe("bin/other"), "windows-x86_64") else { panic!() };
+        assert_eq!(m, "The plugin package is missing bin/other, which its command needs.");
+        let uv = Launch::UvScript { script: "main.py".into() };
+        let Err(PluginError::Invalid(m)) = check_launch(&lock, &uv, "linux-x86_64") else { panic!() };
+        assert_eq!(m, "The plugin package is missing main.py.lock, which its command needs.");
+    }
+
+    #[test]
+    fn an_icon_is_a_small_png_or_svg() {
+        let dir = tempfile::tempdir().unwrap();
+        let icons: [(&str, &[u8]); 4] = [
+            ("icon.png", b"\x89PNG\r\n\x1a\n...."),
+            ("icon.svg", b"\xEF\xBB\xBF\n  <svg xmlns='http://www.w3.org/2000/svg'/>"),
+            ("plain.svg", b"<?xml version='1.0'?><svg/>"),
+            ("fake.png", b"<svg/>"),
+        ];
+        for (name, bytes) in icons {
+            fs::write(dir.path().join(name), bytes).unwrap();
+        }
+        let lock = lock_of(&[
+            ("icon.png", 12, false),
+            ("icon.svg", 50, false),
+            ("plain.svg", 27, false),
+            ("fake.png", 6, false),
+        ]);
+        let check = |icon: &str| match check_icon(dir.path(), &lock, icon) {
+            Ok(()) => String::new(),
+            Err(e) => e.to_string(),
+        };
+        assert_eq!((check("icon.png"), check("icon.svg"), check("plain.svg")), Default::default());
+        assert_eq!(check("fake.png"), "The plugin's icon fake.png isn't a PNG image.");
+        assert_eq!(check("gone.svg"), "The plugin package is missing its icon, gone.svg.");
+        let lock = lock_of(&[("icon.svg", MAX_ICON_SVG + 1, false)]);
+        let Err(e) = check_icon(dir.path(), &lock, "icon.svg") else { panic!() };
+        assert_eq!(e.to_string(), "The plugin's icon is larger than 64 KB.");
     }
 
     #[test]

@@ -45,11 +45,13 @@ jobs:
         shell: bash
         run: mkdir -p app/dist
       - run: cargo fmt --all --check
-      # The feature brings in the export-bindings dev tool, so it's linted too.
-      - run: cargo clippy --workspace --all-targets --features autoscene-app/export-bindings -- -D warnings
+      # The features bring in the export-bindings and asp dev tools, so they're
+      # linted too.
+      - run: cargo clippy --workspace --all-targets --features autoscene-app/export-bindings,as-plugin/cli -- -D warnings
       - name: Generate fixtures
         run: cargo xtask fixtures
-      - run: cargo test --workspace
+      # asp's tests run the tool, which builds only with its feature.
+      - run: cargo test --workspace --features as-plugin/cli
         env:
           AUTOSCENE_REQUIRE_FIXTURES: "1"
       - name: Bindings are up to date

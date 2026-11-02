@@ -26,6 +26,8 @@
 
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
+use std::fs::File;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use semver::{BuildMetadata, Comparator, Op, Prerelease, Version, VersionReq};
@@ -353,6 +355,15 @@ impl Manifest {
         launch_of(command, &format!("runtime.command[\"{key}\"]"), here.starts_with("windows-"))
     }
 
+    /// How it starts on each platform of [`PLATFORMS`] it runs on (those
+    /// `platforms` names, or all), or why it can't start there, as
+    /// [`Manifest::launch`] would say on that computer: `asp` marks the
+    /// programs to run, and checks a package for each platform.
+    pub fn launches(&self) -> Vec<(&'static str, PluginResult<Launch>)> {
+        let named = |p: &&str| self.platforms.is_empty() || self.platforms.iter().any(|named| named == p);
+        PLATFORMS.into_iter().filter(named).map(|p| (p, self.launch_on(p))).collect()
+    }
+
     /// Whether `app` is an AutoScene this plugin works with (see [`parse`]).
     pub fn requirement_met(&self, app: &Version) -> PluginResult<()> {
         check_requirement(&requirement(&self.engines.autoscene)?, app)
@@ -367,6 +378,26 @@ impl Manifest {
 /// and are cut to a length the review dialog can show. An object that names
 /// a key twice is refused: JSON readers differ in which one they keep.
 pub fn parse(bytes: &[u8], app: &Version) -> PluginResult<Parsed> {
+    parse_for(bytes, Some(app))
+}
+
+/// Reads a `plugin.json` as [`parse`] does, for any AutoScene: what
+/// `engines.autoscene` asks for must read, but isn't checked
+/// ([`Manifest::requirement_met`] does that). `asp` packs and signs a plugin
+/// whatever AutoScene it is made for.
+pub fn parse_for_any_app(bytes: &[u8]) -> PluginResult<Parsed> {
+    parse_for(bytes, None)
+}
+
+/// Reads the `plugin.json` at `path`: no more of it than [`parse`] takes and
+/// a byte, so a larger one is refused without being read whole.
+pub fn read_file(path: &Path) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    File::open(path)?.take(MAX_MANIFEST_BYTES + 1).read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+fn parse_for(bytes: &[u8], app: Option<&Version>) -> PluginResult<Parsed> {
     if bytes.len() as u64 > MAX_MANIFEST_BYTES {
         return Err(invalid("The plugin's plugin.json is larger than 256 KB."));
     }
@@ -400,7 +431,10 @@ pub fn parse(bytes: &[u8], app: &Version) -> PluginResult<Parsed> {
         _ => return Err(invalid(r#"The plugin's runtime needs "type": "process"."#)),
     }
     let autoscene = engines.required_text("autoscene")?;
-    check_requirement(&requirement(autoscene)?, app)?;
+    let req = requirement(autoscene)?;
+    if let Some(app) = app {
+        check_requirement(&req, app)?;
+    }
     engines.warn_unknown(&["autoscene", "protocol"], &mut w);
 
     let id = PluginId::parse(root.required_text("id")?)?;
@@ -1512,6 +1546,56 @@ mod tests {
         {
             assert!(message(with(|v| v["platforms"] = platforms.clone())).contains("platforms"), "{platforms}");
         }
+    }
+
+    #[test]
+    fn launches_name_each_platform_it_runs_on() {
+        let launches = |edit: Edit| {
+            let m = with(edit).unwrap().manifest;
+            m.launches().into_iter().map(|(p, l)| (p, l.map_err(|e| e.to_string()))).collect::<Vec<_>>()
+        };
+        // Windows falls back to "*" too, where only an .exe runs.
+        let exe = "The plugin's runtime.command[\"*\"] runs on Windows, so its program must be an .exe file.";
+        let tool = || Ok(Launch::Exe { program: "bin/tool".into(), args: Vec::new() });
+        assert_eq!(
+            launches(|v| v["runtime"]["command"] = json!({"*": ["bin/tool"]})),
+            [
+                ("windows-x86_64", Err(exe.into())),
+                ("windows-aarch64", Err(exe.into())),
+                ("macos-aarch64", tool()),
+                ("macos-x86_64", tool()),
+                ("linux-x86_64", tool()),
+                ("linux-aarch64", tool()),
+            ]
+        );
+        let l = launches(|v| {
+            v["runtime"]["command"] = json!({"windows-x86_64": ["bin/tool.exe"], "*": ["bin/tool"]});
+            v["platforms"] = json!(["windows-x86_64", "linux-x86_64", "plan9-mips"]);
+        });
+        let windows = Ok(Launch::Exe { program: "bin/tool.exe".into(), args: Vec::new() });
+        assert_eq!(l, [("windows-x86_64", windows), ("linux-x86_64", tool())]);
+        assert_eq!(launches(|v| v["platforms"] = json!(["plan9-mips"])), []);
+    }
+
+    #[test]
+    fn any_app_reads_a_plugin_made_for_another() {
+        let mut v = plugin();
+        v["engines"]["autoscene"] = json!(">=99.0.0");
+        let bytes = serde_json::to_vec(&v).unwrap();
+        assert_eq!(too_new(parse(&bytes, &app())), "engines.autoscene");
+        let m = parse_for_any_app(&bytes).unwrap().manifest;
+        assert!(matches!(m.requirement_met(&app()), Err(PluginError::TooNew(_))));
+        // What it asks for must still read.
+        v["engines"]["autoscene"] = json!(">=1.1.0 <2");
+        assert!(message(parse_for_any_app(&serde_json::to_vec(&v).unwrap())).contains("use commas"));
+    }
+
+    #[test]
+    fn a_plugin_json_is_read_no_further_than_parse_takes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("plugin.json");
+        std::fs::write(&path, vec![b' '; MAX_MANIFEST_BYTES as usize + 100]).unwrap();
+        assert_eq!(read_file(&path).unwrap().len() as u64, MAX_MANIFEST_BYTES + 1);
     }
 
     /// A change to the test plugin.

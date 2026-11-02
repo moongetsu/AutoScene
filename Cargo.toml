@@ -51,6 +51,7 @@ zip = { version = "=9.2.2", default-features = false, features = ["deflate-flate
 minisign-verify = "=0.3.0"
 minisign = "=0.10.0"
 base64 = "=0.23.1"
+tempfile = "=3.27.0"
 
 [profile.dev]
 # Media/vision code is unusable unoptimised; keep debug info but optimise deps.
