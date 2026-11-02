@@ -48,6 +48,9 @@ libc = "=0.2.191"
 semver = "=1.0.28"
 sha2 = "=0.11.1"
 zip = { version = "=9.2.2", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+minisign-verify = "=0.3.0"
+minisign = "=0.10.0"
+base64 = "=0.23.1"
 
 [profile.dev]
 # Media/vision code is unusable unoptimised; keep debug info but optimise deps.
