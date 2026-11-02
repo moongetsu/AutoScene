@@ -459,12 +459,13 @@ fn listing<R: Read + Seek>(zip: &mut ZipArchive<R>) -> PluginResult<Listing> {
     Ok(Listing { files, folders })
 }
 
-/// Reads a `files.lock`. A newer `lockVersion` is read first, so a field a
-/// later AutoScene added never reads as a mistake. A key named twice is
-/// refused, and so is a lock or file written as an array of its values:
-/// serde reads it as the object, while other readers of a signed lock would
-/// find no files in it.
-fn read_lock(bytes: &[u8]) -> PluginResult<FilesLock> {
+/// Reads a `files.lock`, from a package or back from an installed plugin's
+/// folder, and checks it as [`unpack`] does. A newer `lockVersion` is read
+/// first, so a field a later AutoScene added never reads as a mistake. A
+/// key named twice is refused, and so is a lock or file written as an array
+/// of its values: serde reads it as the object, while other readers of a
+/// signed lock would find no files in it.
+pub fn read_lock(bytes: &[u8]) -> PluginResult<FilesLock> {
     let root: Value = serde_json::from_slice(bytes).map_err(|e| {
         invalid(format!("The plugin's files.lock isn't valid JSON (line {}, column {}).", e.line(), e.column()))
     })?;
@@ -718,7 +719,7 @@ fn folders_of(path: &str) -> impl Iterator<Item = &str> {
 }
 
 /// The file of package path `path` (a [`check_path`] path) in `dir`.
-fn file_in(dir: &Path, path: &str) -> PathBuf {
+pub(crate) fn file_in(dir: &Path, path: &str) -> PathBuf {
     path.split('/').fold(dir.to_path_buf(), |file, part| file.join(part))
 }
 

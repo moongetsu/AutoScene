@@ -266,11 +266,14 @@ dependencies = [
 name = "as-plugin"
 version = "1.0.3-BETA"
 dependencies = [
+ "as-api",
  "as-core",
  "as-db",
  "base64 0.23.1",
  "minisign",
  "minisign-verify 0.3.0",
+ "parking_lot",
+ "rusqlite",
  "semver",
  "serde",
  "serde_json",
@@ -279,6 +282,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tracing",
+ "uuid",
  "zip 9.2.2",
 ]
 

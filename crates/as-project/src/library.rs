@@ -33,7 +33,7 @@ const SCAN_DEPTH: usize = 4;
 
 /// The project list, settings, and the cache of open projects.
 pub struct Library {
-    db: LibraryDb,
+    db: Arc<LibraryDb>,
     open: Mutex<HashMap<ProjectId, Arc<Project>>>,
     /// One lock per project that was opened here: a project is opened once
     /// at a time, while other projects open, and open ones are handed out,
@@ -59,7 +59,7 @@ pub struct Library {
 impl Library {
     pub fn open(paths: &AppPaths) -> ProjectResult<Self> {
         std::fs::create_dir_all(&paths.data)?;
-        let db = LibraryDb::open(&paths.library_db())?;
+        let db = Arc::new(LibraryDb::open(&paths.library_db())?);
         let find_bodies = Arc::new(AtomicBool::new(db.setting(KEY_FIND_BODIES)?.as_deref() == Some("1")));
         let anilist_on = AtomicBool::new(db.setting(KEY_ANILIST)?.as_deref() == Some("1"));
         let anilist = AniList::new(paths.anilist());
@@ -128,6 +128,12 @@ impl Library {
     /// Whether characters are looked for by their bodies too.
     pub fn finds_bodies(&self) -> bool {
         self.find_bodies.load(Ordering::Relaxed)
+    }
+
+    /// The library's database, for the plugin registry, whose rows sit
+    /// beside the settings.
+    pub fn shared_db(&self) -> Arc<LibraryDb> {
+        Arc::clone(&self.db)
     }
 
     // -- settings -----------------------------------------------------------

@@ -125,6 +125,17 @@ fn project_row(r: &Row) -> DbResult<ProjectSummary> {
     })
 }
 
+/// The first key past every key that starts with `prefix`, if there is one:
+/// its last character one up (UTF-8 sorts as its characters do), or, when
+/// that is the last character there is, the one before it.
+fn past(prefix: &str) -> Option<String> {
+    let (at, c) = prefix.char_indices().next_back()?;
+    match (u32::from(c) + 1..=u32::from(char::MAX)).find_map(char::from_u32) {
+        Some(up) => Some(format!("{}{up}", &prefix[..at])),
+        None => past(&prefix[..at]),
+    }
+}
+
 impl LibraryDb {
     pub fn open(path: &Path) -> DbResult<Self> {
         Ok(Self(Db::open(path, &MIGRATIONS)?))
@@ -146,6 +157,35 @@ impl LibraryDb {
                  ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 [key, value],
             )?;
+            Ok(())
+        })
+    }
+
+    /// The settings whose key starts with `prefix`, in key order. A range of
+    /// keys, not `LIKE`: `_` and `%` in the prefix are only themselves.
+    pub fn settings_in(&self, prefix: &str) -> DbResult<Vec<(String, String)>> {
+        self.0.read(|c| {
+            let mut st =
+                c.prepare("SELECT key, value FROM settings WHERE key >= ?1 AND (?2 IS NULL OR key < ?2) ORDER BY key")?;
+            let rows = st.query_map(params![prefix, past(prefix)], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            Ok(rows.collect::<Result<_, _>>()?)
+        })
+    }
+
+    /// Writes several settings in one transaction: each key gets its value,
+    /// and a key without one (`None`) is deleted.
+    pub fn write_settings(&self, rows: &[(&str, Option<&str>)]) -> DbResult<()> {
+        self.0.write(|tx| {
+            for (key, value) in rows {
+                match value {
+                    Some(value) => tx.execute(
+                        "INSERT INTO settings (key, value) VALUES (?1, ?2)
+                         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                        [key, value],
+                    )?,
+                    None => tx.execute("DELETE FROM settings WHERE key = ?1", [key])?,
+                };
+            }
             Ok(())
         })
     }
@@ -394,6 +434,51 @@ mod tests {
         db.set_setting("library_root", "D:/A").unwrap();
         db.set_setting("library_root", "D:/B").unwrap();
         assert_eq!(db.setting("library_root").unwrap().as_deref(), Some("D:/B"));
+    }
+
+    #[test]
+    fn prefixed_settings_are_read_and_written_in_one_transaction() {
+        let db = LibraryDb::memory();
+        db.write_settings(&[
+            ("plugin.dev.a.b", Some("1")),
+            ("plugin.dev.a.c", Some("2")),
+            ("plugin_settings.dev.a.b", Some("{}")),
+            ("pluginXdev", Some("x")),
+            ("plugin/", Some("past")),
+            ("plugin", Some("before")),
+            ("a\u{10FFFF}b", Some("last character")),
+            ("b", Some("after it")),
+        ])
+        .unwrap();
+        let keys =
+            |prefix: &str| -> Vec<String> { db.settings_in(prefix).unwrap().into_iter().map(|(k, _)| k).collect() };
+        assert_eq!(
+            db.settings_in("plugin.").unwrap(),
+            [("plugin.dev.a.b".to_owned(), "1".to_owned()), ("plugin.dev.a.c".to_owned(), "2".to_owned())]
+        );
+        // `_` is no wildcard: `plugin_` doesn't find `pluginX`.
+        assert_eq!(keys("plugin_"), ["plugin_settings.dev.a.b"]);
+        assert_eq!(keys("plugin%"), Vec::<String>::new());
+        assert_eq!(keys("").len(), 8);
+        // A prefix that ends in the last character there is still ends.
+        assert_eq!(keys("a\u{10FFFF}"), ["a\u{10FFFF}b"]);
+        assert_eq!(keys("\u{10FFFF}"), Vec::<String>::new());
+
+        // A value and a deletion land together.
+        db.write_settings(&[("plugin.dev.a.b", Some("3")), ("plugin.dev.a.c", None)]).unwrap();
+        assert_eq!(db.settings_in("plugin.").unwrap(), [("plugin.dev.a.b".to_owned(), "3".to_owned())]);
+        // Or neither does: the second write fails, and the first is undone.
+        db.0.write(|tx| {
+            tx.execute_batch(
+                "CREATE TRIGGER refuse BEFORE INSERT ON settings WHEN NEW.key = 'boom'
+                 BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        assert!(db.write_settings(&[("plugin.dev.a.b", None), ("boom", Some("x"))]).is_err());
+        assert_eq!(db.setting("plugin.dev.a.b").unwrap().as_deref(), Some("3"));
+        assert_eq!(db.setting("boom").unwrap(), None);
     }
 
     #[test]

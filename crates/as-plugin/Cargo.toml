@@ -21,12 +21,15 @@ cli = ["dep:minisign", "dep:tempfile"]
 
 [dependencies]
 as-core.workspace = true
+as-api.workspace = true
 as-db.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 specta.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+parking_lot.workspace = true
+uuid.workspace = true
 semver.workspace = true
 sha2.workspace = true
 zip.workspace = true
@@ -38,3 +41,5 @@ tempfile = { workspace = true, optional = true }
 [dev-dependencies]
 minisign.workspace = true
 tempfile.workspace = true
+# The store's tests make library.db refuse a write.
+rusqlite.workspace = true

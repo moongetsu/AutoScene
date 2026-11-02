@@ -5,6 +5,8 @@
 //! package ([`package`]): a zip whose `files.lock` lists and hashes each of
 //! its files. Who signed that list decides the plugin's trust ([`trust`]):
 //! AutoScene's review, its author's pinned key, or nobody AutoScene knows.
+//! The installed plugins, and what the person set for them, are kept by
+//! [`store`].
 //!
 //! What a plugin says it does (its permissions) is shown before install, and
 //! is not enforced: a process plugin runs with the person's user rights.
@@ -13,6 +15,7 @@ pub mod error;
 pub mod keys;
 pub mod manifest;
 pub mod package;
+pub mod store;
 pub mod trust;
 
 pub use error::{PluginError, PluginResult};
@@ -21,4 +24,5 @@ pub use manifest::{
     SettingKind, SettingSpec, SettingValue, current_platform,
 };
 pub use package::{FilesLock, LockedFile, Unpacked};
+pub use store::{Installed, Record, Source, Store, Ticket};
 pub use trust::{AuthorKey, Keys, Trust, Verdict};
