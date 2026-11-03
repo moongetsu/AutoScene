@@ -719,7 +719,7 @@ fn folders_of(path: &str) -> impl Iterator<Item = &str> {
 }
 
 /// The file of package path `path` (a [`check_path`] path) in `dir`.
-pub(crate) fn file_in(dir: &Path, path: &str) -> PathBuf {
+pub fn file_in(dir: &Path, path: &str) -> PathBuf {
     path.split('/').fold(dir.to_path_buf(), |file, part| file.join(part))
 }
 

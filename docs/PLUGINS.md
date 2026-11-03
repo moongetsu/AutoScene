@@ -545,7 +545,9 @@ optional `description` (at most 200).
 ```
 
 A default must fit its setting: within `min` and `max`, whole for an
-`integer`, one of the options. AutoScene checks each value the person sets
+`integer`, one of the options. A slider without a default starts at its
+`min` (the next whole number for an `integer`), and that is its default,
+which a run gets too. AutoScene checks each value the person sets
 the same way, and keeps only the values that differ from their default: a
 setting left alone follows the plugin's default, also after an update. A
 stored value that no longer fits after an update gives way to the default.

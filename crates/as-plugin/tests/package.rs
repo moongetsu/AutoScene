@@ -8,7 +8,7 @@ use std::fs;
 use std::io::{Cursor, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-use as_plugin::package::{self, AUTHOR_KEY, LOCK, MAX_ENTRIES, MAX_FILE_BYTES, RATIO_FROM, SIG};
+use as_plugin::package::{self, AUTHOR_KEY, LOCK, MAX_ENTRIES, MAX_FILE_BYTES, MAX_PACKAGE_BYTES, RATIO_FROM, SIG};
 use as_plugin::{FilesLock, LockedFile, PluginError, PluginResult, Unpacked};
 use serde_json::{Value, json};
 use zip::write::{FullFileOptions, SimpleFileOptions};
@@ -494,6 +494,20 @@ fn a_zip_bomb_stops_at_the_limit() {
     assert_eq!(message, "The plugin package's files.lock.minisig isn't text.");
     let message = place.refused(&zip_of(&with(with_lock(&plugin()), AUTHOR_KEY, b"RW\xff")));
     assert_eq!(message, "The plugin package's author.pub isn't text.");
+}
+
+#[test]
+fn a_package_larger_than_1_gb_is_refused_before_it_is_read() {
+    let place = Place::new();
+    let package = place.dir.join("plugin.asp");
+    // Sparse where the file system can: the test writes nothing much.
+    fs::File::create(&package).unwrap().set_len(MAX_PACKAGE_BYTES + 1).unwrap();
+    let message = match package::unpack(&package, &place.target()) {
+        Err(PluginError::Invalid(message)) => message,
+        r => panic!("expected Invalid, got {r:?}"),
+    };
+    assert_eq!(message, "The plugin package is larger than 1 GB.");
+    assert_eq!(place.left(), ["test", "test/plugin.asp"]);
 }
 
 #[test]

@@ -13,16 +13,19 @@
 //! and writes the row; the version before goes only once the row names the
 //! new one. What is thrown away goes through `plugins/.trash`, so it is gone
 //! from its place at once. If AutoScene stops at any point, the plugin is as
-//! it was or as it is now, and what lies about is removed at the next open.
+//! it was or as it is now, and what lies about is moved out of the way at the
+//! next open, and removed after it ([`Store::remove_leftovers`]).
 //! A power cut can also undo the last rows written (library.db syncs
 //! lazily): the plugin is then listed as missing its files. A developer's
 //! folder is loaded where it is ([`Store::stage_folder`]) and is never
 //! removed.
 //!
-//! An update keeps the trust its plugin had: a plugin AutoScene reviewed
-//! takes only reviewed versions, one pinned to its author's key only
-//! versions that key signed ([`trust::judge`]), and none goes back to an
-//! older version or changes its files under the same one. A row this
+//! An update never takes away the trust its plugin had: a plugin AutoScene
+//! reviewed takes only reviewed versions, and one pinned to its author's key
+//! only versions that key signed or AutoScene reviewed, which keep the pin
+//! ([`trust::judge`]). An unreviewed one takes any, and one its author signed
+//! pins the key. None goes back to an older version or changes its files
+//! under the same one. A row this
 //! AutoScene can't read (a later AutoScene's) is listed as such and never
 //! written over, and so is a plugin that doesn't work with this AutoScene
 //! (one put back to an older version).
@@ -63,7 +66,8 @@ const ROW: &str = "plugin.";
 const SETTINGS_ROW: &str = "plugin_settings.";
 const STAGING: &str = ".staging";
 const TRASH: &str = ".trash";
-const MISSING: &str = "Its files are missing. Install it again.";
+/// Why a plugin whose folder is gone can't run.
+pub const MISSING: &str = "Its files are missing. Install it again.";
 const CHANGED: &str = "Its files were changed. Install it again.";
 const NEWER: &str = "Needs a newer AutoScene.";
 /// How long a rename waits for Windows: a virus scanner may still hold a
@@ -155,15 +159,19 @@ pub struct Store {
     /// Held while a plugin's rows change, so each change starts from the
     /// rows the one before wrote.
     changing: Mutex<()>,
+    /// What the open moved into `.trash`, for [`Store::remove_leftovers`].
+    leftovers: Mutex<Vec<PathBuf>>,
 }
 
 impl Store {
     /// Opens the plugins of `paths` (registered in `db`, judged by `keys`)
-    /// for the AutoScene of version `app`, and removes what an install or
-    /// uninstall that never finished left: staged and thrown-away folders,
+    /// for the AutoScene of version `app`, and moves into `.trash` what an
+    /// install or uninstall that never finished left: staged folders,
     /// versions a row no longer names, and folders of plugins without a
     /// row. A plugin whose row a later AutoScene wrote keeps its folder as
-    /// it is.
+    /// it is. Moving is quick; removing them, and what `.trash` held, is
+    /// [`Store::remove_leftovers`]'s, which a package's 4096 files can keep
+    /// busy for a second.
     pub fn open(paths: &AppPaths, db: Arc<LibraryDb>, keys: Keys, app: Version) -> PluginResult<Self> {
         let store = Self {
             root: paths.plugins(),
@@ -173,29 +181,43 @@ impl Store {
             keys,
             app,
             changing: Mutex::default(),
+            leftovers: Mutex::default(),
         };
-        for dir in [STAGING, TRASH] {
-            let dir = store.root.join(dir);
+        let (staging, trash) = (store.root.join(STAGING), store.root.join(TRASH));
+        for dir in [&staging, &trash] {
             // The store's own folders: a file in their place goes.
-            if fs::symlink_metadata(&dir).is_ok_and(|f| !f.is_dir()) {
-                remove_all(&dir)?;
+            if fs::symlink_metadata(dir).is_ok_and(|f| !f.is_dir()) {
+                remove_all(dir)?;
             }
-            fs::create_dir_all(&dir)?;
-            for entry in fs::read_dir(&dir)? {
-                let path = entry?.path();
-                if let Err(e) = remove_all(&path) {
-                    tracing::warn!(path = %as_core::paths::name(&path), error = %e, "a plugin's old files stay");
-                }
-            }
+            fs::create_dir_all(dir)?;
         }
-        store.sweep()?;
+        let mut leftovers = fs::read_dir(&trash)?.map(|entry| Ok(entry?.path())).collect::<io::Result<Vec<_>>>()?;
+        for entry in fs::read_dir(&staging)? {
+            leftovers.extend(store.move_away(&entry?.path()));
+        }
+        leftovers.extend(store.sweep()?);
+        *store.leftovers.lock() = leftovers;
         Ok(store)
     }
 
-    /// Removes each folder under `plugins/<id>/` its row doesn't name, and
-    /// `plugins/<id>/` of a plugin without a row (or loaded from a folder).
-    /// Names that are no plugin id are left as they are.
-    fn sweep(&self) -> PluginResult<()> {
+    /// Removes what [`Store::open`] moved out of the way. Each lies in
+    /// `.trash` under a name of its own, so what is staged, installed or
+    /// thrown away meanwhile is never touched: this may run beside them.
+    pub fn remove_leftovers(&self) {
+        let leftovers = std::mem::take(&mut *self.leftovers.lock());
+        for path in leftovers {
+            if let Err(e) = remove_all(&path) {
+                tracing::warn!(path = %as_core::paths::name(&path), error = %e, "a plugin's old files stay");
+            }
+        }
+    }
+
+    /// Moves into `.trash` each folder under `plugins/<id>/` its row doesn't
+    /// name, and `plugins/<id>/` of a plugin without a row (or loaded from a
+    /// folder), and gives where they went. Names that are no plugin id are
+    /// left as they are.
+    fn sweep(&self) -> PluginResult<Vec<PathBuf>> {
+        let mut moved = Vec::new();
         let rows: BTreeMap<PluginId, String> = self.rows()?.into_iter().collect();
         for entry in fs::read_dir(&self.root)? {
             let entry = entry?;
@@ -205,24 +227,24 @@ impl Store {
                 // A later AutoScene's row: so may its files be.
                 Some(None) => continue,
                 Some(Some(_)) | None => {
-                    self.throw_away(&entry.path());
+                    moved.extend(self.move_away(&entry.path()));
                     continue;
                 }
             };
             // A file or a link in its folder's place goes.
             if !entry.file_type().is_ok_and(|f| f.is_dir()) {
-                self.throw_away(&entry.path());
+                moved.extend(self.move_away(&entry.path()));
                 continue;
             }
             // A folder that can't be read now may hold the version in use.
             let Ok(versions) = fs::read_dir(entry.path()) else { continue };
             for old in versions.flatten() {
                 if old.file_name() != keep.as_str() {
-                    self.throw_away(&old.path());
+                    moved.extend(self.move_away(&old.path()));
                 }
             }
         }
-        Ok(())
+        Ok(moved)
     }
 
     /// Every installed plugin, by id.
@@ -513,7 +535,9 @@ impl Store {
     /// names no setting is dropped. Only values that differ from their
     /// default are kept, so a setting left alone follows the plugin's
     /// default. Gives every value, as [`Store::values`] does. Values a later
-    /// AutoScene saved are never written over.
+    /// AutoScene saved are never written over: a row this one can't read
+    /// refuses the change, and the value of a setting it skipped (a secret, a
+    /// type it doesn't know) stays as it is.
     pub fn set_values(
         &self,
         id: &PluginId,
@@ -523,21 +547,23 @@ impl Store {
         let p = self.get(id)?;
         let specs = &manifest_of(&p)?.settings;
         let spec = |key: &str| specs.iter().find(|s| s.key == key);
-        let mut stored = self.stored_values(id)?.ok_or_else(|| {
+        let mut stored = self.stored_row(id)?.ok_or_else(|| {
             invalid("A newer AutoScene saved this plugin's settings, so this one can't change them. Update AutoScene, or uninstall the plugin.")
         })?;
         for (key, value) in values {
             if let Some(spec) = spec(&key) {
                 check_value(spec, &value)?;
-                stored.insert(key, value);
+                stored.insert(key, serde_json::to_value(value).expect("a setting value serializes"));
             }
         }
-        stored.retain(|key, value| {
-            spec(key).is_some_and(|s| check_value(s, value).is_ok() && default_of(&s.kind).as_ref() != Some(value))
+        stored.retain(|key, value| match spec(key) {
+            Some(s) => serde_json::from_value::<SettingValue>(value.clone())
+                .is_ok_and(|v| check_value(s, &v).is_ok() && default_of(&s.kind) != Some(v)),
+            None => true,
         });
         let json = serde_json::to_string(&stored).expect("setting values serialize");
         self.db.write_settings(&[(&settings_key(id), (!stored.is_empty()).then_some(json.as_str()))])?;
-        Ok(merged(specs, &stored))
+        Ok(merged(specs, &typed(stored)))
     }
 
     /// Where `id` keeps what it needs between runs (its runs start there).
@@ -683,28 +709,35 @@ impl Store {
     }
 
     /// Removes `path` (a file or folder), best-effort. It is moved into
-    /// `.trash` first, so it is gone from its place at once, also when a
-    /// file in it can't be removed yet; the next open removes what stays
-    /// there. What can't be moved (a running program holds it on Windows)
-    /// stays whole where it is, for the next open to sweep, but a plugin's
-    /// data on another drive is removed where it is.
+    /// `.trash` first ([`Store::move_away`]), so it is gone from its place at
+    /// once, also when a file in it can't be removed yet; the next open
+    /// removes what stays there.
     fn throw_away(&self, path: &Path) {
+        let Some(gone) = self.move_away(path) else { return };
+        if let Err(e) = remove_all(&gone) {
+            tracing::warn!(path = %as_core::paths::name(path), error = %e, "a plugin's old files stay");
+        }
+    }
+
+    /// Moves `path` into `.trash` under a name of its own, and gives where
+    /// it is to be removed: there, or where it is for a plugin's data on
+    /// another drive. None when it is gone already, or can't be moved (a
+    /// running program holds it on Windows): it stays whole where it is, for
+    /// the next open to sweep.
+    fn move_away(&self, path: &Path) -> Option<PathBuf> {
         let trash = self.root.join(TRASH);
         // Made again when something removed it, so the rename has a place.
         let _ = fs::create_dir_all(&trash);
         let trash = trash.join(Uuid::now_v7().simple().to_string());
-        let gone = match fs::rename(path, &trash) {
-            Ok(()) => trash,
+        match fs::rename(path, &trash) {
+            Ok(()) => Some(trash),
             // Gone already; not a trash folder that is missing.
-            Err(_) if fs::symlink_metadata(path).is_err_and(|e| e.kind() == ErrorKind::NotFound) => return,
-            Err(_) if !path.starts_with(&self.root) => path.to_path_buf(),
+            Err(_) if fs::symlink_metadata(path).is_err_and(|e| e.kind() == ErrorKind::NotFound) => None,
+            Err(_) if !path.starts_with(&self.root) => Some(path.to_path_buf()),
             Err(e) => {
                 tracing::warn!(path = %as_core::paths::name(path), error = %e, "a plugin's old files stay");
-                return;
+                None
             }
-        };
-        if let Err(e) = remove_all(&gone) {
-            tracing::warn!(path = %as_core::paths::name(path), error = %e, "a plugin's old files stay");
         }
     }
 
@@ -712,17 +745,26 @@ impl Store {
     /// doesn't read (a later AutoScene's). A value that doesn't read is left
     /// out.
     fn stored_values(&self, id: &PluginId) -> PluginResult<Option<BTreeMap<String, SettingValue>>> {
+        Ok(self.stored_row(id)?.map(typed))
+    }
+
+    /// The person's values of the settings of `id` as their row holds them,
+    /// or none when it doesn't read (a later AutoScene's).
+    fn stored_row(&self, id: &PluginId) -> PluginResult<Option<BTreeMap<String, Value>>> {
         let Some(json) = self.db.setting(&settings_key(id))? else { return Ok(Some(BTreeMap::new())) };
-        let values: BTreeMap<String, Value> = match serde_json::from_str(&json) {
-            Ok(values) => values,
+        match serde_json::from_str(&json) {
+            Ok(values) => Ok(Some(values)),
             Err(e) => {
                 tracing::warn!(plugin = %id, error = %e, "a plugin's settings don't read");
-                return Ok(None);
+                Ok(None)
             }
-        };
-        let values = values.into_iter().filter_map(|(key, value)| Some((key, serde_json::from_value(value).ok()?)));
-        Ok(Some(values.collect()))
+        }
     }
+}
+
+/// The values of a settings row that read as setting values.
+fn typed(row: BTreeMap<String, Value>) -> BTreeMap<String, SettingValue> {
+    row.into_iter().filter_map(|(key, value)| Some((key, serde_json::from_value(value).ok()?))).collect()
 }
 
 fn row_key(id: &PluginId) -> String {
@@ -1209,6 +1251,16 @@ mod tests {
         let store = place.store();
         let mut kept = holding(&p);
         kept.extend(["dev.autoscene.later".into(), "dev.autoscene.later/2.0.0+12345678".into()]);
+        // Out of their places at once, all in the trash, whose old files stay
+        // with them until they are removed.
+        let trash = place.paths.plugins().join(TRASH);
+        assert_eq!(fs::read_dir(&trash).unwrap().count(), 4);
+        // What is staged meanwhile isn't touched by their removal.
+        let staged = store.stage(&place.unsigned("1.1.0")).unwrap();
+        store.remove_leftovers();
+        assert_eq!(fs::read_dir(&trash).unwrap().count(), 0);
+        assert!(staged.staged.as_ref().unwrap().join("plugin.json").is_file());
+        store.discard(staged);
         assert_eq!(place.plugins(), kept);
         assert!(store.get(&id()).unwrap().broken.is_none());
         assert_eq!(place.db.setting("plugin.dev.autoscene.later").unwrap().as_deref(), Some(later));
@@ -1363,7 +1415,7 @@ mod tests {
         assert_eq!(place.plugins(), [".staging", ".trash"]);
         // What lies in plugins/<id>/ of a loaded folder is no version of it.
         fs::create_dir_all(place.paths.plugins().join(ID).join("1.0.0+0badf00d")).unwrap();
-        place.store();
+        place.store().remove_leftovers();
         assert_eq!(place.plugins(), [".staging", ".trash"]);
         assert_eq!(fs::read_dir(&dev).unwrap().count(), 3);
     }
@@ -1415,7 +1467,7 @@ mod tests {
         fs::write(&trash, b"x").unwrap();
         store.uninstall(&id(), true).unwrap();
         assert!(!store.data_dir(&id()).exists());
-        place.store();
+        place.store().remove_leftovers();
         assert_eq!(place.plugins(), [".staging", ".trash"]);
     }
 
@@ -1460,9 +1512,20 @@ mod tests {
 
         // A value that doesn't fit any more (an update changed its setting)
         // gives the default.
-        place.db.set_setting(&row, r#"{"count":40,"mode":"z","loud":false,"later":{"secret":1}}"#).unwrap();
+        let later = r##"{"count":40,"mode":"z","loud":false,"later":{"secret":1},"tint":"#ff0000"}"##;
+        place.db.set_setting(&row, later).unwrap();
         assert_eq!(store.values(&id()).unwrap(), with(3.0, false));
-        // Back at their defaults, nothing is kept.
+        // Back at their defaults, nothing of its settings is kept; the values
+        // of settings this AutoScene skipped (a later one's) stay as they are.
+        store.set_values(&id(), values(&[("loud", Bool(true))])).unwrap();
+        assert_eq!(place.db.setting(&row).unwrap().as_deref(), Some(r##"{"later":{"secret":1},"tint":"#ff0000"}"##));
+        store.set_values(&id(), values(&[("count", Number(4.0))])).unwrap();
+        assert_eq!(
+            place.db.setting(&row).unwrap().as_deref(),
+            Some(r##"{"count":4.0,"later":{"secret":1},"tint":"#ff0000"}"##)
+        );
+        assert_eq!(store.values(&id()).unwrap(), with(4.0, true));
+        place.db.set_setting(&row, r#"{"loud":false}"#).unwrap();
         store.set_values(&id(), values(&[("loud", Bool(true))])).unwrap();
         assert_eq!(place.db.setting(&row).unwrap(), None);
 
@@ -1520,6 +1583,46 @@ mod tests {
         let t = store.stage(&place.package(&hello("1.0.0"), Some(&review), false)).unwrap();
         assert_eq!(t.verdict.trust, Trust::Reviewed);
         assert_eq!(store.commit(t, false, false).unwrap().record.trust, Trust::Reviewed);
+    }
+
+    #[test]
+    fn a_pinned_plugin_takes_a_reviewed_update_and_keeps_its_pin() {
+        let place = Place::new();
+        let (review, author) = (key_pair(), key_pair());
+        let store = place.store_with(Keys::new(&[&review.pk.to_base64()]).unwrap());
+        let p = install(&store, &place.package(&hello("1.0.0"), Some(&author), true)).unwrap();
+        let pin = p.record.author_key.clone();
+        assert!(pin.is_some());
+        let p = install(&store, &place.package(&hello("1.1.0"), Some(&review), false)).unwrap();
+        assert_eq!((p.record.trust, &p.record.author_key), (Trust::Reviewed, &pin));
+        // Reviewed now, it takes no version its author alone signed.
+        let e = store.stage(&place.package(&hello("1.2.0"), Some(&author), true)).unwrap_err();
+        assert_eq!(e.to_string(), "AutoScene reviewed the installed version of this plugin, and not this one.");
+
+        // An unreviewed plugin takes a signed update, which pins its key.
+        store.uninstall(&id(), false).unwrap();
+        install(&store, &place.unsigned("1.0.0")).unwrap();
+        let p = install(&store, &place.package(&hello("1.1.0"), Some(&author), true)).unwrap();
+        assert_eq!((p.record.trust, &p.record.author_key), (Trust::Pinned, &pin));
+    }
+
+    #[test]
+    fn a_ticket_never_throws_away_a_folder_outside_staging() {
+        let place = Place::new();
+        let store = place.store();
+        let dev = place.folder("hello-export", &hello("1.0.0"));
+        // A loaded folder's ticket, made to name that folder as staged.
+        let mut t = store.stage_folder(&dev).unwrap();
+        t.staged = Some(dev.clone());
+        store.discard(t);
+        assert!(dev.join("plugin.json").is_file(), "discard kept the developer's folder");
+        // A package's, whose commit fails.
+        let mut t = store.stage(&place.unsigned("1.0.0")).unwrap();
+        let staged = t.staged.replace(dev.clone()).unwrap();
+        assert!(store.commit(t, true, true).is_err());
+        assert!(dev.join("plugin.json").is_file(), "a failed commit kept the developer's folder");
+        assert!(store.list().unwrap().is_empty());
+        let _ = remove_all(&staged);
     }
 
     #[test]

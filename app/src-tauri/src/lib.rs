@@ -231,6 +231,10 @@ The log is in {}",
                 if let Ok(tools) = handle.state::<state::AppState>().tools() {
                     let _ = tools.caps();
                 }
+                // What a plugin install or uninstall that never finished left.
+                if let Some(plugins) = &handle.state::<state::AppState>().plugins {
+                    plugins.store.remove_leftovers();
+                }
             });
             Ok(())
         })

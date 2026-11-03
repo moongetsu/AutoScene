@@ -328,7 +328,7 @@ fn runnable(p: &Installed, allow_unreviewed: bool) -> PluginResult<&Manifest> {
     let m = match (&p.manifest, &p.broken) {
         (Some(m), None) => m,
         (_, Some(broken)) => return Err(PluginError::Invalid(broken.clone())),
-        (None, None) => return Err(PluginError::Invalid("Its files are missing. Install it again.".into())),
+        (None, None) => return Err(PluginError::Invalid(as_plugin::store::MISSING.into())),
     };
     if !p.record.enabled {
         return Err(PluginError::Invalid(format!("{} is turned off.", m.name)));

@@ -41,7 +41,7 @@ use std::process::ExitCode;
 
 use as_plugin::keys::REVIEW_KEYS;
 use as_plugin::manifest::{self, Parsed};
-use as_plugin::package::{self, AUTHOR_KEY, LOCK, MANIFEST, SIG};
+use as_plugin::package::{self, AUTHOR_KEY, LOCK, MANIFEST, SIG, file_in};
 use as_plugin::trust::{self, Keys, Trust, Verdict};
 use as_plugin::{FilesLock, Launch, LockedFile, Manifest, PluginError, Unpacked, current_platform};
 use base64::Engine as _;
@@ -434,11 +434,6 @@ fn scratch_beside(out: &Path) -> Result<TempDir, Failure> {
 /// The folder `path` lies in.
 fn folder_of(path: &Path) -> &Path {
     path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."))
-}
-
-/// The package path `path` in the folder `dir`.
-fn file_in(dir: &Path, path: &str) -> PathBuf {
-    path.split('/').fold(dir.to_path_buf(), |file, part| file.join(part))
 }
 
 /// Reads the secret key file `path` (as `keygen` or minisign writes it),

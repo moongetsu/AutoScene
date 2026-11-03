@@ -89,9 +89,15 @@ pub fn trusted_comment(id: &PluginId, version: &str, lock_sha256: &str) -> Strin
 pub fn key_id(base64: &str) -> PluginResult<String> {
     let raw = STANDARD.decode(base64).ok().filter(|raw| raw.len() == 42 && raw.starts_with(b"Ed"));
     let raw = raw.ok_or_else(|| invalid("That isn't a minisign public key."))?;
+    Ok(key_id_of(&raw))
+}
+
+/// The key id in `raw`, a decoded minisign key or signature (its algorithm,
+/// then the id's 8 bytes, little-endian), as minisign shows it.
+fn key_id_of(raw: &[u8]) -> String {
     let mut id = [0u8; 8];
     id.copy_from_slice(&raw[2..10]);
-    Ok(format!("{:016X}", u64::from_le_bytes(id)))
+    format!("{:016X}", u64::from_le_bytes(id))
 }
 
 /// Judges a package by the signature of its lock `lock_bytes` (from
@@ -166,10 +172,7 @@ fn read_key(base64: &str) -> PluginResult<(PublicKey, AuthorKey)> {
 /// reads, as minisign shows it.
 fn signer_id(sig: &str) -> String {
     let raw = sig.lines().nth(1).and_then(|line| STANDARD.decode(line.trim()).ok()).filter(|raw| raw.len() == 74);
-    let Some(raw) = raw else { return "unknown".into() };
-    let mut id = [0u8; 8];
-    id.copy_from_slice(&raw[2..10]);
-    format!("{:016X}", u64::from_le_bytes(id))
+    raw.map_or_else(|| "unknown".into(), |raw| key_id_of(&raw))
 }
 
 fn key_changed(pin: &AuthorKey, got: &str) -> PluginError {

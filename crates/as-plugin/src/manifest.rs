@@ -314,7 +314,7 @@ impl Launch {
             Self::Exe { program, .. } => program,
             Self::UvScript { script } => script,
         };
-        file.split('/').fold(dir.to_path_buf(), |path, part| path.join(part))
+        crate::package::file_in(dir, file)
     }
 }
 
@@ -775,6 +775,13 @@ fn setting(o: &Obj, w: &mut Vec<String>) -> PluginResult<Option<SettingSpec>> {
                     return Err(invalid(format!("The plugin's {} must be a whole number.", o.at("default"))));
                 }
             }
+            // A slider stands somewhere: without a default it starts at its
+            // min, which the plugin then gets too, as it is shown.
+            let default = default.or_else(|| {
+                let (min, max) = (min?, max?);
+                let start = if integer { min.ceil() } else { min };
+                (max > min && start <= max).then_some(start)
+            });
             (SettingKind::Number { default, min, max, step, integer }, &["default", "min", "max", "step", "integer"])
         }
         "boolean" => (SettingKind::Boolean { default: o.flag("default")?.unwrap_or(false) }, &["default"]),
@@ -1350,6 +1357,27 @@ mod tests {
         }
         let twice = json!([{"id": "a", "title": "A"}, {"id": "a", "title": "B"}]);
         assert!(message(with(|v| v["contributes"]["exportActions"] = twice)).contains(r#"the id "a" twice"#));
+    }
+
+    #[test]
+    fn a_slider_without_a_default_starts_at_its_min() {
+        let default = |setting: Value| {
+            let p = with(|v| v["contributes"]["settings"] = json!([setting])).unwrap();
+            let SettingKind::Number { default, .. } = p.manifest.settings[0].kind else { panic!() };
+            default
+        };
+        let n = |extra: Value| {
+            let mut setting = json!({"key": "n", "type": "number", "title": "N"});
+            setting.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            setting
+        };
+        assert_eq!(default(n(json!({"min": 2, "max": 10}))), Some(2.0));
+        assert_eq!(default(n(json!({"min": 0.5, "max": 3, "integer": true}))), Some(1.0));
+        assert_eq!(default(n(json!({"min": 2, "max": 10, "default": 5}))), Some(5.0));
+        // Not a slider: a number field may be left empty.
+        assert_eq!(default(n(json!({"min": 2}))), None);
+        assert_eq!(default(n(json!({"min": 2, "max": 2}))), None);
+        assert_eq!(default(n(json!({"min": 0.2, "max": 0.7, "integer": true}))), None);
     }
 
     #[test]
