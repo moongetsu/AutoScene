@@ -207,6 +207,12 @@ function Builder({
     if (picks.length > 0) void pack.clearPicks(picks)
   }, [picks, pack])
 
+  const toggleAll = useCallback(() => {
+    if (clips.length === 0) return
+    const allIncluded = clips.every((c) => c.included)
+    void pack.setIncluded(clips, !allIncluded)
+  }, [clips, pack])
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "a") {
@@ -218,13 +224,13 @@ function Builder({
         if (e.shiftKey) {
           excludeAll()
         } else {
-          includeAll()
+          toggleAll()
         }
       }
     }
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
-  }, [includeAll, excludeAll])
+  }, [toggleAll, excludeAll])
 
   // The pack's empty space: export it, give the hand-picked shots back, choose what shows.
   const pageMenu = (
