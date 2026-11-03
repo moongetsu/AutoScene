@@ -21,4 +21,4 @@ tracing.workspace = true
 
 [dev-dependencies]
 as-export.workspace = true
-tempfile = "3.27"
+tempfile.workspace = true

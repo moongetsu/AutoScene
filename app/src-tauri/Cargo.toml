@@ -41,7 +41,7 @@ as-media.workspace = true
 as-models.workspace = true
 as-plugin.workspace = true
 as-project.workspace = true
-base64 = "=0.23.1"
+base64.workspace = true
 parking_lot.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -68,7 +68,7 @@ semver.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 # Keep the PC awake while analysis runs.
-windows-sys = { version = "0.61.2", features = [
+windows-sys = { workspace = true, features = [
     "Win32_System_Power",
     # The Windows build, for Mica (window.rs).
     "Wdk_System_SystemServices",

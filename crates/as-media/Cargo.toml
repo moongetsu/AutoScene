@@ -17,7 +17,7 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "=0.61.2", features = [
+windows-sys = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_System_Diagnostics_ToolHelp",
@@ -31,4 +31,4 @@ libc.workspace = true
 
 [dev-dependencies]
 as-testkit.workspace = true
-tempfile = "3.27"
+tempfile.workspace = true

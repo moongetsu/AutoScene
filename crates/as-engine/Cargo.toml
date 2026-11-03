@@ -19,7 +19,7 @@ as-infer.workspace = true
 as-vision.workspace = true
 as-analysis.workspace = true
 as-models.workspace = true
-base64 = "=0.23.1"
+base64.workspace = true
 parking_lot.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -29,4 +29,4 @@ tracing-subscriber = { version = "=0.3.23", default-features = false, features =
 
 [dev-dependencies]
 as-testkit.workspace = true
-tempfile = "3.27"
+tempfile.workspace = true

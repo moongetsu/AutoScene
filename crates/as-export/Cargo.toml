@@ -19,4 +19,4 @@ tracing.workspace = true
 
 [dev-dependencies]
 as-testkit.workspace = true
-tempfile = "3.27"
+tempfile.workspace = true

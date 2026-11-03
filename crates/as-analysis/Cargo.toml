@@ -25,4 +25,4 @@ as-identity.workspace = true
 serde_json.workspace = true
 as-testkit.workspace = true
 as-models.workspace = true
-tempfile = "3.27"
+tempfile.workspace = true
