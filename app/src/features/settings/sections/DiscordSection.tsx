@@ -1,4 +1,5 @@
 import { ArrowCounterClockwise } from "@/components/icons"
+import { AutoSceneMark } from "@/components/brand/AutoSceneMark"
 import { DiscordIcon } from "@/components/DiscordIcon"
 import { toast } from "sonner"
 import type { AppSettings, DiscordRpcSettings } from "@/bindings"
@@ -65,8 +66,8 @@ export function DiscordSection() {
           </div>
           <div className="flex items-start gap-4">
             <div className="relative shrink-0">
-              <div className="flex size-20 items-center justify-center rounded-2xl bg-[#1e1f22] border border-white/[0.06] text-amber-500 font-bold text-2xl shadow-inner">
-                AS
+              <div className="size-20 overflow-hidden rounded-2xl border border-white/[0.08] shadow-inner">
+                <AutoSceneMark className="size-full" />
               </div>
               <Tooltip label="AutoScene">
                 <div

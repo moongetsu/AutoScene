@@ -17,3 +17,4 @@ export function DiscordIcon({ className, ...props }: React.ComponentProps<"svg">
     </svg>
   )
 }
+
