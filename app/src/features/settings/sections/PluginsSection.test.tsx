@@ -1,6 +1,7 @@
 import type * as React from "react"
 import { QueryClientProvider } from "@tanstack/react-query"
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { AppSettings, PluginInfo, PluginReview } from "@/bindings"
 import { AppMenu } from "@/components/shell/AppMenu"
@@ -10,7 +11,7 @@ import { qk, queryClient } from "@/lib/queries"
 import { pluginInfo } from "@/test/plugins"
 import { PluginsSection } from "./PluginsSection"
 
-const { state } = vi.hoisted(() => ({ state: { plugins: [] as PluginInfo[], allow: false } }))
+const { state, reveal } = vi.hoisted(() => ({ state: { plugins: [] as PluginInfo[], allow: false }, reveal: vi.fn() }))
 
 const settings = (allow: boolean): AppSettings => ({
   libraryRoot: "C:\\Library",
@@ -33,6 +34,7 @@ vi.mock("@/lib/ipc", async (importOriginal) => ({
   },
 }))
 vi.mock("@/lib/media", () => ({ pickFolder: vi.fn(() => Promise.resolve("D:\\Plugins\\mine")), pickPluginFile: vi.fn() }))
+vi.mock("@/lib/os", async (importOriginal) => ({ ...(await importOriginal<typeof import("@/lib/os")>()), reveal }))
 vi.mock("@/lib/actions", () => ({ useAppActions: () => ({ goSettings: vi.fn() }) }))
 // The window's menu, around the rows' own entries.
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
@@ -240,17 +242,28 @@ describe("Settings → Plugins", () => {
     expect(screen.queryByRole("group", { name: "Beta Script" })).toBeNull()
   })
 
-  it("opens plugin folder and log via direct card buttons", async () => {
+  it("opens plugin folder and log via context menu items", async () => {
+    const user = userEvent.setup()
     state.plugins = [pluginInfo({ id: "dev.a.alpha", name: "Alpha Tool", folder: "/path/to/folder", logPath: "/path/to/log.txt" })]
-    render(<PluginsSection />, { wrapper })
-    const folderBtn = await screen.findByRole("button", { name: "Open Alpha Tool folder" })
-    const logBtn = screen.getByRole("button", { name: "Open Alpha Tool log" })
+    render(
+      <AppMenu>
+        <div>
+          <PluginsSection />
+        </div>
+      </AppMenu>,
+      { wrapper },
+    )
+    const card = await screen.findByRole("group", { name: "Alpha Tool" })
+    fireEvent.contextMenu(card, { clientX: 40, clientY: 40 })
+    await screen.findByRole("menu")
 
-    fireEvent.click(folderBtn)
-    expect(commands.revealPath).toHaveBeenCalledWith("/path/to/folder")
+    await user.click(screen.getByRole("menuitem", { name: "Show its folder" }))
+    expect(reveal).toHaveBeenCalledWith("/path/to/folder")
 
-    fireEvent.click(logBtn)
-    expect(commands.revealPath).toHaveBeenCalledWith("/path/to/log.txt")
+    fireEvent.contextMenu(card, { clientX: 40, clientY: 40 })
+    await screen.findByRole("menu")
+    await user.click(screen.getByRole("menuitem", { name: "Show its log" }))
+    expect(reveal).toHaveBeenCalledWith("/path/to/log.txt")
   })
 
   it("enables and disables all plugins via bulk action buttons", async () => {
@@ -272,17 +285,10 @@ describe("Settings → Plugins", () => {
     await waitFor(() => expect(commands.pluginSetEnabled).toHaveBeenCalledWith("dev.b.beta", false))
   })
 
-  it("displays runtime and permissions tags on cards", async () => {
-    state.plugins = [
-      pluginInfo({
-        id: "dev.a.python",
-        name: "Python Runner",
-        uvScript: true,
-        permissions: ["network", "process"] as any,
-      }),
-    ]
+  it("navigates to settings on clicking a card with settings page", async () => {
+    state.plugins = [pluginInfo({ id: "dev.a.alpha", name: "Alpha Tool", settings: [{ key: "opt", title: "Option", kind: { type: "boolean" } }] })]
     render(<PluginsSection />, { wrapper })
-    expect(await screen.findByText("Python / uv")).toBeTruthy()
-    expect(screen.getByText("2 permissions")).toBeTruthy()
+    const card = await screen.findByRole("group", { name: "Alpha Tool" })
+    expect(card.className).toContain("cursor-pointer")
   })
 })

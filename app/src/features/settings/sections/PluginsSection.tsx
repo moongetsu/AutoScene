@@ -308,19 +308,25 @@ export function PluginsSection() {
 function PluginItems({ kit, p, onUninstall }: { kit: MenuKit; p: PluginInfo; onUninstall: () => void }) {
   const { goSettings } = useAppActions()
   const { Item, Separator } = kit
+  const isGithub = p.repository?.includes("github.com")
   return (
     <>
+      {hasPage(p) && (
+        <Item onSelect={() => goSettings(`plugin.${p.id}`)}>
+          <SlidersHorizontal /> Settings
+        </Item>
+      )}
+      {p.repository && (
+        <Item onSelect={() => void openExternalUrl(p.repository!)}>
+          {isGithub ? <GithubLogo /> : <ArrowSquareOut />} Repository
+        </Item>
+      )}
       <Item onSelect={() => reveal(p.folder)}>
         <FolderOpen /> Show its folder
       </Item>
       <Item onSelect={() => reveal(p.logPath)}>
         <FileText /> Show its log
       </Item>
-      {hasPage(p) && (
-        <Item onSelect={() => goSettings(`plugin.${p.id}`)}>
-          <SlidersHorizontal /> Its settings
-        </Item>
-      )}
       <Separator />
       <Item destructive onSelect={onUninstall}>
         <Trash /> Uninstall…
@@ -354,7 +360,15 @@ function PluginCard({ p, onUninstall }: { p: PluginInfo; onUninstall: () => void
       <div
         role="group"
         aria-label={p.name}
-        className="group relative flex flex-col justify-between overflow-hidden rounded-2xl border border-white/[0.08] bg-white/[0.03] shadow-sm transition-all duration-200 hover:border-white/20 hover:bg-white/[0.05]"
+        onClick={(e) => {
+          if (hasPage(p) && !(e.target as HTMLElement).closest("button, a, input, [role='switch']")) {
+            goSettings(`plugin.${p.id}`)
+          }
+        }}
+        className={cn(
+          "group relative flex flex-col justify-between overflow-hidden rounded-2xl border border-white/[0.08] bg-white/[0.03] shadow-sm transition-all duration-200 hover:border-white/20 hover:bg-white/[0.05]",
+          hasPage(p) && "cursor-pointer",
+        )}
       >
         {p.banner && (
           <div className="relative aspect-[21/9] w-full overflow-hidden border-b border-white/[0.06] bg-black/40">
@@ -457,69 +471,22 @@ function PluginCard({ p, onUninstall }: { p: PluginInfo; onUninstall: () => void
             </p>
           )}
 
-          <div className="mt-3 flex flex-wrap items-center gap-1.5">
-            {p.uvScript && (
-              <span className="rounded border border-sky-400/20 bg-sky-400/10 px-1.5 py-0.5 text-[10px] font-medium text-sky-300">
-                Python / uv
-              </span>
-            )}
-            {p.permissions.length > 0 && (
-              <span
-                className="rounded border border-white/10 bg-white/[0.04] px-1.5 py-0.5 text-[10px] text-fg-3"
-                title={p.permissions.join(", ")}
-              >
-                {p.permissions.length} {p.permissions.length === 1 ? "permission" : "permissions"}
-              </span>
-            )}
-          </div>
-
           {why && <span className="mt-2 block text-xs text-danger">{why}</span>}
         </div>
 
         <div className="flex items-center justify-between border-t border-white/[0.06] bg-white/[0.01] px-5 py-3">
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-2">
             {hasPage(p) && (
               <Button
                 size="sm"
                 variant="ghost"
                 onClick={() => goSettings(`plugin.${p.id}`)}
-                className="h-8 gap-1.5 px-2.5 text-xs text-fg-2 hover:text-fg-1"
+                className="h-8 gap-1.5 px-3 text-xs text-fg-2 hover:text-fg-1"
               >
                 <GearSix className="size-3.5" />
                 Settings
               </Button>
             )}
-            {p.repository && (
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => void openExternalUrl(p.repository!)}
-                className="h-8 gap-1.5 px-2.5 text-xs text-fg-2 hover:text-fg-1"
-              >
-                {isGithub ? <GithubLogo className="size-3.5" /> : <ArrowSquareOut className="size-3.5" />}
-                Repo
-              </Button>
-            )}
-            <Button
-              size="sm"
-              variant="ghost"
-              title="Show plugin folder"
-              aria-label={`Open ${p.name} folder`}
-              onClick={() => reveal(p.folder)}
-              className="size-8 p-0 text-fg-3 hover:text-fg-1"
-            >
-              <FolderOpen className="size-3.5" />
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              title="Show plugin log"
-              aria-label={`Open ${p.name} log`}
-              onClick={() => reveal(p.logPath)}
-              className="size-8 p-0 text-fg-3 hover:text-fg-1"
-            >
-              <FileText className="size-3.5" />
-            </Button>
           </div>
           <div className="flex items-center gap-2">
             <Switch aria-label={`Enable ${p.name}`} checked={p.enabled} onCheckedChange={(on) => void setEnabled(on)} />
