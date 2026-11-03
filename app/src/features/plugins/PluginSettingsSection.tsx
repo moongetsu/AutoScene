@@ -9,6 +9,7 @@ import { Segmented } from "@/components/ui/segmented"
 import { Select } from "@/components/ui/select"
 import { Slider } from "@/components/ui/slider"
 import { Switch } from "@/components/ui/switch"
+import { Tooltip } from "@/components/ui/tooltip"
 import { PathText, SettingRow, SettingsGroup } from "@/features/settings/primitives"
 import { useAppActions } from "@/lib/actions"
 import { commands, errorMessage } from "@/lib/ipc"
@@ -219,15 +220,16 @@ function PluginHeroHeader({ p }: { p: PluginInfo }) {
                   </span>
                 )}
                 <span className="text-white/20">•</span>
-                <button
-                  type="button"
-                  onClick={() => void copyText(p.id, "plugin ID")}
-                  className="group inline-flex items-center gap-1 font-mono text-xs text-fg-3 hover:text-fg-1"
-                  title="Click to copy plugin ID"
-                >
-                  {p.id}
-                  <Copy className="size-3 opacity-40 group-hover:opacity-100" />
-                </button>
+                <Tooltip label="Click to copy plugin ID">
+                  <button
+                    type="button"
+                    onClick={() => void copyText(p.id, "plugin ID")}
+                    className="group inline-flex items-center gap-1 font-mono text-xs text-fg-3 hover:text-fg-1"
+                  >
+                    {p.id}
+                    <Copy className="size-3 opacity-40 group-hover:opacity-100" />
+                  </button>
+                </Tooltip>
               </div>
             </div>
           </div>
