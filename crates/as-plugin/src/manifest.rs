@@ -77,7 +77,7 @@ const NOT_PROGRAMS: &str = "uv uvx py pyw node deno bun perl ruby php osascript 
 /// toward the uv form.
 const SCRIPTS: [&str; 5] = [".bat", ".cmd", ".ps1", ".sh", ".py"];
 const UV_FORM: &str = r#"["uv", "run", "--script", "--locked", "<script>.py"]"#;
-const TOP_KEYS: [&str; 17] = [
+const TOP_KEYS: [&str; 18] = [
     "$schema",
     "manifestVersion",
     "id",
@@ -95,6 +95,7 @@ const TOP_KEYS: [&str; 17] = [
     "contributes",
     "icon",
     "color",
+    "banner",
 ];
 
 /// A plugin's id: a reverse domain name such as `dev.example.my-plugin`,
@@ -205,6 +206,8 @@ pub struct Manifest {
     pub icon: Option<String>,
     /// An optional hex brand/accent color (e.g. `#2a2a2a`).
     pub color: Option<String>,
+    /// A `.png` or `.svg` wide banner in the package.
+    pub banner: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Type)]
@@ -612,6 +615,17 @@ fn parse_for(bytes: &[u8], app: Option<&Version>) -> PluginResult<Parsed> {
         }
         None => None,
     };
+
+    let banner = match root.text("banner")? {
+        Some(p) if check_path(p).is_ok() && (ends_with_any_case(p, ".png") || ends_with_any_case(p, ".svg")) => {
+            Some(p.to_owned())
+        }
+        Some(_) => {
+            w.push("Left out the banner: it must be a .png or .svg file in the plugin.".into());
+            None
+        }
+        None => None,
+    };
     root.warn_unknown(&TOP_KEYS, &mut w);
 
     if w.len() > MAX_WARNINGS {
@@ -637,6 +651,7 @@ fn parse_for(bytes: &[u8], app: Option<&Version>) -> PluginResult<Parsed> {
         settings,
         icon,
         color,
+        banner,
     };
     Ok(Parsed { manifest, warnings: w })
 }

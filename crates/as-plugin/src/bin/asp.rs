@@ -205,6 +205,9 @@ fn pack(dir: &Path, out: &Path) -> Result<(), Failure> {
     if let Some(icon) = &m.icon {
         package::check_icon(dir, &lock, icon).map_err(plugin_at(dir))?;
     }
+    if let Some(banner) = &m.banner {
+        package::check_banner(dir, &lock, banner).map_err(plugin_at(dir))?;
+    }
     let mut lock_bytes = serde_json::to_vec_pretty(&lock).expect("a files.lock is JSON");
     lock_bytes.push(b'\n');
     save(out, dir, &lock, &lock_bytes, &[])?;
@@ -305,6 +308,9 @@ fn verify(path: &Path, review: &[&OsString]) -> Result<(), Failure> {
     check_platforms(m, &unpacked.lock)?;
     if let Some(icon) = &m.icon {
         package::check_icon(&dir, &unpacked.lock, icon)?;
+    }
+    if let Some(banner) = &m.banner {
+        package::check_banner(&dir, &unpacked.lock, banner)?;
     }
     let (sig, author_key) = (unpacked.signature.as_deref(), unpacked.author_key.as_deref());
     let verdict = trust::judge(&keys, &unpacked.lock_bytes, sig, author_key, m, None)?;

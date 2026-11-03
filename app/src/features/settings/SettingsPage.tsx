@@ -84,9 +84,11 @@ export function SettingsPage() {
           </nav>
           <div className="min-w-0 flex-1 overflow-y-auto">
             <div key={section} className="mx-auto max-w-3xl animate-rise-in px-10 pt-8 pb-14">
-              <h2 className="display mb-8 text-5xl text-fg-1">
-                {plugin ? <PluginName id={plugin} /> : SETTINGS_LABELS[section as SettingsSection]}
-              </h2>
+              {!plugin && (
+                <h2 className="display mb-8 text-5xl text-fg-1">
+                  {SETTINGS_LABELS[section as SettingsSection]}
+                </h2>
+              )}
               {plugin ? <PluginSettingsSection id={plugin} /> : META[section as SettingsSection].render()}
             </div>
           </div>

@@ -64,6 +64,10 @@ pub const MAX_KEY_BYTES: u64 = 1 << 10;
 pub const MAX_ICON_PNG: u64 = 256 << 10;
 /// The largest `.svg` icon.
 pub const MAX_ICON_SVG: u64 = 64 << 10;
+/// The largest `.png` banner.
+pub const MAX_BANNER_PNG: u64 = 1024 << 10;
+/// The largest `.svg` banner.
+pub const MAX_BANNER_SVG: u64 = 256 << 10;
 /// The `lockVersion` this AutoScene reads and writes.
 pub const LOCK_VERSION: u32 = 1;
 pub const LOCK: &str = "files.lock";
@@ -269,6 +273,33 @@ pub fn check_icon(dir: &Path, lock: &FilesLock, icon: &str) -> PluginResult<()> 
     };
     if !fits {
         return Err(invalid(format!("The plugin's icon {} isn't a {kind} image.", shown(icon))));
+    }
+    Ok(())
+}
+
+/// Checks the plugin's banner, the `.png` or `.svg` package path `banner`, in
+/// the folder `dir` that holds the files of `lock`: it is listed, no larger
+/// than [`MAX_BANNER_PNG`] or [`MAX_BANNER_SVG`], and starts as its kind does
+/// (PNG's signature; SVG text with `<svg` or `<?xml`).
+pub fn check_banner(dir: &Path, lock: &FilesLock, banner: &str) -> PluginResult<()> {
+    let svg = banner.to_ascii_lowercase().ends_with(".svg");
+    let (kind, max) = if svg { ("SVG", MAX_BANNER_SVG) } else { ("PNG", MAX_BANNER_PNG) };
+    let Some(f) = lock.files.iter().find(|f| f.path == banner) else {
+        return Err(invalid(format!("The plugin package is missing its banner, {}.", shown(banner))));
+    };
+    if f.size > max {
+        return Err(invalid(format!("The plugin's banner is larger than {}.", size_text(max))));
+    }
+    let mut start = Vec::new();
+    File::open(file_in(dir, banner))?.take(256).read_to_end(&mut start)?;
+    let text = start.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&start).trim_ascii_start();
+    let fits = if svg {
+        text.starts_with(b"<svg") || text.starts_with(b"<?xml")
+    } else {
+        start.starts_with(b"\x89PNG\r\n\x1a\n")
+    };
+    if !fits {
+        return Err(invalid(format!("The plugin's banner {} isn't a {kind} image.", shown(banner))));
     }
     Ok(())
 }

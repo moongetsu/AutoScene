@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { toast } from "sonner"
 import type { PluginInfo, SettingKind, SettingSpec, SettingValue } from "@/bindings"
-import { FolderOpen, PuzzlePiece } from "@/components/icons"
+import { ArrowSquareOut, Copy, FolderOpen, GithubLogo, PuzzlePiece } from "@/components/icons"
 import { Button } from "@/components/ui/button"
 import { EmptyState } from "@/components/ui/empty-state"
 import { Input } from "@/components/ui/input"
@@ -12,8 +12,10 @@ import { Switch } from "@/components/ui/switch"
 import { PathText, SettingRow, SettingsGroup } from "@/features/settings/primitives"
 import { useAppActions } from "@/lib/actions"
 import { commands, errorMessage } from "@/lib/ipc"
-import { reveal } from "@/lib/os"
+import { copyText, openExternalUrl, reveal } from "@/lib/os"
 import { qk, queryClient, usePluginSettings, usePlugins } from "@/lib/queries"
+import { cn } from "@/lib/utils"
+import { PluginIcon } from "./PluginIcon"
 import { keepPlugin } from "./plugin-actions"
 
 type Values = Partial<Record<string, SettingValue>>
@@ -78,7 +80,7 @@ function PluginPage({ p }: { p: PluginInfo }) {
   const why = p.broken ?? (p.enabled ? p.blockedReason : `${p.name} is turned off.`)
   return (
     <>
-      {p.description && <p className="-mt-4 mb-8 text-md text-fg-2">{p.description}</p>}
+      <PluginHeroHeader p={p} />
       {why && (
         <div className="mb-8 flex items-center justify-between gap-4 rounded-2xl border border-white/[0.07] bg-white/[0.03] px-5 py-4">
           <p className="text-md text-fg-1">{why}</p>
@@ -138,6 +140,96 @@ function PluginPage({ p }: { p: PluginInfo }) {
         </SettingsGroup>
       )}
     </>
+  )
+}
+
+function PluginHeroHeader({ p }: { p: PluginInfo }) {
+  const isGithub = p.repository?.includes("github.com")
+  return (
+    <div className="mb-8 overflow-hidden rounded-2xl border border-white/[0.08] bg-white/[0.03]">
+      {p.banner && (
+        <div className="relative aspect-[3/1] max-h-56 w-full overflow-hidden border-b border-white/[0.06] bg-black/40">
+          <img src={p.banner} alt="" draggable={false} className="size-full object-cover" />
+          <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent" />
+        </div>
+      )}
+      <div className="p-6">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="flex items-center gap-4">
+            <span
+              style={p.color ? { backgroundColor: p.color } : undefined}
+              className={cn(
+                "flex size-14 shrink-0 items-center justify-center rounded-2xl shadow-md ring-1 ring-white/10 [&_img]:size-9 [&_svg]:size-8",
+                p.color ? "text-fg-1" : "bg-white/[0.08] text-fg-1",
+              )}
+            >
+              <PluginIcon src={p.icon} />
+            </span>
+            <div>
+              <div className="flex flex-wrap items-center gap-2.5">
+                <h1 className="text-2xl font-bold tracking-tight text-fg-1">{p.name}</h1>
+                <span className="rounded-md border border-white/10 bg-white/[0.06] px-2 py-0.5 font-mono text-xs text-fg-2">
+                  v{p.version}
+                </span>
+                {p.license && (
+                  <span className="rounded-md border border-white/10 bg-white/[0.06] px-2 py-0.5 text-xs text-fg-2">
+                    {p.license}
+                  </span>
+                )}
+                {p.gpu && (
+                  <span className="rounded-md border border-accent/30 bg-accent/10 px-2 py-0.5 text-xs font-medium text-accent">
+                    GPU
+                  </span>
+                )}
+              </div>
+              <div className="mt-1 flex flex-wrap items-center gap-3 text-sm text-fg-2">
+                {p.author && (
+                  <span>
+                    By{" "}
+                    {p.authorUrl ? (
+                      <button
+                        type="button"
+                        onClick={() => void openExternalUrl(p.authorUrl!)}
+                        className="inline-flex items-center gap-1 font-medium text-fg-1 underline decoration-white/20 underline-offset-4 hover:decoration-white/60"
+                      >
+                        {p.author}
+                        <ArrowSquareOut className="size-3.5 opacity-60" />
+                      </button>
+                    ) : (
+                      <span className="font-medium text-fg-1">{p.author}</span>
+                    )}
+                  </span>
+                )}
+                <span className="text-white/20">•</span>
+                <button
+                  type="button"
+                  onClick={() => void copyText(p.id, "plugin ID")}
+                  className="group inline-flex items-center gap-1 font-mono text-xs text-fg-3 hover:text-fg-1"
+                  title="Click to copy plugin ID"
+                >
+                  {p.id}
+                  <Copy className="size-3 opacity-40 group-hover:opacity-100" />
+                </button>
+              </div>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {p.repository && (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => void openExternalUrl(p.repository!)}
+                className="gap-2"
+              >
+                {isGithub ? <GithubLogo /> : <ArrowSquareOut />}
+                Repository
+              </Button>
+            )}
+          </div>
+        </div>
+        {p.description && <p className="mt-4 text-md leading-relaxed text-fg-2">{p.description}</p>}
+      </div>
+    </div>
   )
 }
 

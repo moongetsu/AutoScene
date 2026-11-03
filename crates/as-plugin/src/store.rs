@@ -280,6 +280,9 @@ impl Store {
         if let Some(icon) = &m.icon {
             package::check_icon(staged, &unpacked.lock, icon)?;
         }
+        if let Some(banner) = &m.banner {
+            package::check_banner(staged, &unpacked.lock, banner)?;
+        }
         let previous = self.record(&m.id)?;
         let Unpacked { lock, lock_bytes, signature, author_key } = unpacked;
         let pin = previous.as_ref().and_then(|p| p.author_key.as_ref());
@@ -647,6 +650,31 @@ impl Store {
             return None;
         }
         let kind = if icon.to_ascii_lowercase().ends_with(".svg") { "image/svg+xml" } else { "image/png" };
+        Some(format!("data:{kind};base64,{}", STANDARD.encode(&bytes)))
+    }
+
+    /// The banner of `p` as a `data:` URL, while it is the picture its
+    /// package listed (a loaded folder's: a picture of a banner's size).
+    pub fn banner_data_url(&self, p: &Installed) -> Option<String> {
+        let banner = p.manifest.as_ref()?.banner.as_deref()?;
+        let path = file_in(&p.dir, banner);
+        let lock = match &p.record.lock_sha256 {
+            Some(sha256) => installed_lock(&p.dir, sha256).ok()?,
+            None => {
+                let size = fs::symlink_metadata(&path).ok().filter(|f| f.is_file())?.len();
+                let listed = LockedFile { path: banner.to_owned(), size, sha256: String::new(), exec: false };
+                FilesLock { lock_version: LOCK_VERSION, files: vec![listed] }
+            }
+        };
+        package::check_banner(&p.dir, &lock, banner).ok()?;
+        let listed = lock.files.iter().find(|f| f.path == banner)?;
+        let mut bytes = Vec::new();
+        File::open(&path).ok()?.take(listed.size + 1).read_to_end(&mut bytes).ok()?;
+        let hashed = p.record.lock_sha256.is_none() || package::sha256_hex(&bytes) == listed.sha256;
+        if bytes.len() as u64 != listed.size || !hashed {
+            return None;
+        }
+        let kind = if banner.to_ascii_lowercase().ends_with(".svg") { "image/svg+xml" } else { "image/png" };
         Some(format!("data:{kind};base64,{}", STANDARD.encode(&bytes)))
     }
 
