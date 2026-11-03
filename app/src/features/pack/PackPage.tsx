@@ -1,7 +1,7 @@
 import { type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { Link, useNavigate, useParams } from "@tanstack/react-router"
 import { toast } from "sonner"
-import { ArrowCounterClockwise, ArrowLeft, Check, Package, User, Users, X } from "@/components/icons"
+import { ArrowCounterClockwise, ArrowLeft, ArrowsDownUp, Check, Package, User, Users, X } from "@/components/icons"
 import type { CastEdit, Character, MediaItem, PackClip } from "@/bindings"
 import { Artwork } from "@/components/ui/artwork"
 import { Button } from "@/components/ui/button"
@@ -213,24 +213,31 @@ function Builder({
     void pack.setIncluded(clips, !allIncluded)
   }, [clips, pack])
 
+  const invertSelection = useCallback(() => {
+    if (clips.length > 0) void pack.invertIncluded(clips)
+  }, [clips, pack])
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
+        return
+      }
       if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "a") {
-        const target = e.target as HTMLElement | null
-        if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
-          return
-        }
         e.preventDefault()
         if (e.shiftKey) {
           excludeAll()
         } else {
           toggleAll()
         }
+      } else if ((e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey && e.key.toLowerCase() === "i") {
+        e.preventDefault()
+        invertSelection()
       }
     }
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
-  }, [toggleAll, excludeAll])
+  }, [toggleAll, excludeAll, invertSelection])
 
   // The pack's empty space: export it, give the hand-picked shots back, choose what shows.
   const pageMenu = (
@@ -244,6 +251,9 @@ function Builder({
       </ContextMenuItem>
       <ContextMenuItem disabled={clips.length === 0} onSelect={excludeAll} shortcut={["⇧", "⌘", "A"]}>
         <X /> Leave all shots out
+      </ContextMenuItem>
+      <ContextMenuItem disabled={clips.length === 0} onSelect={invertSelection} shortcut={["⇧", "⌘", "I"]}>
+        <ArrowsDownUp /> Invert selection
       </ContextMenuItem>
       {picks.length > 0 && (
         <ContextMenuItem onSelect={resetPicks}>
@@ -303,6 +313,16 @@ function Builder({
                     className="h-7 px-2 text-xs text-fg-3 hover:text-fg-1"
                   >
                     Exclude all
+                  </Button>
+                  <span className="text-xs text-white/20">·</span>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={invertSelection}
+                    disabled={!pack.ready}
+                    className="h-7 px-2 text-xs text-fg-3 hover:text-fg-1"
+                  >
+                    Invert
                   </Button>
                   {picks.length > 0 && (
                     <>

@@ -199,6 +199,22 @@ export function usePack(pid: ProjectId, cid: CharacterId, media: Map<string, Med
     [ready, settled, send],
   )
 
+  /** Invert inclusion of shots: what was in goes out, what was out goes in. */
+  const invertIncluded = useCallback(
+    async (clips: PackClip[]) => {
+      if (!ready || !settled || clips.length === 0) return
+      const toInclude = clips.filter((c) => !c.included && pickable(c))
+      const toExclude = clips.filter((c) => c.included && pickable(c))
+      const pIn = picksFor(toInclude, true)
+      const pOut = picksFor(toExclude, false)
+      const pick = [...pIn.pick]
+      const unpick = [...pIn.unpick, ...pOut.unpick]
+      const shown = clips.filter(pickable).map((c) => [keyOf(c), !c.included] as const)
+      await send(settled.spec, [[pick, true], [pOut.pick, false], [unpick, null]], shown)
+    },
+    [ready, settled, send],
+  )
+
   /** Hand shots back to the filters (what they say doesn't matter: also while they change). */
   const clearPicks = useCallback(
     async (clips: PackClip[]) => {
@@ -216,7 +232,7 @@ export function usePack(pid: ProjectId, cid: CharacterId, media: Map<string, Med
   // preview's stamp names exactly those clips), its names and size too.
   const current = ready && sending === 0 && !preview.isFetching
 
-  return { state, saved, setSpec, setNaming, preview, plan, setIncluded, clearPicks, ready, current, fpsOf }
+  return { state, saved, setSpec, setNaming, preview, plan, setIncluded, invertIncluded, clearPicks, ready, current, fpsOf }
 }
 
 export type Pack = ReturnType<typeof usePack>
