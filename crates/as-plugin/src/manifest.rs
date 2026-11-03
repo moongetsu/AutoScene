@@ -1250,7 +1250,10 @@ mod tests {
         assert_eq!(p.warnings, Vec::<String>::new());
         let m = p.manifest;
         assert_eq!(m.id.as_str(), "dev.autoscene.hello-export");
-        assert_eq!(m.author, Author { name: "AutoScene".into(), url: Some("https://autoscene.app".into()), avatar: None });
+        assert_eq!(
+            m.author,
+            Author { name: "AutoScene".into(), url: Some("https://autoscene.app".into()), avatar: None }
+        );
         assert_eq!(m.permissions, [Permission::ExportsRead]);
         assert_eq!(m.export_actions[0].id, "hello");
         assert!(m.commands[0].needs_project);
