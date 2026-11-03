@@ -252,4 +252,23 @@ describe("Settings → Plugins", () => {
     fireEvent.click(logBtn)
     expect(commands.revealPath).toHaveBeenCalledWith("/path/to/log.txt")
   })
+
+  it("enables and disables all plugins via bulk action buttons", async () => {
+    state.plugins = [
+      pluginInfo({ id: "dev.a.alpha", name: "Alpha", enabled: false }),
+      pluginInfo({ id: "dev.b.beta", name: "Beta", enabled: true }),
+    ]
+    vi.mocked(commands.pluginSetEnabled).mockImplementation((id, on) =>
+      Promise.resolve(pluginInfo({ id, name: id, enabled: on })),
+    )
+    render(<PluginsSection />, { wrapper })
+
+    // Enable all
+    fireEvent.click(await screen.findByRole("button", { name: "Enable all" }))
+    await waitFor(() => expect(commands.pluginSetEnabled).toHaveBeenCalledWith("dev.a.alpha", true))
+
+    // Disable all
+    fireEvent.click(screen.getByRole("button", { name: "Disable all" }))
+    await waitFor(() => expect(commands.pluginSetEnabled).toHaveBeenCalledWith("dev.b.beta", false))
+  })
 })

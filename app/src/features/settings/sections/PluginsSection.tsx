@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react"
 import { toast } from "sonner"
 import type { PluginInfo, PluginReview } from "@/bindings"
-import { ArrowSquareOut, CircleNotch, Copy, DotsThree, FileText, FolderOpen, GearSix, GithubLogo, MagnifyingGlass, Plus, PuzzlePiece, SlidersHorizontal, Trash, User, X } from "@/components/icons"
+import { ArrowCounterClockwise, ArrowSquareOut, CircleNotch, Copy, DotsThree, FileText, FolderOpen, GearSix, GithubLogo, MagnifyingGlass, Plus, PuzzlePiece, SlidersHorizontal, Trash, User, X } from "@/components/icons"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { ContextArea } from "@/components/ui/context-area"
@@ -36,6 +36,8 @@ export function PluginsSection() {
   const [removing, setRemoving] = useState<PluginInfo | null>(null)
   // While it uninstalls it stays open: closed, it would uninstall all the same.
   const [uninstalling, setUninstalling] = useState(false)
+  const [togglingAll, setTogglingAll] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
   const [search, setSearch] = useState("")
   const [filter, setFilter] = useState<"all" | "enabled" | "disabled" | "gpu" | "folder">("all")
 
@@ -85,6 +87,33 @@ export function PluginsSection() {
     }
   }
 
+  const toggleAll = async (targetState: boolean) => {
+    if (!plugins || plugins.length === 0) return
+    const targets = plugins.filter((p) => p.enabled !== targetState)
+    if (targets.length === 0) return
+    setTogglingAll(true)
+    try {
+      await Promise.all(
+        targets.map(async (p) => {
+          keepPlugin(await commands.pluginSetEnabled(p.id, targetState))
+        }),
+      )
+    } catch (e) {
+      toast.error("Couldn't change all plugins", { description: errorMessage(e) })
+    } finally {
+      setTogglingAll(false)
+    }
+  }
+
+  const refreshList = async () => {
+    setRefreshing(true)
+    try {
+      await queryClient.invalidateQueries({ queryKey: qk.plugins })
+    } finally {
+      setTimeout(() => setRefreshing(false), 300)
+    }
+  }
+
   return (
     <>
       <div className="-mt-4 mb-8 flex items-start justify-between gap-6">
@@ -130,11 +159,48 @@ export function PluginsSection() {
         plugins && (
           <section className="mb-10">
             <div className="mb-4 flex flex-col gap-3 px-1 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex items-center gap-2">
-                <h3 className="text-lg font-semibold text-fg-1">Installed</h3>
-                <span className="rounded-full bg-white/[0.08] px-2 py-0.5 text-xs font-medium text-fg-2">
-                  {filteredPlugins.length}
-                </span>
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2">
+                  <h3 className="text-lg font-semibold text-fg-1">Installed</h3>
+                  <span className="rounded-full bg-white/[0.08] px-2 py-0.5 text-xs font-medium text-fg-2">
+                    {filteredPlugins.length}
+                  </span>
+                </div>
+
+                {plugins.length > 0 && (
+                  <div className="flex items-center gap-1 border-l border-white/[0.08] pl-3">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={togglingAll}
+                      onClick={() => void toggleAll(true)}
+                      className="h-7 px-2 text-xs text-fg-3 hover:text-fg-1"
+                    >
+                      Enable all
+                    </Button>
+                    <span className="text-xs text-white/20">·</span>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={togglingAll}
+                      onClick={() => void toggleAll(false)}
+                      className="h-7 px-2 text-xs text-fg-3 hover:text-fg-1"
+                    >
+                      Disable all
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      title="Refresh plugins list"
+                      aria-label="Refresh plugins list"
+                      disabled={refreshing}
+                      onClick={() => void refreshList()}
+                      className="size-7 p-0 text-fg-3 hover:text-fg-1"
+                    >
+                      <ArrowCounterClockwise className={cn("size-3.5", refreshing && "animate-spin")} />
+                    </Button>
+                  </div>
+                )}
               </div>
 
               {plugins.length > 0 && (
