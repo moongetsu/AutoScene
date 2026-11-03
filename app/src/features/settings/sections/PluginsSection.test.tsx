@@ -94,24 +94,20 @@ describe("Settings → Plugins", () => {
     expect(await screen.findByText("No plugins yet")).toBeTruthy()
   })
 
-  it("asks before allowing unreviewed plugins", async () => {
+  it("leaves the question about unreviewed plugins to AutoScene's own dialog", async () => {
     render(<PluginsSection />, { wrapper })
     await waitFor(() => expect((allowSwitch() as HTMLButtonElement).disabled).toBe(false))
+    // The person said no there: it stays off.
+    vi.mocked(commands.pluginsAllowUnreviewed).mockResolvedValueOnce(settings(false))
     fireEvent.click(allowSwitch())
-    const dialog = await screen.findByRole("dialog")
-    expect(within(dialog).getByText(/They run with your user rights/)).toBeTruthy()
-    expect(commands.pluginsAllowUnreviewed).not.toHaveBeenCalled()
-    // No, and it stays off.
-    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }))
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
-    expect(commands.pluginsAllowUnreviewed).not.toHaveBeenCalled()
+    await waitFor(() => expect(commands.pluginsAllowUnreviewed).toHaveBeenCalledExactlyOnceWith(true))
+    expect(screen.queryByRole("dialog")).toBeNull()
     expect(allowSwitch().getAttribute("aria-checked")).toBe("false")
 
     fireEvent.click(allowSwitch())
-    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Allow them" }))
     await waitFor(() => expect(allowSwitch().getAttribute("aria-checked")).toBe("true"))
     // Through its own command, never a settings save.
-    expect(commands.pluginsAllowUnreviewed).toHaveBeenCalledExactlyOnceWith(true)
+    expect(commands.pluginsAllowUnreviewed).toHaveBeenLastCalledWith(true)
     expect(queryClient.getQueryData<AppSettings>(qk.settings)?.allowUnreviewedPlugins).toBe(true)
 
     // Off needs no question.

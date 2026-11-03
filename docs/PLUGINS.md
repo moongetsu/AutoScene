@@ -698,8 +698,12 @@ brings along never makes it Reviewed.
 A plugin AutoScene hasn't reviewed (Pinned, Unreviewed, or loaded from a
 folder) needs **Settings → Plugins → Allow plugins that AutoScene has not
 reviewed**, which is off until the person turns it on, and then the person
-types its name in the review before it installs. While the setting is off,
-such plugins don't run, their actions aren't offered, and their runs stop.
+types its name in the review before it installs. Turning the setting on,
+and each such install, also ask in a dialog of the system's own, which
+names the plugin's id, version and key as AutoScene checked them: a script
+in AutoScene's page can't say yes for the person. While the setting is
+off, such plugins don't run, their actions aren't offered, and their runs
+stop. The review can turn it on, after the same question.
 
 Signing doesn't make a plugin safe. It makes its updates come from the same
 author: a Pinned plugin takes an update only when it is signed with its

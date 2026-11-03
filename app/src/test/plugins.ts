@@ -19,6 +19,7 @@ export function pluginInfo(o: Partial<PluginInfo> & Pick<PluginInfo, "id" | "nam
     permissions: [],
     networkHosts: [],
     gpu: false,
+    uvScript: true,
     exportActions: [],
     commands: [],
     settings: [],

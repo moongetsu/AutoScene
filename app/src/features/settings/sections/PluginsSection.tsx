@@ -11,7 +11,7 @@ import { EmptyState } from "@/components/ui/empty-state"
 import { Switch } from "@/components/ui/switch"
 import { InstallReviewDialog } from "@/features/plugins/InstallReviewDialog"
 import { PluginIcon } from "@/features/plugins/PluginIcon"
-import { keepPlugin } from "@/features/plugins/plugin-actions"
+import { allowUnreviewed, keepPlugin } from "@/features/plugins/plugin-actions"
 import { hasPage, trustLabel } from "@/features/plugins/plugin-items"
 import { useAppActions } from "@/lib/actions"
 import { commands, errorMessage } from "@/lib/ipc"
@@ -22,21 +22,11 @@ import { SettingRow, SettingsGroup } from "../primitives"
 
 const ALLOW = "Allow plugins that AutoScene has not reviewed"
 
-/** Let plugins AutoScene hasn't reviewed run, or not (off, their runs stop). */
-async function allow(on: boolean) {
-  try {
-    queryClient.setQueryData(qk.settings, await commands.pluginsAllowUnreviewed(on))
-    void queryClient.invalidateQueries({ queryKey: qk.plugins })
-  } catch (e) {
-    toast.error("Couldn't save the setting", { description: errorMessage(e) })
-  }
-}
 
 export function PluginsSection() {
   const { data: settings } = useSettings()
   const { data: plugins, error } = usePlugins()
   const allowed = settings?.allowUnreviewedPlugins ?? false
-  const [asking, setAsking] = useState(false)
   const [checking, setChecking] = useState(false)
   const [review, setReview] = useState<PluginReview | null>(null)
   const [removing, setRemoving] = useState<PluginInfo | null>(null)
@@ -82,12 +72,8 @@ export function PluginsSection() {
           label={ALLOW}
           description="Unsigned plugins, and ones only their author signed, and plugins loaded from a folder. AutoScene can't check what they do."
         >
-          <Switch
-            aria-label={ALLOW}
-            checked={allowed}
-            disabled={!settings}
-            onCheckedChange={(on) => (on ? setAsking(true) : void allow(false))}
-          />
+          {/* On, AutoScene asks in a dialog of the system's own: the page can't say yes alone. */}
+          <Switch aria-label={ALLOW} checked={allowed} disabled={!settings} onCheckedChange={(on) => void allowUnreviewed(on)} />
         </SettingRow>
       </SettingsGroup>
 
@@ -97,7 +83,7 @@ export function PluginsSection() {
         <EmptyState
           icon={<PuzzlePiece />}
           title="No plugins yet"
-          description="Install a plugin from its .asp file. Its actions then show in each export's menu, and its commands in the palette."
+          description="Install a plugin from its .asp file. One AutoScene hasn't reviewed needs the setting above first. Its actions then show in each export's menu, and its commands in the palette."
         />
       ) : (
         plugins && (
@@ -109,31 +95,6 @@ export function PluginsSection() {
         )
       )}
 
-      <Dialog open={asking} onOpenChange={setAsking}>
-        <DialogContent
-          title="Allow plugins AutoScene has not reviewed?"
-          description="They run with your user rights: they can read, change and send anything you can."
-        >
-          <p className="text-md text-fg-2">
-            Install only plugins from people you trust. Each asks you to type its name before it installs, and turning this
-            off again stops them.
-          </p>
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => setAsking(false)}>
-              Cancel
-            </Button>
-            <Button
-              variant="danger"
-              onClick={() => {
-                setAsking(false)
-                void allow(true)
-              }}
-            >
-              Allow them
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
       <InstallReviewDialog review={review} onClose={() => setReview(null)} />
       <Dialog open={removing != null} onOpenChange={(open) => !open && setRemoving(null)}>
         {removing && <UninstallForm key={removing.id} p={removing} onDone={() => setRemoving(null)} />}

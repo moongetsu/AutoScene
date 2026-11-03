@@ -241,9 +241,10 @@ export const commands = {
 	/**
 	 *  Let plugins AutoScene hasn't reviewed be installed and run, or not
 	 *  (`settings_update` never changes it, so a save from a copy of the
-	 *  settings made before can't turn it back). Off, their runs stop, running
-	 *  or still waiting. Gives the settings as they are now; once the change is
-	 *  stored, the page hears of it even when they can't be read back.
+	 *  settings made before can't turn it back). On, it asks the person first
+	 *  ([`confirm`]); a no leaves it off. Off, their runs stop, running or still
+	 *  waiting. Gives the settings as they are now; once the change is stored,
+	 *  the page hears of it even when they can't be read back.
 	 */
 	pluginsAllowUnreviewed: (on: boolean) => __TAURI_INVOKE<AppSettings>("plugins_allow_unreviewed", { on }),
 	/**
@@ -259,8 +260,9 @@ export const commands = {
 	pluginInspectFolder: (path: string) => __TAURI_INVOKE<PluginReview>("plugin_inspect_folder", { path }),
 	/**
 	 *  Install the plugin the review `ticket_id` showed. One AutoScene hasn't
-	 *  reviewed needs the setting, and `accept_unreviewed`: the person typed its
-	 *  name. Refused while the version it replaces runs.
+	 *  reviewed needs the setting, `accept_unreviewed` (the person typed its
+	 *  name), and the person's yes in a dialog of the system's own; a no keeps
+	 *  the review (`cancelled`). Refused while the version it replaces runs.
 	 */
 	pluginInstall: (ticketId: string, acceptUnreviewed: boolean) => __TAURI_INVOKE<PluginInfo>("plugin_install", { ticketId, acceptUnreviewed }),
 	/**
@@ -1337,6 +1339,12 @@ export type PluginInfo = {
 	networkHosts: string[],
 	/**  It uses the GPU, so its runs wait for the analysis. */
 	gpu: boolean,
+	/**
+	 *  It is a Python script that uv runs here: on its first run, uv
+	 *  downloads Python (when this computer has none) and the packages its
+	 *  lock names.
+	 */
+	uvScript: boolean,
 	exportActions: PluginExportAction[],
 	commands: CommandSpec[],
 	settings: SettingSpec[],
@@ -1365,6 +1373,8 @@ export type PluginReview = {
 	needsUnreviewed: boolean,
 	/**  It may be installed now (reviewed, or the setting is on). */
 	allowed: boolean,
+	/**  It is a uv script, and uv isn't installed: it won't run until it is. */
+	uvMissing: boolean,
 };
 
 /**  Where a plugin's files are. */

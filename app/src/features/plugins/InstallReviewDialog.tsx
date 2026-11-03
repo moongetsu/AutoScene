@@ -7,17 +7,19 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogFooter } from "@/components/ui/dialog"
 import { Field, Input } from "@/components/ui/input"
-import { useAppActions } from "@/lib/actions"
 import { commands, errorMessage, isAppError } from "@/lib/ipc"
 import { qk, queryClient } from "@/lib/queries"
 import { PluginIcon } from "./PluginIcon"
+import { allowUnreviewed } from "./plugin-actions"
 import { permissionLabel, trustLabel, trustLine } from "./plugin-items"
 
 /**
  * A plugin package (or folder) checked for install, before the person says
- * yes: who stands behind it, what it says it does, and what it adds. One
- * AutoScene hasn't reviewed needs the setting, and its name typed. Closed
- * without installing, the review goes, and the files it unpacked.
+ * yes: who stands behind it, what it says it does, how it runs and what it
+ * adds. One AutoScene hasn't reviewed needs the setting (which can be turned
+ * on here), its name typed, and the person's yes in the dialog AutoScene
+ * then shows outside the page. Closed without installing, the review goes,
+ * and the files it unpacked.
  */
 export function InstallReviewDialog({ review, onClose }: { review: PluginReview | null; onClose: () => void }) {
   // While it installs it stays open: closed, it would install all the same.
@@ -58,8 +60,10 @@ function ReviewForm({
   onInstalled: () => void
 }) {
   const p = review.plugin
-  const { goSettings } = useAppActions()
   const [typed, setTyped] = useState("")
+  // The setting turned on from here: the review stays, and may install.
+  const [allowedHere, setAllowedHere] = useState(false)
+  const allowed = review.allowed || allowedHere
   const nameId = useId()
   const confirmed = !review.needsUnreviewed || (typedName(typed) !== "" && typedName(typed) === typedName(p.name))
   // A developer's folder is loaded where it is, not installed.
@@ -72,6 +76,8 @@ function ReviewForm({
       onInstalled()
       toast(`${verb === "Update" ? "Updated" : verb === "Load" ? "Loaded" : "Installed"} ${installed.name}`)
     } catch (e) {
+      // The person said no in AutoScene's own dialog: the review stays as it is.
+      if (isAppError(e) && e.code === "cancelled") return
       toast.error("Couldn't install the plugin", { description: errorMessage(e) })
       // Only a refusal while the plugin runs keeps the review, to try again.
       if (!(isAppError(e) && e.code === "not_ready")) onCancel()
@@ -128,6 +134,7 @@ function ReviewForm({
         </div>
 
         <Permissions review={review} />
+        <Runs review={review} />
         <Adds p={p} />
 
         {p.warnings.length > 0 && (
@@ -142,7 +149,7 @@ function ReviewForm({
         )}
 
         {review.needsUnreviewed &&
-          (review.allowed ? (
+          (allowed ? (
             <Field
               label={
                 <>
@@ -156,16 +163,9 @@ function ReviewForm({
             </Field>
           ) : (
             <div className="flex items-center justify-between gap-4 rounded-lg border border-danger/30 bg-danger-subtle px-3.5 py-3">
-              <p className="text-sm text-fg-1">Plugins that AutoScene has not reviewed are turned off in Settings.</p>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => {
-                  onCancel()
-                  goSettings("plugins")
-                }}
-              >
-                Go to Plugins
+              <p className="text-sm text-fg-1">Plugins that AutoScene has not reviewed are turned off.</p>
+              <Button size="sm" variant="ghost" onClick={() => void allowUnreviewed(true).then(setAllowedHere)}>
+                Allow them…
               </Button>
             </div>
           ))}
@@ -176,7 +176,7 @@ function ReviewForm({
         </Button>
         <Button
           variant={review.needsUnreviewed ? "danger" : "primary"}
-          disabled={busy || !review.allowed || !confirmed}
+          disabled={busy || !allowed || !confirmed}
           onClick={() => void install()}
         >
           {busy && <CircleNotch className="animate-spin" />}
@@ -232,6 +232,24 @@ function Permissions({ review }: { review: PluginReview }) {
         {p.gpu && <li>Uses the graphics card: its runs wait while an analysis runs</li>}
       </ul>
       <p className="mt-2 text-xs text-fg-3">Declared by the author, not enforced. The plugin runs with your user rights.</p>
+    </section>
+  )
+}
+
+/** What AutoScene starts to run it, and what that fetches on its own. */
+function Runs({ review }: { review: PluginReview }) {
+  const p = review.plugin
+  return (
+    <section>
+      <h3 className="text-sm font-medium text-fg-2">How it runs</h3>
+      <p className="mt-1.5 text-md text-fg-1">
+        {p.uvScript
+          ? "A Python script that uv runs. On its first run, uv downloads Python (if this computer has none) and the packages the script names."
+          : "A program in its folder."}
+      </p>
+      {review.uvMissing && (
+        <p className="mt-1.5 text-sm text-danger">uv isn't installed, so it can't run yet. Install it from docs.astral.sh/uv.</p>
+      )}
     </section>
   )
 }

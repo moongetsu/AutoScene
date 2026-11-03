@@ -34,8 +34,8 @@ use as_jobs::{Class, JobCtx, JobError, JobResult, JobRunner, JobSpec};
 use as_plugin::protocol::{ClipContext, ExportContext, ProjectContext, RunMessage};
 use as_plugin::store::RECORD_VERSION;
 use as_plugin::{
-    ActionContext, ActionKind, CommandSpec, Installed, Keys, Manifest, Permission, PluginError, PluginId, PluginResult,
-    Record, SettingSpec, Source, Store, Ticket, Trigger, Trust, package, runtime,
+    ActionContext, ActionKind, CommandSpec, Installed, Keys, Launch, Manifest, Permission, PluginError, PluginId,
+    PluginResult, Record, SettingSpec, Source, Store, Ticket, Trigger, Trust, package, runtime,
 };
 use as_project::{Library, Project, ProjectError, ProjectResult};
 use parking_lot::{Condvar, Mutex};
@@ -128,6 +128,10 @@ pub struct PluginInfo {
     pub network_hosts: Vec<String>,
     /// It uses the GPU, so its runs wait for the analysis.
     pub gpu: bool,
+    /// It is a Python script that uv runs here: on its first run, uv
+    /// downloads Python (when this computer has none) and the packages its
+    /// lock names.
+    pub uv_script: bool,
     pub export_actions: Vec<PluginExportAction>,
     pub commands: Vec<CommandSpec>,
     pub settings: Vec<SettingSpec>,
@@ -175,6 +179,8 @@ pub struct PluginReview {
     pub needs_unreviewed: bool,
     /// It may be installed now (reviewed, or the setting is on).
     pub allowed: bool,
+    /// It is a uv script, and uv isn't installed: it won't run until it is.
+    pub uv_missing: bool,
 }
 
 /// What an update changes.
@@ -469,6 +475,7 @@ pub fn info(p: &Installed, store: &Store, allow_unreviewed: bool) -> PluginInfo 
         permissions: m.map_or_else(|| p.record.permissions.clone(), |m| m.permissions.clone()),
         network_hosts: m.map_or_else(|| p.record.network_hosts.clone(), |m| m.network_hosts.clone()),
         gpu: m.is_some_and(|m| m.runtime.gpu),
+        uv_script: m.is_some_and(|m| matches!(m.launch(), Ok(Launch::UvScript { .. }))),
         export_actions: actions
             .iter()
             .map(|a| PluginExportAction {
@@ -489,12 +496,14 @@ pub fn info(p: &Installed, store: &Store, allow_unreviewed: bool) -> PluginInfo 
 /// `t` for the review dialog, with `allow_unreviewed` the setting.
 pub fn review(t: &Ticket, store: &Store, allow_unreviewed: bool) -> PluginReview {
     let needs_unreviewed = t.verdict.trust != Trust::Reviewed;
+    let plugin = info(&as_installed(t), store, allow_unreviewed);
     PluginReview {
         ticket_id: t.id.to_string(),
-        plugin: info(&as_installed(t), store, allow_unreviewed),
         update: t.previous.as_ref().map(|previous| update(previous, &t.manifest)),
         needs_unreviewed,
         allowed: !needs_unreviewed || allow_unreviewed,
+        uv_missing: plugin.uv_script && runtime::find_uv().is_none(),
+        plugin,
     }
 }
 
@@ -1045,6 +1054,9 @@ mod tests {
             let t = folder(&host, &tmp, &manifest(id, false));
             let shown = review(&t, &host.store, false);
             assert!(shown.needs_unreviewed && !shown.allowed && shown.update.is_none());
+            // A uv script: the review says what uv fetches, and whether uv is there.
+            assert!(shown.plugin.uv_script);
+            assert_eq!(shown.uv_missing, runtime::find_uv().is_none());
             assert_eq!(
                 (shown.plugin.source, shown.plugin.folder.as_str()),
                 (PluginSource::Folder, tmp.join(id).to_str().unwrap())

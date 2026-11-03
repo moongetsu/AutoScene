@@ -1,9 +1,10 @@
 /**
  * Mock plugins for the browser backend, shaped like `plugins.rs`: one
  * reviewed plugin installed, packages to install (each .asp picked offers
- * the next: a reviewed one, one AutoScene hasn't reviewed, an update of the
- * installed one, one its author signed), a developer's folder to load, and
- * what each run says when it ends. The jobs are the backend's to run.
+ * the next: one AutoScene hasn't reviewed and one its author signed, as
+ * every real package is for now, then a reviewed one and an update of the
+ * installed one), a developer's folder to load, and what each run says when
+ * it ends. The jobs are the backend's to run.
  */
 import type { ActionKind, Permission, PluginInfo, PluginReview, PluginUpdate, SettingSpec, SettingValue } from "@/bindings"
 
@@ -30,6 +31,7 @@ function plugin(o: Pick<MockPlugin, "id" | "name" | "version" | "description" | 
     permissions: [],
     networkHosts: [],
     gpu: false,
+    uvScript: true,
     exportActions: [],
     commands: [],
     settings: [],
@@ -95,20 +97,6 @@ const hello = (version: string, more: Partial<MockPlugin> = {}) =>
 /** What each .asp picked in the mock is, in the order they are offered. */
 const PACKAGES: { path: string; plugin: MockPlugin }[] = [
   {
-    path: String.raw`C:\Plugins\shot-notes.asp`,
-    plugin: plugin({
-      id: "dev.autoscene.shot-notes",
-      name: "Shot Notes",
-      version: "1.2.0",
-      trust: "reviewed",
-      description: "Lists each clip's episode and timecodes in a text file beside the export.",
-      permissions: ["exports:read", "exports:write", "project:read"],
-      icon: icon("#5fc58f"),
-      exportActions: [{ id: "notes", title: "Write shot notes", description: null, afterExport: false }],
-      commands: [{ id: "whats-new", title: "What's new in Shot Notes", description: null, needsProject: false }],
-    }),
-  },
-  {
     path: String.raw`C:\Plugins\discord-notify-unreviewed.asp`,
     plugin: plugin({
       id: "dev.example.discord-notify",
@@ -149,14 +137,6 @@ const PACKAGES: { path: string; plugin: MockPlugin }[] = [
     }),
   },
   {
-    path: String.raw`C:\Plugins\hello-export-1.1.0.asp`,
-    plugin: hello("1.1.0", {
-      permissions: ["exports:read", "exports:write", "network"],
-      networkHosts: ["hooks.example.com"],
-      description: "Writes a short note beside each export, and can send it on. An example of what plugins can do.",
-    }),
-  },
-  {
     path: String.raw`C:\Plugins\frame-guard.asp`,
     plugin: plugin({
       id: "dev.someone.frame-guard",
@@ -168,7 +148,30 @@ const PACKAGES: { path: string; plugin: MockPlugin }[] = [
       description: "Checks each exported clip for dropped or repeated frames.",
       permissions: ["exports:read"],
       gpu: true,
+      uvScript: false,
       exportActions: [{ id: "check", title: "Check for dropped frames", description: null, afterExport: false }],
+    }),
+  },
+  {
+    path: String.raw`C:\Plugins\shot-notes.asp`,
+    plugin: plugin({
+      id: "dev.autoscene.shot-notes",
+      name: "Shot Notes",
+      version: "1.2.0",
+      trust: "reviewed",
+      description: "Lists each clip's episode and timecodes in a text file beside the export.",
+      permissions: ["exports:read", "exports:write", "project:read"],
+      icon: icon("#5fc58f"),
+      exportActions: [{ id: "notes", title: "Write shot notes", description: null, afterExport: false }],
+      commands: [{ id: "whats-new", title: "What's new in Shot Notes", description: null, needsProject: false }],
+    }),
+  },
+  {
+    path: String.raw`C:\Plugins\hello-export-1.1.0.asp`,
+    plugin: hello("1.1.0", {
+      permissions: ["exports:read", "exports:write", "network"],
+      networkHosts: ["hooks.example.com"],
+      description: "Writes a short note beside each export, and can send it on. An example of what plugins can do.",
     }),
   },
 ]
@@ -260,7 +263,7 @@ function review(p: MockPlugin, allow: boolean): PluginReview {
       }
     : null
   const needsUnreviewed = !reviewed(next)
-  return { ticketId, plugin: info(next, allow), update, needsUnreviewed, allowed: !needsUnreviewed || allow }
+  return { ticketId, plugin: info(next, allow), update, needsUnreviewed, allowed: !needsUnreviewed || allow, uvMissing: false }
 }
 
 export function inspectPackage(path: string, allow: boolean): PluginReview {

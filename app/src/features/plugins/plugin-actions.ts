@@ -22,6 +22,23 @@ export async function runPlugin(
   }
 }
 
+/**
+ * Let plugins AutoScene hasn't reviewed run, or not (off, their runs stop).
+ * On, AutoScene asks first, in a dialog of the system's own: whether they
+ * may run now.
+ */
+export async function allowUnreviewed(on: boolean): Promise<boolean> {
+  try {
+    const settings = await commands.pluginsAllowUnreviewed(on)
+    queryClient.setQueryData(qk.settings, settings)
+    void queryClient.invalidateQueries({ queryKey: qk.plugins })
+    return settings.allowUnreviewedPlugins ?? false
+  } catch (e) {
+    toast.error("Couldn't save the setting", { description: errorMessage(e) })
+    return false
+  }
+}
+
 /** Put `p` as the backend gave it back into the plugin list on hand. */
 export function keepPlugin(p: PluginInfo) {
   queryClient.setQueryData<PluginInfo[]>(qk.plugins, (list) => list?.map((x) => (x.id === p.id ? p : x)))

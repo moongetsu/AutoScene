@@ -6,16 +6,16 @@ import { commands } from "@/lib/ipc"
 import { pluginInfo } from "@/test/plugins"
 import { InstallReviewDialog } from "./InstallReviewDialog"
 
-const { goSettings } = vi.hoisted(() => ({ goSettings: vi.fn() }))
-
 vi.mock("@/lib/ipc", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/ipc")>()),
   commands: {
     pluginInstall: vi.fn(() => Promise.resolve(pluginInfo({ id: "dev.example.discord-notify", name: "Discord Notify" }))),
     pluginDiscard: vi.fn(() => Promise.resolve(null)),
+    pluginsAllowUnreviewed: vi.fn((on: boolean) =>
+      Promise.resolve({ libraryRoot: "C:\\Library", exportPresetId: "prores-hq", audioLanguage: "eng", allowUnreviewedPlugins: on }),
+    ),
   },
 }))
-vi.mock("@/lib/actions", () => ({ useAppActions: () => ({ goSettings }) }))
 vi.mock("sonner", () => ({ toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn() }) }))
 
 const discord = pluginInfo({
@@ -35,6 +35,7 @@ const review = (o: Partial<PluginReview> = {}): PluginReview => ({
   update: null,
   needsUnreviewed: true,
   allowed: true,
+  uvMissing: false,
   ...o,
 })
 
@@ -67,13 +68,21 @@ describe("the install review", () => {
     expect(commands.pluginDiscard).not.toHaveBeenCalled()
     cleanup()
 
-    // The setting off: no way to install it here, only the way to the setting.
+    // The setting off: it is turned on from here, and the review stays.
     show(review({ allowed: false }))
     expect(screen.queryByRole("textbox")).toBeNull()
     expect(install().disabled).toBe(true)
-    fireEvent.click(screen.getByRole("button", { name: "Go to Plugins" }))
-    expect(goSettings).toHaveBeenCalledWith("plugins")
-    expect(commands.pluginDiscard).toHaveBeenCalledWith("t1")
+    vi.mocked(commands.pluginsAllowUnreviewed).mockImplementationOnce((on) =>
+      Promise.resolve({ libraryRoot: "C:\\Library", exportPresetId: "prores-hq", audioLanguage: "eng", allowUnreviewedPlugins: !on }),
+    )
+    // The person said no in AutoScene's own dialog: still off.
+    fireEvent.click(screen.getByRole("button", { name: "Allow them…" }))
+    await waitFor(() => expect(commands.pluginsAllowUnreviewed).toHaveBeenCalledExactlyOnceWith(true))
+    expect(screen.queryByRole("textbox")).toBeNull()
+    fireEvent.click(screen.getByRole("button", { name: "Allow them…" }))
+    fireEvent.change(await screen.findByLabelText("Type Discord Notify to install it"), { target: { value: "Discord Notify" } })
+    expect(install().disabled).toBe(false)
+    expect(commands.pluginDiscard).not.toHaveBeenCalled()
     cleanup()
 
     // A reviewed one installs at once, without the setting's yes.
@@ -178,6 +187,31 @@ describe("the install review", () => {
     // What the installed version could do already isn't marked.
     expect(within(screen.getByText("Reads the exported clips").closest("li")!).queryByText("New")).toBeNull()
     expect(screen.getByRole("button", { name: "Update" })).toBeTruthy()
+  })
+
+  it("keeps the review when the person says no outside the page", async () => {
+    vi.mocked(commands.pluginInstall).mockRejectedValueOnce({ code: "cancelled", message: "It wasn't installed." })
+    const onClose = show(review())
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Discord Notify" } })
+    fireEvent.click(install())
+    await waitFor(() => expect(install().disabled).toBe(false))
+    expect(onClose).not.toHaveBeenCalled()
+    expect(toast.error).not.toHaveBeenCalled()
+    expect(commands.pluginDiscard).not.toHaveBeenCalled()
+  })
+
+  it("says how it runs, and that uv is missing", () => {
+    show(review())
+    expect(screen.getByText(/A Python script that uv runs\. On its first run, uv downloads Python/)).toBeTruthy()
+    expect(screen.queryByText(/uv isn't installed/)).toBeNull()
+    cleanup()
+
+    show(review({ uvMissing: true }))
+    expect(screen.getByText("uv isn't installed, so it can't run yet. Install it from docs.astral.sh/uv.")).toBeTruthy()
+    cleanup()
+
+    show(review({ plugin: { ...discord, uvScript: false } }))
+    expect(screen.getByText("A program in its folder.")).toBeTruthy()
   })
 
   it("drops the review when it is closed", async () => {

@@ -3,18 +3,24 @@
 //! or off, their settings, whether plugins AutoScene hasn't reviewed may
 //! run, and running their actions. Each change emits `plugins:changed`;
 //! runs report as jobs.
+//!
+//! The page can't say yes alone to code AutoScene hasn't reviewed: turning
+//! the setting on, and installing such a plugin, each ask the person in a
+//! dialog of the system's own ([`confirm`]), with what the backend checked.
+//! A script in the page could call these commands; it can't answer that.
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
 use as_api::AppSettings;
 use as_core::{ExportId, JobId, ProjectId};
-use as_plugin::{ActionKind, PluginError, PluginId, SettingValue, Trigger};
+use as_plugin::{ActionKind, PluginError, PluginId, SettingValue, Source, Ticket, Trigger, Trust};
 use parking_lot::Mutex;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_specta::Event;
 
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult, ErrorCode};
 use crate::events::PluginsChanged;
 use crate::paths;
 use crate::plugins::{self, PluginInfo, PluginReview, host, info, review};
@@ -38,27 +44,78 @@ static ALLOWING: Mutex<()> = Mutex::new(());
 
 /// Let plugins AutoScene hasn't reviewed be installed and run, or not
 /// (`settings_update` never changes it, so a save from a copy of the
-/// settings made before can't turn it back). Off, their runs stop, running
-/// or still waiting. Gives the settings as they are now; once the change is
-/// stored, the page hears of it even when they can't be read back.
+/// settings made before can't turn it back). On, it asks the person first
+/// ([`confirm`]); a no leaves it off. Off, their runs stop, running or still
+/// waiting. Gives the settings as they are now; once the change is stored,
+/// the page hears of it even when they can't be read back.
 #[tauri::command]
 #[specta::specta]
 pub async fn plugins_allow_unreviewed(app: AppHandle, state: State<'_, AppState>, on: bool) -> AppResult<AppSettings> {
     let (lib, plugins, jobs) = (state.library.clone(), state.plugins.clone(), state.jobs.clone());
-    let (before, settings) = blocking(move || {
+    let asking = app.clone();
+    let (changed_it, settings) = blocking(move || {
+        if on && !lib.allows_unreviewed_plugins()? && !confirm(&asking, ALLOW_TITLE, ALLOW_TEXT.into(), "Allow them") {
+            return Ok((false, lib.settings()));
+        }
         let _one = ALLOWING.lock();
         let before = lib.allows_unreviewed_plugins()?;
         lib.set_allows_unreviewed_plugins(on)?;
         if let Some(plugins) = plugins {
             plugins.allow_changed(&jobs, before, on);
         }
-        Ok((before, lib.settings()))
+        Ok((before != on, lib.settings()))
     })
     .await?;
-    if before != on {
+    if changed_it {
         changed(&app, None);
     }
     Ok(settings?)
+}
+
+const ALLOW_TITLE: &str = "Allow plugins AutoScene has not reviewed?";
+const ALLOW_TEXT: &str = "They run with your user rights: they can read, change and send anything you can. \
+Install only plugins from people you trust.\n\n\
+Turning this off again stops their runs. It doesn't undo what a plugin set up outside AutoScene.";
+
+/// Asks the person `title`, as `message` says, with `yes` and Cancel, in a
+/// dialog of the system's own over the window: the page can neither answer
+/// nor change it. Blocks until they answer, so never on the main thread.
+fn confirm(app: &AppHandle, title: &str, message: String, yes: &str) -> bool {
+    let mut dialog = app
+        .dialog()
+        .message(message)
+        .title(title)
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(yes.into(), "Cancel".into()));
+    if let Some(window) = app.get_webview_window("main") {
+        dialog = dialog.parent(&window);
+    }
+    dialog.blocking_show()
+}
+
+/// What installing the plugin of `t` asks, from what was checked here (not
+/// what the page shows): its title, its text and the yes.
+fn install_question(t: &Ticket) -> (String, String, &'static str) {
+    let m = &t.manifest;
+    let yes = match (&t.source, &t.previous) {
+        (Source::Folder { .. }, _) => "Load",
+        (_, Some(_)) => "Update",
+        _ => "Install",
+    };
+    let signed = match &t.verdict.author_key {
+        Some(key) if t.verdict.trust == Trust::Pinned => format!("Signed with key {}", key.key_id),
+        _ => "Not signed".to_owned(),
+    };
+    let place = match &t.source {
+        Source::Folder { path } => format!("\nFolder: {path}"),
+        Source::Package { .. } => String::new(),
+    };
+    let text = format!(
+        "AutoScene has not reviewed it. It runs with your user rights: it can read, change and send anything you can.\n\n\
+         Id: {}\nVersion: {}\nSays it is by: {}\n{signed}{place}",
+        m.id, m.version, m.author.name
+    );
+    (format!("{yes} {}?", m.name), text, yes)
 }
 
 /// Unpack and check the plugin package at `path`, for the review dialog,
@@ -99,8 +156,9 @@ pub async fn plugin_inspect_folder(state: State<'_, AppState>, path: String) -> 
 }
 
 /// Install the plugin the review `ticket_id` showed. One AutoScene hasn't
-/// reviewed needs the setting, and `accept_unreviewed`: the person typed its
-/// name. Refused while the version it replaces runs.
+/// reviewed needs the setting, `accept_unreviewed` (the person typed its
+/// name), and the person's yes in a dialog of the system's own; a no keeps
+/// the review (`cancelled`). Refused while the version it replaces runs.
 #[tauri::command]
 #[specta::specta]
 pub async fn plugin_install(
@@ -110,9 +168,19 @@ pub async fn plugin_install(
     accept_unreviewed: bool,
 ) -> AppResult<PluginInfo> {
     let (host, lib) = (host(&state)?, state.library.clone());
+    let asking = app.clone();
     let installed = blocking(move || {
         let allow = lib.allows_unreviewed_plugins()?;
         let ticket = host.take(&ticket_id)?;
+        // Asked only when the page said yes and the setting allows it: else
+        // the commit refuses anyway.
+        if ticket.verdict.trust != Trust::Reviewed && allow && accept_unreviewed {
+            let (title, text, yes) = install_question(&ticket);
+            if !confirm(&asking, &title, text, yes) {
+                host.keep(ticket);
+                return Err(AppError::new(ErrorCode::Cancelled, "It wasn't installed."));
+            }
+        }
         // Its runs wait from here until the row names the new version.
         let changing = match host.change(&ticket.manifest.id, &ticket.manifest.name) {
             Ok(changing) => changing,
