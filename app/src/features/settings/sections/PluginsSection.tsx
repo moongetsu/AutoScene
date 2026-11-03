@@ -384,7 +384,20 @@ function PluginCard({ p, onUninstall }: { p: PluginInfo; onUninstall: () => void
             </span>
             <div className="min-w-0 flex-1">
               <div className="flex items-center justify-between gap-2">
-                <h4 className="truncate font-semibold text-fg-1 text-base leading-snug">{p.name}</h4>
+                <div className="flex min-w-0 items-center gap-2">
+                  <span
+                    className={cn(
+                      "size-2 shrink-0 rounded-full",
+                      p.broken
+                        ? "bg-danger shadow-[0_0_8px_rgba(239,68,68,0.5)]"
+                        : p.enabled
+                          ? "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.5)]"
+                          : "bg-white/20",
+                    )}
+                    title={p.broken ? "Plugin has errors" : p.enabled ? "Active and ready" : "Disabled"}
+                  />
+                  <h4 className="truncate font-semibold text-fg-1 text-base leading-snug">{p.name}</h4>
+                </div>
                 {!p.banner && (
                   <div className="flex items-center gap-1.5">
                     <Badge tone={trust.tone}>{trust.label}</Badge>
@@ -443,6 +456,22 @@ function PluginCard({ p, onUninstall }: { p: PluginInfo; onUninstall: () => void
               {p.description}
             </p>
           )}
+
+          <div className="mt-3 flex flex-wrap items-center gap-1.5">
+            {p.uvScript && (
+              <span className="rounded border border-sky-400/20 bg-sky-400/10 px-1.5 py-0.5 text-[10px] font-medium text-sky-300">
+                Python / uv
+              </span>
+            )}
+            {p.permissions.length > 0 && (
+              <span
+                className="rounded border border-white/10 bg-white/[0.04] px-1.5 py-0.5 text-[10px] text-fg-3"
+                title={p.permissions.join(", ")}
+              >
+                {p.permissions.length} {p.permissions.length === 1 ? "permission" : "permissions"}
+              </span>
+            )}
+          </div>
 
           {why && <span className="mt-2 block text-xs text-danger">{why}</span>}
         </div>

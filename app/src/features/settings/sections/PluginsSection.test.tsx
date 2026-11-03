@@ -271,4 +271,18 @@ describe("Settings → Plugins", () => {
     fireEvent.click(screen.getByRole("button", { name: "Disable all" }))
     await waitFor(() => expect(commands.pluginSetEnabled).toHaveBeenCalledWith("dev.b.beta", false))
   })
+
+  it("displays runtime and permissions tags on cards", async () => {
+    state.plugins = [
+      pluginInfo({
+        id: "dev.a.python",
+        name: "Python Runner",
+        uvScript: true,
+        permissions: ["network", "process"] as any,
+      }),
+    ]
+    render(<PluginsSection />, { wrapper })
+    expect(await screen.findByText("Python / uv")).toBeTruthy()
+    expect(screen.getByText("2 permissions")).toBeTruthy()
+  })
 })
