@@ -1,0 +1,51 @@
+{
+  "manifestVersion": 1,
+  "id": "dev.autoscene.hello-export",
+  "version": "1.0.0",
+  "name": "Hello Export",
+  "description": "Writes a list of an export's clips beside them, and says hello from the command palette. An example plugin.",
+  "author": { "name": "AutoScene", "url": "https://github.com/tcmmi/AutoScene" },
+  "repository": "https://github.com/tcmmi/AutoScene",
+  "engines": { "autoscene": ">=1.0.0, <2", "protocol": 1 },
+  "runtime": {
+    "type": "process",
+    "command": { "*": ["uv", "run", "--script", "--locked", "main.py"] }
+  },
+  "permissions": ["exports:read", "exports:write"],
+  "contributes": {
+    "exportActions": [
+      { "id": "clip-list", "title": "Write a clip list", "description": "Writes clips.txt (or clips.md) into the export's folder." }
+    ],
+    "commands": [
+      { "id": "hello", "title": "Say hello", "description": "Says which AutoScene and FFmpeg the plugin runs with." }
+    ],
+    "settings": [
+      {
+        "key": "format",
+        "type": "select",
+        "title": "List format",
+        "options": [
+          { "value": "text", "label": "Plain text" },
+          { "value": "markdown", "label": "Markdown" }
+        ],
+        "default": "text"
+      },
+      {
+        "key": "withFrames",
+        "type": "boolean",
+        "title": "Show frame numbers",
+        "description": "Each clip's first and last frame in its episode, beside its times.",
+        "default": true
+      },
+      {
+        "key": "greeting",
+        "type": "string",
+        "title": "Greeting",
+        "description": "What Say hello starts with.",
+        "default": "Hello",
+        "maxLength": 40
+      }
+    ]
+  },
+  "icon": "icon.svg"
+}

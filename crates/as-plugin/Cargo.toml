@@ -51,3 +51,5 @@ minisign.workspace = true
 tempfile.workspace = true
 # The store's tests make library.db refuse a write.
 rusqlite.workspace = true
+# The example plugins' scripts and locks (tests/asp_cli.rs).
+toml.workspace = true

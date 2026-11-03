@@ -115,12 +115,14 @@ cd app && npm test
 
 | Path | What |
 | --- | --- |
-| `crates/` | The Rust core: media and frame index (`as-media`), projects and database (`as-project`, `as-db`), analysis engine and inference (`as-engine`, `as-infer`, `as-analysis`, `as-identity`), exports (`as-export`) |
+| `crates/` | The Rust core: media and frame index (`as-media`), projects and database (`as-project`, `as-db`), analysis engine and inference (`as-engine`, `as-infer`, `as-analysis`, `as-identity`), exports (`as-export`), plugins and the `asp` tool (`as-plugin`) |
 | `app/` | The desktop app: Tauri shell (`app/src-tauri`) and React UI (`app/src`) |
 | `xtask/` | Dev tasks: sidecars, fixtures, test models |
 | `models/manifest.toml` | The AI models, pinned by URL and SHA-256 |
 | `tools/model-prep/` | Dev-only Python that prepares models (never shipped) |
 | `docs/DESIGN.md` | The design system |
+| `docs/PLUGINS.md` | How to write, package and sign a plugin |
+| `examples/plugins/` | Two example plugins |
 
 `src/autoscene/` and `ui/` hold AutoScene 0.1, the Python-based version. They
 stay until this version also has its dialogue search, smart tags and frame

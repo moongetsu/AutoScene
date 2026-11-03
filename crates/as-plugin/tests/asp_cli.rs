@@ -3,17 +3,17 @@
 //! folder of its own.
 #![cfg(feature = "cli")]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use as_plugin::current_platform;
 use as_plugin::keys::REVIEW_KEYS;
 use as_plugin::manifest;
 use as_plugin::package::{self, AUTHOR_KEY, LOCK, SIG};
 use as_plugin::trust::{self, Keys, Trust};
+use as_plugin::{Launch, current_platform};
 use semver::Version;
 use serde_json::{Value, json};
 use zip::write::SimpleFileOptions;
@@ -548,4 +548,67 @@ fn verify_names_the_trust_a_package_would_get() {
     assert_eq!(err, "asp: The plugin package is damaged.\n");
     let err = asp(&["verify", text(&place("missing.asp"))]).failed(1);
     assert!(err.starts_with(&format!("asp: {}: ", place("missing.asp").display())), "{err}");
+}
+
+/// The Python and the dependencies a uv script's `# /// script` block asks
+/// for, each dependency without spaces and in lowercase.
+fn script_wants(script: &str) -> (String, BTreeSet<String>) {
+    let block: String = script
+        .lines()
+        .skip_while(|l| *l != "# /// script")
+        .skip(1)
+        .take_while(|l| *l != "# ///")
+        .map(|l| format!("{}\n", l.strip_prefix("# ").or(l.strip_prefix('#')).unwrap()))
+        .collect();
+    let block: toml::Table = block.parse().unwrap();
+    let deps = block["dependencies"].as_array().unwrap().iter().map(|d| squeezed(d.as_str().unwrap()));
+    (block["requires-python"].as_str().unwrap().to_owned(), deps.collect())
+}
+
+/// The Python and the dependencies the uv lock `lock` was made for, as
+/// [`script_wants`] gives them. Only a name and a version are compared:
+/// the examples' dependencies have no extras or markers.
+fn lock_has(lock: &str) -> (String, BTreeSet<String>) {
+    let lock: toml::Table = lock.parse().unwrap();
+    let requirements = lock.get("manifest").and_then(|m| m.get("requirements"));
+    let deps = requirements.map_or(&[][..], |r| r.as_array().unwrap()).iter().map(|r| {
+        squeezed(&format!("{}{}", r["name"].as_str().unwrap(), r.get("specifier").map_or("", |s| s.as_str().unwrap())))
+    });
+    (lock["requires-python"].as_str().unwrap().to_owned(), deps.collect())
+}
+
+/// `requirement` without spaces, in lowercase.
+fn squeezed(requirement: &str) -> String {
+    requirement.chars().filter(|c| !c.is_whitespace()).collect::<String>().to_lowercase()
+}
+
+#[test]
+fn the_example_plugins_pack_and_parse() {
+    let tmp = tempfile::tempdir().unwrap();
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/plugins");
+    let app = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+    for name in ["hello-export", "discord-notify"] {
+        // docs/PLUGINS.md packs them as they are: without a warning.
+        let out = tmp.path().join(format!("{name}.asp"));
+        assert_eq!(asp(&["pack", text(&examples.join(name)), text(&out)]).warnings(), "", "{name}");
+        let into = tmp.path().join(name);
+        let lock = package::unpack(&out, &into).unwrap().lock;
+        // Its lock fits the script as it is now: uv refuses every run of a
+        // script whose block changed since it was locked.
+        let script = fs::read_to_string(into.join("main.py")).unwrap();
+        let uv_lock = fs::read_to_string(into.join("main.py.lock")).unwrap();
+        assert_eq!(lock_has(&uv_lock), script_wants(&script), "{name}: lock it again");
+        let parsed = manifest::parse(&fs::read(into.join("plugin.json")).unwrap(), &app).unwrap();
+        assert!(parsed.warnings.is_empty(), "{name}: {:?}", parsed.warnings);
+
+        // A uv script with its lock, which starts the same way everywhere.
+        let m = parsed.manifest;
+        assert_eq!(m.id.as_str(), format!("dev.autoscene.{name}"));
+        for (platform, launch) in m.launches() {
+            let launch = launch.unwrap();
+            assert_eq!(launch, Launch::UvScript { script: "main.py".into() }, "{name} on {platform}");
+            package::check_launch(&lock, &launch, platform).unwrap();
+        }
+        assert_eq!(asp(&["verify", text(&out)]).ok(), format!("{} {}: Unreviewed\n", m.id, m.version));
+    }
 }
