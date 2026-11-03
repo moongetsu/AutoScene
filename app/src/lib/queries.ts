@@ -39,6 +39,9 @@ export const qk = {
   // unnamed. The look-up says it began and ended with `anilist:changed`.
   anilistNames: (pid: ProjectId) => ["cast", pid, "anilist"] as const,
   exportDir: (pid: ProjectId) => ["exportDir", pid] as const,
+  plugins: ["plugins"] as const,
+  // Under the plugins: `plugins:changed` refreshes both.
+  pluginSettings: (id: string) => ["plugins", id, "settings"] as const,
 }
 
 export function useAppInfo() {
@@ -141,6 +144,16 @@ export function useCharacterShots(pid: ProjectId, cid: CharacterId, enabled = tr
 /** Where characters are on screen in one media. */
 export function usePresence(pid: ProjectId, mid: MediaId, enabled: boolean) {
   return useQuery({ queryKey: qk.presence(pid, mid), queryFn: () => commands.mediaPresence(pid, mid), enabled })
+}
+
+/** The installed plugins, broken ones too. */
+export function usePlugins() {
+  return useQuery({ queryKey: qk.plugins, queryFn: () => commands.pluginsList() })
+}
+
+/** A plugin's settings: the person's value of each, else its default. */
+export function usePluginSettings(id: string) {
+  return useQuery({ queryKey: qk.pluginSettings(id), queryFn: () => commands.pluginSettingsGet(id) })
 }
 
 type Refetchable = { isError: boolean; error: unknown; data?: unknown; refetch: () => unknown }

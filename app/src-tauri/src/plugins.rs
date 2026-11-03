@@ -164,6 +164,9 @@ pub struct PluginReview {
 pub struct PluginUpdate {
     pub from_version: String,
     pub trust_before: Trust,
+    /// Where the installed version's files are: a package replacing a
+    /// loaded folder leaves that folder as it is.
+    pub source_before: PluginSource,
     /// Permissions it says it needs that the installed version didn't.
     pub added_permissions: Vec<Permission>,
     pub added_hosts: Vec<String>,
@@ -227,6 +230,12 @@ impl PluginHost {
             ));
         }
         Ok(t)
+    }
+
+    /// The developers' folders plugins are loaded from.
+    pub fn loaded_folders(&self) -> Vec<PathBuf> {
+        let plugins = self.store.list().unwrap_or_default();
+        plugins.into_iter().filter(|p| source(&p.record) == PluginSource::Folder).map(|p| p.dir).collect()
     }
 
     /// Whether a run of `id` is running.
@@ -335,16 +344,24 @@ fn blocked(p: &Installed, allow_unreviewed: bool) -> Option<PluginError> {
 
 /// Whether AutoScene reviewed `p` (see [`trust`]).
 fn reviewed(p: &Installed) -> bool {
-    trust(p) == Trust::Reviewed
+    trust(&p.record) == Trust::Reviewed
 }
 
-/// How far `p` is trusted: as its row says, but a plugin loaded from a
-/// folder is never reviewed or signed, whatever its row says (another
-/// program could have written it).
-fn trust(p: &Installed) -> Trust {
-    match p.record.source {
-        Source::Package { .. } => p.record.trust,
+/// How far the plugin of `r` is trusted: as its row says, but a plugin
+/// loaded from a folder is never reviewed or signed, whatever its row says
+/// (another program could have written it).
+fn trust(r: &Record) -> Trust {
+    match r.source {
+        Source::Package { .. } => r.trust,
         Source::Folder { .. } => Trust::Unreviewed,
+    }
+}
+
+/// Where the files of the plugin of `r` are.
+fn source(r: &Record) -> PluginSource {
+    match r.source {
+        Source::Package { .. } => PluginSource::Package,
+        Source::Folder { .. } => PluginSource::Folder,
     }
 }
 
@@ -366,12 +383,9 @@ pub fn info(p: &Installed, store: &Store, allow_unreviewed: bool) -> PluginInfo 
         author: m.map(|m| m.author.name.clone()).unwrap_or_default(),
         license: m.and_then(|m| m.license.clone()),
         repository: m.and_then(|m| m.repository.clone()),
-        trust: trust(p),
+        trust: trust(&p.record),
         author_key_id: p.record.author_key.as_ref().map(|k| k.key_id.clone()),
-        source: match p.record.source {
-            Source::Package { .. } => PluginSource::Package,
-            Source::Folder { .. } => PluginSource::Folder,
-        },
+        source: source(&p.record),
         folder: p.dir.to_string_lossy().into_owned(),
         enabled: p.record.enabled,
         active: active(p, allow_unreviewed),
@@ -449,7 +463,8 @@ fn as_installed(t: &Ticket) -> Installed {
 fn update(previous: &Record, m: &Manifest) -> PluginUpdate {
     PluginUpdate {
         from_version: previous.version.clone(),
-        trust_before: previous.trust,
+        trust_before: trust(previous),
+        source_before: source(previous),
         added_permissions: m.permissions.iter().filter(|p| !previous.permissions.contains(p)).copied().collect(),
         added_hosts: m.network_hosts.iter().filter(|h| !previous.network_hosts.contains(h)).cloned().collect(),
     }
@@ -869,7 +884,7 @@ mod tests {
             );
         }
         // Settings shows the folder as what it is.
-        assert_eq!(trust(&plugins[3]), Trust::Unreviewed);
+        assert_eq!(trust(&plugins[3].record), Trust::Unreviewed);
     }
 
     #[test]
@@ -917,9 +932,16 @@ mod tests {
         });
         let m = as_plugin::manifest::parse_for_any_app(manifest.to_string().as_bytes()).unwrap().manifest;
         let u = update(&previous, &m);
-        assert_eq!((u.from_version.as_str(), u.trust_before), ("1.0.0", Trust::Pinned));
+        assert_eq!(
+            (u.from_version.as_str(), u.trust_before, u.source_before),
+            ("1.0.0", Trust::Pinned, PluginSource::Package)
+        );
         assert_eq!(u.added_permissions, [Permission::Network]);
         assert_eq!(u.added_hosts, ["example.com"]);
+        // A package replacing a loaded folder says so: that folder was never reviewed.
+        let folder = loaded(plugin("dev.a.post", Trust::Reviewed, false)).record;
+        let u = update(&folder, &m);
+        assert_eq!((u.trust_before, u.source_before), (Trust::Unreviewed, PluginSource::Folder));
     }
 
     #[test]
@@ -938,6 +960,8 @@ mod tests {
             assert_eq!(shown.plugin.blocked_reason.as_deref(), Some(PluginError::NotAllowed.to_string().as_str()));
             host.store.commit(t, true, true).unwrap().record.id
         });
+        // Their folders may be shown.
+        assert_eq!(host.loaded_folders(), ids.each_ref().map(|id| tmp.join(id.as_str())));
 
         let jobs = JobRunner::new(&[(Class::Plugin, 3)], |_| {});
         let (tx, started) = mpsc::channel();
@@ -1056,9 +1080,7 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("autoscene-plugin-start-{}", std::process::id()));
         let (lib, host) = host_in(&tmp);
         let id = host.store.commit(folder(&host, &tmp, &manifest("dev.a.one", false)), true, true).unwrap().record.id;
-        let allow = |on| {
-            lib.update_settings(&AppSettings { allow_unreviewed_plugins: on, ..lib.settings().unwrap() }).unwrap();
-        };
+        let allow = |on| lib.set_allows_unreviewed_plugins(on).unwrap();
         let said = |key: &RunKey, gpu| match startable(&host.store, &lib, key, gpu) {
             Ok(_) => "starts".to_owned(),
             Err(JobError::Failed(why)) => why,

@@ -1,0 +1,164 @@
+import type * as React from "react"
+import { QueryClientProvider } from "@tanstack/react-query"
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import type { AppSettings, PluginInfo } from "@/bindings"
+import { AppMenu } from "@/components/shell/AppMenu"
+import { TooltipProvider } from "@/components/ui/tooltip"
+import { commands } from "@/lib/ipc"
+import { qk, queryClient } from "@/lib/queries"
+import { pluginInfo } from "@/test/plugins"
+import { PluginsSection } from "./PluginsSection"
+
+const { state } = vi.hoisted(() => ({ state: { plugins: [] as PluginInfo[], allow: false } }))
+
+const settings = (allow: boolean): AppSettings => ({
+  libraryRoot: "C:\\Library",
+  exportPresetId: "prores-hq",
+  audioLanguage: "eng",
+  allowUnreviewedPlugins: allow,
+})
+
+vi.mock("@/lib/ipc", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/ipc")>()),
+  commands: {
+    settingsGet: vi.fn(() => Promise.resolve(settings(state.allow))),
+    pluginsList: vi.fn(() => Promise.resolve(state.plugins)),
+    pluginsAllowUnreviewed: vi.fn((on: boolean) => Promise.resolve(settings(on))),
+    pluginSetEnabled: vi.fn(),
+    pluginUninstall: vi.fn(() => Promise.resolve(null)),
+  },
+}))
+vi.mock("@/lib/actions", () => ({ useAppActions: () => ({ goSettings: vi.fn() }) }))
+// The window's menu, around the rows' own entries.
+vi.mock("@tanstack/react-router", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@tanstack/react-router")>()),
+  useCanGoBack: () => false,
+}))
+
+const wrapper = ({ children }: { children: React.ReactNode }) => (
+  <QueryClientProvider client={queryClient}>
+    <TooltipProvider>{children}</TooltipProvider>
+  </QueryClientProvider>
+)
+const allowSwitch = () => screen.getByRole("switch", { name: "Allow plugins that AutoScene has not reviewed" })
+
+beforeEach(() => {
+  queryClient.clear()
+  vi.clearAllMocks()
+  state.plugins = []
+  state.allow = false
+})
+afterEach(cleanup)
+
+describe("Settings → Plugins", () => {
+  it("lists plugins with their trust", async () => {
+    state.plugins = [
+      pluginInfo({ id: "dev.a.reviewed", name: "Reviewed One", description: "Says hello.", author: "AutoScene" }),
+      pluginInfo({ id: "dev.a.pinned", name: "Pinned One", trust: "pinned", authorKeyId: "4B2D9C1E0F3A7E51" }),
+      pluginInfo({
+        id: "dev.a.unreviewed",
+        name: "Unreviewed One",
+        trust: "unreviewed",
+        active: false,
+        blockedReason: "Plugins that AutoScene has not reviewed are turned off in Settings.",
+      }),
+      // A folder says so first, whatever its trust.
+      pluginInfo({ id: "dev.a.folder", name: "Folder One", trust: "unreviewed", source: "folder", enabled: false, active: false }),
+    ]
+    render(<PluginsSection />, { wrapper })
+    const row = (name: string) => screen.findByRole("group", { name })
+    const badges: [string, string][] = [
+      ["Reviewed One", "Reviewed by AutoScene"],
+      ["Pinned One", "Signed by its author"],
+      ["Unreviewed One", "Not reviewed"],
+      ["Folder One", "Loaded from a folder"],
+    ]
+    for (const [name, badge] of badges) expect(within(await row(name)).getByText(badge)).toBeTruthy()
+    expect(within(await row("Reviewed One")).getByText("By AutoScene, version 1.0.0")).toBeTruthy()
+    // Why one that is turned on doesn't run; nothing for one turned off.
+    expect(within(await row("Unreviewed One")).getByText(/turned off in Settings/)).toBeTruthy()
+    const folder = screen.getByRole("switch", { name: "Enable Folder One" })
+    expect(folder.getAttribute("aria-checked")).toBe("false")
+    expect(screen.getByRole("switch", { name: "Enable Reviewed One" }).getAttribute("aria-checked")).toBe("true")
+
+    // Turned on, the list shows what the backend gave back.
+    vi.mocked(commands.pluginSetEnabled).mockResolvedValue({ ...state.plugins[3], enabled: true })
+    fireEvent.click(folder)
+    await waitFor(() => expect(screen.getByRole("switch", { name: "Enable Folder One" }).getAttribute("aria-checked")).toBe("true"))
+    expect(commands.pluginSetEnabled).toHaveBeenCalledWith("dev.a.folder", true)
+  })
+
+  it("says so when no plugin is installed", async () => {
+    render(<PluginsSection />, { wrapper })
+    expect(await screen.findByText("No plugins yet")).toBeTruthy()
+  })
+
+  it("asks before allowing unreviewed plugins", async () => {
+    render(<PluginsSection />, { wrapper })
+    await waitFor(() => expect((allowSwitch() as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(allowSwitch())
+    const dialog = await screen.findByRole("dialog")
+    expect(within(dialog).getByText(/They run with your user rights/)).toBeTruthy()
+    expect(commands.pluginsAllowUnreviewed).not.toHaveBeenCalled()
+    // No, and it stays off.
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }))
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
+    expect(commands.pluginsAllowUnreviewed).not.toHaveBeenCalled()
+    expect(allowSwitch().getAttribute("aria-checked")).toBe("false")
+
+    fireEvent.click(allowSwitch())
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Allow them" }))
+    await waitFor(() => expect(allowSwitch().getAttribute("aria-checked")).toBe("true"))
+    // Through its own command, never a settings save.
+    expect(commands.pluginsAllowUnreviewed).toHaveBeenCalledExactlyOnceWith(true)
+    expect(queryClient.getQueryData<AppSettings>(qk.settings)?.allowUnreviewedPlugins).toBe(true)
+
+    // Off needs no question.
+    fireEvent.click(allowSwitch())
+    await waitFor(() => expect(commands.pluginsAllowUnreviewed).toHaveBeenLastCalledWith(false))
+    expect(screen.queryByRole("dialog")).toBeNull()
+    await waitFor(() => expect(allowSwitch().getAttribute("aria-checked")).toBe("false"))
+  })
+
+  it("uninstalls a plugin, and what it kept only when asked", async () => {
+    state.plugins = [pluginInfo({ id: "dev.a.one", name: "One" }), pluginInfo({ id: "dev.a.two", name: "Two" })]
+    render(
+      <AppMenu>
+        <div>
+          <PluginsSection />
+        </div>
+      </AppMenu>,
+      { wrapper },
+    )
+    const uninstall = async (name: string) => {
+      fireEvent.contextMenu(await screen.findByRole("group", { name }), { clientX: 40, clientY: 40 })
+      fireEvent.click(within(await screen.findByRole("menu")).getByRole("menuitem", { name: "Uninstall…" }))
+      return screen.findByRole("dialog")
+    }
+    // What it kept between runs stays, unless the person says otherwise.
+    let dialog = await uninstall("One")
+    expect(within(dialog).getByRole("switch", { name: "Delete what it kept too" }).getAttribute("aria-checked")).toBe("false")
+    fireEvent.click(within(dialog).getByRole("button", { name: "Uninstall" }))
+    await waitFor(() => expect(commands.pluginUninstall).toHaveBeenCalledExactlyOnceWith("dev.a.one", false))
+    await waitFor(() => expect(screen.queryByRole("group", { name: "One" })).toBeNull())
+
+    dialog = await uninstall("Two")
+    fireEvent.click(within(dialog).getByRole("switch", { name: "Delete what it kept too" }))
+    fireEvent.click(within(dialog).getByRole("button", { name: "Uninstall" }))
+    await waitFor(() => expect(commands.pluginUninstall).toHaveBeenLastCalledWith("dev.a.two", true))
+  })
+
+  it("hides Load a folder while unreviewed plugins are off", async () => {
+    render(<PluginsSection />, { wrapper })
+    expect(await screen.findByRole("button", { name: "Install a plugin…" })).toBeTruthy()
+    await waitFor(() => expect((allowSwitch() as HTMLButtonElement).disabled).toBe(false))
+    expect(screen.queryByRole("button", { name: "Load a folder…" })).toBeNull()
+    cleanup()
+    queryClient.clear()
+
+    state.allow = true
+    render(<PluginsSection />, { wrapper })
+    expect(await screen.findByRole("button", { name: "Load a folder…" })).toBeTruthy()
+  })
+})

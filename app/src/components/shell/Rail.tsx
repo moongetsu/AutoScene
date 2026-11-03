@@ -10,6 +10,7 @@ import {
   Keyboard,
   MagnifyingGlass,
   Plus,
+  PuzzlePiece,
   Queue,
   SquaresFour,
   Television,
@@ -133,6 +134,9 @@ export function Rail() {
               </ContextMenuItem>
               <ContextMenuItem onSelect={() => actions.goSettings("updates")}>
                 <ArrowCounterClockwise /> Updates
+              </ContextMenuItem>
+              <ContextMenuItem onSelect={() => actions.goSettings("plugins")}>
+                <PuzzlePiece /> Plugins
               </ContextMenuItem>
               <ContextMenuItem onSelect={actions.checkUpdates}>
                 <DownloadSimple /> Check for updates

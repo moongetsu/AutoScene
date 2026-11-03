@@ -16,6 +16,7 @@ export function Slider({
   step = 0.01,
   label,
   format,
+  disabled,
   className,
 }: {
   value: number
@@ -27,6 +28,7 @@ export function Slider({
   label: string
   /** The chip's text for a value; no chip without it. */
   format?: (value: number) => string
+  disabled?: boolean
   className?: string
 }) {
   const [hover, setHover] = useState(false)
@@ -38,6 +40,7 @@ export function Slider({
       min={min}
       max={max}
       step={step}
+      disabled={disabled}
       onValueChange={([v]) => onChange(v)}
       onPointerEnter={() => setHover(true)}
       onPointerLeave={() => setHover(false)}
@@ -48,7 +51,7 @@ export function Slider({
         else setDrag(true)
       }}
       onLostPointerCapture={() => setDrag(false)}
-      className={cn("relative flex h-5 touch-none items-center select-none", className)}
+      className={cn("relative flex h-5 touch-none items-center select-none data-[disabled]:opacity-40", className)}
     >
       <S.Track className="relative h-1 grow overflow-hidden rounded-full bg-white/[0.14]">
         <S.Range className="absolute h-full rounded-full bg-fg-1" />

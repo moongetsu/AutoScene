@@ -157,6 +157,13 @@ impl Library {
         Ok(self.db.setting(KEY_ALLOW_UNREVIEWED)?.as_deref() == Some("1"))
     }
 
+    /// Lets plugins AutoScene has not reviewed be installed and run, or
+    /// not. Only here: [`Library::update_settings`] keeps it as it is, so a
+    /// page saving a copy of the settings made before can't turn it back.
+    pub fn set_allows_unreviewed_plugins(&self, on: bool) -> ProjectResult<()> {
+        Ok(self.db.set_setting(KEY_ALLOW_UNREVIEWED, if on { "1" } else { "0" })?)
+    }
+
     /// The keys the person chose; AutoScene's own when what is stored can't
     /// be read (an older or a newer app's).
     fn shortcuts(&self) -> ProjectResult<Shortcuts> {
@@ -196,7 +203,7 @@ impl Library {
         self.db.set_setting(KEY_FAST_SCAN, if s.fast_scan { "1" } else { "0" })?;
         self.db.set_setting(KEY_ANILIST, if s.anilist { "1" } else { "0" })?;
         self.anilist_on.store(s.anilist, Ordering::Relaxed);
-        self.db.set_setting(KEY_ALLOW_UNREVIEWED, if s.allow_unreviewed_plugins { "1" } else { "0" })?;
+        // `allow_unreviewed_plugins` stays: see `set_allows_unreviewed_plugins`.
         // Keys a newer app stored, that this one can't read, stay unless
         // they were changed here.
         let unreadable =
@@ -952,23 +959,32 @@ mod tests {
         let (dir, lib) = lib();
         assert!(!lib.settings().unwrap().allow_unreviewed_plugins);
         assert!(!lib.allows_unreviewed_plugins().unwrap());
+        // Saving the settings never turns it on...
         let on = AppSettings { allow_unreviewed_plugins: true, ..lib.settings().unwrap() };
-        assert!(lib.update_settings(&on).unwrap().allow_unreviewed_plugins);
-        // Other settings saved after it keep it.
-        lib.update_settings(&AppSettings { fast_scan: true, ..lib.settings().unwrap() }).unwrap();
+        assert!(!lib.update_settings(&on).unwrap().allow_unreviewed_plugins);
+        lib.set_allows_unreviewed_plugins(true).unwrap();
+        assert!(lib.settings().unwrap().allow_unreviewed_plugins);
+        // ...or off: a copy made before it was turned on keeps it.
+        let stale = AppSettings { allow_unreviewed_plugins: false, fast_scan: true, ..on };
+        assert!(lib.update_settings(&stale).unwrap().allow_unreviewed_plugins);
         drop(lib);
         let reopened = Library::open(&AppPaths::at(dir.path().join("data"))).unwrap();
         assert!(reopened.allows_unreviewed_plugins().unwrap());
-        let off = AppSettings { allow_unreviewed_plugins: false, ..reopened.settings().unwrap() };
-        assert!(!reopened.update_settings(&off).unwrap().allow_unreviewed_plugins);
+        reopened.set_allows_unreviewed_plugins(false).unwrap();
         assert!(!reopened.allows_unreviewed_plugins().unwrap());
-        // A page that sends no answer (an older one) turns them off.
+        let stale = AppSettings { allow_unreviewed_plugins: true, ..reopened.settings().unwrap() };
+        assert!(!reopened.update_settings(&stale).unwrap().allow_unreviewed_plugins);
+        // A page that sends no answer (an older one) reads as off, and its
+        // save leaves the switch as it is.
         let older: AppSettings = serde_json::from_value(serde_json::json!({
             "libraryRoot": dir.path().join("Library").display().to_string(),
             "exportPresetId": "h264-edit",
         }))
         .unwrap();
         assert!(!older.allow_unreviewed_plugins);
+        reopened.set_allows_unreviewed_plugins(true).unwrap();
+        assert!(reopened.update_settings(&older).unwrap().allow_unreviewed_plugins);
+        assert!(reopened.allows_unreviewed_plugins().unwrap());
     }
 
     #[test]

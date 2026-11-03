@@ -11,8 +11,9 @@ export const commands = {
 	/**
 	 *  Show a file or folder in Explorer / Finder: one AutoScene knows (its
 	 *  library, data and logs, a project's folder, an episode's file, an
-	 *  export's folder or files), never just any path. Off the main thread: a
-	 *  share that doesn't answer would freeze the window until Windows gives up.
+	 *  export's folder or files, a folder a plugin is loaded from), never just
+	 *  any path. Off the main thread: a share that doesn't answer would freeze
+	 *  the window until Windows gives up.
 	 */
 	revealPath: (path: string) => __TAURI_INVOKE<null>("reveal_path", { path }),
 	/**
@@ -70,6 +71,10 @@ export const commands = {
 	 */
 	importScan: (paths: string[], kind: ProjectKind, projectId: string | null) => __TAURI_INVOKE<ImportCandidate[]>("import_scan", { paths, kind, projectId }),
 	settingsGet: () => __TAURI_INVOKE<AppSettings>("settings_get"),
+	/**
+	 *  Save the settings. Whether plugins AutoScene hasn't reviewed may run
+	 *  stays as it is: `plugins_allow_unreviewed` changes it.
+	 */
 	settingsUpdate: (settings: AppSettings) => __TAURI_INVOKE<AppSettings>("settings_update", { settings }),
 	mediaList: (projectId: ProjectId) => __TAURI_INVOKE<MediaItem[]>("media_list", { projectId }),
 	mediaGet: (projectId: ProjectId, mediaId: MediaId) => __TAURI_INVOKE<MediaItem>("media_get", { projectId, mediaId }),
@@ -233,6 +238,14 @@ export const commands = {
 	packExport: (projectId: ProjectId, characterId: CharacterId, req: PackExportRequest) => __TAURI_INVOKE<ExportSummary>("pack_export", { projectId, characterId, req }),
 	/**  Every installed plugin, by id (also the broken ones). */
 	pluginsList: () => __TAURI_INVOKE<PluginInfo[]>("plugins_list"),
+	/**
+	 *  Let plugins AutoScene hasn't reviewed be installed and run, or not
+	 *  (`settings_update` never changes it, so a save from a copy of the
+	 *  settings made before can't turn it back). Off, their runs stop, running
+	 *  or still waiting. Gives the settings as they are now; once the change is
+	 *  stored, the page hears of it even when they can't be read back.
+	 */
+	pluginsAllowUnreviewed: (on: boolean) => __TAURI_INVOKE<AppSettings>("plugins_allow_unreviewed", { on }),
 	/**
 	 *  Unpack and check the plugin package at `path`, for the review dialog,
 	 *  which answers with `plugin_install` or `plugin_discard`.
@@ -475,7 +488,8 @@ export type AppSettings = {
 	/**
 	 *  Lets plugins be installed and run that AutoScene has not reviewed:
 	 *  unsigned ones, and ones only their author signed. They run with your
-	 *  user rights. Off by default.
+	 *  user rights. Off by default. Changed only by
+	 *  `plugins_allow_unreviewed`: `settings_update` keeps it as it is.
 	 */
 	allowUnreviewedPlugins?: boolean,
 };
@@ -1364,6 +1378,11 @@ export type PluginSource =
 export type PluginUpdate = {
 	fromVersion: string,
 	trustBefore: Trust,
+	/**
+	 *  Where the installed version's files are: a package replacing a
+	 *  loaded folder leaves that folder as it is.
+	 */
+	sourceBefore: PluginSource,
 	/**  Permissions it says it needs that the installed version didn't. */
 	addedPermissions: Permission[],
 	addedHosts: string[],

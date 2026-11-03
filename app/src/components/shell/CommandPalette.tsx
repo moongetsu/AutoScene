@@ -14,6 +14,7 @@ import {
   MagnifyingGlass,
   Package,
   Plus,
+  PuzzlePiece,
   Queue,
   SidebarSimple,
   SquaresFour,
@@ -23,11 +24,13 @@ import {
 } from "@/components/icons"
 import { Artwork } from "@/components/ui/artwork"
 import { Kbd } from "@/components/ui/kbd"
+import { PluginIcon } from "@/features/plugins/PluginIcon"
+import { runPlugin } from "@/features/plugins/plugin-actions"
 import { useAppActions } from "@/lib/actions"
-import { useCast, useMediaList, useProjects } from "@/lib/queries"
+import { useCast, useMediaList, usePlugins, useProjects } from "@/lib/queries"
 import { useShortcutKeys } from "@/lib/shortcuts"
 import { useUi } from "@/state/ui"
-import { type ProjectEntry, characterEntries, episodeEntries } from "./palette-items"
+import { type ProjectEntry, characterEntries, episodeEntries, pluginCommandEntries } from "./palette-items"
 
 type Item = {
   id: string
@@ -56,6 +59,7 @@ export function CommandPalette() {
   const setOpen = useUi((s) => s.setPaletteOpen)
   const a = useAppActions()
   const { data: projects } = useProjects()
+  const { data: plugins } = usePlugins()
   const path = useRouterState({ select: (s) => s.location.pathname })
   const pid = path.match(/^\/p\/([^/]+)/)?.[1]
   const current = projects?.find((p) => p.id === pid)
@@ -78,6 +82,7 @@ export function CommandPalette() {
     { id: "library", label: "Library", icon: <SquaresFour />, run: a.goLibrary, keys: keys("global.library") },
     { id: "settings", label: "Settings", icon: <GearSix />, run: () => a.goSettings(), keys: keys("global.settings") },
     { id: "shortcuts", label: "Keyboard shortcuts", icon: <Keyboard />, run: () => a.goSettings("shortcuts") },
+    { id: "plugins", label: "Plugins", icon: <PuzzlePiece />, run: () => a.goSettings("plugins") },
     { id: "about", label: "About AutoScene", icon: <Info />, run: () => a.goSettings("about") },
   ]
   const projectItems: Item[] = (projects ?? []).map((p) => ({
@@ -87,6 +92,15 @@ export function CommandPalette() {
     poster: p.posterSmall ?? p.poster,
     hint: p.kind === "movie" ? "Movie" : `${p.mediaCount} ${p.mediaCount === 1 ? "episode" : "episodes"}`,
     run: () => a.goProject(p.id),
+  }))
+  // Run in the open project, if any: a command that needs one shows only there.
+  const pluginItems: Item[] = pluginCommandEntries(plugins, pid).map((c) => ({
+    id: c.id,
+    label: c.label,
+    icon: <PluginIcon src={c.icon} />,
+    hint: c.hint,
+    keywords: c.keywords,
+    run: () => void runPlugin({ ...c, title: c.label }, "command", pid ?? null, null),
   }))
   const actions: Item[] = [
     { id: "new-project", label: "New project…", icon: <Plus />, run: a.newProject, keys: keys("global.newProject") },
@@ -137,6 +151,7 @@ export function CommandPalette() {
               {current && <Group heading={current.title} items={here} onSelect={select} />}
               {current && <ProjectFinds pid={current.id} query={query} onSelect={select} />}
               {projectItems.length > 0 && <Group heading="Projects" items={projectItems} onSelect={select} />}
+              {pluginItems.length > 0 && <Group heading="Plugins" items={pluginItems} onSelect={select} />}
               <Group heading="Actions" items={actions} onSelect={select} />
               <Group heading="Go to" items={go} onSelect={select} />
             </Command.List>

@@ -109,7 +109,8 @@ pub struct AppSettings {
     pub shortcuts: Shortcuts,
     /// Lets plugins be installed and run that AutoScene has not reviewed:
     /// unsigned ones, and ones only their author signed. They run with your
-    /// user rights. Off by default.
+    /// user rights. Off by default. Changed only by
+    /// `plugins_allow_unreviewed`: `settings_update` keeps it as it is.
     #[serde(default)]
     pub allow_unreviewed_plugins: bool,
 }

@@ -11,11 +11,14 @@ import { EmptyState } from "@/components/ui/empty-state"
 import { Page } from "@/components/ui/page"
 import { Progress } from "@/components/ui/progress"
 import { Tooltip, TruncatedText } from "@/components/ui/tooltip"
+import { PluginIcon } from "@/features/plugins/PluginIcon"
+import { runPlugin } from "@/features/plugins/plugin-actions"
+import { exportActionItems } from "@/features/plugins/plugin-items"
 import { formatBytes, formatDateTime, formatDuration, formatPercent } from "@/lib/format"
 import { commands, errorMessage } from "@/lib/ipc"
 import { pickSaveFile } from "@/lib/media"
 import { copyText, reveal } from "@/lib/os"
-import { firstFailure, useExports, useMediaList, useProject } from "@/lib/queries"
+import { firstFailure, useExports, useMediaList, usePlugins, useProject } from "@/lib/queries"
 import { fpsValue, isDropFrameRate, timecode } from "@/lib/timecode"
 import { cn } from "@/lib/utils"
 import { useActivity } from "@/state/activity"
@@ -99,6 +102,8 @@ function ExportCard({ pid, ex, media }: { pid: string; ex: ExportSummary; media:
   const listed = open ? ex.items : ex.items.filter((i) => i.status === "failed" || i.error != null)
   const seconds = open ? null : runTime(ex.items, media)
   const listId = useId()
+  const { data: plugins } = usePlugins()
+  const actions = exportActionItems(plugins)
 
   return (
     <section className="overflow-hidden rounded-3xl border border-white/[0.07] bg-white/[0.03]">
@@ -118,6 +123,14 @@ function ExportCard({ pid, ex, media }: { pid: string; ex: ExportSummary; media:
             <ContextMenuItem disabled={!listable} onSelect={() => void saveList(pid, ex, "csv")}>
               <Table /> Save cut list (CSV)…
             </ContextMenuItem>
+            {actions.length > 0 && <ContextMenuSeparator />}
+            {/* Plugins run on what the export made, once it is made. */}
+            {actions.map((a) => (
+              <ContextMenuItem key={a.key} disabled={running} onSelect={() => void runPlugin(a, "exportAction", pid, ex.id)}>
+                <PluginIcon src={a.icon} /> {a.title}
+                <span className="ml-auto pl-4 text-xs text-fg-3">{a.pluginName}</span>
+              </ContextMenuItem>
+            ))}
           </>
         }
       >

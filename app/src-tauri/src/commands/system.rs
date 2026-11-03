@@ -63,21 +63,23 @@ pub async fn models(state: State<'_, AppState>) -> AppResult<Vec<ModelInfo>> {
 
 /// Show a file or folder in Explorer / Finder: one AutoScene knows (its
 /// library, data and logs, a project's folder, an episode's file, an
-/// export's folder or files), never just any path. Off the main thread: a
-/// share that doesn't answer would freeze the window until Windows gives up.
+/// export's folder or files, a folder a plugin is loaded from), never just
+/// any path. Off the main thread: a share that doesn't answer would freeze
+/// the window until Windows gives up.
 #[tauri::command]
 #[specta::specta]
 pub async fn reveal_path(state: State<'_, AppState>, path: String) -> AppResult<()> {
     paths::check(&path)?;
-    let lib = state.library.clone();
+    let (lib, plugins) = (state.library.clone(), state.plugins.clone());
     blocking(move || {
-        let p = PathBuf::from(&path);
-        if !known(&lib, &AppPaths::resolve(), &p) {
+        let (p, app) = (PathBuf::from(&path), AppPaths::resolve());
+        let loaded = plugins.map(|host| host.loaded_folders()).unwrap_or_default();
+        if !known(&lib, &app, &loaded, &p) {
             log::warn!("not revealing {}, which isn't AutoScene's", paths::name(&p));
             return Err(AppError::new(ErrorCode::Invalid, "AutoScene only shows its own files and folders."));
         }
         if !p.exists() {
-            return Err(AppError::new(ErrorCode::NotFound, "That file or folder isn't there any more."));
+            return Err(AppError::new(ErrorCode::NotFound, missing(&app, &p)));
         }
         tauri_plugin_opener::reveal_item_in_dir(&p).map_err(|e| {
             log::warn!("revealing {}: {e}", paths::name(&p));
@@ -89,19 +91,31 @@ pub async fn reveal_path(state: State<'_, AppState>, path: String) -> AppResult<
 
 /// Whether `path` is one AutoScene keeps things in or was given: the
 /// library folder, the app's data and logs, a project's folder (thumbnails,
-/// previews), an export's folder and files, an episode's file. Episodes and
-/// exports are those of the open projects, which after launch are all of
-/// them (each is opened to resume its work).
-fn known(lib: &Library, app: &AppPaths, path: &Path) -> bool {
+/// previews), an export's folder and files, an episode's file, a folder of
+/// `loaded` (those plugins are loaded from). Episodes and exports are those
+/// of the open projects, which after launch are all of them (each is opened
+/// to resume its work).
+fn known(lib: &Library, app: &AppPaths, loaded: &[PathBuf], path: &Path) -> bool {
     let folders = [lib.library_root().ok(), Some(app.data.clone()), Some(app.logs())];
     let projects = lib.projects().unwrap_or_default().into_iter().map(|p| Some(PathBuf::from(p.dir)));
-    if folders.into_iter().chain(projects).flatten().any(|dir| paths::is_within(path, &dir)) {
+    let loaded = loaded.iter().cloned().map(Some);
+    if folders.into_iter().chain(projects).chain(loaded).flatten().any(|dir| paths::is_within(path, &dir)) {
         return true;
     }
     lib.open_projects().iter().any(|project| {
         project.exports().unwrap_or_default().iter().any(|e| paths::is_within(path, Path::new(&e.out_dir)))
             || project.media_list_uncounted().unwrap_or_default().iter().any(|m| Path::new(&m.path) == path)
     })
+}
+
+/// Why `path` (one AutoScene knows) can't be shown: it is gone, or it is a
+/// plugin's log, which its first run starts.
+fn missing(app: &AppPaths, path: &Path) -> &'static str {
+    if path.parent() == Some(app.plugin_logs().as_path()) {
+        "It hasn't run yet, so it has no log."
+    } else {
+        "That file or folder isn't there any more."
+    }
 }
 
 /// Put text on the clipboard. Natively, so it also works from the macOS
@@ -185,8 +199,13 @@ mod tests {
             .unwrap();
 
         let project = PathBuf::from(&summary.dir);
-        for ok in [&root, &root.join("Exports").join("Show"), &project.join("thumbs"), &episode, &app.logs(), &data] {
-            assert!(known(&lib, &app, ok), "{}", ok.display());
+        // A developer's folder a plugin is loaded from.
+        let loaded = [tmp.join("Plugins").join("hello")];
+        let plugin = loaded[0].join("plugin.json");
+        for ok in
+            [&root, &root.join("Exports").join("Show"), &project.join("thumbs"), &episode, &app.logs(), &data, &plugin]
+        {
+            assert!(known(&lib, &app, &loaded, ok), "{}", ok.display());
         }
         for other in [
             media.clone(),
@@ -194,10 +213,20 @@ mod tests {
             tmp.join("Library2"),
             root.join("..").join("Shows").join("Show S01E02.mkv"),
             PathBuf::from("Library"),
+            tmp.join("Plugins"),
         ] {
-            assert!(!known(&lib, &app, &other), "{}", other.display());
+            assert!(!known(&lib, &app, &loaded, &other), "{}", other.display());
         }
+        assert!(!known(&lib, &app, &[], &plugin));
         drop(lib);
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn a_plugin_that_never_ran_has_no_log_yet() {
+        let app = AppPaths::at(std::env::temp_dir().join("autoscene-missing"));
+        assert_eq!(missing(&app, &app.plugin_logs().join("dev.a.hello.log")), "It hasn't run yet, so it has no log.");
+        let gone = app.logs().join("autoscene.log");
+        assert_eq!(missing(&app, &gone), "That file or folder isn't there any more.");
     }
 }

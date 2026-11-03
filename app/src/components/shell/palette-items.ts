@@ -1,4 +1,4 @@
-import type { Cast, MediaItem } from "@/bindings"
+import type { Cast, MediaItem, PluginInfo } from "@/bindings"
 import { formatScreenTime, plural } from "@/features/cast/cast"
 import { formatDuration } from "@/lib/format"
 import { fileStem, mediaTitle } from "@/lib/media"
@@ -49,4 +49,37 @@ export function episodeKeywords(m: Pick<MediaItem, "season" | "episode" | "fileN
     }
   }
   return words
+}
+
+/** A plugin's command, as the palette lists it. */
+export type PluginCommandEntry = {
+  id: string
+  pluginId: string
+  actionId: string
+  label: string
+  hint: string
+  keywords: string[]
+  icon: string | null
+}
+
+/**
+ * The commands of the plugins that may run now, plugin by plugin; one that
+ * needs a project only while one is open (`pid`).
+ */
+export function pluginCommandEntries(plugins: PluginInfo[] | undefined, pid: string | undefined): PluginCommandEntry[] {
+  return (plugins ?? [])
+    .filter((p) => p.active)
+    .flatMap((p) =>
+      p.commands
+        .filter((c) => !c.needsProject || pid != null)
+        .map((c) => ({
+          id: `plugin-${p.id}.${c.id}`,
+          pluginId: p.id,
+          actionId: c.id,
+          label: c.title,
+          hint: p.name,
+          keywords: [p.name],
+          icon: p.icon,
+        })),
+    )
 }

@@ -129,3 +129,15 @@ describe("a plugin job that finishes", () => {
     expect(toast.success).not.toHaveBeenCalled()
   })
 })
+
+describe("plugins changing", () => {
+  it("plugins:changed refetches the plugins", () => {
+    const read = vi.spyOn(queryClient, "invalidateQueries")
+    handlers.pluginsChanged({ payload: { pluginId: "dev.a.one" } })
+    handlers.pluginsChanged({ payload: { pluginId: null } })
+    // The list, and by prefix every plugin's settings; the settings too when
+    // whether unreviewed plugins may run changed.
+    expect(read.mock.calls).toEqual([[{ queryKey: ["plugins"] }], [{ queryKey: ["plugins"] }], [{ queryKey: ["settings"] }]])
+    read.mockRestore()
+  })
+})

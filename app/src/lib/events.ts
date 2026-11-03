@@ -19,6 +19,7 @@ import { exportsQuery, qk, queryClient } from "./queries"
  * | cast:changed     | cast(pid) and everything under it (tracks, presence, packs) |
  * | pack:changed     | pack(pid, cid): its settings (an export keeps them) |
  * | export:changed   | exports(pid)                                       |
+ * | plugins:changed  | plugins and every plugin's settings; settings when no plugin is named |
  */
 export function startEventBridge(): () => void {
   const unlisten: Promise<() => void>[] = []
@@ -75,6 +76,13 @@ export function startEventBridge(): () => void {
     }),
     events.exportChanged.listen(({ payload }) => {
       void queryClient.invalidateQueries({ queryKey: qk.exports(payload.projectId) })
+    }),
+    events.pluginsChanged.listen(({ payload }) => {
+      // Prefix match: the list and each plugin's settings.
+      void queryClient.invalidateQueries({ queryKey: qk.plugins })
+      // None named: the setting may have changed, under a settings save
+      // still on its way with the value from before.
+      if (payload.pluginId == null) void queryClient.invalidateQueries({ queryKey: qk.settings })
     }),
   )
   // Snapshot only once the listeners are live, so nothing falls between the two.

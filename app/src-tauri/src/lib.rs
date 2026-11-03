@@ -94,6 +94,7 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::DynRuntime> {
             commands::pack::pack_plan,
             commands::pack::pack_export,
             commands::plugins::plugins_list,
+            commands::plugins::plugins_allow_unreviewed,
             commands::plugins::plugin_inspect,
             commands::plugins::plugin_inspect_folder,
             commands::plugins::plugin_install,

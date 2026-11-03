@@ -2,16 +2,18 @@ import type * as React from "react"
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { toast } from "sonner"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import type { ExportItem, ExportStatus, ExportSummary, JobInfo, MediaItem } from "@/bindings"
+import type { ExportItem, ExportStatus, ExportSummary, JobInfo, MediaItem, PluginInfo } from "@/bindings"
 import { AppMenu } from "@/components/shell/AppMenu"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { useActivity } from "@/state/activity"
+import { pluginInfo } from "@/test/plugins"
 import { ExportsPage } from "./ExportsPage"
 
-const { list, pickSaveFile, exportSaveList, reveal } = vi.hoisted(() => ({
-  list: { exports: [] as ExportSummary[], media: [] as MediaItem[] },
+const { list, pickSaveFile, exportSaveList, pluginRun, reveal } = vi.hoisted(() => ({
+  list: { exports: [] as ExportSummary[], media: [] as MediaItem[], plugins: [] as PluginInfo[] },
   pickSaveFile: vi.fn(),
   exportSaveList: vi.fn(),
+  pluginRun: vi.fn(),
   reveal: vi.fn(),
 }))
 
@@ -23,7 +25,7 @@ vi.mock("@tanstack/react-router", () => ({
 vi.mock("@/lib/media", async (importOriginal) => ({ ...(await importOriginal<typeof import("@/lib/media")>()), pickSaveFile }))
 vi.mock("@/lib/ipc", async (importOriginal) => {
   const ipc = await importOriginal<typeof import("@/lib/ipc")>()
-  return { ...ipc, commands: { ...ipc.commands, exportSaveList } }
+  return { ...ipc, commands: { ...ipc.commands, exportSaveList, pluginRun } }
 })
 vi.mock("@/lib/os", async (importOriginal) => ({ ...(await importOriginal<typeof import("@/lib/os")>()), reveal }))
 vi.mock("sonner", () => ({ toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn() }) }))
@@ -33,6 +35,7 @@ vi.mock("@/lib/queries", () => ({
   useProject: () => ({ data: { title: "Show" } }),
   useExports: () => ({ data: list.exports }),
   useMediaList: () => ({ data: list.media }),
+  usePlugins: () => ({ data: list.plugins }),
   firstFailure: () => null,
 }))
 
@@ -67,6 +70,7 @@ async function openMenu() {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  list.plugins = []
   useActivity.setState({ jobs: {}, order: [] })
 })
 afterEach(cleanup)
@@ -223,5 +227,49 @@ describe("an export's edit lists", () => {
       expect(toast.error).toHaveBeenCalledWith("Couldn't save the EDL", { description: "Clips of different frame rates can't share one EDL." }),
     )
     expect(toast).not.toHaveBeenCalled()
+  })
+})
+
+describe("an export's plugin actions", () => {
+  const post = { id: "post", title: "Post to Discord", description: null, afterExport: false }
+  const entry = (name: RegExp) => screen.getByRole("menuitem", { name })
+
+  it("runs a plugin's export action", async () => {
+    list.plugins = [
+      pluginInfo({ id: "dev.example.discord-notify", name: "Discord Notify", exportActions: [post] }),
+      // One that may not run now adds nothing.
+      pluginInfo({ id: "dev.a.off", name: "Off", active: false, exportActions: [{ ...post, id: "off", title: "Never shown" }] }),
+    ]
+    pluginRun.mockResolvedValue("j9")
+    show(exported("done", [item(1, "done")]))
+    await openMenu()
+    expect(screen.queryByRole("menuitem", { name: /Never shown/ })).toBeNull()
+    // Named with its plugin.
+    expect(entry(/Post to Discord/).textContent).toContain("Discord Notify")
+    fireEvent.click(entry(/Post to Discord/))
+    await waitFor(() => expect(pluginRun).toHaveBeenCalledExactlyOnceWith("dev.example.discord-notify", "post", "exportAction", "p", "e1"))
+    expect(toast.error).not.toHaveBeenCalled()
+    cleanup()
+
+    // Not while the export still runs.
+    show(exported("running", [item(1, "running")]), job("running", 0.3))
+    await openMenu()
+    expect(entry(/Post to Discord/).getAttribute("aria-disabled")).toBe("true")
+  })
+
+  it("says why a plugin's run couldn't start, or that it runs already", async () => {
+    list.plugins = [pluginInfo({ id: "dev.example.discord-notify", name: "Discord Notify", exportActions: [post] })]
+    pluginRun.mockResolvedValue(null)
+    show(exported("done", [item(1, "done")]))
+    await openMenu()
+    fireEvent.click(entry(/Post to Discord/))
+    await waitFor(() => expect(toast).toHaveBeenCalledWith("Post to Discord is already waiting or running", { description: "It's in Activity." }))
+    cleanup()
+
+    pluginRun.mockRejectedValue({ code: "invalid", message: "Discord Notify is turned off." })
+    show(exported("done", [item(1, "done")]))
+    await openMenu()
+    fireEvent.click(entry(/Post to Discord/))
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("Couldn't run Post to Discord", { description: "Discord Notify is turned off." }))
   })
 })

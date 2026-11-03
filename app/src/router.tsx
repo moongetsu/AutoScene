@@ -17,12 +17,13 @@ import { EpisodesPage } from "@/features/project/EpisodesPage"
 import { ExportsPage } from "@/features/project/ExportsPage"
 import { OverviewPage } from "@/features/project/OverviewPage"
 import { CharacterCrumb, MediaCrumb, PackCrumb, ProjectCrumb } from "@/features/project/crumbs"
+import { PluginCrumb } from "@/features/plugins/PluginSettingsSection"
 import { SettingsPage } from "@/features/settings/SettingsPage"
 import { settingsLabel } from "@/features/settings/sections"
 import { NotFound } from "@/features/not-found"
 import { PackPage } from "@/features/pack/PackPage"
 import { RouteError } from "@/features/route-error"
-import { SETTINGS_SECTIONS, type SettingsSection } from "@/lib/actions"
+import { type PluginSection, type SettingsSection, isPluginSection, settingsSection } from "@/lib/actions"
 
 declare module "@tanstack/react-router" {
   interface Register {
@@ -121,11 +122,11 @@ const settingsIndexRoute = createRoute({
 const settingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/settings/$section",
-  staticData: { crumb: (p) => `Settings · ${settingsLabel(p.section)}` },
+  staticData: {
+    crumb: (p) => (isPluginSection(p.section) ? <PluginCrumb id={p.section.slice(7)} /> : `Settings · ${settingsLabel(p.section)}`),
+  },
   params: {
-    parse: (p) => ({
-      section: (SETTINGS_SECTIONS as readonly string[]).includes(p.section) ? (p.section as SettingsSection) : "general",
-    }),
+    parse: (p): { section: SettingsSection | PluginSection } => ({ section: settingsSection(p.section) }),
     stringify: (p) => ({ section: p.section }),
   },
   component: SettingsPage,

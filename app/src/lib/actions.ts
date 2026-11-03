@@ -23,7 +23,7 @@ export function useAppActions() {
       newProject: () => useNewProject.getState().show(),
       goProject: (pid: string, page: "overview" | "episodes" | "cast" | "exports" = "overview") =>
         void navigate({ to: page === "overview" ? "/p/$pid" : `/p/$pid/${page}`, params: { pid } }),
-      goSettings: (section: SettingsSection = "general") =>
+      goSettings: (section: SettingsSection | PluginSection = "general") =>
         void navigate({ to: "/settings/$section", params: { section } }),
       checkUpdates: () => void useUpdates.getState().check(true, true),
       openLogs: () => commands.openLogsDir().catch((e) => toast.error("Couldn't open logs", { description: errorMessage(e) })),
@@ -45,8 +45,24 @@ function currentProjectId(): string | undefined {
   return m?.[1]
 }
 
-export const SETTINGS_SECTIONS = ["general", "shortcuts", "updates", "about", "contributors"] as const
+export const SETTINGS_SECTIONS = ["general", "shortcuts", "updates", "plugins", "about", "contributors"] as const
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number]
+/** A plugin's own page in Settings: `plugin.<its id>`. */
+export type PluginSection = `plugin.${string}`
+
+/** Whether `section` is a plugin's page, not one of the app's. */
+export function isPluginSection(section: string): section is PluginSection {
+  return /^plugin\.[a-z0-9.-]{3,200}$/.test(section)
+}
+
+/**
+ * The page of Settings a link names: one of the app's, a plugin's (whether
+ * it is installed shows on the page), else General.
+ */
+export function settingsSection(section: string): SettingsSection | PluginSection {
+  if ((SETTINGS_SECTIONS as readonly string[]).includes(section)) return section as SettingsSection
+  return isPluginSection(section) ? section : "general"
+}
 
 /** Wire global keyboard shortcuts (non-macOS-native) and macOS menu events to actions. */
 export function useGlobalBindings() {

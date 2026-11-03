@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import type { Cast, MediaItem } from "@/bindings"
-import { characterEntries, episodeEntries, episodeKeywords } from "./palette-items"
+import { pluginInfo } from "@/test/plugins"
+import { characterEntries, episodeEntries, episodeKeywords, pluginCommandEntries } from "./palette-items"
 
 describe("palette entries", () => {
   it("finds an episode by its number written any common way, or by its file", () => {
@@ -24,5 +25,20 @@ describe("palette entries", () => {
     ])
     const media = [{ id: "m", label: "S01E03", fileName: "x.mkv", season: 1, episode: 3, status: "missing" }]
     expect(episodeEntries(media as unknown as MediaItem[])[0]).toMatchObject({ label: "S01E03 · x", hint: "File missing" })
+  })
+
+  it("plugin commands that need a project show only in one", () => {
+    const command = (id: string, needsProject: boolean) => ({ id, title: `Run ${id}`, description: null, needsProject })
+    const plugins = [
+      pluginInfo({ id: "dev.a.one", name: "One", commands: [command("anywhere", false), command("here", true)] }),
+      // One that may not run now offers nothing.
+      pluginInfo({ id: "dev.a.off", name: "Off", active: false, commands: [command("anywhere", false)] }),
+    ]
+    expect(pluginCommandEntries(plugins, undefined).map((e) => e.id)).toEqual(["plugin-dev.a.one.anywhere"])
+    expect(pluginCommandEntries(plugins, "p1")).toEqual([
+      { id: "plugin-dev.a.one.anywhere", pluginId: "dev.a.one", actionId: "anywhere", label: "Run anywhere", hint: "One", keywords: ["One"], icon: null },
+      { id: "plugin-dev.a.one.here", pluginId: "dev.a.one", actionId: "here", label: "Run here", hint: "One", keywords: ["One"], icon: null },
+    ])
+    expect(pluginCommandEntries(undefined, "p1")).toEqual([])
   })
 })

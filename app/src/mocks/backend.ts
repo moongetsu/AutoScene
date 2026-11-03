@@ -33,7 +33,26 @@ import {
   packSave,
   templateProblem,
 } from "./pack"
+import {
+  MOCK_PLUGIN_FOLDER,
+  afterExportRuns,
+  discardTicket,
+  inspectFolder,
+  inspectPackage,
+  installPlugin,
+  mockPlugin,
+  nextPluginPackage,
+  pluginRun,
+  pluginValues,
+  pluginsList,
+  reviewed,
+  setAfterExport,
+  setPluginEnabled,
+  setPluginValues,
+  uninstallPlugin,
+} from "./plugins"
 import type {
+  ActionKind,
   AniListMedia,
   AniListMerge,
   AniListSuggestion,
@@ -63,6 +82,7 @@ import type {
   ProjectKind,
   ProjectSummary,
   Segment,
+  SettingValue,
   TrackFilter,
   CastEdit,
   UpdateStatus,
@@ -116,10 +136,8 @@ const appInfo: AppInfo = {
 let mockClipboard: string | null = null
 let settings: AppSettings = { libraryRoot: ROOT, exportPresetId: "prores-hq", audioLanguage: "eng", allowUnreviewedPlugins: false }
 
-/** What the backend says of a plugin that isn't installed (none is, in the mock). */
-const notInstalled: Handler = ({ pluginId }) => {
-  throw { code: "not_found", message: `${String(pluginId)} isn't installed.` }
-}
+/** Whether plugins AutoScene hasn't reviewed may run (changed only by `plugins_allow_unreviewed`). */
+const allows = () => settings.allowUnreviewedPlugins ?? false
 
 /** Canned AniList answers (no network in the mock). */
 const ANILIST_SERIES: AniListMedia[] = [
@@ -424,24 +442,28 @@ const onCancel = new Map<string, () => void>()
 function startJob(
   kind: JobKind,
   title: string,
-  p: MockProject,
+  p: MockProject | null,
   ms: number,
   opts: {
     mediaId?: string
     exportId?: string
+    /** Under the title; the project's by default. */
+    subtitle?: string
     stage: string
     cancelled?: () => void
     /** Tells the job's stage, progress, time left and frames `elapsed` ms in, as its kind of work does. */
     tick?: (job: JobInfo, elapsed: number) => void
+    /** What it says once it is done (a plugin's result). */
+    message?: string
   },
   done: () => void,
-) {
+): JobInfo {
   const job: JobInfo = {
     id: id(),
     kind,
     title,
-    subtitle: p.title,
-    projectId: p.id,
+    subtitle: opts.subtitle ?? p?.title ?? null,
+    projectId: p?.id ?? null,
     mediaId: opts.mediaId ?? null,
     exportId: opts.exportId ?? null,
     state: "running",
@@ -472,6 +494,7 @@ function startJob(
     if (f >= 1) {
       window.clearInterval(timer)
       job.state = "done"
+      job.message = opts.message ?? null
       job.finishedAt = Date.now()
       job.etaMs = null
       job.frames = null
@@ -481,6 +504,42 @@ function startJob(
       void emit("job:changed", { ...job })
     }
   }, 250)
+  return job
+}
+
+/** Each running plugin job's plugin, and what it runs on (one run of the same at a time). */
+const pluginJobs = new Map<string, { pluginId: string; run: string }>()
+
+/**
+ * A plugin run as a job of its own, as `queue_run` queues it: `null` when
+ * the same run runs already. It ends with what the plugin says.
+ */
+function startPluginJob(pluginId: string, actionId: string, kind: ActionKind, projectId: string | null, exportId: string | null) {
+  const run = pluginRun(pluginId, kind, actionId, projectId, exportId, allows())
+  const key = [pluginId, kind, actionId, projectId, exportId].join(" ")
+  if (jobs.some((j) => j.state === "running" && pluginJobs.get(j.id)?.run === key)) return null
+  const p = projectId ? find(projectId) : null
+  const job = startJob(
+    "plugin",
+    run.title,
+    p,
+    2500,
+    {
+      exportId: exportId ?? undefined,
+      subtitle: run.name,
+      stage: `Starting ${run.name}`,
+      tick: (j, elapsed) => void (j.stage = elapsed < 700 ? `Starting ${run.name}` : `${run.title}…`),
+      message: run.message,
+    },
+    () => pluginJobs.delete(job.id),
+  )
+  pluginJobs.set(job.id, { pluginId, run: key })
+  return job.id
+}
+
+/** Stop the runs of the plugins `of` matches. */
+function stopPlugins(of: (pluginId: string) => boolean) {
+  cancelJobs((j) => j.kind === "plugin" && of(pluginJobs.get(j.id)?.pluginId ?? ""))
 }
 
 /**
@@ -632,6 +691,16 @@ function startExport(p: MockProject, req: ExportRequest): ExportSummary {
     }
     ex.status = "done"
     void emit("export:changed", { projectId: p.id, exportId: ex.id })
+    // A whole export runs what plugins turned on for after every export.
+    window.setTimeout(() => {
+      for (const r of afterExportRuns(allows())) {
+        try {
+          startPluginJob(r.pluginId, r.actionId, "exportAction", p.id, ex.id)
+        } catch (e) {
+          console.warn("[mock] after-export run refused", e)
+        }
+      }
+    }, 0)
   })
   return ex
 }
@@ -734,7 +803,8 @@ const handlers: Record<string, Handler> = {
   models: () => MODELS,
   settings_get: () => settings,
   settings_update: ({ settings: s }) => {
-    settings = s as AppSettings
+    // Like the backend: only plugins_allow_unreviewed changes this one.
+    settings = { ...(s as AppSettings), allowUnreviewedPlugins: allows() }
     setMockBodies(settings.findBodies ?? false)
     return settings
   },
@@ -1046,35 +1116,64 @@ const handlers: Record<string, Handler> = {
       merge: r.naming.merge ? packFileName(p.id, cid, p.title, r.naming) : null,
     })
   },
-  // Plugins: none is installed, as after a fresh install, and the browser
-  // can't read a package or a folder.
-  plugins_list: () => [],
-  plugin_inspect: () => {
-    throw { code: "invalid", message: "The mock backend can't read plugin packages." }
+  // Plugins: one reviewed is installed; each .asp picked offers another (see mocks/plugins.ts).
+  plugins_list: () => pluginsList(allows()),
+  plugins_allow_unreviewed: ({ on }) => {
+    const before = allows()
+    settings = { ...settings, allowUnreviewedPlugins: Boolean(on) }
+    // Off: the runs of plugins AutoScene hasn't reviewed stop.
+    if (before && !on) stopPlugins((pluginId) => !reviewed(mockPlugin(pluginId)))
+    if (before !== Boolean(on)) void emit("plugins:changed", { pluginId: null })
+    return settings
   },
-  plugin_inspect_folder: () => {
-    if (!settings.allowUnreviewedPlugins) {
-      throw { code: "invalid", message: "Plugins that AutoScene has not reviewed are turned off in Settings." }
+  plugin_inspect: ({ path }) => inspectPackage(String(path), allows()),
+  plugin_inspect_folder: ({ path }) => inspectFolder(String(path), allows()),
+  plugin_install: ({ ticketId, acceptUnreviewed }) => {
+    const p = installPlugin(String(ticketId), allows(), Boolean(acceptUnreviewed))
+    void emit("plugins:changed", { pluginId: p.id })
+    return p
+  },
+  plugin_discard: ({ ticketId }) => {
+    discardTicket(String(ticketId))
+    return null
+  },
+  plugin_uninstall: ({ pluginId }) => {
+    const id = String(pluginId)
+    if (jobs.some((j) => j.state === "running" && pluginJobs.get(j.id)?.pluginId === id)) {
+      const name = mockPlugin(id)?.name ?? id
+      throw { code: "not_ready", message: `${name} is running. Wait for it to finish, or cancel it in Activity.` }
     }
-    throw { code: "invalid", message: "The mock backend can't read plugin folders." }
+    uninstallPlugin(id)
+    void emit("plugins:changed", { pluginId: id })
+    return null
   },
-  plugin_install: () => {
-    throw { code: "not_found", message: "This plugin waited too long to be installed. Open it again." }
+  plugin_set_enabled: ({ pluginId, enabled }) => {
+    const p = setPluginEnabled(String(pluginId), Boolean(enabled), allows())
+    if (!enabled) stopPlugins((id) => id === p.id)
+    void emit("plugins:changed", { pluginId: p.id })
+    return p
   },
-  plugin_discard: () => null,
-  plugin_uninstall: notInstalled,
-  plugin_set_enabled: notInstalled,
-  plugin_set_after_export: notInstalled,
-  plugin_settings_get: notInstalled,
-  plugin_settings_set: notInstalled,
-  plugin_run: notInstalled,
+  plugin_set_after_export: ({ pluginId, actionId, on }) => {
+    const p = setAfterExport(String(pluginId), String(actionId), Boolean(on), allows())
+    void emit("plugins:changed", { pluginId: p.id })
+    return p
+  },
+  plugin_settings_get: ({ pluginId }) => pluginValues(String(pluginId)),
+  plugin_settings_set: ({ pluginId, values }) => {
+    const v = setPluginValues(String(pluginId), values as Record<string, SettingValue>)
+    void emit("plugins:changed", { pluginId })
+    return v
+  },
+  plugin_run: ({ pluginId, actionId, kind, projectId, exportId }) =>
+    startPluginJob(String(pluginId), String(actionId), kind as ActionKind, (projectId as string | null) ?? null, (exportId as string | null) ?? null),
   jobs_list: () => jobs,
   job_cancel: ({ jobId }) => {
     const j = jobs.find((x) => x.id === jobId)
     const running = j?.state === "running"
     cancelJobs((x) => x.id === jobId)
-    // As the backend does: the export and the clips it didn't make are cancelled.
-    const p = running ? projects.find((x) => x.id === j.projectId) : undefined
+    // As the backend does: the export and the clips it didn't make are cancelled
+    // (a plugin's run on it is no export's job).
+    const p = running && j.kind === "export" ? projects.find((x) => x.id === j.projectId) : undefined
     const ex = p?.exports.find((x) => x.id === j?.exportId)
     if (p && ex) {
       ex.status = "cancelled"
@@ -1100,8 +1199,9 @@ const handlers: Record<string, Handler> = {
   update_relaunch: () => false,
   // Dialog plugin: pretend the user picked something sensible.
   "plugin:dialog|open": ({ options }) => {
-    const o = (options ?? {}) as { directory?: boolean; multiple?: boolean; title?: string }
-    if (o.directory) return String.raw`D:\Video\Spy x Family\Season 1`
+    const o = (options ?? {}) as { directory?: boolean; multiple?: boolean; title?: string; filters?: { extensions: string[] }[] }
+    if (o.directory) return o.title?.includes("plugin") ? MOCK_PLUGIN_FOLDER : String.raw`D:\Video\Spy x Family\Season 1`
+    if (o.filters?.some((f) => f.extensions.includes("asp"))) return nextPluginPackage()
     const files = [String.raw`D:\Video\Spy x Family - 01 [1080p].mkv`, String.raw`D:\Video\Spy x Family - 02 [1080p].mkv`]
     return o.multiple ? files : files[0]
   },

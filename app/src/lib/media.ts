@@ -211,6 +211,12 @@ export async function pickVideoFile(title?: string): Promise<string | null> {
   return typeof picked === "string" ? picked : null
 }
 
+/** A plugin package (`.asp`). */
+export async function pickPluginFile(): Promise<string | null> {
+  const picked = await open({ multiple: false, title: "Install a plugin", filters: [{ name: "AutoScene plugin", extensions: ["asp"] }] })
+  return typeof picked === "string" ? picked : null
+}
+
 export async function pickFolder(title?: string): Promise<string | null> {
   const picked = await open({ directory: true, multiple: false, title })
   return typeof picked === "string" ? picked : null

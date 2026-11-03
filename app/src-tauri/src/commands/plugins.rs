@@ -1,13 +1,16 @@
 //! Plugins (Settings → Plugins): what is installed, installing it after a
 //! review, uninstalling, turning plugins and their after-export actions on
-//! or off, their settings, and running their actions. Each change emits
-//! `plugins:changed`; runs report as jobs.
+//! or off, their settings, whether plugins AutoScene hasn't reviewed may
+//! run, and running their actions. Each change emits `plugins:changed`;
+//! runs report as jobs.
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use as_api::AppSettings;
 use as_core::{ExportId, JobId, ProjectId};
 use as_plugin::{ActionKind, PluginError, PluginId, SettingValue, Trigger};
+use parking_lot::Mutex;
 use tauri::{AppHandle, State};
 use tauri_specta::Event;
 
@@ -27,6 +30,35 @@ pub async fn plugins_list(state: State<'_, AppState>) -> AppResult<Vec<PluginInf
         Ok(host.store.list()?.iter().map(|p| info(p, &host.store, allow)).collect())
     })
     .await
+}
+
+/// One change of whether plugins AutoScene hasn't reviewed may run at a
+/// time: each stops the runs it should, from what was stored before it.
+static ALLOWING: Mutex<()> = Mutex::new(());
+
+/// Let plugins AutoScene hasn't reviewed be installed and run, or not
+/// (`settings_update` never changes it, so a save from a copy of the
+/// settings made before can't turn it back). Off, their runs stop, running
+/// or still waiting. Gives the settings as they are now; once the change is
+/// stored, the page hears of it even when they can't be read back.
+#[tauri::command]
+#[specta::specta]
+pub async fn plugins_allow_unreviewed(app: AppHandle, state: State<'_, AppState>, on: bool) -> AppResult<AppSettings> {
+    let (lib, plugins, jobs) = (state.library.clone(), state.plugins.clone(), state.jobs.clone());
+    let (before, settings) = blocking(move || {
+        let _one = ALLOWING.lock();
+        let before = lib.allows_unreviewed_plugins()?;
+        lib.set_allows_unreviewed_plugins(on)?;
+        if let Some(plugins) = plugins {
+            plugins.allow_changed(&jobs, before, on);
+        }
+        Ok((before, lib.settings()))
+    })
+    .await?;
+    if before != on {
+        changed(&app, None);
+    }
+    Ok(settings?)
 }
 
 /// Unpack and check the plugin package at `path`, for the review dialog,

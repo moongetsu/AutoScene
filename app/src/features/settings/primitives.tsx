@@ -28,23 +28,36 @@ export function SettingsGroup({
   )
 }
 
+/** A setting: what it is on the left (after `leading`, a picture), its controls on the right. */
 export function SettingRow({
   label,
   description,
+  leading,
   children,
   className,
 }: {
   label: React.ReactNode
   description?: React.ReactNode
+  leading?: React.ReactNode
   children?: React.ReactNode
   className?: string
 }) {
+  const text = (
+    <div className="min-w-0">
+      <div className="text-md font-medium text-fg-1">{label}</div>
+      {description && <div className="mt-0.5 text-sm text-fg-2">{description}</div>}
+    </div>
+  )
   return (
     <div className={cn("flex min-h-16 items-center justify-between gap-6 px-5 py-4", className)}>
-      <div className="min-w-0">
-        <div className="text-md font-medium text-fg-1">{label}</div>
-        {description && <div className="mt-0.5 text-sm text-fg-2">{description}</div>}
-      </div>
+      {leading ? (
+        <div className="flex min-w-0 items-center gap-4">
+          {leading}
+          {text}
+        </div>
+      ) : (
+        text
+      )}
       {children && <div className="flex shrink-0 items-center gap-2">{children}</div>}
     </div>
   )

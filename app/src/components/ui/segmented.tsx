@@ -24,12 +24,14 @@ export function Segmented<T extends string>({
   value,
   onChange,
   options,
+  disabled,
   className,
   "aria-label": ariaLabel,
 }: {
   value: T
   onChange: (v: T) => void
   options: Option<T>[]
+  disabled?: boolean
   className?: string
   "aria-label": string
 }) {
@@ -41,6 +43,7 @@ export function Segmented<T extends string>({
       type="single"
       value={value}
       aria-label={ariaLabel}
+      disabled={disabled}
       onValueChange={(v) => v && onChange(v as T)}
       className={cn(track, className)}
     >
