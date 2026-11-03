@@ -81,9 +81,11 @@ dependency that posts to the internet.
    shows "Starting <name>", then each stage the plugin names.
 4. The plugin writes one result line, or one error line, and exits.
 5. AutoScene shows the result's message in a toast and in Activity, or the
-   error's message in a toast and as a failed job. The toast's title names
-   the plugin and the action ("Discord Notify: Post to Discord", or "…
-   failed"), so a plugin's words never read as AutoScene's own.
+   error's message in a toast and as a failed job. The toast's title starts
+   with "Plugin", then names the plugin and the action ("Plugin “Discord
+   Notify”: Post to Discord", or "… failed"). A plugin chooses its name and
+   its words, but not that first word, so its toast says it is a plugin's
+   whatever the plugin calls itself.
 
 ### Where it runs
 

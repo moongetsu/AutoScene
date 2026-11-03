@@ -95,13 +95,13 @@ export function startEventBridge(): () => void {
 
 /**
  * Exports finish in the background; say so wherever the user is. A plugin's
- * job that finishes says its message the same way, named by its plugin: its
- * title and its words are the plugin's own, so they never stand alone as
- * AutoScene's.
+ * job that finishes says its message the same way, named by its plugin. Its
+ * name, title and words are all the plugin's own (a plugin may be called
+ * "AutoScene"), so the toast starts with a word it can't choose.
  */
 function notifyFinished(job: JobInfo) {
   if (job.kind === "plugin") {
-    const from = job.subtitle ?? "A plugin"
+    const from = job.subtitle != null ? `Plugin “${job.subtitle}”` : "A plugin"
     if (job.state === "failed") toast.error(`${from}: ${job.title} failed`, { description: job.error ?? undefined })
     else if (job.state === "done" && job.message) toast(`${from}: ${job.title}`, { description: job.message })
     return
