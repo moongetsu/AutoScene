@@ -29,6 +29,7 @@ vi.mock("@/lib/ipc", async (importOriginal) => ({
     pluginUninstall: vi.fn(() => Promise.resolve(null)),
     pluginInspectFolder: vi.fn(),
     pluginDiscard: vi.fn(() => Promise.resolve(null)),
+    revealPath: vi.fn(() => Promise.resolve()),
   },
 }))
 vi.mock("@/lib/media", () => ({ pickFolder: vi.fn(() => Promise.resolve("D:\\Plugins\\mine")), pickPluginFile: vi.fn() }))
@@ -237,5 +238,18 @@ describe("Settings → Plugins", () => {
     fireEvent.click(screen.getByRole("button", { name: /GPU/ }))
     expect(screen.getByRole("group", { name: "Alpha Tool" })).toBeTruthy()
     expect(screen.queryByRole("group", { name: "Beta Script" })).toBeNull()
+  })
+
+  it("opens plugin folder and log via direct card buttons", async () => {
+    state.plugins = [pluginInfo({ id: "dev.a.alpha", name: "Alpha Tool", folder: "/path/to/folder", logPath: "/path/to/log.txt" })]
+    render(<PluginsSection />, { wrapper })
+    const folderBtn = await screen.findByRole("button", { name: "Open Alpha Tool folder" })
+    const logBtn = screen.getByRole("button", { name: "Open Alpha Tool log" })
+
+    fireEvent.click(folderBtn)
+    expect(commands.revealPath).toHaveBeenCalledWith("/path/to/folder")
+
+    fireEvent.click(logBtn)
+    expect(commands.revealPath).toHaveBeenCalledWith("/path/to/log.txt")
   })
 })

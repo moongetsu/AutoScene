@@ -382,13 +382,13 @@ function PluginCard({ p, onUninstall }: { p: PluginInfo; onUninstall: () => void
         </div>
 
         <div className="flex items-center justify-between border-t border-white/[0.06] bg-white/[0.01] px-5 py-3">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5">
             {hasPage(p) && (
               <Button
                 size="sm"
                 variant="ghost"
                 onClick={() => goSettings(`plugin.${p.id}`)}
-                className="h-8 gap-1.5 px-3 text-xs text-fg-2 hover:text-fg-1"
+                className="h-8 gap-1.5 px-2.5 text-xs text-fg-2 hover:text-fg-1"
               >
                 <GearSix className="size-3.5" />
                 Settings
@@ -399,12 +399,32 @@ function PluginCard({ p, onUninstall }: { p: PluginInfo; onUninstall: () => void
                 size="sm"
                 variant="ghost"
                 onClick={() => void openExternalUrl(p.repository!)}
-                className="h-8 gap-1.5 px-3 text-xs text-fg-2 hover:text-fg-1"
+                className="h-8 gap-1.5 px-2.5 text-xs text-fg-2 hover:text-fg-1"
               >
                 {isGithub ? <GithubLogo className="size-3.5" /> : <ArrowSquareOut className="size-3.5" />}
                 Repo
               </Button>
             )}
+            <Button
+              size="sm"
+              variant="ghost"
+              title="Show plugin folder"
+              aria-label={`Open ${p.name} folder`}
+              onClick={() => reveal(p.folder)}
+              className="size-8 p-0 text-fg-3 hover:text-fg-1"
+            >
+              <FolderOpen className="size-3.5" />
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              title="Show plugin log"
+              aria-label={`Open ${p.name} log`}
+              onClick={() => reveal(p.logPath)}
+              className="size-8 p-0 text-fg-3 hover:text-fg-1"
+            >
+              <FileText className="size-3.5" />
+            </Button>
           </div>
           <div className="flex items-center gap-2">
             <Switch aria-label={`Enable ${p.name}`} checked={p.enabled} onCheckedChange={(on) => void setEnabled(on)} />
