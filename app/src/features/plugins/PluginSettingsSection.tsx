@@ -194,7 +194,9 @@ function SettingControl({
     }
     case "select": {
       const current = typeof value === "string" ? value : undefined
-      return k.options.length <= 3 ? (
+      const totalChars = k.options.reduce((sum, o) => sum + o.label.length, 0)
+      const fitsInSegmented = k.options.length <= 3 && totalChars <= 32
+      return fitsInSegmented ? (
         <Segmented aria-label={spec.title} value={current ?? ""} disabled={!ready} onChange={onSave} options={k.options} />
       ) : (
         <Select
