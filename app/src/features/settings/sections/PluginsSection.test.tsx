@@ -207,4 +207,35 @@ describe("Settings → Plugins", () => {
     render(<PluginsSection />, { wrapper })
     expect(await screen.findByRole("button", { name: "Load a folder…" })).toBeTruthy()
   })
+
+  it("filters plugins by search text and filter tabs", async () => {
+    state.plugins = [
+      pluginInfo({ id: "dev.a.alpha", name: "Alpha Tool", author: "Alice", description: "Video helper", enabled: true, gpu: true }),
+      pluginInfo({ id: "dev.b.beta", name: "Beta Script", author: "Bob", description: "Audio cleaner", enabled: false, gpu: false }),
+    ]
+    render(<PluginsSection />, { wrapper })
+    expect(await screen.findByRole("group", { name: "Alpha Tool" })).toBeTruthy()
+    expect(screen.getByRole("group", { name: "Beta Script" })).toBeTruthy()
+
+    // Search query
+    const input = screen.getByPlaceholderText("Search plugins…")
+    fireEvent.change(input, { target: { value: "alpha" } })
+    expect(screen.getByRole("group", { name: "Alpha Tool" })).toBeTruthy()
+    expect(screen.queryByRole("group", { name: "Beta Script" })).toBeNull()
+
+    // Clear search
+    fireEvent.change(input, { target: { value: "" } })
+    expect(screen.getByRole("group", { name: "Alpha Tool" })).toBeTruthy()
+    expect(screen.getByRole("group", { name: "Beta Script" })).toBeTruthy()
+
+    // Filter tab: Disabled
+    fireEvent.click(screen.getByRole("button", { name: /Disabled/ }))
+    expect(screen.queryByRole("group", { name: "Alpha Tool" })).toBeNull()
+    expect(screen.getByRole("group", { name: "Beta Script" })).toBeTruthy()
+
+    // Filter tab: GPU
+    fireEvent.click(screen.getByRole("button", { name: /GPU/ }))
+    expect(screen.getByRole("group", { name: "Alpha Tool" })).toBeTruthy()
+    expect(screen.queryByRole("group", { name: "Beta Script" })).toBeNull()
+  })
 })

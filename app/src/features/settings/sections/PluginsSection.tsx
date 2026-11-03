@@ -1,7 +1,7 @@
-import { useState } from "react"
+import { useMemo, useState } from "react"
 import { toast } from "sonner"
 import type { PluginInfo, PluginReview } from "@/bindings"
-import { ArrowSquareOut, CircleNotch, Copy, DotsThree, FileText, FolderOpen, GearSix, GithubLogo, Plus, PuzzlePiece, SlidersHorizontal, Trash, User } from "@/components/icons"
+import { ArrowSquareOut, CircleNotch, Copy, DotsThree, FileText, FolderOpen, GearSix, GithubLogo, MagnifyingGlass, Plus, PuzzlePiece, SlidersHorizontal, Trash, User, X } from "@/components/icons"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { ContextArea } from "@/components/ui/context-area"
@@ -9,6 +9,7 @@ import { Dialog, DialogContent, DialogFooter } from "@/components/ui/dialog"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { type MenuKit, contextKit, dropdownKit } from "@/components/ui/menu-actions"
 import { EmptyState } from "@/components/ui/empty-state"
+import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
 import { InstallReviewDialog } from "@/features/plugins/InstallReviewDialog"
 import { PluginIcon } from "@/features/plugins/PluginIcon"
@@ -35,6 +36,37 @@ export function PluginsSection() {
   const [removing, setRemoving] = useState<PluginInfo | null>(null)
   // While it uninstalls it stays open: closed, it would uninstall all the same.
   const [uninstalling, setUninstalling] = useState(false)
+  const [search, setSearch] = useState("")
+  const [filter, setFilter] = useState<"all" | "enabled" | "disabled" | "gpu" | "folder">("all")
+
+  const counts = useMemo(() => {
+    if (!plugins) return { all: 0, enabled: 0, disabled: 0, gpu: 0, folder: 0 }
+    return {
+      all: plugins.length,
+      enabled: plugins.filter((p) => p.enabled).length,
+      disabled: plugins.filter((p) => !p.enabled).length,
+      gpu: plugins.filter((p) => p.gpu).length,
+      folder: plugins.filter((p) => p.source.type === "folder").length,
+    }
+  }, [plugins])
+
+  const filteredPlugins = useMemo(() => {
+    if (!plugins) return []
+    const q = search.trim().toLowerCase()
+    return plugins.filter((p) => {
+      if (filter === "enabled" && !p.enabled) return false
+      if (filter === "disabled" && p.enabled) return false
+      if (filter === "gpu" && !p.gpu) return false
+      if (filter === "folder" && p.source.type !== "folder") return false
+      if (!q) return true
+      return (
+        p.name.toLowerCase().includes(q) ||
+        p.id.toLowerCase().includes(q) ||
+        p.author.toLowerCase().includes(q) ||
+        p.description.toLowerCase().includes(q)
+      )
+    })
+  }, [plugins, search, filter])
 
   const inspect = async (
     what: "file" | "folder",
@@ -97,14 +129,95 @@ export function PluginsSection() {
       ) : (
         plugins && (
           <section className="mb-10">
-            <div className="mb-3 px-1">
-              <h3 className="text-lg font-semibold text-fg-1">Installed</h3>
+            <div className="mb-4 flex flex-col gap-3 px-1 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-center gap-2">
+                <h3 className="text-lg font-semibold text-fg-1">Installed</h3>
+                <span className="rounded-full bg-white/[0.08] px-2 py-0.5 text-xs font-medium text-fg-2">
+                  {filteredPlugins.length}
+                </span>
+              </div>
+
+              {plugins.length > 0 && (
+                <div className="relative w-full sm:w-64">
+                  <MagnifyingGlass className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-fg-3" />
+                  <Input
+                    type="text"
+                    placeholder="Search plugins…"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    className="h-8 w-full bg-white/[0.04] pr-8 pl-9 text-xs placeholder:text-fg-3 focus:bg-white/[0.07]"
+                  />
+                  {search && (
+                    <button
+                      type="button"
+                      onClick={() => setSearch("")}
+                      className="absolute top-1/2 right-2.5 -translate-y-1/2 rounded p-0.5 text-fg-3 hover:text-fg-1"
+                    >
+                      <X className="size-3" />
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              {plugins.map((p) => (
-                <PluginCard key={p.id} p={p} onUninstall={() => setRemoving(p)} />
-              ))}
-            </div>
+
+            {plugins.length > 0 && (
+              <div className="mb-4 flex flex-wrap items-center gap-1.5 px-1">
+                {(
+                  [
+                    { id: "all", label: "All", count: counts.all },
+                    { id: "enabled", label: "Enabled", count: counts.enabled },
+                    { id: "disabled", label: "Disabled", count: counts.disabled },
+                    ...(counts.gpu > 0 ? [{ id: "gpu", label: "GPU", count: counts.gpu }] : []),
+                    ...(counts.folder > 0 ? [{ id: "folder", label: "Folder", count: counts.folder }] : []),
+                  ] as const
+                ).map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setFilter(tab.id)}
+                    className={cn(
+                      "inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors",
+                      filter === tab.id
+                        ? "bg-white/15 text-fg-1 shadow-sm"
+                        : "bg-white/[0.04] text-fg-2 hover:bg-white/[0.08] hover:text-fg-1",
+                    )}
+                  >
+                    <span>{tab.label}</span>
+                    <span
+                      className={cn(
+                        "rounded px-1 text-[10px] tabular-nums",
+                        filter === tab.id ? "bg-white/20 text-fg-1" : "bg-white/[0.06] text-fg-3",
+                      )}
+                    >
+                      {tab.count}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {filteredPlugins.length === 0 ? (
+              <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-8 text-center">
+                <p className="text-sm text-fg-2">No plugins found matching &ldquo;{search || filter}&rdquo;.</p>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    setSearch("")
+                    setFilter("all")
+                  }}
+                  className="mt-3 text-xs"
+                >
+                  Clear search and filter
+                </Button>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                {filteredPlugins.map((p) => (
+                  <PluginCard key={p.id} p={p} onUninstall={() => setRemoving(p)} />
+                ))}
+              </div>
+            )}
           </section>
         )
       )}
