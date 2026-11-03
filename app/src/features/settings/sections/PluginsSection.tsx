@@ -152,11 +152,6 @@ function PluginRow({ p, onUninstall }: { p: PluginInfo; onUninstall: () => void 
   const by = p.author && (reviewedPackage(p) ? `By ${p.author}` : `Says it is by ${p.author}`)
   const facts = [by, `version ${p.version}`].filter(Boolean).join(", ")
   const why = p.broken ?? (p.enabled ? p.blockedReason : null)
-  const avatarUrl =
-    p.authorAvatar ??
-    (p.authorUrl?.includes("github.com/")
-      ? `${p.authorUrl.replace(/\/$/, "")}.png`
-      : undefined)
   const setEnabled = async (on: boolean) => {
     try {
       keepPlugin(await commands.pluginSetEnabled(p.id, on))
@@ -168,11 +163,12 @@ function PluginRow({ p, onUninstall }: { p: PluginInfo; onUninstall: () => void 
     <ContextArea menu={<PluginItems kit={contextKit} p={p} onUninstall={onUninstall} />}>
       <div role="group" aria-label={p.name}>
         <SettingRow
+          className="group hover:bg-white/[0.02] transition-colors"
           leading={
             <span
               style={p.color ? { backgroundColor: p.color } : undefined}
               className={cn(
-                "flex size-11 shrink-0 items-center justify-center rounded-xl shadow-sm ring-1 ring-white/10 [&_img]:size-7 [&_svg]:size-6",
+                "flex size-10 shrink-0 items-center justify-center rounded-xl shadow-sm ring-1 ring-white/10 [&_img]:size-6 [&_svg]:size-5",
                 p.color ? "text-fg-1" : "bg-white/[0.06] text-fg-2",
               )}
             >
@@ -180,55 +176,26 @@ function PluginRow({ p, onUninstall }: { p: PluginInfo; onUninstall: () => void 
             </span>
           }
           label={
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-2">
               <span className="font-semibold text-fg-1">{p.name}</span>
-              <span className="rounded border border-white/10 bg-white/[0.05] px-1.5 py-0.5 font-mono text-xs text-fg-3">
-                v{p.version}
-              </span>
               <Badge tone={trust.tone}>{trust.label}</Badge>
               {p.gpu && (
-                <span className="rounded border border-accent/30 bg-accent/10 px-1.5 py-0.5 text-xs font-medium text-accent">
+                <span className="rounded border border-accent/30 bg-accent/10 px-1.5 py-0.5 text-[11px] font-medium text-accent">
                   GPU
                 </span>
               )}
             </div>
           }
           description={
-            <div className="mt-1 space-y-1">
-              {p.description && <span className="block text-sm text-fg-2">{p.description}</span>}
-              <div className="flex flex-wrap items-center gap-2 text-xs text-fg-3">
-                <span className="inline-flex items-center gap-1.5">
-                  {by && (
-                    avatarUrl ? (
-                      <img
-                        src={avatarUrl}
-                        alt=""
-                        loading="lazy"
-                        className="size-3.5 shrink-0 rounded-full border border-white/10 bg-white/5 object-cover"
-                        onError={(e) => (e.currentTarget.style.display = "none")}
-                      />
-                    ) : (
-                      <span className="flex size-3.5 shrink-0 items-center justify-center rounded-full bg-white/10 text-fg-3">
-                        <User className="size-2" />
-                      </span>
-                    )
-                  )}
-                  <span>{facts}</span>
-                </span>
-                {p.license && (
-                  <>
-                    <span className="text-white/20">•</span>
-                    <span>{p.license}</span>
-                  </>
-                )}
-              </div>
+            <div className="mt-0.5 space-y-0.5">
+              {p.description && <span className="block text-sm text-fg-2 line-clamp-1">{p.description}</span>}
+              <span className="block text-xs text-fg-3">{facts}</span>
               {why && <span className="mt-1 block text-xs text-danger">{why}</span>}
             </div>
           }
         >
           {hasPage(p) && (
-            <Button size="sm" variant="ghost" onClick={() => goSettings(`plugin.${p.id}`)} className="gap-1.5">
-              <GearSix className="size-3.5" />
+            <Button size="sm" variant="ghost" onClick={() => goSettings(`plugin.${p.id}`)} className="text-fg-2 hover:text-fg-1">
               Settings
             </Button>
           )}
