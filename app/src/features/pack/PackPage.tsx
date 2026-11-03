@@ -1,7 +1,7 @@
 import { type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { Link, useNavigate, useParams } from "@tanstack/react-router"
 import { toast } from "sonner"
-import { ArrowCounterClockwise, ArrowLeft, Package, User, Users } from "@/components/icons"
+import { ArrowCounterClockwise, ArrowLeft, Check, Package, User, Users, X } from "@/components/icons"
 import type { CastEdit, Character, MediaItem, PackClip } from "@/bindings"
 import { Artwork } from "@/components/ui/artwork"
 import { Button } from "@/components/ui/button"
@@ -194,14 +194,53 @@ function Builder({
     [navigate, pid],
   )
 
+  // Bulk action helpers
+  const includeAll = useCallback(() => {
+    if (clips.length > 0) void pack.setIncluded(clips, true)
+  }, [clips, pack])
+
+  const excludeAll = useCallback(() => {
+    if (clips.length > 0) void pack.setIncluded(clips, false)
+  }, [clips, pack])
+
+  const resetPicks = useCallback(() => {
+    if (picks.length > 0) void pack.clearPicks(picks)
+  }, [picks, pack])
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "a") {
+        const target = e.target as HTMLElement | null
+        if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
+          return
+        }
+        e.preventDefault()
+        if (e.shiftKey) {
+          excludeAll()
+        } else {
+          includeAll()
+        }
+      }
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [includeAll, excludeAll])
+
   // The pack's empty space: export it, give the hand-picked shots back, choose what shows.
   const pageMenu = (
     <>
       <ContextMenuItem disabled={!canExport} onSelect={() => setExportOpen(true)} shortcut={keys("pack.export")}>
         <Package /> Export the pack…
       </ContextMenuItem>
+      <ContextMenuSeparator />
+      <ContextMenuItem disabled={clips.length === 0} onSelect={includeAll} shortcut={["⌘", "A"]}>
+        <Check /> Take all shots into the pack
+      </ContextMenuItem>
+      <ContextMenuItem disabled={clips.length === 0} onSelect={excludeAll} shortcut={["⇧", "⌘", "A"]}>
+        <X /> Leave all shots out
+      </ContextMenuItem>
       {picks.length > 0 && (
-        <ContextMenuItem onSelect={() => void pack.clearPicks(picks)}>
+        <ContextMenuItem onSelect={resetPicks}>
           <ArrowCounterClockwise /> Hand every shot back to the filters
         </ContextMenuItem>
       )}
@@ -226,16 +265,56 @@ function Builder({
         )}
         <section className="px-10 pt-5 pb-32">
           <div className="mb-4 flex flex-wrap items-center justify-between gap-4">
-            <Segmented<Show>
-              aria-label="Show"
-              value={show}
-              onChange={setShow}
-              options={[
-                { value: "all", label: `All ${clips.length}` },
-                { value: "in", label: `In the pack ${taken}` },
-                { value: "out", label: `Left out ${clips.length - taken}` },
-              ]}
-            />
+            <div className="flex flex-wrap items-center gap-3">
+              <Segmented<Show>
+                aria-label="Show"
+                value={show}
+                onChange={setShow}
+                options={[
+                  { value: "all", label: `All ${clips.length}` },
+                  { value: "in", label: `In the pack ${taken}` },
+                  { value: "out", label: `Left out ${clips.length - taken}` },
+                ]}
+              />
+
+              {clips.length > 0 && (
+                <div className="flex items-center gap-1 border-l border-white/[0.08] pl-3">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={includeAll}
+                    disabled={!pack.ready}
+                    className="h-7 px-2 text-xs text-fg-3 hover:text-fg-1"
+                  >
+                    Include all
+                  </Button>
+                  <span className="text-xs text-white/20">·</span>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={excludeAll}
+                    disabled={!pack.ready}
+                    className="h-7 px-2 text-xs text-fg-3 hover:text-fg-1"
+                  >
+                    Exclude all
+                  </Button>
+                  {picks.length > 0 && (
+                    <>
+                      <span className="text-xs text-white/20">·</span>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={resetPicks}
+                        disabled={!pack.ready}
+                        className="h-7 px-2 text-xs text-fg-3 hover:text-fg-1"
+                      >
+                        Reset
+                      </Button>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
             {clips.length > 0 && (
               <span className="text-sm text-fg-3">Click to take a shot in or out · Shift for every shot since · Enter to watch</span>
             )}
