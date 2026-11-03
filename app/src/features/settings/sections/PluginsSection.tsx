@@ -96,11 +96,16 @@ export function PluginsSection() {
         />
       ) : (
         plugins && (
-          <SettingsGroup title="Installed">
-            {plugins.map((p) => (
-              <PluginRow key={p.id} p={p} onUninstall={() => setRemoving(p)} />
-            ))}
-          </SettingsGroup>
+          <section className="mb-10">
+            <div className="mb-3 px-1">
+              <h3 className="text-lg font-semibold text-fg-1">Installed</h3>
+            </div>
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              {plugins.map((p) => (
+                <PluginCard key={p.id} p={p} onUninstall={() => setRemoving(p)} />
+              ))}
+            </div>
+          </section>
         )
       )}
 
@@ -145,7 +150,7 @@ function PluginItems({ kit, p, onUninstall }: { kit: MenuKit; p: PluginInfo; onU
   )
 }
 
-function PluginRow({ p, onUninstall }: { p: PluginInfo; onUninstall: () => void }) {
+function PluginCard({ p, onUninstall }: { p: PluginInfo; onUninstall: () => void }) {
   const { goSettings } = useAppActions()
   const trust = trustLabel(p)
   // Only AutoScene's review stands behind the name a plugin gives its author.
@@ -161,10 +166,29 @@ function PluginRow({ p, onUninstall }: { p: PluginInfo; onUninstall: () => void 
   }
   return (
     <ContextArea menu={<PluginItems kit={contextKit} p={p} onUninstall={onUninstall} />}>
-      <div role="group" aria-label={p.name}>
-        <SettingRow
-          className="group hover:bg-white/[0.02] transition-colors"
-          leading={
+      <div
+        role="group"
+        aria-label={p.name}
+        className="group relative flex flex-col justify-between overflow-hidden rounded-2xl border border-white/[0.08] bg-white/[0.03] transition-all duration-200 hover:border-white/20 hover:bg-white/[0.05]"
+      >
+        {p.banner ? (
+          <div className="relative aspect-[21/9] w-full overflow-hidden border-b border-white/[0.06] bg-black/40">
+            <img src={p.banner} alt="" draggable={false} className="size-full object-cover transition-transform duration-300 group-hover:scale-105" />
+            <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent" />
+            <div className="absolute bottom-3 left-3 flex items-center gap-2">
+              <span
+                style={p.color ? { backgroundColor: p.color } : undefined}
+                className={cn(
+                  "flex size-10 shrink-0 items-center justify-center rounded-xl shadow-md ring-1 ring-white/10 [&_img]:size-6 [&_svg]:size-5",
+                  p.color ? "text-fg-1" : "bg-white/[0.12] text-fg-1",
+                )}
+              >
+                <PluginIcon src={p.icon} />
+              </span>
+            </div>
+          </div>
+        ) : (
+          <div className="p-4 pb-0">
             <span
               style={p.color ? { backgroundColor: p.color } : undefined}
               className={cn(
@@ -174,44 +198,62 @@ function PluginRow({ p, onUninstall }: { p: PluginInfo; onUninstall: () => void 
             >
               <PluginIcon src={p.icon} />
             </span>
-          }
-          label={
-            <div className="flex items-center gap-2">
-              <span className="font-semibold text-fg-1">{p.name}</span>
-              <Badge tone={trust.tone}>{trust.label}</Badge>
-              {p.gpu && (
-                <span className="rounded border border-accent/30 bg-accent/10 px-1.5 py-0.5 text-[11px] font-medium text-accent">
-                  GPU
-                </span>
-              )}
-            </div>
-          }
-          description={
-            <div className="mt-0.5 space-y-0.5">
-              {p.description && <span className="block text-sm text-fg-2 line-clamp-1">{p.description}</span>}
-              <span className="block text-xs text-fg-3">{facts}</span>
-              {why && <span className="mt-1 block text-xs text-danger">{why}</span>}
-            </div>
-          }
-        >
-          {hasPage(p) && (
-            <Button size="sm" variant="ghost" onClick={() => goSettings(`plugin.${p.id}`)} className="text-fg-2 hover:text-fg-1">
-              Settings
-            </Button>
+          </div>
+        )}
+
+        <div className="flex flex-1 flex-col p-4 pt-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <h4 className="font-semibold text-fg-1 leading-snug">{p.name}</h4>
+            <Badge tone={trust.tone}>{trust.label}</Badge>
+            {p.gpu && (
+              <span className="rounded border border-accent/30 bg-accent/10 px-1.5 py-0.5 text-[11px] font-medium text-accent">
+                GPU
+              </span>
+            )}
+          </div>
+
+          {p.description && (
+            <p className="mt-1.5 text-sm text-fg-2 line-clamp-2 leading-relaxed">
+              {p.description}
+            </p>
           )}
-          <Switch aria-label={`Enable ${p.name}`} checked={p.enabled} onCheckedChange={(on) => void setEnabled(on)} />
-          <DropdownMenu>
-            <DropdownMenuTrigger
-              aria-label={`${p.name} options`}
-              className="flex size-8 items-center justify-center rounded-full text-fg-3 transition-colors hover:bg-white/[0.08] hover:text-fg-1 data-[state=open]:bg-white/[0.08]"
-            >
-              <DotsThree className="size-5" weight="bold" />
-            </DropdownMenuTrigger>
-            <DropdownMenuContent>
-              <PluginItems kit={dropdownKit} p={p} onUninstall={onUninstall} />
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </SettingRow>
+
+          <div className="mt-3 flex items-center gap-2 text-xs text-fg-3">
+            <span>{facts}</span>
+          </div>
+
+          {why && <span className="mt-2 block text-xs text-danger">{why}</span>}
+        </div>
+
+        <div className="flex items-center justify-between border-t border-white/[0.06] bg-white/[0.01] px-4 py-3">
+          <div className="flex items-center gap-2">
+            {hasPage(p) && (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => goSettings(`plugin.${p.id}`)}
+                className="h-8 gap-1.5 px-2.5 text-xs text-fg-2 hover:text-fg-1"
+              >
+                <GearSix className="size-3.5" />
+                Settings
+              </Button>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <Switch aria-label={`Enable ${p.name}`} checked={p.enabled} onCheckedChange={(on) => void setEnabled(on)} />
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                aria-label={`${p.name} options`}
+                className="flex size-8 items-center justify-center rounded-full text-fg-3 transition-colors hover:bg-white/[0.08] hover:text-fg-1 data-[state=open]:bg-white/[0.08]"
+              >
+                <DotsThree className="size-5" weight="bold" />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent>
+                <PluginItems kit={dropdownKit} p={p} onUninstall={onUninstall} />
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </div>
       </div>
     </ContextArea>
   )
