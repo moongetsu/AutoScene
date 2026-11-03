@@ -80,10 +80,10 @@ export function DiscordSection() {
             <div className="min-w-0 flex-1">
               <div className="truncate text-base font-bold text-white">AutoScene</div>
               <div className="truncate text-sm text-[#dbdee1]">
-                {rpc.showProject ? "Cyberpunk: Edgerunners • Episode 04" : "Editing project"}
+                {rpc.showProject ? "Tears of Steel • Episode 01" : "Editing project"}
               </div>
               <div className="truncate text-sm text-[#949ba4]">
-                {rpc.showCharacter ? "Scenepack: Lucy (48 clips)" : "Working on scenes"}
+                {rpc.showCharacter ? "Scenepack: Celia (48 clips)" : "Working on scenes"}
               </div>
               {rpc.showTimer && (
                 <div className="mt-0.5 text-xs text-[#949ba4]">01:42:18 elapsed</div>
