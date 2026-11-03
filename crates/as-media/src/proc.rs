@@ -31,9 +31,11 @@ pub fn output(cmd: &mut Command) -> io::Result<Output> {
 /// A child and every process it starts, ended together.
 ///
 /// On Windows the child runs in a job of its own, nested in the app's job, and
-/// it joins that job before it runs its first instruction, so nothing it
-/// starts can slip out. Closing the job's handle kills what is left: dropping
-/// the tree does, and so does the app ending in a crash.
+/// it joins that job before it runs its first instruction, so no process it
+/// starts itself can slip out. Closing the job's handle kills what is left:
+/// dropping the tree does, and so does the app ending in a crash. A process a
+/// system service starts for it (through WMI, the Task Scheduler, a COM
+/// server) is that service's child, in no job of ours, and outlives the tree.
 ///
 /// On Unix the child leads a process group of its own. A process that leaves
 /// the group (`setsid`, `setpgid`) is out of reach, and nothing kills the group

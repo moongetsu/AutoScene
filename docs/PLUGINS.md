@@ -156,10 +156,12 @@ person can stop it in Activity.
 
 - **Stop** in Activity sends the cancel line. A plugin that still runs 5
   seconds later is ended, with the processes it started. On Windows they
-  all end at once. On macOS and Linux the plugin's process group gets
-  SIGTERM, then SIGKILL 2 seconds later; a process that left the group
-  (`setsid`, `setpgid`) keeps running. The run is cancelled, unless the
-  plugin gave its result or error line first: Activity then shows that.
+  all end at once; a process a system service started for it (through WMI,
+  the Task Scheduler or a COM server) isn't the plugin's and keeps running.
+  On macOS and Linux the plugin's process group gets SIGTERM, then SIGKILL
+  2 seconds later; a process that left the group (`setsid`, `setpgid`)
+  keeps running. The run is cancelled, unless the plugin gave its result
+  or error line first: Activity then shows that.
 - After its result or error line, the plugin's stdin closes. A plugin that
   still runs 10 seconds later is ended the same way, and its line counts.
 - AutoScene never tries a run again: what the plugin did, a post to a
@@ -170,6 +172,10 @@ person can stop it in Activity.
   runs; its runs still waiting go with it.
 - Quitting AutoScene stops the runs as Stop does. A run still waiting then
   is lost.
+- None of this undoes what a plugin set up outside AutoScene: a process
+  that slipped out as above, a scheduled task, a program it set to start
+  with the computer. A plugin you no longer trust: uninstall it, and look
+  at what starts with your computer.
 
 ### After every export
 
