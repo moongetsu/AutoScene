@@ -174,12 +174,11 @@ fn connect_discord(client_id: &str) -> Option<IpcStream> {
                     "v": 1,
                     "client_id": client_id
                 });
-                if write_packet(&mut stream, OP_HANDSHAKE, &handshake) {
-                    if let Some((op, _)) = read_packet(&mut stream) {
-                        if op == OP_FRAME {
-                            return Some(stream);
-                        }
-                    }
+                if write_packet(&mut stream, OP_HANDSHAKE, &handshake)
+                    && let Some((op, _)) = read_packet(&mut stream)
+                    && op == OP_FRAME
+                {
+                    return Some(stream);
                 }
             }
         }
@@ -190,12 +189,11 @@ fn connect_discord(client_id: &str) -> Option<IpcStream> {
                     "v": 1,
                     "client_id": client_id
                 });
-                if write_packet(&mut file, OP_HANDSHAKE, &handshake) {
-                    if let Some((op, _)) = read_packet(&mut file) {
-                        if op == OP_FRAME {
-                            return Some(file);
-                        }
-                    }
+                if write_packet(&mut file, OP_HANDSHAKE, &handshake)
+                    && let Some((op, _)) = read_packet(&mut file)
+                    && op == OP_FRAME
+                {
+                    return Some(file);
                 }
             }
         }
