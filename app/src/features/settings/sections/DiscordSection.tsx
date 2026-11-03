@@ -1,4 +1,5 @@
-import { ArrowCounterClockwise, DiscordLogo } from "@/components/icons"
+import { ArrowCounterClockwise } from "@/components/icons"
+import { DiscordIcon } from "@/components/DiscordIcon"
 import { toast } from "sonner"
 import type { AppSettings, DiscordRpcSettings } from "@/bindings"
 import { Button } from "@/components/ui/button"
@@ -59,7 +60,7 @@ export function DiscordSection() {
         </div>
         <div className="overflow-hidden rounded-2xl border border-white/[0.08] bg-[#111214] p-5 text-white shadow-xl">
           <div className="flex items-center gap-2 mb-4 text-xs font-semibold tracking-wider text-[#949ba4] uppercase">
-            <DiscordLogo className="size-4 text-[#5865F2]" />
+            <DiscordIcon className="size-4 text-[#5865F2]" />
             Playing a Game
           </div>
           <div className="flex items-start gap-4">
@@ -71,7 +72,7 @@ export function DiscordSection() {
                 <div
                   className="absolute -right-1 -bottom-1 flex size-7 items-center justify-center rounded-full bg-[#2b2d31] border-2 border-[#111214] text-[#5865F2]"
                 >
-                  <DiscordLogo className="size-4" />
+                  <DiscordIcon className="size-4" />
                 </div>
               </Tooltip>
             </div>

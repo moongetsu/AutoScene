@@ -1,6 +1,7 @@
 import type * as React from "react"
 import { Link, useNavigate, useParams } from "@tanstack/react-router"
-import { DiscordLogo, DownloadSimple, Info, Keyboard, PuzzlePiece, SlidersHorizontal, Users } from "@/components/icons"
+import { DownloadSimple, Info, Keyboard, PuzzlePiece, SlidersHorizontal, Users } from "@/components/icons"
+import { DiscordIcon } from "@/components/DiscordIcon"
 import { ContextArea } from "@/components/ui/context-area"
 import { ContextMenuItem, ContextMenuRadioGroup, ContextMenuRadioItem, ContextMenuSeparator } from "@/components/ui/context-menu"
 import { TopBar } from "@/components/ui/topbar"
@@ -21,7 +22,7 @@ import { SETTINGS_LABELS } from "./sections"
 
 const META: Record<SettingsSection, { icon: React.ReactNode; render: () => React.ReactNode }> = {
   general: { icon: <SlidersHorizontal />, render: () => <GeneralSection /> },
-  discord: { icon: <DiscordLogo />, render: () => <DiscordSection /> },
+  discord: { icon: <DiscordIcon className="size-4" />, render: () => <DiscordSection /> },
   shortcuts: { icon: <Keyboard />, render: () => <ShortcutsSection /> },
   updates: { icon: <DownloadSimple />, render: () => <UpdatesSection /> },
   plugins: { icon: <PuzzlePiece />, render: () => <PluginsSection /> },
