@@ -177,7 +177,7 @@ function PluginCard({ p, onUninstall }: { p: PluginInfo; onUninstall: () => void
         aria-label={p.name}
         className="group relative flex flex-col justify-between overflow-hidden rounded-2xl border border-white/[0.08] bg-white/[0.03] shadow-sm transition-all duration-200 hover:border-white/20 hover:bg-white/[0.05]"
       >
-        {p.banner ? (
+        {p.banner && (
           <div className="relative aspect-[21/9] w-full overflow-hidden border-b border-white/[0.06] bg-black/40">
             <img src={p.banner} alt="" draggable={false} className="size-full object-cover transition-transform duration-300 group-hover:scale-105" />
             <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent" />
@@ -190,49 +190,44 @@ function PluginCard({ p, onUninstall }: { p: PluginInfo; onUninstall: () => void
               )}
             </div>
           </div>
-        ) : (
-          <div className="flex items-center justify-between p-5 pb-0">
-            <span
-              style={p.color ? { backgroundColor: p.color } : undefined}
-              className={cn(
-                "flex size-11 shrink-0 items-center justify-center rounded-xl shadow-sm ring-1 ring-white/10 [&_img]:size-7 [&_svg]:size-6",
-                p.color ? "text-fg-1" : "bg-white/[0.06] text-fg-2",
-              )}
-            >
-              <PluginIcon src={p.icon} />
-            </span>
-            <div className="flex items-center gap-1.5">
-              <Badge tone={trust.tone}>{trust.label}</Badge>
-              {p.gpu && (
-                <span className="rounded border border-accent/30 bg-accent/10 px-1.5 py-0.5 text-[11px] font-medium text-accent">
-                  GPU
-                </span>
-              )}
-            </div>
-          </div>
         )}
 
         <div className="flex flex-1 flex-col p-5">
           <div className="flex items-start gap-3.5">
-            {p.banner && (
-              <span
-                style={p.color ? { backgroundColor: p.color } : undefined}
-                className={cn(
-                  "-mt-9 relative z-10 flex size-12 shrink-0 items-center justify-center rounded-xl shadow-lg ring-2 ring-black/80 [&_img]:size-7 [&_svg]:size-6",
-                  p.color ? "text-fg-1" : "bg-[#2a2a2a] text-fg-1",
-                )}
-              >
-                <PluginIcon src={p.icon} />
-              </span>
-            )}
+            <span
+              style={p.color ? { backgroundColor: p.color } : undefined}
+              className={cn(
+                "flex size-11 shrink-0 items-center justify-center rounded-xl shadow-sm ring-1 ring-white/10 [&_img]:size-7 [&_svg]:size-6",
+                p.color ? "text-fg-1" : "bg-white/[0.08] text-fg-1",
+              )}
+            >
+              <PluginIcon src={p.icon} />
+            </span>
             <div className="min-w-0 flex-1">
               <div className="flex items-center justify-between gap-2">
                 <h4 className="truncate font-semibold text-fg-1 text-base leading-snug">{p.name}</h4>
-                <span className="shrink-0 rounded border border-white/10 bg-white/[0.05] px-1.5 py-0.5 font-mono text-[11px] text-fg-3">
-                  v{p.version}
-                </span>
+                {!p.banner && (
+                  <div className="flex items-center gap-1.5">
+                    <Badge tone={trust.tone}>{trust.label}</Badge>
+                    {p.gpu && (
+                      <span className="rounded border border-accent/30 bg-accent/10 px-1.5 py-0.5 text-[11px] font-medium text-accent">
+                        GPU
+                      </span>
+                    )}
+                  </div>
+                )}
+                {p.banner && (
+                  <span className="shrink-0 rounded border border-white/10 bg-white/[0.05] px-1.5 py-0.5 font-mono text-[11px] text-fg-3">
+                    v{p.version}
+                  </span>
+                )}
               </div>
               <div className="mt-1 flex items-center gap-1.5 text-xs text-fg-3">
+                {!p.banner && (
+                  <span className="shrink-0 rounded border border-white/10 bg-white/[0.05] px-1.5 py-0.5 font-mono text-[11px] text-fg-3">
+                    v{p.version}
+                  </span>
+                )}
                 {p.author && (
                   avatarUrl ? (
                     <img
