@@ -25,6 +25,7 @@ const KEY_ANILIST: &str = "anilist";
 /// The keyboard shortcuts the person changed, as JSON.
 const KEY_SHORTCUTS: &str = "shortcuts";
 const KEY_ALLOW_UNREVIEWED: &str = "allow_unreviewed_plugins";
+const KEY_DISCORD_RPC: &str = "discord_rpc";
 /// Most series and films people cut are watched in their original English
 /// track; dubbed tracks are often flagged "default" too, so a language
 /// preference beats the file's flag.
@@ -149,12 +150,21 @@ impl Library {
             anilist: self.names_from_anilist(),
             shortcuts: self.shortcuts()?,
             allow_unreviewed_plugins: self.allows_unreviewed_plugins()?,
+            discord_rpc: self.discord_rpc()?,
         })
     }
 
     /// Whether plugins AutoScene has not reviewed may be installed and run.
     pub fn allows_unreviewed_plugins(&self) -> ProjectResult<bool> {
         Ok(self.db.setting(KEY_ALLOW_UNREVIEWED)?.as_deref() == Some("1"))
+    }
+
+    /// Discord Rich Presence settings.
+    pub fn discord_rpc(&self) -> ProjectResult<as_api::DiscordRpcSettings> {
+        let Some(json) = self.db.setting(KEY_DISCORD_RPC)? else {
+            return Ok(as_api::DiscordRpcSettings::default());
+        };
+        Ok(serde_json::from_str(&json).unwrap_or_default())
     }
 
     /// Lets plugins AutoScene has not reviewed be installed and run, or
@@ -203,6 +213,8 @@ impl Library {
         self.db.set_setting(KEY_FAST_SCAN, if s.fast_scan { "1" } else { "0" })?;
         self.db.set_setting(KEY_ANILIST, if s.anilist { "1" } else { "0" })?;
         self.anilist_on.store(s.anilist, Ordering::Relaxed);
+        let discord_json = serde_json::to_string(&s.discord_rpc).unwrap_or_default();
+        self.db.set_setting(KEY_DISCORD_RPC, &discord_json)?;
         // `allow_unreviewed_plugins` stays: see `set_allows_unreviewed_plugins`.
         // Keys a newer app stored, that this one can't read, stay unless
         // they were changed here.

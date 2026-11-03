@@ -2,6 +2,7 @@ import type { SettingsSection } from "@/lib/actions"
 
 export const SETTINGS_LABELS: Record<SettingsSection, string> = {
   general: "General",
+  discord: "Discord",
   shortcuts: "Shortcuts",
   updates: "Updates",
   plugins: "Plugins",

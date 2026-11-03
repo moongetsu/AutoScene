@@ -32,6 +32,7 @@ export {
   CornersIn,
   CornersOut,
   Crosshair,
+  DiscordLogo,
   DotsThree,
   DownloadSimple,
   Eye,

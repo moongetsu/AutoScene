@@ -8,6 +8,7 @@ import { startEventBridge } from "@/lib/events"
 import { useKeymapSync } from "@/lib/keymap"
 import { useLayerSafetyNet } from "@/lib/layers"
 import { isTauri, isWindows } from "@/lib/platform"
+import { useDiscordRPC } from "@/lib/useDiscordRPC"
 import { startUpdateSchedule } from "@/state/updates"
 import { useUi } from "@/state/ui"
 import { ActivityDrawer } from "./ActivityDrawer"
@@ -29,6 +30,7 @@ export function AppShell() {
   useGlobalBindings()
   useKeymapSync()
   useLayerSafetyNet()
+  useDiscordRPC()
   useEffect(() => startUpdateSchedule(), [])
   useEffect(() => startEventBridge(), [])
   useEffect(() => installBrowserGuards({ dev: import.meta.env.DEV }), [])

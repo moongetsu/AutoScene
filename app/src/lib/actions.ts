@@ -45,7 +45,7 @@ function currentProjectId(): string | undefined {
   return m?.[1]
 }
 
-export const SETTINGS_SECTIONS = ["general", "shortcuts", "updates", "plugins", "about", "contributors"] as const
+export const SETTINGS_SECTIONS = ["general", "discord", "shortcuts", "updates", "plugins", "about", "contributors"] as const
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number]
 /** A plugin's own page in Settings: `plugin.<its id>`. */
 export type PluginSection = `plugin.${string}`

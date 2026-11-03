@@ -1,5 +1,6 @@
 pub mod anilist;
 pub mod cast;
+pub mod discord;
 pub mod export;
 pub mod jobs;
 pub mod library;

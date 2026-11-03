@@ -7,6 +7,7 @@
 //! take the UI down.
 
 mod commands;
+mod discord;
 mod error;
 mod events;
 mod keep_awake;
@@ -105,6 +106,9 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::DynRuntime> {
             commands::plugins::plugin_settings_get,
             commands::plugins::plugin_settings_set,
             commands::plugins::plugin_run,
+            commands::discord::discord_rpc_start,
+            commands::discord::discord_rpc_update,
+            commands::discord::discord_rpc_stop,
             commands::jobs::jobs_list,
             commands::jobs::job_cancel,
             commands::jobs::jobs_clear_finished,
@@ -218,6 +222,7 @@ The log is in {}",
             };
             let handle = app.handle().clone();
             app.manage(state::AppState::new(&handle, library, &paths));
+            app.manage(discord::DiscordRpcManager::new());
             // After the state: the page calls commands as soon as it loads.
             window::create_main(app)?;
             // Resume interrupted indexing and previews; locate ffmpeg and probe
@@ -244,6 +249,9 @@ The log is in {}",
             if let tauri::RunEvent::Exit = event {
                 // Never leave ffmpeg processes running after the window closes.
                 state::shutdown_work(app);
+                if let Some(discord) = app.try_state::<discord::DiscordRpcManager>() {
+                    discord.stop();
+                }
             }
         });
 }
