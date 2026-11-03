@@ -137,6 +137,8 @@ pub struct PluginInfo {
     pub settings: Vec<SettingSpec>,
     /// A `data:` URL of its icon (PNG or SVG), when it has a sound one.
     pub icon: Option<String>,
+    /// An optional hex brand/accent color (e.g. `#2a2a2a`).
+    pub color: Option<String>,
     /// Where its runs write their log.
     pub log_path: String,
     /// What was skipped or changed in its `plugin.json`.
@@ -488,6 +490,7 @@ pub fn info(p: &Installed, store: &Store, allow_unreviewed: bool) -> PluginInfo 
         commands: m.map(|m| m.commands.clone()).unwrap_or_default(),
         settings: m.map(|m| m.settings.clone()).unwrap_or_default(),
         icon: store.icon_data_url(p),
+        color: m.and_then(|m| m.color.clone()),
         log_path: store.log_path(id).to_string_lossy().into_owned(),
         warnings: p.warnings.clone(),
     }

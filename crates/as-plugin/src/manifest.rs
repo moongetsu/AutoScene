@@ -77,7 +77,7 @@ const NOT_PROGRAMS: &str = "uv uvx py pyw node deno bun perl ruby php osascript 
 /// toward the uv form.
 const SCRIPTS: [&str; 5] = [".bat", ".cmd", ".ps1", ".sh", ".py"];
 const UV_FORM: &str = r#"["uv", "run", "--script", "--locked", "<script>.py"]"#;
-const TOP_KEYS: [&str; 16] = [
+const TOP_KEYS: [&str; 17] = [
     "$schema",
     "manifestVersion",
     "id",
@@ -94,6 +94,7 @@ const TOP_KEYS: [&str; 16] = [
     "network",
     "contributes",
     "icon",
+    "color",
 ];
 
 /// A plugin's id: a reverse domain name such as `dev.example.my-plugin`,
@@ -202,6 +203,8 @@ pub struct Manifest {
     pub settings: Vec<SettingSpec>,
     /// A `.png` or `.svg` in the package (whether it's there is checked at install).
     pub icon: Option<String>,
+    /// An optional hex brand/accent color (e.g. `#2a2a2a`).
+    pub color: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Type)]
@@ -593,6 +596,22 @@ fn parse_for(bytes: &[u8], app: Option<&Version>) -> PluginResult<Parsed> {
         }
         None => None,
     };
+
+    let color = match root.text("color")? {
+        Some(c) => {
+            let hex = c.trim();
+            let valid = (hex.len() == 4 || hex.len() == 7 || hex.len() == 9)
+                && hex.starts_with('#')
+                && hex[1..].chars().all(|ch| ch.is_ascii_hexdigit());
+            if valid {
+                Some(hex.to_ascii_lowercase())
+            } else {
+                w.push(format!("Left out the color: {c} isn't a hex color like #2a2a2a."));
+                None
+            }
+        }
+        None => None,
+    };
     root.warn_unknown(&TOP_KEYS, &mut w);
 
     if w.len() > MAX_WARNINGS {
@@ -617,6 +636,7 @@ fn parse_for(bytes: &[u8], app: Option<&Version>) -> PluginResult<Parsed> {
         commands: commands_out,
         settings,
         icon,
+        color,
     };
     Ok(Parsed { manifest, warnings: w })
 }
