@@ -82,7 +82,7 @@ export function CommandPalette() {
     { id: "library", label: "Library", icon: <SquaresFour />, run: a.goLibrary, keys: keys("global.library") },
     { id: "settings", label: "Settings", icon: <GearSix />, run: () => a.goSettings(), keys: keys("global.settings") },
     { id: "shortcuts", label: "Keyboard shortcuts", icon: <Keyboard />, run: () => a.goSettings("shortcuts") },
-    { id: "plugins", label: "Plugins", icon: <PuzzlePiece />, run: () => a.goSettings("plugins") },
+    { id: "plugins", label: "Plugins", icon: <PuzzlePiece />, run: a.goPlugins },
     { id: "about", label: "About AutoScene", icon: <Info />, run: () => a.goSettings("about") },
   ]
   const projectItems: Item[] = (projects ?? []).map((p) => ({

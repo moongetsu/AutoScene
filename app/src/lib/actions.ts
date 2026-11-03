@@ -23,6 +23,7 @@ export function useAppActions() {
       newProject: () => useNewProject.getState().show(),
       goProject: (pid: string, page: "overview" | "episodes" | "cast" | "exports" = "overview") =>
         void navigate({ to: page === "overview" ? "/p/$pid" : `/p/$pid/${page}`, params: { pid } }),
+      goPlugins: () => void navigate({ to: "/plugins" }),
       goSettings: (section: SettingsSection | PluginSection = "general") =>
         void navigate({ to: "/settings/$section", params: { section } }),
       checkUpdates: () => void useUpdates.getState().check(true, true),
@@ -45,7 +46,7 @@ function currentProjectId(): string | undefined {
   return m?.[1]
 }
 
-export const SETTINGS_SECTIONS = ["general", "shortcuts", "updates", "plugins", "about", "contributors"] as const
+export const SETTINGS_SECTIONS = ["general", "shortcuts", "updates", "about", "contributors"] as const
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number]
 /** A plugin's own page in Settings: `plugin.<its id>`. */
 export type PluginSection = `plugin.${string}`

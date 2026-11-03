@@ -41,7 +41,7 @@ export function PluginName({ id }: { id: string }) {
  */
 export function PluginSettingsSection({ id }: { id: string }) {
   const { data: plugins, isPending, error } = usePlugins()
-  const { goSettings } = useAppActions()
+  const { goPlugins } = useAppActions()
   const p = plugins?.find((x) => x.id === id)
   if (p) return <PluginPage p={p} />
   if (isPending) return null
@@ -51,14 +51,14 @@ export function PluginSettingsSection({ id }: { id: string }) {
       tone={error ? "danger" : "accent"}
       title={error ? "Couldn't read the plugins" : "This plugin isn't installed"}
       description={error ? errorMessage(error) : "It was uninstalled, or this link is to another one."}
-      actions={<Button onClick={() => goSettings("plugins")}>Go to Plugins</Button>}
+      actions={<Button onClick={goPlugins}>Go to Plugins</Button>}
     />
   )
 }
 
 function PluginPage({ p }: { p: PluginInfo }) {
   const { data: values, error: unread } = usePluginSettings(p.id)
-  const { goSettings } = useAppActions()
+  const { goPlugins } = useAppActions()
   const save = async (key: string, value: SettingValue) => {
     // Shown at once; read again when it couldn't be saved. Not before the
     // others were read: they would show their defaults meanwhile.
@@ -84,7 +84,7 @@ function PluginPage({ p }: { p: PluginInfo }) {
       {why && (
         <div className="mb-8 flex items-center justify-between gap-4 rounded-2xl border border-white/[0.07] bg-white/[0.03] px-5 py-4">
           <p className="text-md text-fg-1">{why}</p>
-          <Button size="sm" variant="ghost" onClick={() => goSettings("plugins")}>
+          <Button size="sm" variant="ghost" onClick={goPlugins}>
             Go to Plugins
           </Button>
         </div>

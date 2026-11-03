@@ -4,7 +4,6 @@ export const SETTINGS_LABELS: Record<SettingsSection, string> = {
   general: "General",
   shortcuts: "Shortcuts",
   updates: "Updates",
-  plugins: "Plugins",
   about: "About",
   contributors: "Contributors",
 }
