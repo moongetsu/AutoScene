@@ -26,6 +26,8 @@ vi.mock("@/lib/ipc", async (importOriginal) => ({
 }))
 vi.mock("@/lib/actions", () => ({ useAppActions: () => ({ goSettings: vi.fn() }) }))
 vi.mock("sonner", () => ({ toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn() }) }))
+const { reveal } = vi.hoisted(() => ({ reveal: vi.fn() }))
+vi.mock("@/lib/os", async (importOriginal) => ({ ...(await importOriginal<typeof import("@/lib/os")>()), reveal }))
 
 const wrapper = ({ children }: { children: React.ReactNode }) => (
   <QueryClientProvider client={queryClient}>
@@ -62,6 +64,13 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe("a plugin's settings", () => {
+  it("shows its folder and its log", async () => {
+    show({})
+    await screen.findByText("Its folder")
+    for (const button of screen.getAllByRole("button", { name: "Reveal" })) fireEvent.click(button)
+    expect(reveal.mock.calls).toEqual([[state.plugin!.folder], [state.plugin!.logPath]])
+  })
+
   it("saves a number within its bounds", async () => {
     show({ settings: [number("clips", "Clips", { min: 1, integer: true }), number("pause", "Pause", { max: 2 })] }, { clips: 3 })
     const clips = (await screen.findByRole("textbox", { name: "Clips" })) as HTMLInputElement

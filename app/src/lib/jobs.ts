@@ -26,5 +26,6 @@ export function stopWord(kind: JobInfo["kind"]): "Stop" | "Cancel" {
 
 /** Stop `job`, as the Activity drawer does; a toast says so when it can't. */
 export function cancelJob(job: JobInfo) {
-  void commands.jobCancel(job.id).catch((e) => toast.error("Couldn't cancel the job", { description: errorMessage(e) }))
+  const stop = stopWord(job.kind).toLowerCase()
+  void commands.jobCancel(job.id).catch((e) => toast.error(`Couldn't ${stop} the job`, { description: errorMessage(e) }))
 }

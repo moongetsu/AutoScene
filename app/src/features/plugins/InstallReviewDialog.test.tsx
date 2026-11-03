@@ -93,17 +93,26 @@ describe("the install review", () => {
   })
 
   it("says permissions are declared, not enforced", () => {
-    show(review())
+    show(review({ plugin: { ...discord, description: "Posts each export to Discord." } }))
+    // What counts first, as plainly as the rest.
+    expect(screen.getByText("It runs with your user rights: it can read, change and send anything you can.")).toBeTruthy()
+    expect(screen.getByRole("heading", { name: "What it says it does (not enforced)" })).toBeTruthy()
     expect(screen.getByText("Reads the exported clips")).toBeTruthy()
     expect(screen.getByText("Talks to the internet")).toBeTruthy()
     expect(screen.getByText("discord.com")).toBeTruthy()
-    expect(screen.getByText("Declared by the author, not enforced. The plugin runs with your user rights.")).toBeTruthy()
-    // Who it is, and what it adds.
+    // Who it is, as it says, and what it adds; its description as its own words, not the dialog's.
     expect(screen.getByText("dev.example.discord-notify")).toBeTruthy()
     expect(screen.getByText("0.3.1")).toBeTruthy()
+    expect(screen.getByText("Says it is by")).toBeTruthy()
     expect(screen.getByText("Example Dev")).toBeTruthy()
+    expect(screen.getByRole("heading", { name: "In its own words" })).toBeTruthy()
+    expect(screen.getByRole("dialog").getAttribute("aria-describedby")).not.toBe(screen.getByText("Posts each export to Discord.").id)
     expect(screen.getByText("Post to Discord")).toBeTruthy()
     expect(screen.queryByText(/graphics card/)).toBeNull()
+    cleanup()
+
+    show(review({ plugin: { ...discord, permissions: [], networkHosts: [] } }))
+    expect(screen.getByText("It names no permissions.")).toBeTruthy()
     cleanup()
 
     // The GPU, and what its plugin.json had skipped.
@@ -179,7 +188,8 @@ describe("the install review", () => {
     expect(screen.getByRole("heading", { name: "Update Discord Notify?" })).toBeTruthy()
     expect(screen.getByText(/0\.2\.0 is installed/)).toBeTruthy()
     expect(screen.getByText("4B2D9C1E0F3A7E51")).toBeTruthy()
-    expect(screen.getByText("Signed by its author")).toBeTruthy()
+    expect(screen.getByText("Signed, not reviewed")).toBeTruthy()
+    expect(screen.getByText("Signed with the same key as the installed version. AutoScene has not reviewed it.")).toBeTruthy()
     const network = screen.getByText("Talks to the internet").closest("li")!
     expect(within(network).getByText("New")).toBeTruthy()
     expect(within(network).getByText("New: cdn.example.com")).toBeTruthy()
@@ -212,6 +222,30 @@ describe("the install review", () => {
 
     show(review({ plugin: { ...discord, uvScript: false } }))
     expect(screen.getByText("A program in its folder.")).toBeTruthy()
+  })
+
+  it("never says a first signature shows who made it", () => {
+    const signed = { ...discord, trust: "pinned" as const, author: "AutoScene", authorKeyId: "4B2D9C1E0F3A7E51" }
+    show(review({ plugin: signed }))
+    const badge = screen.getByText("Signed, not reviewed")
+    expect(badge.className).not.toContain("accent")
+    expect(screen.getByText(/Signed with a key that came in the package: nothing shows who holds it\./)).toBeTruthy()
+    // The name it gives its author is its own claim.
+    expect(screen.getByText("Says it is by")).toBeTruthy()
+    expect(screen.queryByText("Author")).toBeNull()
+    cleanup()
+
+    // An unsigned plugin's signed update pins whatever key it brings: said plainly.
+    const update: PluginUpdate = { fromVersion: "0.2.0", trustBefore: "unreviewed", sourceBefore: "package", addedPermissions: [], addedHosts: [] }
+    show(review({ plugin: signed, update }))
+    expect(
+      screen.getByText("The installed version wasn't signed. This one pins its key: from now on, only updates signed with it install."),
+    ).toBeTruthy()
+    cleanup()
+
+    // Only a reviewed package's author is AutoScene's word.
+    show(review({ plugin: { ...discord, trust: "reviewed" }, needsUnreviewed: false }))
+    expect(screen.getByText("Author")).toBeTruthy()
   })
 
   it("drops the review when it is closed", async () => {

@@ -1,5 +1,5 @@
 import type * as React from "react"
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { toast } from "sonner"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { ExportItem, ExportStatus, ExportSummary, JobInfo, MediaItem, PluginInfo } from "@/bindings"
@@ -177,6 +177,18 @@ describe("an export's edit lists", () => {
     await openMenu()
     expect(entry("Save EDL…").getAttribute("aria-disabled")).toBeNull()
     expect(entry("Save cut list (CSV)…").getAttribute("aria-disabled")).toBeNull()
+  })
+
+  it("lists the same in the card's ⋯ menu", async () => {
+    show(exported("done", [item(1, "done")]))
+    fireEvent.pointerDown(screen.getByRole("button", { name: "ProRes 422 HQ options" }), { button: 0, ctrlKey: false })
+    const menu = await screen.findByRole("menu")
+    expect(within(menu).getAllByRole("menuitem").map((i) => i.textContent?.trim())).toEqual([
+      "Show folder",
+      "Copy folder path",
+      "Save EDL…",
+      "Save cut list (CSV)…",
+    ])
   })
 
   it("saves the EDL where the person chose", async () => {

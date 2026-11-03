@@ -1146,7 +1146,7 @@ mod tests {
         assert_eq!(held.recv_timeout(Duration::from_secs(10)).unwrap(), first);
         // No update or uninstall while it runs.
         let busy = host.change(&id, "One").err().unwrap();
-        assert_eq!(busy.to_string(), "One is running. Wait for it to finish, or cancel it in Activity.");
+        assert_eq!(busy.to_string(), "One is running. Wait for it to finish, or stop it in Activity.");
         // A second run on the other class waits for the first.
         let second_done = flag();
         let second = run(Class::Analysis, second_done.clone());

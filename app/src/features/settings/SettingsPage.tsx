@@ -69,7 +69,8 @@ export function SettingsPage() {
               {pages.length > 0 && <div role="separator" className="mx-2 my-2 h-px bg-white/[0.06]" />}
               {pages.map((p) => (
                 <NavLink key={p.id} section={`plugin.${p.id}`} current={section} icon={<PluginIcon src={p.icon} />}>
-                  <span className="truncate">{p.name}</span>
+                  {/* One that can't run now stays, dimmed: its page says why. */}
+                  <span className={cn("truncate", !p.active && "opacity-50")}>{p.name}</span>
                 </NavLink>
               ))}
             </div>

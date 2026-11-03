@@ -137,7 +137,9 @@ function JobRow({ job: j }: { job: JobInfo }) {
       {!done && (
         <ContextMenuItem
           onSelect={() =>
-            void commands.jobCancel(j.id).catch((e) => toast.error("Couldn't cancel the job", { description: errorMessage(e) }))
+            void commands
+              .jobCancel(j.id)
+              .catch((e) => toast.error(`Couldn't ${stop.toLowerCase()} the job`, { description: errorMessage(e) }))
           }
         >
           <X /> {stop}
@@ -211,7 +213,7 @@ function JobRow({ job: j }: { job: JobInfo }) {
                     e.stopPropagation()
                     void commands
                       .jobCancel(j.id)
-                      .catch((err) => toast.error("Couldn't cancel the job", { description: errorMessage(err) }))
+                      .catch((err) => toast.error(`Couldn't ${stop.toLowerCase()} the job`, { description: errorMessage(err) }))
                   }}
                   className="flex size-7 items-center justify-center rounded-full text-fg-3 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-white/[0.1] hover:text-fg-1 focus-visible:opacity-100"
                 >

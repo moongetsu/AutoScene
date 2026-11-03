@@ -81,7 +81,9 @@ dependency that posts to the internet.
    shows "Starting <name>", then each stage the plugin names.
 4. The plugin writes one result line, or one error line, and exits.
 5. AutoScene shows the result's message in a toast and in Activity, or the
-   error's message in a toast and as a failed job.
+   error's message in a toast and as a failed job. The toast's title names
+   the plugin and the action ("Discord Notify: Post to Discord", or "…
+   failed"), so a plugin's words never read as AutoScene's own.
 
 ### Where it runs
 
@@ -487,9 +489,12 @@ unusable there, which `asp pack` warns of.
 | `network` | Talks to the internet |
 
 Name what the plugin does. The person sees the list before they install it,
-with "Declared by the author, not enforced. The plugin runs with your user
-rights." under it. An update that names a permission or a host the version
-before didn't marks it "New" in its review.
+under "It runs with your user rights: it can read, change and send anything
+you can." and the heading "What it says it does (not enforced)". An update
+that names a permission or a host the version before didn't marks it "New"
+in its review. The review also says how the plugin runs (a uv script fetches
+Python and its packages on its first run) and whether uv is missing, and
+shows the plugin's `description` under "In its own words".
 
 A permission this AutoScene doesn't know refuses the plugin: it may stand
 for more than the person agreed to.
@@ -687,7 +692,7 @@ Who signed a package's `files.lock` decides how far AutoScene trusts it.
 | Trust | Its badge | What it means |
 |---|---|---|
 | Reviewed | Reviewed by AutoScene | An AutoScene Plugins key, compiled into the app, signed this version. |
-| Pinned | Signed by its author | Its author signed it with the key in its `author.pub`. The first install pins that key: an update must be signed with it. |
+| Pinned | Signed, not reviewed | Signed with the key in its `author.pub`. The first install pins that key: an update must be signed with it. That key came in the package, so it shows no one's name: the review says so, and names the author as the plugin "says it is by". |
 | Unreviewed | Not reviewed | Nobody signed it, or a key AutoScene doesn't know did. |
 | | Loaded from a folder | A developer's folder, run as its files are now. It always counts as unreviewed. |
 
@@ -730,7 +735,7 @@ hosts the update adds.
   folder, and its actions that run after every export (those that still
   exist).
 - **While it runs**, it can't be updated or uninstalled: "<name> is running.
-  Wait for it to finish, or cancel it in Activity."
+  Wait for it to finish, or stop it in Activity."
 
 An install never leaves a plugin half done: the package is unpacked and
 checked in a staging folder, checked again, and only then takes the place

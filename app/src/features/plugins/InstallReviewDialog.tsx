@@ -11,7 +11,7 @@ import { commands, errorMessage, isAppError } from "@/lib/ipc"
 import { qk, queryClient } from "@/lib/queries"
 import { PluginIcon } from "./PluginIcon"
 import { allowUnreviewed } from "./plugin-actions"
-import { permissionLabel, trustLabel, trustLine } from "./plugin-items"
+import { permissionLabel, reviewedPackage, trustLabel, trustLine } from "./plugin-items"
 
 /**
  * A plugin package (or folder) checked for install, before the person says
@@ -87,11 +87,7 @@ function ReviewForm({
   }
   const trust = trustLabel(p)
   return (
-    <DialogContent
-      title={`${verb} ${p.name}?`}
-      description={p.description || undefined}
-      className="max-h-[calc(100vh-48px)] overflow-y-auto"
-    >
+    <DialogContent title={`${verb} ${p.name}?`} className="max-h-[calc(100vh-48px)] overflow-y-auto">
       <div className="flex flex-col gap-5">
         <div className="flex items-start gap-4">
           <span className="flex size-12 shrink-0 items-center justify-center rounded-2xl bg-white/[0.06] text-fg-1 [&_svg]:size-6">
@@ -107,7 +103,7 @@ function ReviewForm({
               {p.version}
               {review.update && <span className="text-fg-3"> · {review.update.fromVersion} is installed</span>}
             </Fact>
-            <Fact label="Author">{p.author || "Not named"}</Fact>
+            <Fact label={reviewedPackage(p) ? "Author" : "Says it is by"}>{p.author || "Not named"}</Fact>
             {p.authorKeyId && (
               <Fact label="Key">
                 <span data-selectable className="font-mono">
@@ -129,9 +125,17 @@ function ReviewForm({
           <Badge tone={trust.tone} className="self-start">
             {trust.label}
           </Badge>
-          <p className="text-sm text-fg-1">{trustLine(p)}</p>
+          <p className="text-sm text-fg-1">{trustLine(p, review.update)}</p>
           {review.update && <Before update={review.update} p={p} />}
         </div>
+
+        {/* The plugin's words, not AutoScene's. */}
+        {p.description && (
+          <section>
+            <h3 className="text-sm font-medium text-fg-2">In its own words</h3>
+            <p className="mt-1.5 text-md text-fg-1">{p.description}</p>
+          </section>
+        )}
 
         <Permissions review={review} />
         <Runs review={review} />
@@ -190,6 +194,14 @@ function ReviewForm({
 /** What the installed version was, when the update changes who stands behind it or where its files are. */
 function Before({ update, p }: { update: PluginUpdate; p: PluginInfo }) {
   if (update.trustBefore === p.trust && update.sourceBefore === p.source) return null
+  // A signed update of an unsigned package pins whatever key it brings.
+  if (update.sourceBefore === "package" && update.trustBefore === "unreviewed" && p.source === "package" && p.trust === "pinned") {
+    return (
+      <p className="text-sm text-fg-1">
+        The installed version wasn't signed. This one pins its key: from now on, only updates signed with it install.
+      </p>
+    )
+  }
   const before = trustLabel({ trust: update.trustBefore, source: update.sourceBefore })
   return (
     <p className="text-sm text-fg-2">
@@ -216,7 +228,8 @@ function Permissions({ review }: { review: PluginReview }) {
   const hosts = p.networkHosts.filter((h) => !newHosts.includes(h))
   return (
     <section>
-      <h3 className="text-sm font-medium text-fg-2">What it says it does</h3>
+      <p className="text-md text-fg-1">It runs with your user rights: it can read, change and send anything you can.</p>
+      <h3 className="mt-3 text-sm font-medium text-fg-2">What it says it does (not enforced)</h3>
       <ul className="mt-1.5 flex flex-col gap-1.5 text-md text-fg-1">
         {p.permissions.map((perm) => (
           <li key={perm} className="flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -228,10 +241,9 @@ function Permissions({ review }: { review: PluginReview }) {
             )}
           </li>
         ))}
-        {p.permissions.length === 0 && <li className="text-fg-2">It asks for no permissions.</li>}
+        {p.permissions.length === 0 && <li className="text-fg-2">It names no permissions.</li>}
         {p.gpu && <li>Uses the graphics card: its runs wait while an analysis runs</li>}
       </ul>
-      <p className="mt-2 text-xs text-fg-3">Declared by the author, not enforced. The plugin runs with your user rights.</p>
     </section>
   )
 }

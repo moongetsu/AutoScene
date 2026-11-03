@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { toast } from "sonner"
 import type { PluginInfo, SettingKind, SettingSpec, SettingValue } from "@/bindings"
-import { PuzzlePiece } from "@/components/icons"
+import { FolderOpen, PuzzlePiece } from "@/components/icons"
 import { Button } from "@/components/ui/button"
 import { EmptyState } from "@/components/ui/empty-state"
 import { Input } from "@/components/ui/input"
@@ -12,6 +12,7 @@ import { Switch } from "@/components/ui/switch"
 import { PathText, SettingRow, SettingsGroup } from "@/features/settings/primitives"
 import { useAppActions } from "@/lib/actions"
 import { commands, errorMessage } from "@/lib/ipc"
+import { reveal } from "@/lib/os"
 import { qk, queryClient, usePluginSettings, usePlugins } from "@/lib/queries"
 import { keepPlugin } from "./plugin-actions"
 
@@ -115,8 +116,16 @@ function PluginPage({ p }: { p: PluginInfo }) {
       )}
 
       <SettingsGroup title="Files">
-        <SettingRow label="Its folder" description={<PathText path={p.folder} />} />
-        <SettingRow label="Its log" description={<PathText path={p.logPath} />} />
+        <SettingRow label="Its folder" description={<PathText path={p.folder} />}>
+          <Button size="sm" variant="ghost" onClick={() => reveal(p.folder)}>
+            <FolderOpen /> Reveal
+          </Button>
+        </SettingRow>
+        <SettingRow label="Its log" description={<PathText path={p.logPath} />}>
+          <Button size="sm" variant="ghost" onClick={() => reveal(p.logPath)}>
+            <FolderOpen /> Reveal
+          </Button>
+        </SettingRow>
       </SettingsGroup>
 
       {p.warnings.length > 0 && (

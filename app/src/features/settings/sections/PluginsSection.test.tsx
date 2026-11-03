@@ -2,7 +2,7 @@ import type * as React from "react"
 import { QueryClientProvider } from "@tanstack/react-query"
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import type { AppSettings, PluginInfo } from "@/bindings"
+import type { AppSettings, PluginInfo, PluginReview } from "@/bindings"
 import { AppMenu } from "@/components/shell/AppMenu"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { commands } from "@/lib/ipc"
@@ -27,8 +27,11 @@ vi.mock("@/lib/ipc", async (importOriginal) => ({
     pluginsAllowUnreviewed: vi.fn((on: boolean) => Promise.resolve(settings(on))),
     pluginSetEnabled: vi.fn(),
     pluginUninstall: vi.fn(() => Promise.resolve(null)),
+    pluginInspectFolder: vi.fn(),
+    pluginDiscard: vi.fn(() => Promise.resolve(null)),
   },
 }))
+vi.mock("@/lib/media", () => ({ pickFolder: vi.fn(() => Promise.resolve("D:\\Plugins\\mine")), pickPluginFile: vi.fn() }))
 vi.mock("@/lib/actions", () => ({ useAppActions: () => ({ goSettings: vi.fn() }) }))
 // The window's menu, around the rows' own entries.
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
@@ -70,12 +73,14 @@ describe("Settings → Plugins", () => {
     const row = (name: string) => screen.findByRole("group", { name })
     const badges: [string, string][] = [
       ["Reviewed One", "Reviewed by AutoScene"],
-      ["Pinned One", "Signed by its author"],
+      ["Pinned One", "Signed, not reviewed"],
       ["Unreviewed One", "Not reviewed"],
       ["Folder One", "Loaded from a folder"],
     ]
     for (const [name, badge] of badges) expect(within(await row(name)).getByText(badge)).toBeTruthy()
     expect(within(await row("Reviewed One")).getByText("By AutoScene, version 1.0.0")).toBeTruthy()
+    // Only AutoScene's review stands behind the name a plugin gives its author.
+    expect(within(await row("Pinned One")).getByText("Says it is by Someone, version 1.0.0")).toBeTruthy()
     // Why one that is turned on doesn't run; nothing for one turned off.
     expect(within(await row("Unreviewed One")).getByText(/turned off in Settings/)).toBeTruthy()
     const folder = screen.getByRole("switch", { name: "Enable Folder One" })
@@ -115,6 +120,51 @@ describe("Settings → Plugins", () => {
     await waitFor(() => expect(commands.pluginsAllowUnreviewed).toHaveBeenLastCalledWith(false))
     expect(screen.queryByRole("dialog")).toBeNull()
     await waitFor(() => expect(allowSwitch().getAttribute("aria-checked")).toBe("false"))
+  })
+
+  it("offers a plugin's actions in its ⋯ menu too", async () => {
+    state.plugins = [pluginInfo({ id: "dev.a.one", name: "One" })]
+    render(<PluginsSection />, { wrapper })
+    const trigger = await screen.findByRole("button", { name: "One options" })
+    fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false })
+    const menu = await screen.findByRole("menu")
+    expect(within(menu).getAllByRole("menuitem").map((i) => i.textContent?.trim())).toEqual([
+      "Show its folder",
+      "Show its log",
+      "Uninstall…",
+    ])
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Uninstall…" }))
+    expect(await screen.findByRole("dialog", { name: "Uninstall One?" })).toBeTruthy()
+  })
+
+  it("stays open while it uninstalls", async () => {
+    state.plugins = [pluginInfo({ id: "dev.a.one", name: "One" })]
+    let done: (v: null) => void = () => {}
+    vi.mocked(commands.pluginUninstall).mockReturnValueOnce(new Promise((resolve) => (done = resolve)))
+    render(<PluginsSection />, { wrapper })
+    fireEvent.pointerDown(await screen.findByRole("button", { name: "One options" }), { button: 0, ctrlKey: false })
+    fireEvent.click(within(await screen.findByRole("menu")).getByRole("menuitem", { name: "Uninstall…" }))
+    const dialog = await screen.findByRole("dialog")
+    fireEvent.click(within(dialog).getByRole("button", { name: "Uninstall" }))
+    await waitFor(() => expect((within(dialog).getByRole("button", { name: "Cancel" }) as HTMLButtonElement).disabled).toBe(true))
+    fireEvent.keyDown(dialog, { key: "Escape" })
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }))
+    expect(screen.getByRole("dialog")).toBeTruthy()
+    done(null)
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
+  })
+
+  it("spins the button whose choice is being checked", async () => {
+    state.allow = true
+    let checked: (r: PluginReview) => void = () => {}
+    vi.mocked(commands.pluginInspectFolder).mockReturnValueOnce(new Promise((resolve) => (checked = resolve)))
+    render(<PluginsSection />, { wrapper })
+    const load = await screen.findByRole("button", { name: /Load a folder/ })
+    fireEvent.click(load)
+    await waitFor(() => expect(load.querySelector(".animate-spin")).not.toBeNull())
+    expect(screen.getByRole("button", { name: /Install a plugin/ }).querySelector(".animate-spin")).toBeNull()
+    checked({ ticketId: "t", plugin: pluginInfo({ id: "dev.me.mine", name: "Mine" }), update: null, needsUnreviewed: true, allowed: true, uvMissing: false })
+    await waitFor(() => expect(load.querySelector(".animate-spin")).toBeNull())
   })
 
   it("uninstalls a plugin, and what it kept only when asked", async () => {

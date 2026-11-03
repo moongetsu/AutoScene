@@ -119,8 +119,16 @@ describe("a plugin job that finishes", () => {
   it("says its message", () => {
     handlers.jobChanged({ payload: plugin({ state: "running" }) })
     handlers.jobChanged({ payload: plugin({ state: "done", message: "Posted 12 clips.", rev: 3 }) })
-    expect(toast).toHaveBeenCalledExactlyOnceWith("Post to Discord", { description: "Posted 12 clips." })
+    // Named by its plugin: the plugin's words never stand alone as AutoScene's.
+    expect(toast).toHaveBeenCalledExactlyOnceWith("Discord notify: Post to Discord", { description: "Posted 12 clips." })
     expect(toast.success).not.toHaveBeenCalled()
+  })
+
+  it("says it failed, and which plugin it was", () => {
+    handlers.jobChanged({ payload: plugin({ state: "failed", error: "Discord refused the post.", rev: 3 }) })
+    expect(toast.error).toHaveBeenCalledExactlyOnceWith("Discord notify: Post to Discord failed", {
+      description: "Discord refused the post.",
+    })
   })
 
   it("says nothing when it has nothing to say", () => {

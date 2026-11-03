@@ -1,18 +1,19 @@
 import { useState } from "react"
 import { toast } from "sonner"
 import type { PluginInfo, PluginReview } from "@/bindings"
-import { CircleNotch, FileText, FolderOpen, Plus, PuzzlePiece, SlidersHorizontal, Trash } from "@/components/icons"
+import { CircleNotch, DotsThree, FileText, FolderOpen, Plus, PuzzlePiece, SlidersHorizontal, Trash } from "@/components/icons"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { ContextArea } from "@/components/ui/context-area"
-import { ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-menu"
 import { Dialog, DialogContent, DialogFooter } from "@/components/ui/dialog"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
+import { type MenuKit, contextKit, dropdownKit } from "@/components/ui/menu-actions"
 import { EmptyState } from "@/components/ui/empty-state"
 import { Switch } from "@/components/ui/switch"
 import { InstallReviewDialog } from "@/features/plugins/InstallReviewDialog"
 import { PluginIcon } from "@/features/plugins/PluginIcon"
 import { allowUnreviewed, keepPlugin } from "@/features/plugins/plugin-actions"
-import { hasPage, trustLabel } from "@/features/plugins/plugin-items"
+import { hasPage, reviewedPackage, trustLabel } from "@/features/plugins/plugin-items"
 import { useAppActions } from "@/lib/actions"
 import { commands, errorMessage } from "@/lib/ipc"
 import { pickFolder, pickPluginFile } from "@/lib/media"
@@ -27,20 +28,27 @@ export function PluginsSection() {
   const { data: settings } = useSettings()
   const { data: plugins, error } = usePlugins()
   const allowed = settings?.allowUnreviewedPlugins ?? false
-  const [checking, setChecking] = useState(false)
+  // Which picker's choice is being checked: its button spins.
+  const [checking, setChecking] = useState<"file" | "folder" | null>(null)
   const [review, setReview] = useState<PluginReview | null>(null)
   const [removing, setRemoving] = useState<PluginInfo | null>(null)
+  // While it uninstalls it stays open: closed, it would uninstall all the same.
+  const [uninstalling, setUninstalling] = useState(false)
 
-  const inspect = async (pick: () => Promise<string | null>, check: (path: string) => Promise<PluginReview>) => {
+  const inspect = async (
+    what: "file" | "folder",
+    pick: () => Promise<string | null>,
+    check: (path: string) => Promise<PluginReview>,
+  ) => {
     const path = await pick()
     if (!path) return
-    setChecking(true)
+    setChecking(what)
     try {
       setReview(await check(path))
     } catch (e) {
       toast.error("Couldn't open the plugin", { description: errorMessage(e) })
     } finally {
-      setChecking(false)
+      setChecking(null)
     }
   }
 
@@ -55,14 +63,14 @@ export function PluginsSection() {
             <Button
               size="sm"
               variant="ghost"
-              disabled={checking}
-              onClick={() => void inspect(() => pickFolder("Choose the plugin's folder"), commands.pluginInspectFolder)}
+              disabled={checking != null}
+              onClick={() => void inspect("folder", () => pickFolder("Choose the plugin's folder"), commands.pluginInspectFolder)}
             >
-              <FolderOpen /> Load a folder…
+              {checking === "folder" ? <CircleNotch className="animate-spin" /> : <FolderOpen />} Load a folder…
             </Button>
           )}
-          <Button size="sm" disabled={checking} onClick={() => void inspect(pickPluginFile, commands.pluginInspect)}>
-            {checking ? <CircleNotch className="animate-spin" /> : <Plus />} Install a plugin…
+          <Button size="sm" disabled={checking != null} onClick={() => void inspect("file", pickPluginFile, commands.pluginInspect)}>
+            {checking === "file" ? <CircleNotch className="animate-spin" /> : <Plus />} Install a plugin…
           </Button>
         </div>
       </div>
@@ -96,9 +104,42 @@ export function PluginsSection() {
       )}
 
       <InstallReviewDialog review={review} onClose={() => setReview(null)} />
-      <Dialog open={removing != null} onOpenChange={(open) => !open && setRemoving(null)}>
-        {removing && <UninstallForm key={removing.id} p={removing} onDone={() => setRemoving(null)} />}
+      <Dialog open={removing != null} onOpenChange={(open) => !open && !uninstalling && setRemoving(null)}>
+        {removing && (
+          <UninstallForm
+            key={removing.id}
+            p={removing}
+            busy={uninstalling}
+            setBusy={setUninstalling}
+            onDone={() => setRemoving(null)}
+          />
+        )}
       </Dialog>
+    </>
+  )
+}
+
+/** What can be done with an installed plugin: its right-click menu and its ⋯ menu list the same. */
+function PluginItems({ kit, p, onUninstall }: { kit: MenuKit; p: PluginInfo; onUninstall: () => void }) {
+  const { goSettings } = useAppActions()
+  const { Item, Separator } = kit
+  return (
+    <>
+      <Item onSelect={() => reveal(p.folder)}>
+        <FolderOpen /> Show its folder
+      </Item>
+      <Item onSelect={() => reveal(p.logPath)}>
+        <FileText /> Show its log
+      </Item>
+      {hasPage(p) && (
+        <Item onSelect={() => goSettings(`plugin.${p.id}`)}>
+          <SlidersHorizontal /> Its settings
+        </Item>
+      )}
+      <Separator />
+      <Item destructive onSelect={onUninstall}>
+        <Trash /> Uninstall…
+      </Item>
     </>
   )
 }
@@ -106,7 +147,9 @@ export function PluginsSection() {
 function PluginRow({ p, onUninstall }: { p: PluginInfo; onUninstall: () => void }) {
   const { goSettings } = useAppActions()
   const trust = trustLabel(p)
-  const facts = [p.author && `By ${p.author}`, `version ${p.version}`].filter(Boolean).join(", ")
+  // Only AutoScene's review stands behind the name a plugin gives its author.
+  const by = p.author && (reviewedPackage(p) ? `By ${p.author}` : `Says it is by ${p.author}`)
+  const facts = [by, `version ${p.version}`].filter(Boolean).join(", ")
   const why = p.broken ?? (p.enabled ? p.blockedReason : null)
   const setEnabled = async (on: boolean) => {
     try {
@@ -116,27 +159,7 @@ function PluginRow({ p, onUninstall }: { p: PluginInfo; onUninstall: () => void 
     }
   }
   return (
-    <ContextArea
-      menu={
-        <>
-          <ContextMenuItem onSelect={() => reveal(p.folder)}>
-            <FolderOpen /> Show its folder
-          </ContextMenuItem>
-          <ContextMenuItem onSelect={() => reveal(p.logPath)}>
-            <FileText /> Show its log
-          </ContextMenuItem>
-          {hasPage(p) && (
-            <ContextMenuItem onSelect={() => goSettings(`plugin.${p.id}`)}>
-              <SlidersHorizontal /> Its settings
-            </ContextMenuItem>
-          )}
-          <ContextMenuSeparator />
-          <ContextMenuItem destructive onSelect={onUninstall}>
-            <Trash /> Uninstall…
-          </ContextMenuItem>
-        </>
-      }
-    >
+    <ContextArea menu={<PluginItems kit={contextKit} p={p} onUninstall={onUninstall} />}>
       <div role="group" aria-label={p.name}>
         <SettingRow
           leading={
@@ -164,15 +187,35 @@ function PluginRow({ p, onUninstall }: { p: PluginInfo; onUninstall: () => void 
             </Button>
           )}
           <Switch aria-label={`Enable ${p.name}`} checked={p.enabled} onCheckedChange={(on) => void setEnabled(on)} />
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              aria-label={`${p.name} options`}
+              className="flex size-8 items-center justify-center rounded-full text-fg-3 transition-colors hover:bg-white/[0.08] hover:text-fg-1 data-[state=open]:bg-white/[0.08]"
+            >
+              <DotsThree className="size-5" weight="bold" />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent>
+              <PluginItems kit={dropdownKit} p={p} onUninstall={onUninstall} />
+            </DropdownMenuContent>
+          </DropdownMenu>
         </SettingRow>
       </div>
     </ContextArea>
   )
 }
 
-function UninstallForm({ p, onDone }: { p: PluginInfo; onDone: () => void }) {
+function UninstallForm({
+  p,
+  busy,
+  setBusy,
+  onDone,
+}: {
+  p: PluginInfo
+  busy: boolean
+  setBusy: (busy: boolean) => void
+  onDone: () => void
+}) {
   const [deleteData, setDeleteData] = useState(false)
-  const [busy, setBusy] = useState(false)
   const remove = async () => {
     setBusy(true)
     try {
@@ -203,7 +246,7 @@ function UninstallForm({ p, onDone }: { p: PluginInfo; onDone: () => void }) {
         <Switch aria-label="Delete what it kept too" checked={deleteData} onCheckedChange={setDeleteData} />
       </label>
       <DialogFooter>
-        <Button variant="ghost" onClick={onDone}>
+        <Button variant="ghost" disabled={busy} onClick={onDone}>
           Cancel
         </Button>
         <Button variant="danger" disabled={busy} onClick={() => void remove()}>

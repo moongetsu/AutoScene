@@ -136,7 +136,7 @@ mod tests {
         assert_eq!(said(PluginError::NotFound("dev.a.b".into())).0, ErrorCode::NotFound);
         assert_eq!(
             said(PluginError::Busy("Poster".into())),
-            (ErrorCode::NotReady, "Poster is running. Wait for it to finish, or cancel it in Activity.".into())
+            (ErrorCode::NotReady, "Poster is running. Wait for it to finish, or stop it in Activity.".into())
         );
         assert_eq!(said(PluginError::Cancelled).0, ErrorCode::Cancelled);
         // A file: missing, else any other trouble.

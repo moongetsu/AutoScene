@@ -1,19 +1,36 @@
 import { useId, useState } from "react"
 import { useNavigate, useParams } from "@tanstack/react-router"
-import { CaretDown, Check, CircleNotch, Clock, Copy, FileText, FolderOpen, Package, Play, Prohibit, ShieldWarning, Table, Warning } from "@/components/icons"
+import {
+  CaretDown,
+  Check,
+  CircleNotch,
+  Clock,
+  Copy,
+  DotsThree,
+  FileText,
+  FolderOpen,
+  Package,
+  Play,
+  Prohibit,
+  ShieldWarning,
+  Table,
+  Warning,
+} from "@/components/icons"
 import { toast } from "sonner"
 import type { ExportItem, ExportStatus, ExportSummary, JobInfo, ListFormat, MediaItem, MergedFile } from "@/bindings"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { ContextArea } from "@/components/ui/context-area"
 import { ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-menu"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { EmptyState } from "@/components/ui/empty-state"
+import { type MenuKit, contextKit, dropdownKit } from "@/components/ui/menu-actions"
 import { Page } from "@/components/ui/page"
 import { Progress } from "@/components/ui/progress"
 import { Tooltip, TruncatedText } from "@/components/ui/tooltip"
 import { PluginIcon } from "@/features/plugins/PluginIcon"
 import { runPlugin } from "@/features/plugins/plugin-actions"
-import { exportActionItems } from "@/features/plugins/plugin-items"
+import { type ExportActionItem, exportActionItems } from "@/features/plugins/plugin-items"
 import { formatBytes, formatDateTime, formatDuration, formatPercent } from "@/lib/format"
 import { commands, errorMessage } from "@/lib/ipc"
 import { pickSaveFile } from "@/lib/media"
@@ -104,36 +121,11 @@ function ExportCard({ pid, ex, media }: { pid: string; ex: ExportSummary; media:
   const listId = useId()
   const { data: plugins } = usePlugins()
   const actions = exportActionItems(plugins)
+  const items = { pid, ex, listable, running, actions }
 
   return (
     <section className="overflow-hidden rounded-3xl border border-white/[0.07] bg-white/[0.03]">
-      <ContextArea
-        menu={
-          <>
-            <ContextMenuItem onSelect={() => reveal(ex.outDir)}>
-              <FolderOpen /> Show folder
-            </ContextMenuItem>
-            <ContextMenuItem onSelect={() => void copyText(ex.outDir, "folder path")}>
-              <Copy /> Copy folder path
-            </ContextMenuItem>
-            <ContextMenuSeparator />
-            <ContextMenuItem disabled={!listable} onSelect={() => void saveList(pid, ex, "edl")}>
-              <FileText /> Save EDL…
-            </ContextMenuItem>
-            <ContextMenuItem disabled={!listable} onSelect={() => void saveList(pid, ex, "csv")}>
-              <Table /> Save cut list (CSV)…
-            </ContextMenuItem>
-            {actions.length > 0 && <ContextMenuSeparator />}
-            {/* Plugins run on what the export made, once it is made. */}
-            {actions.map((a) => (
-              <ContextMenuItem key={a.key} disabled={running} onSelect={() => void runPlugin(a, "exportAction", pid, ex.id)}>
-                <PluginIcon src={a.icon} /> {a.title}
-                <span className="ml-auto pl-4 text-xs text-fg-3">{a.pluginName}</span>
-              </ContextMenuItem>
-            ))}
-          </>
-        }
-      >
+      <ContextArea menu={<ExportItems kit={contextKit} {...items} />}>
         <header className="flex items-center gap-4 border-b border-white/[0.06] px-6 py-4">
           <span className="flex size-11 shrink-0 items-center justify-center rounded-2xl bg-white/[0.06] text-fg-1 [&_svg]:size-5">
             <Package />
@@ -152,6 +144,17 @@ function ExportCard({ pid, ex, media }: { pid: string; ex: ExportSummary; media:
           <Button variant="secondary" onClick={() => reveal(ex.outDir)}>
             <FolderOpen /> Show folder
           </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              aria-label={`${ex.label ?? ex.preset.name} options`}
+              className="flex size-9 items-center justify-center rounded-full text-fg-2 transition-colors hover:bg-white/[0.08] hover:text-fg-1 data-[state=open]:bg-white/[0.08]"
+            >
+              <DotsThree className="size-5" weight="bold" />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent>
+              <ExportItems kit={dropdownKit} {...items} />
+            </DropdownMenuContent>
+          </DropdownMenu>
         </header>
       </ContextArea>
       {running && job && (
@@ -184,6 +187,50 @@ function ExportCard({ pid, ex, media }: { pid: string; ex: ExportSummary; media:
         </ul>
       </div>
     </section>
+  )
+}
+
+/** What can be done with an export: its card's right-click menu and its ⋯ menu list the same. */
+function ExportItems({
+  kit,
+  pid,
+  ex,
+  listable,
+  running,
+  actions,
+}: {
+  kit: MenuKit
+  pid: string
+  ex: ExportSummary
+  listable: boolean
+  running: boolean
+  actions: ExportActionItem[]
+}) {
+  const { Item, Separator } = kit
+  return (
+    <>
+      <Item onSelect={() => reveal(ex.outDir)}>
+        <FolderOpen /> Show folder
+      </Item>
+      <Item onSelect={() => void copyText(ex.outDir, "folder path")}>
+        <Copy /> Copy folder path
+      </Item>
+      <Separator />
+      <Item disabled={!listable} onSelect={() => void saveList(pid, ex, "edl")}>
+        <FileText /> Save EDL…
+      </Item>
+      <Item disabled={!listable} onSelect={() => void saveList(pid, ex, "csv")}>
+        <Table /> Save cut list (CSV)…
+      </Item>
+      {actions.length > 0 && <Separator />}
+      {/* Plugins run on what the export made, once it is made. */}
+      {actions.map((a) => (
+        <Item key={a.key} disabled={running} onSelect={() => void runPlugin(a, "exportAction", pid, ex.id)}>
+          <PluginIcon src={a.icon} /> {a.title}
+          <span className="ml-auto pl-4 text-xs text-fg-3">{a.pluginName}</span>
+        </Item>
+      ))}
+    </>
   )
 }
 

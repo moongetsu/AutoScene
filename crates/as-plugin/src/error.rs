@@ -20,7 +20,7 @@ pub enum PluginError {
     NotAllowed,
     #[error("{0} isn't installed.")]
     NotFound(String),
-    #[error("{0} is running. Wait for it to finish, or cancel it in Activity.")]
+    #[error("{0} is running. Wait for it to finish, or stop it in Activity.")]
     Busy(String),
     #[error("This plugin needs uv, which isn't installed. Install it from docs.astral.sh/uv, then try again.")]
     UvMissing,

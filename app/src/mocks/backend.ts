@@ -1141,7 +1141,7 @@ const handlers: Record<string, Handler> = {
     const id = String(pluginId)
     if (jobs.some((j) => j.state === "running" && pluginJobs.get(j.id)?.pluginId === id)) {
       const name = mockPlugin(id)?.name ?? id
-      throw { code: "not_ready", message: `${name} is running. Wait for it to finish, or cancel it in Activity.` }
+      throw { code: "not_ready", message: `${name} is running. Wait for it to finish, or stop it in Activity.` }
     }
     uninstallPlugin(id)
     void emit("plugins:changed", { pluginId: id })
