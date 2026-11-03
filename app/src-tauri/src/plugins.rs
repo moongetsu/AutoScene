@@ -107,6 +107,8 @@ pub struct PluginInfo {
     pub author: String,
     /// An optional link to the author's profile or website.
     pub author_url: Option<String>,
+    /// An optional URL to the author's avatar.
+    pub author_avatar: Option<String>,
     pub license: Option<String>,
     /// An `https://` link.
     pub repository: Option<String>,
@@ -468,6 +470,7 @@ pub fn info(p: &Installed, store: &Store, allow_unreviewed: bool) -> PluginInfo 
         description: m.map(|m| m.description.clone()).unwrap_or_default(),
         author: m.map(|m| m.author.name.clone()).unwrap_or_default(),
         author_url: m.and_then(|m| m.author.url.clone()),
+        author_avatar: m.and_then(|m| m.author.avatar.clone()),
         license: m.and_then(|m| m.license.clone()),
         repository: m.and_then(|m| m.repository.clone()),
         trust: trust(&p.record),

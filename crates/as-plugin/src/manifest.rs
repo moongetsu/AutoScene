@@ -216,6 +216,8 @@ pub struct Author {
     pub name: String,
     /// An `https://` link.
     pub url: Option<String>,
+    /// An optional `https://` avatar URL or local image path.
+    pub avatar: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Type)]
@@ -452,8 +454,12 @@ fn parse_for(bytes: &[u8], app: Option<&Version>) -> PluginResult<Parsed> {
     let description = root.required_label("description", 300, &mut w)?;
     let author = {
         let a = root.required_object("author")?;
-        a.warn_unknown(&["name", "url"], &mut w);
-        Author { name: a.required_label("name", 60, &mut w)?, url: a.link("url", &mut w)? }
+        a.warn_unknown(&["name", "url", "avatar"], &mut w);
+        Author {
+            name: a.required_label("name", 60, &mut w)?,
+            url: a.link("url", &mut w)?,
+            avatar: a.link("avatar", &mut w)?,
+        }
     };
     let license = root.label("license", 60, &mut w)?;
     let repository = root.link("repository", &mut w)?;

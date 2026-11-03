@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { toast } from "sonner"
 import type { PluginInfo, SettingKind, SettingSpec, SettingValue } from "@/bindings"
-import { ArrowSquareOut, Copy, FolderOpen, GithubLogo, PuzzlePiece } from "@/components/icons"
+import { ArrowSquareOut, Copy, FolderOpen, GithubLogo, PuzzlePiece, User } from "@/components/icons"
 import { Button } from "@/components/ui/button"
 import { EmptyState } from "@/components/ui/empty-state"
 import { Input } from "@/components/ui/input"
@@ -145,6 +145,11 @@ function PluginPage({ p }: { p: PluginInfo }) {
 
 function PluginHeroHeader({ p }: { p: PluginInfo }) {
   const isGithub = p.repository?.includes("github.com")
+  const avatarUrl =
+    p.authorAvatar ??
+    (p.authorUrl?.includes("github.com/")
+      ? `${p.authorUrl.replace(/\/$/, "")}.png`
+      : undefined)
   return (
     <div className="mb-8 overflow-hidden rounded-2xl border border-white/[0.08] bg-white/[0.03]">
       {p.banner && (
@@ -184,8 +189,21 @@ function PluginHeroHeader({ p }: { p: PluginInfo }) {
               </div>
               <div className="mt-1 flex flex-wrap items-center gap-3 text-sm text-fg-2">
                 {p.author && (
-                  <span>
-                    By{" "}
+                  <span className="inline-flex items-center gap-1.5">
+                    {avatarUrl ? (
+                      <img
+                        src={avatarUrl}
+                        alt=""
+                        loading="lazy"
+                        className="size-4 shrink-0 rounded-full border border-white/10 bg-white/5 object-cover"
+                        onError={(e) => (e.currentTarget.style.display = "none")}
+                      />
+                    ) : (
+                      <span className="flex size-4 shrink-0 items-center justify-center rounded-full bg-white/10 text-fg-3">
+                        <User className="size-2.5" />
+                      </span>
+                    )}
+                    <span>By </span>
                     {p.authorUrl ? (
                       <button
                         type="button"

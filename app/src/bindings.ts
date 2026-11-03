@@ -1314,6 +1314,8 @@ export type PluginInfo = {
 	author: string,
 	/**  An optional link to the author's profile or website. */
 	authorUrl: string | null,
+	/**  An optional URL to the author's avatar. */
+	authorAvatar: string | null,
 	license: string | null,
 	/**  An `https://` link. */
 	repository: string | null,
