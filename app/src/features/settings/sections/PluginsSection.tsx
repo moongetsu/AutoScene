@@ -544,36 +544,42 @@ function PluginListItem({ p, onUninstall }: { p: PluginInfo; onUninstall: () => 
           }
         }}
         className={cn(
-          "group flex min-h-20 items-center justify-between gap-4 px-5 py-3.5 transition-colors duration-150 hover:bg-white/[0.03]",
+          "group flex min-h-20 items-center justify-between gap-6 px-5 py-4 transition-colors duration-150 hover:bg-white/[0.03]",
           hasPage(p) && "cursor-pointer",
         )}
       >
-        <div className="flex min-w-0 items-center gap-3.5">
+        <div className="flex min-w-0 flex-1 items-center gap-4">
           <span
             style={p.color ? { backgroundColor: p.color } : undefined}
             className={cn(
-              "flex size-10 shrink-0 items-center justify-center rounded-xl shadow-sm ring-1 ring-white/10 [&_img]:size-6 [&_svg]:size-5",
+              "flex size-11 shrink-0 items-center justify-center rounded-xl shadow-sm ring-1 ring-white/10 [&_img]:size-7 [&_svg]:size-6",
               p.color ? "text-fg-1" : "bg-white/[0.08] text-fg-1",
             )}
           >
             <PluginIcon src={p.icon} />
           </span>
 
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <h4 className="truncate font-semibold text-fg-1 text-sm leading-snug">{p.name}</h4>
-              <span className="shrink-0 rounded border border-white/10 bg-white/[0.05] px-1.5 py-0.2 font-mono text-[10px] text-fg-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <h4 className="font-semibold text-fg-1 text-sm leading-snug">{p.name}</h4>
+              <span className="shrink-0 rounded border border-white/10 bg-white/[0.05] px-1.5 py-0.5 font-mono text-[10px] text-fg-3">
                 v{p.version}
               </span>
               <Badge tone={trust.tone}>{trust.label}</Badge>
               {p.gpu && (
-                <span className="rounded border border-accent/30 bg-accent/10 px-1.5 py-0.2 text-[10px] font-medium text-accent">
+                <span className="shrink-0 rounded border border-accent/30 bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-accent">
                   GPU
                 </span>
               )}
             </div>
 
-            <div className="mt-0.5 flex items-center gap-1.5 text-xs text-fg-3">
+            {p.description && (
+              <p className="mt-1 line-clamp-1 text-xs text-fg-2">
+                {p.description}
+              </p>
+            )}
+
+            <div className="mt-1 flex items-center gap-1.5 text-xs text-fg-3">
               {p.author && (
                 avatarUrl ? (
                   <img
@@ -593,18 +599,12 @@ function PluginListItem({ p, onUninstall }: { p: PluginInfo; onUninstall: () => 
                 <button
                   type="button"
                   onClick={() => void openExternalUrl(p.authorUrl!)}
-                  className="truncate font-medium text-fg-2 hover:text-fg-1 hover:underline"
+                  className="font-medium text-fg-2 hover:text-fg-1 hover:underline"
                 >
                   {by}
                 </button>
               ) : (
-                <span className="truncate">{by}</span>
-              )}
-              {p.description && (
-                <>
-                  <span className="text-white/20">·</span>
-                  <span className="truncate text-fg-3">{p.description}</span>
-                </>
+                <span>{by}</span>
               )}
               <span className="hidden opacity-0">{facts}</span>
             </div>
