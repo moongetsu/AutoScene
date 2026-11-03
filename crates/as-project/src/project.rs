@@ -1279,6 +1279,9 @@ impl Project {
                         )
                     }
                     EdlError::TooLong => "These clips run longer than the 23 hours an EDL can hold.".into(),
+                    EdlError::TooFast => {
+                        "An EDL holds at most 100 frames a second. Save a cut list (CSV) instead.".into()
+                    }
                 })
             })?,
             ListFormat::Csv => write_csv(&events),

@@ -15,6 +15,8 @@
 //! Timecode starts over at midnight, and an event can't run across it (its
 //! out point would come before its in point): an EDL refuses a clip that
 //! runs to its episode's midnight, and clips that run to the timeline's.
+//! CMX 3600 has two digits for the frames, so an EDL refuses a rate past 100
+//! frames a second; a cut list counts them with three.
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -60,7 +62,13 @@ pub enum EdlError {
     PastMidnight(usize),
     /// The clips run to the timeline's midnight: 23 hours from 01:00:00:00.
     TooLong,
+    /// The clips count more than [`MAX_FPS`] frames a second (119.88, 120):
+    /// their frames would take three digits.
+    TooFast,
 }
+
+/// The most frames a second an EDL counts: CMX 3600 has two digits for them.
+pub const MAX_FPS: u64 = 100;
 
 /// `events` as a CMX 3600 EDL named `title` (in printable ASCII, at most 70
 /// characters): a numbered line per clip with its reel, its source in and
@@ -69,8 +77,12 @@ pub enum EdlError {
 /// and Avid read). Lines end in CRLF. Past 999 clips the numbers take four
 /// digits, which Resolve and Premiere Pro read and strict CMX readers may
 /// not. A clip that runs to its episode's midnight is refused, and so are
-/// clips that run to the timeline's.
+/// clips that run to the timeline's, and a rate past [`MAX_FPS`].
 pub fn write_cmx3600(title: &str, events: &[EdlEvent]) -> Result<String, EdlError> {
+    // Timecodes count whole frames a second, rounded (120 at 119.88).
+    if events.iter().any(|e| e.fps.to_f64().round() > MAX_FPS as f64) {
+        return Err(EdlError::TooFast);
+    }
     if let Some(i) = events.iter().position(|e| e.origin() + e.end >= Clock::new(e.fps).day) {
         return Err(EdlError::PastMidnight(i));
     }
@@ -111,13 +123,16 @@ pub fn write_cmx3600(title: &str, events: &[EdlEvent]) -> Result<String, EdlErro
     Ok(crlf(lines))
 }
 
-/// `events` as a cut list: a CSV (RFC 4180, CRLF, UTF-8 without a BOM) with
-/// a row per clip and the timecodes the EDL gives it, but for the source's:
+/// `events` as a cut list: a CSV (RFC 4180, CRLF, UTF-8 with a BOM) with a
+/// row per clip and the timecodes the EDL gives it, but for the source's:
 /// those count as the episode's start timecode does (non-drop at 29.97 when
 /// it's written so), as an editor shows the clip, and start over at its
 /// midnight. Drop Frame tells how the rest count. A clip whose episode has
 /// no start timecode says so in Note. It's for reading and sorting: an
-/// editor builds the cut from the EDL.
+/// editor builds the cut from the EDL. The BOM is for Excel, which reads a
+/// CSV without one in the system's code page (names with umlauts or kana
+/// came out garbled); it still splits rows on the system's list separator,
+/// `;` in German, unless the file is opened with Data > From Text/CSV.
 pub fn write_csv(events: &[EdlEvent]) -> String {
     let mut lines = vec![
         "#,Reel,Clip Name,Source File,Source In,Source Out,Record In,Record Out,Duration,Frame Rate,Drop Frame,Note"
@@ -141,7 +156,7 @@ pub fn write_csv(events: &[EdlEvent]) -> String {
         ];
         lines.push(row.iter().map(|f| csv_field(f)).collect::<Vec<_>>().join(","));
     }
-    crlf(lines)
+    format!("\u{feff}{}", crlf(lines))
 }
 
 /// A tape name (reel) per episode, from its name (`S01E03`, or its file's
@@ -385,7 +400,7 @@ mod tests {
             ]
         );
         assert!(csv.starts_with(
-            "#,Reel,Clip Name,Source File,Source In,Source Out,Record In,Record Out,Duration,Frame Rate,Drop Frame,Note\r\n"
+            "\u{feff}#,Reel,Clip Name,Source File,Source In,Source Out,Record In,Record Out,Duration,Frame Rate,Drop Frame,Note\r\n"
         ));
         assert_eq!(rate_label(NTSC), "29.97");
         assert_eq!(rate_label(Rational::new(24000, 1001)), "23.976");
@@ -438,6 +453,19 @@ mod tests {
             edl(&[event("A", PAL, None, 0, hours_23 - 25), event("A", PAL, None, 0, 25)]),
             Err(EdlError::TooLong)
         );
+    }
+
+    #[test]
+    fn an_edl_counts_at_most_100_frames_a_second() {
+        let edl = |fps| write_cmx3600("Cut", &[event("A", fps, Some("00:00:00:00"), 5, 99)]);
+        let lines = event_lines(&edl(Rational::new(100, 1)).unwrap()).join("");
+        assert!(lines.ends_with("00:00:00:05 00:00:00:99 01:00:00:00 01:00:00:94"), "{lines}");
+        for fps in [Rational::new(120, 1), Rational::new(120_000, 1001)] {
+            assert_eq!(edl(fps), Err(EdlError::TooFast), "{fps:?}");
+        }
+        // A cut list gives them as they are, with three digits.
+        let csv = write_csv(&[event("A", Rational::new(120, 1), Some("00:00:00:00"), 5, 119)]);
+        assert!(csv.contains(",00:00:00:05,00:00:00:119,"), "{csv}");
     }
 
     #[test]
