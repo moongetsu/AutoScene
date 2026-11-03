@@ -11,9 +11,9 @@ export const commands = {
 	/**
 	 *  Show a file or folder in Explorer / Finder: one AutoScene knows (its
 	 *  library, data and logs, a project's folder, an episode's file, an
-	 *  export's folder or files, a folder a plugin is loaded from), never just
-	 *  any path. Off the main thread: a share that doesn't answer would freeze
-	 *  the window until Windows gives up.
+	 *  export's folder or files, a folder a plugin is loaded from, a list saved
+	 *  this session), never just any path. Off the main thread: a share that
+	 *  doesn't answer would freeze the window until Windows gives up.
 	 */
 	revealPath: (path: string) => __TAURI_INVOKE<null>("reveal_path", { path }),
 	/**

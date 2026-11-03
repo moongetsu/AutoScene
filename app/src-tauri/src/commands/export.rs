@@ -103,10 +103,12 @@ pub async fn export_save_list(
     path: String,
 ) -> AppResult<SavedList> {
     let path = list_path(&path, format)?;
-    let (lib, tools) = (state.library.clone(), state.tools().ok());
+    let (lib, tools, saved) = (state.library.clone(), state.tools().ok(), state.saved_lists.clone());
     blocking(move || {
         let (text, left_out) = lib.project(project_id)?.export_list_file(export_id, format, tools.as_deref())?;
         std::fs::write(&path, text)?;
+        // Its toast offers to show it, wherever it went.
+        saved.lock().insert(path.clone());
         Ok(SavedList { path: path.display().to_string(), left_out })
     })
     .await

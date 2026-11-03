@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use as_api::{AppInfo, MediaToolsStatus, ModelInfo, Platform};
@@ -63,18 +63,19 @@ pub async fn models(state: State<'_, AppState>) -> AppResult<Vec<ModelInfo>> {
 
 /// Show a file or folder in Explorer / Finder: one AutoScene knows (its
 /// library, data and logs, a project's folder, an episode's file, an
-/// export's folder or files, a folder a plugin is loaded from), never just
-/// any path. Off the main thread: a share that doesn't answer would freeze
-/// the window until Windows gives up.
+/// export's folder or files, a folder a plugin is loaded from, a list saved
+/// this session), never just any path. Off the main thread: a share that
+/// doesn't answer would freeze the window until Windows gives up.
 #[tauri::command]
 #[specta::specta]
 pub async fn reveal_path(state: State<'_, AppState>, path: String) -> AppResult<()> {
     paths::check(&path)?;
-    let (lib, plugins) = (state.library.clone(), state.plugins.clone());
+    let (lib, plugins, saved) = (state.library.clone(), state.plugins.clone(), state.saved_lists.clone());
     blocking(move || {
         let (p, app) = (PathBuf::from(&path), AppPaths::resolve());
         let loaded = plugins.map(|host| host.loaded_folders()).unwrap_or_default();
-        if !known(&lib, &app, &loaded, &p) {
+        let saved = saved.lock().clone();
+        if !known(&lib, &app, &loaded, &saved, &p) {
             log::warn!("not revealing {}, which isn't AutoScene's", paths::name(&p));
             return Err(AppError::new(ErrorCode::Invalid, "AutoScene only shows its own files and folders."));
         }
@@ -92,10 +93,14 @@ pub async fn reveal_path(state: State<'_, AppState>, path: String) -> AppResult<
 /// Whether `path` is one AutoScene keeps things in or was given: the
 /// library folder, the app's data and logs, a project's folder (thumbnails,
 /// previews), an export's folder and files, an episode's file, a folder of
-/// `loaded` (those plugins are loaded from). Episodes and exports are those
-/// of the open projects, which after launch are all of them (each is opened
-/// to resume its work).
-fn known(lib: &Library, app: &AppPaths, loaded: &[PathBuf], path: &Path) -> bool {
+/// `loaded` (those plugins are loaded from), a list of `saved` (the EDLs and
+/// cut lists saved this session). Episodes and exports are those of the open
+/// projects, which after launch are all of them (each is opened to resume
+/// its work).
+fn known(lib: &Library, app: &AppPaths, loaded: &[PathBuf], saved: &HashSet<PathBuf>, path: &Path) -> bool {
+    if saved.contains(path) {
+        return true;
+    }
     let folders = [lib.library_root().ok(), Some(app.data.clone()), Some(app.logs())];
     let projects = lib.projects().unwrap_or_default().into_iter().map(|p| Some(PathBuf::from(p.dir)));
     let loaded = loaded.iter().cloned().map(Some);
@@ -202,10 +207,19 @@ mod tests {
         // A developer's folder a plugin is loaded from.
         let loaded = [tmp.join("Plugins").join("hello")];
         let plugin = loaded[0].join("plugin.json");
-        for ok in
-            [&root, &root.join("Exports").join("Show"), &project.join("thumbs"), &episode, &app.logs(), &data, &plugin]
-        {
-            assert!(known(&lib, &app, &loaded, ok), "{}", ok.display());
+        // A list saved this session, wherever it went: that file only.
+        let saved = HashSet::from([tmp.join("Edit").join("Walter.edl")]);
+        for ok in [
+            &root,
+            &root.join("Exports").join("Show"),
+            &project.join("thumbs"),
+            &episode,
+            &app.logs(),
+            &data,
+            &plugin,
+            &tmp.join("Edit").join("Walter.edl"),
+        ] {
+            assert!(known(&lib, &app, &loaded, &saved, ok), "{}", ok.display());
         }
         for other in [
             media.clone(),
@@ -214,10 +228,13 @@ mod tests {
             root.join("..").join("Shows").join("Show S01E02.mkv"),
             PathBuf::from("Library"),
             tmp.join("Plugins"),
+            tmp.join("Edit"),
+            tmp.join("Edit").join("Walter.csv"),
         ] {
-            assert!(!known(&lib, &app, &loaded, &other), "{}", other.display());
+            assert!(!known(&lib, &app, &loaded, &saved, &other), "{}", other.display());
         }
-        assert!(!known(&lib, &app, &[], &plugin));
+        assert!(!known(&lib, &app, &[], &saved, &plugin));
+        assert!(!known(&lib, &app, &loaded, &HashSet::new(), &tmp.join("Edit").join("Walter.edl")));
         drop(lib);
         let _ = std::fs::remove_dir_all(&tmp);
     }

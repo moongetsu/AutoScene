@@ -63,6 +63,10 @@ pub struct AppState {
     /// The installed plugins and their runs; none when they couldn't start
     /// (see `plugins::open`).
     pub plugins: Option<Arc<PluginHost>>,
+    /// The EDLs and cut lists saved this session, which may be shown in
+    /// their folder wherever the person saved them (see
+    /// `commands::system::reveal_path`).
+    pub saved_lists: Arc<parking_lot::Mutex<HashSet<PathBuf>>>,
     /// ffmpeg/ffprobe once found (see [`AppState::tools`]).
     tools: Arc<OnceLock<Arc<Tools>>>,
     /// The ffmpeg folder this build uses (see [`sidecar_dir`]).
@@ -114,6 +118,7 @@ impl AppState {
             decisions: Arc::default(),
             anilist: Arc::default(),
             plugins,
+            saved_lists: Arc::default(),
             tools: Arc::new(OnceLock::new()),
             bundled_ffmpeg,
         }
