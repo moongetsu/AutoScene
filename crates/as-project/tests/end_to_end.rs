@@ -81,6 +81,7 @@ fn import_preview_and_export_three_episodes() {
         anilist: false,
         shortcuts: Default::default(),
         allow_unreviewed_plugins: false,
+        discord_rpc: Default::default(),
     })
     .unwrap();
 
@@ -258,6 +259,7 @@ fn bad_ranges_and_missing_files_are_refused() {
         anilist: false,
         shortcuts: Default::default(),
         allow_unreviewed_plugins: false,
+        discord_rpc: Default::default(),
     })
     .unwrap();
     // A copy we can delete to simulate a disconnected drive.
@@ -324,6 +326,7 @@ fn covers_get_portraits_from_the_exact_frame() {
         anilist: false,
         shortcuts: Default::default(),
         allow_unreviewed_plugins: false,
+        discord_rpc: Default::default(),
     })
     .unwrap();
     // A copy we can delete to simulate a disconnected drive.
@@ -417,6 +420,7 @@ fn a_moved_episode_keeps_its_analysis() {
         anilist: false,
         shortcuts: Default::default(),
         allow_unreviewed_plugins: false,
+        discord_rpc: Default::default(),
     })
     .unwrap();
     let file = tmp.path().join("Show - 01.mp4");
@@ -555,6 +559,7 @@ fn a_clip_past_a_shortened_episode_is_left_out_of_the_file() {
         anilist: false,
         shortcuts: Default::default(),
         allow_unreviewed_plugins: false,
+        discord_rpc: Default::default(),
     })
     .unwrap();
     // Variable frame rate: a part's length comes from its frames' own times.
@@ -640,6 +645,7 @@ fn a_merged_export_is_one_file_with_every_clip() {
         anilist: false,
         shortcuts: Default::default(),
         allow_unreviewed_plugins: false,
+        discord_rpc: Default::default(),
     })
     .unwrap();
     // Copies, so one can go missing.

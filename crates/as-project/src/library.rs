@@ -627,6 +627,7 @@ mod tests {
             anilist: false,
             shortcuts: Default::default(),
             allow_unreviewed_plugins: false,
+            discord_rpc: Default::default(),
         })
         .unwrap();
         assert_eq!(lib.audio_language().unwrap(), "deu", "stored as an ISO 639-2 code");
@@ -1029,6 +1030,7 @@ mod tests {
             anilist: false,
             shortcuts: Default::default(),
             allow_unreviewed_plugins: false,
+            discord_rpc: Default::default(),
         };
         assert!(matches!(lib.update_settings(&bad), Err(ProjectError::Invalid(_))));
         assert_eq!(lib.settings().unwrap().export_preset_id, "h264-edit");

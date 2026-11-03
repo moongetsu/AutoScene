@@ -243,6 +243,7 @@ pub(crate) mod tests {
             anilist: false,
             shortcuts: Default::default(),
             allow_unreviewed_plugins: false,
+            discord_rpc: Default::default(),
         })
         .unwrap();
         let file = dir.path().join("Show - 01.mkv");

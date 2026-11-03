@@ -57,6 +57,7 @@ fn series(dir: &Path) -> (Arc<Project>, CharacterId) {
         anilist: false,
         shortcuts: Default::default(),
         allow_unreviewed_plugins: false,
+        discord_rpc: Default::default(),
     })
     .unwrap();
     let files: Vec<String> = (1..=EPISODES)

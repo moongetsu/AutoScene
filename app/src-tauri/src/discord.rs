@@ -1,7 +1,7 @@
 use std::io::{Read, Write};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -45,10 +45,7 @@ pub struct DiscordRpcManager {
 
 impl DiscordRpcManager {
     pub fn new() -> Self {
-        Self {
-            sender: Mutex::new(None),
-            active: Arc::new(AtomicBool::new(false)),
-        }
+        Self { sender: Mutex::new(None), active: Arc::new(AtomicBool::new(false)) }
     }
 
     pub fn start(&self, client_id: Option<String>) {
