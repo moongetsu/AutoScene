@@ -57,6 +57,10 @@ pub struct JobSpec {
 pub enum JobError {
     Cancelled,
     Failed(String),
+    /// Failed with an answer the work had before any cancel (a plugin's
+    /// error line): it stays Failed when a cancel comes after it, which
+    /// only ended the wait for the work to stop.
+    FailedFirst(String),
 }
 
 impl<E: std::error::Error> From<E> for JobError {
@@ -567,9 +571,11 @@ fn run_worker(inner: &Arc<Inner>, class: Class) {
                 }
                 // A cancelled job's work often fails with an I/O or ffmpeg error
                 // on the way out; the cancel flag decides what it was.
-                Err(_) if cancel.is_cancelled() => e.info.state = JobState::Cancelled,
+                Err(JobError::Cancelled | JobError::Failed(_)) if cancel.is_cancelled() => {
+                    e.info.state = JobState::Cancelled;
+                }
                 Err(JobError::Cancelled) => e.info.state = JobState::Cancelled,
-                Err(JobError::Failed(msg)) => {
+                Err(JobError::Failed(msg) | JobError::FailedFirst(msg)) => {
                     tracing::warn!(%id, title = %e.info.title, error = %msg, "job failed");
                     e.info.state = JobState::Failed;
                     e.info.error = Some(msg);
@@ -759,6 +765,23 @@ mod tests {
         assert_eq!(finished(&rx, queued).state, JobState::Cancelled);
         r.cancel(running);
         assert_eq!(finished(&rx, running).state, JobState::Cancelled, "cancel wins over the error it causes");
+    }
+
+    #[test]
+    fn an_error_given_before_a_cancel_stays_the_error() {
+        let (r, rx) = runner(&[(Class::Plugin, 1)]);
+        let (started_tx, started_rx) = mpsc::channel();
+        let job = r.submit(spec("post", Class::Plugin), move |ctx| {
+            started_tx.send(()).unwrap();
+            while !ctx.cancel.is_cancelled() {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(JobError::FailedFirst("No webhook is set.".into()))
+        });
+        started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        r.cancel(job);
+        let info = finished(&rx, job);
+        assert_eq!((info.state, info.error.as_deref()), (JobState::Failed, Some("No webhook is set.")));
     }
 
     #[test]

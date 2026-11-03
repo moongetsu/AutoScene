@@ -599,9 +599,16 @@ fn add_place(message: &mut RunMessage, lib: &Library, key: &RunKey) -> ProjectRe
     Ok(())
 }
 
+/// `e` as its job ends with it. The plugin's own error line is its answer,
+/// given before any cancel (else the run says Cancelled): it stays the
+/// job's error when a cancel comes after it.
 fn plugin_job_error(e: PluginError) -> JobError {
     match e {
         PluginError::Cancelled => JobError::Cancelled,
+        e @ PluginError::Failed { .. } => {
+            log::warn!("{}", e.detail());
+            JobError::FailedFirst(e.to_string())
+        }
         e => {
             log::warn!("{}", e.detail());
             JobError::Failed(e.to_string())
@@ -914,6 +921,16 @@ mod tests {
     }
 
     #[test]
+    fn a_plugins_own_error_stays_its_error_after_a_cancel() {
+        let failed = PluginError::Failed { message: "No webhook is set.".into(), detail: None };
+        assert!(matches!(plugin_job_error(failed), JobError::FailedFirst(m) if m == "No webhook is set."));
+        // What the host says of a run a cancel may have caused gives way to the cancel.
+        let crashed = PluginError::Crashed { name: "Poster".into(), detail: "exit code: 1".into() };
+        assert!(matches!(plugin_job_error(crashed), JobError::Failed(m) if m == "Poster stopped unexpectedly."));
+        assert!(matches!(plugin_job_error(PluginError::Cancelled), JobError::Cancelled));
+    }
+
+    #[test]
     fn an_update_shows_what_it_adds() {
         let mut previous = plugin("dev.a.post", Trust::Pinned, false).record;
         previous.permissions = vec![Permission::ExportsRead];
@@ -1083,7 +1100,7 @@ mod tests {
         let allow = |on| lib.set_allows_unreviewed_plugins(on).unwrap();
         let said = |key: &RunKey, gpu| match startable(&host.store, &lib, key, gpu) {
             Ok(_) => "starts".to_owned(),
-            Err(JobError::Failed(why)) => why,
+            Err(JobError::Failed(why) | JobError::FailedFirst(why)) => why,
             Err(JobError::Cancelled) => "cancelled".to_owned(),
         };
         let (project, export) = (Some(ProjectId::new()), Some(ExportId::new()));

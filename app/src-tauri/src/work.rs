@@ -237,7 +237,7 @@ fn guarded(
 fn stage_error(e: ProjectError) -> StageError {
     match job_error(e) {
         JobError::Cancelled => StageError::Cancelled,
-        JobError::Failed(m) => StageError::Failed(m),
+        JobError::Failed(m) | JobError::FailedFirst(m) => StageError::Failed(m),
     }
 }
 

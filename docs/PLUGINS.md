@@ -155,7 +155,7 @@ person can stop it in Activity.
   all end at once. On macOS and Linux the plugin's process group gets
   SIGTERM, then SIGKILL 2 seconds later; a process that left the group
   (`setsid`, `setpgid`) keeps running. The run is cancelled, unless the
-  plugin gave its result first.
+  plugin gave its result or error line first: Activity then shows that.
 - After its result or error line, the plugin's stdin closes. A plugin that
   still runs 10 seconds later is ended the same way, and its line counts.
 - AutoScene never tries a run again: what the plugin did, a post to a
