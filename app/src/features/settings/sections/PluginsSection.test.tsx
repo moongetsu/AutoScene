@@ -242,27 +242,17 @@ describe("Settings → Plugins", () => {
     expect(screen.queryByRole("group", { name: "Beta Script" })).toBeNull()
   })
 
-  it("opens plugin folder and log via context menu items", async () => {
+  it("opens plugin folder and log via ⋯ menu items", async () => {
     const user = userEvent.setup()
     state.plugins = [pluginInfo({ id: "dev.a.alpha", name: "Alpha Tool", folder: "/path/to/folder", logPath: "/path/to/log.txt" })]
-    render(
-      <AppMenu>
-        <div>
-          <PluginsSection />
-        </div>
-      </AppMenu>,
-      { wrapper },
-    )
-    const card = await screen.findByRole("group", { name: "Alpha Tool" })
-    fireEvent.contextMenu(card, { clientX: 40, clientY: 40 })
-    await screen.findByRole("menu")
-
-    await user.click(screen.getByRole("menuitem", { name: "Show its folder" }))
+    render(<PluginsSection />, { wrapper })
+    const trigger = await screen.findByRole("button", { name: "Alpha Tool options" })
+    await user.click(trigger)
+    await user.click(await screen.findByRole("menuitem", { name: "Show its folder" }))
     expect(reveal).toHaveBeenCalledWith("/path/to/folder")
 
-    fireEvent.contextMenu(card, { clientX: 40, clientY: 40 })
-    await screen.findByRole("menu")
-    await user.click(screen.getByRole("menuitem", { name: "Show its log" }))
+    await user.click(trigger)
+    await user.click(await screen.findByRole("menuitem", { name: "Show its log" }))
     expect(reveal).toHaveBeenCalledWith("/path/to/log.txt")
   })
 

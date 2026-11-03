@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react"
 import { toast } from "sonner"
 import type { PluginInfo, PluginReview } from "@/bindings"
-import { ArrowCounterClockwise, ArrowSquareOut, CircleNotch, Copy, DotsThree, FileText, FolderOpen, GearSix, GithubLogo, MagnifyingGlass, Plus, PuzzlePiece, SlidersHorizontal, Trash, User, X } from "@/components/icons"
+import { ArrowCounterClockwise, ArrowSquareOut, CircleNotch, Copy, DotsThree, FileText, FolderOpen, GearSix, GithubLogo, ListBullets, MagnifyingGlass, Plus, PuzzlePiece, SlidersHorizontal, SquaresFour, Trash, User, X } from "@/components/icons"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { ContextArea } from "@/components/ui/context-area"
@@ -10,6 +10,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "@/compon
 import { type MenuKit, contextKit, dropdownKit } from "@/components/ui/menu-actions"
 import { EmptyState } from "@/components/ui/empty-state"
 import { Input } from "@/components/ui/input"
+import { Segmented } from "@/components/ui/segmented"
 import { Switch } from "@/components/ui/switch"
 import { InstallReviewDialog } from "@/features/plugins/InstallReviewDialog"
 import { PluginIcon } from "@/features/plugins/PluginIcon"
@@ -40,6 +41,7 @@ export function PluginsSection() {
   const [refreshing, setRefreshing] = useState(false)
   const [search, setSearch] = useState("")
   const [filter, setFilter] = useState<"all" | "enabled" | "disabled" | "gpu" | "folder">("all")
+  const [layout, setLayout] = useState<"grid" | "list">("grid")
 
   const counts = useMemo(() => {
     if (!plugins) return { all: 0, enabled: 0, disabled: 0, gpu: 0, folder: 0 }
@@ -204,24 +206,35 @@ export function PluginsSection() {
               </div>
 
               {plugins.length > 0 && (
-                <div className="relative w-full sm:w-64">
-                  <MagnifyingGlass className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-fg-3" />
-                  <Input
-                    type="text"
-                    placeholder="Search plugins…"
-                    value={search}
-                    onChange={(e) => setSearch(e.target.value)}
-                    className="h-8 w-full bg-white/[0.04] pr-8 pl-9 text-xs placeholder:text-fg-3 focus:bg-white/[0.07]"
+                <div className="flex items-center gap-2.5">
+                  <Segmented
+                    value={layout}
+                    onChange={(v) => setLayout(v as "grid" | "list")}
+                    aria-label="Plugin layout"
+                    options={[
+                      { value: "grid", label: <SquaresFour weight="bold" /> },
+                      { value: "list", label: <ListBullets weight="bold" /> },
+                    ]}
                   />
-                  {search && (
-                    <button
-                      type="button"
-                      onClick={() => setSearch("")}
-                      className="absolute top-1/2 right-2.5 -translate-y-1/2 rounded p-0.5 text-fg-3 hover:text-fg-1"
-                    >
-                      <X className="size-3" />
-                    </button>
-                  )}
+                  <div className="relative w-full sm:w-56">
+                    <MagnifyingGlass className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-fg-3" />
+                    <Input
+                      type="text"
+                      placeholder="Search plugins…"
+                      value={search}
+                      onChange={(e) => setSearch(e.target.value)}
+                      className="h-8 w-full bg-white/[0.04] pr-8 pl-9 text-xs placeholder:text-fg-3 focus:bg-white/[0.07]"
+                    />
+                    {search && (
+                      <button
+                        type="button"
+                        onClick={() => setSearch("")}
+                        className="absolute top-1/2 right-2.5 -translate-y-1/2 rounded p-0.5 text-fg-3 hover:text-fg-1"
+                      >
+                        <X className="size-3" />
+                      </button>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
@@ -277,10 +290,16 @@ export function PluginsSection() {
                   Clear search and filter
                 </Button>
               </div>
-            ) : (
+            ) : layout === "grid" ? (
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                 {filteredPlugins.map((p) => (
                   <PluginCard key={p.id} p={p} onUninstall={() => setRemoving(p)} />
+                ))}
+              </div>
+            ) : (
+              <div className="divide-y divide-white/[0.06] overflow-hidden rounded-2xl border border-white/[0.07] bg-white/[0.03]">
+                {filteredPlugins.map((p) => (
+                  <PluginListItem key={p.id} p={p} onUninstall={() => setRemoving(p)} />
                 ))}
               </div>
             )}
@@ -398,20 +417,7 @@ function PluginCard({ p, onUninstall }: { p: PluginInfo; onUninstall: () => void
             </span>
             <div className="min-w-0 flex-1">
               <div className="flex items-center justify-between gap-2">
-                <div className="flex min-w-0 items-center gap-2">
-                  <span
-                    className={cn(
-                      "size-2 shrink-0 rounded-full",
-                      p.broken
-                        ? "bg-danger shadow-[0_0_8px_rgba(239,68,68,0.5)]"
-                        : p.enabled
-                          ? "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.5)]"
-                          : "bg-white/20",
-                    )}
-                    title={p.broken ? "Plugin has errors" : p.enabled ? "Active and ready" : "Disabled"}
-                  />
-                  <h4 className="truncate font-semibold text-fg-1 text-base leading-snug">{p.name}</h4>
-                </div>
+                <h4 className="truncate font-semibold text-fg-1 text-base leading-snug">{p.name}</h4>
                 {!p.banner && (
                   <div className="flex items-center gap-1.5">
                     <Badge tone={trust.tone}>{trust.label}</Badge>
@@ -502,6 +508,135 @@ function PluginCard({ p, onUninstall }: { p: PluginInfo; onUninstall: () => void
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
+        </div>
+      </div>
+    </ContextArea>
+  )
+}
+
+function PluginListItem({ p, onUninstall }: { p: PluginInfo; onUninstall: () => void }) {
+  const { goSettings } = useAppActions()
+  const trust = trustLabel(p)
+  const by = p.author && (reviewedPackage(p) ? `By ${p.author}` : `Says it is by ${p.author}`)
+  const facts = [by, `version ${p.version}`].filter(Boolean).join(", ")
+  const why = p.broken ?? (p.enabled ? p.blockedReason : null)
+  const avatarUrl =
+    p.authorAvatar ??
+    (p.authorUrl?.includes("github.com/")
+      ? `${p.authorUrl.replace(/\/$/, "")}.png`
+      : undefined)
+  const setEnabled = async (on: boolean) => {
+    try {
+      keepPlugin(await commands.pluginSetEnabled(p.id, on))
+    } catch (e) {
+      toast.error(on ? "Couldn't turn the plugin on" : "Couldn't turn the plugin off", { description: errorMessage(e) })
+    }
+  }
+
+  return (
+    <ContextArea menu={<PluginItems kit={contextKit} p={p} onUninstall={onUninstall} />}>
+      <div
+        role="group"
+        aria-label={p.name}
+        onClick={(e) => {
+          if (hasPage(p) && !(e.target as HTMLElement).closest("button, a, input, [role='switch']")) {
+            goSettings(`plugin.${p.id}`)
+          }
+        }}
+        className={cn(
+          "group flex min-h-20 items-center justify-between gap-4 px-5 py-3.5 transition-colors duration-150 hover:bg-white/[0.03]",
+          hasPage(p) && "cursor-pointer",
+        )}
+      >
+        <div className="flex min-w-0 items-center gap-3.5">
+          <span
+            style={p.color ? { backgroundColor: p.color } : undefined}
+            className={cn(
+              "flex size-10 shrink-0 items-center justify-center rounded-xl shadow-sm ring-1 ring-white/10 [&_img]:size-6 [&_svg]:size-5",
+              p.color ? "text-fg-1" : "bg-white/[0.08] text-fg-1",
+            )}
+          >
+            <PluginIcon src={p.icon} />
+          </span>
+
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h4 className="truncate font-semibold text-fg-1 text-sm leading-snug">{p.name}</h4>
+              <span className="shrink-0 rounded border border-white/10 bg-white/[0.05] px-1.5 py-0.2 font-mono text-[10px] text-fg-3">
+                v{p.version}
+              </span>
+              <Badge tone={trust.tone}>{trust.label}</Badge>
+              {p.gpu && (
+                <span className="rounded border border-accent/30 bg-accent/10 px-1.5 py-0.2 text-[10px] font-medium text-accent">
+                  GPU
+                </span>
+              )}
+            </div>
+
+            <div className="mt-0.5 flex items-center gap-1.5 text-xs text-fg-3">
+              {p.author && (
+                avatarUrl ? (
+                  <img
+                    src={avatarUrl}
+                    alt=""
+                    loading="lazy"
+                    className="size-3.5 shrink-0 rounded-full border border-white/10 bg-white/5 object-cover"
+                    onError={(e) => (e.currentTarget.style.display = "none")}
+                  />
+                ) : (
+                  <span className="flex size-3.5 shrink-0 items-center justify-center rounded-full bg-white/10 text-fg-3">
+                    <User className="size-2" />
+                  </span>
+                )
+              )}
+              {p.authorUrl ? (
+                <button
+                  type="button"
+                  onClick={() => void openExternalUrl(p.authorUrl!)}
+                  className="truncate font-medium text-fg-2 hover:text-fg-1 hover:underline"
+                >
+                  {by}
+                </button>
+              ) : (
+                <span className="truncate">{by}</span>
+              )}
+              {p.description && (
+                <>
+                  <span className="text-white/20">·</span>
+                  <span className="truncate text-fg-3">{p.description}</span>
+                </>
+              )}
+              <span className="hidden opacity-0">{facts}</span>
+            </div>
+
+            {why && <span className="mt-1 block text-xs text-danger">{why}</span>}
+          </div>
+        </div>
+
+        <div className="flex shrink-0 items-center gap-2">
+          {hasPage(p) && (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => goSettings(`plugin.${p.id}`)}
+              className="h-8 gap-1.5 px-2.5 text-xs text-fg-2 hover:text-fg-1"
+            >
+              <GearSix className="size-3.5" />
+              Settings
+            </Button>
+          )}
+          <Switch aria-label={`Enable ${p.name}`} checked={p.enabled} onCheckedChange={(on) => void setEnabled(on)} />
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              aria-label={`${p.name} options`}
+              className="flex size-8 items-center justify-center rounded-full text-fg-3 transition-colors hover:bg-white/[0.08] hover:text-fg-1 data-[state=open]:bg-white/[0.08]"
+            >
+              <DotsThree className="size-5" weight="bold" />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent>
+              <PluginItems kit={dropdownKit} p={p} onUninstall={onUninstall} />
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </div>
     </ContextArea>
