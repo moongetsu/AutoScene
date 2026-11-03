@@ -181,20 +181,17 @@ function PluginCard({ p, onUninstall }: { p: PluginInfo; onUninstall: () => void
           <div className="relative aspect-[21/9] w-full overflow-hidden border-b border-white/[0.06] bg-black/40">
             <img src={p.banner} alt="" draggable={false} className="size-full object-cover transition-transform duration-300 group-hover:scale-105" />
             <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent" />
-            <div className="absolute bottom-3 left-3 flex items-center gap-2">
-              <span
-                style={p.color ? { backgroundColor: p.color } : undefined}
-                className={cn(
-                  "flex size-11 shrink-0 items-center justify-center rounded-xl shadow-md ring-1 ring-white/10 [&_img]:size-7 [&_svg]:size-6",
-                  p.color ? "text-fg-1" : "bg-white/[0.12] text-fg-1",
-                )}
-              >
-                <PluginIcon src={p.icon} />
-              </span>
+            <div className="absolute top-3 right-3 flex items-center gap-1.5">
+              <Badge tone={trust.tone}>{trust.label}</Badge>
+              {p.gpu && (
+                <span className="rounded border border-accent/40 bg-black/60 px-1.5 py-0.5 text-[11px] font-medium text-accent backdrop-blur-md">
+                  GPU
+                </span>
+              )}
             </div>
           </div>
         ) : (
-          <div className="p-5 pb-0">
+          <div className="flex items-center justify-between p-5 pb-0">
             <span
               style={p.color ? { backgroundColor: p.color } : undefined}
               className={cn(
@@ -204,76 +201,74 @@ function PluginCard({ p, onUninstall }: { p: PluginInfo; onUninstall: () => void
             >
               <PluginIcon src={p.icon} />
             </span>
+            <div className="flex items-center gap-1.5">
+              <Badge tone={trust.tone}>{trust.label}</Badge>
+              {p.gpu && (
+                <span className="rounded border border-accent/30 bg-accent/10 px-1.5 py-0.5 text-[11px] font-medium text-accent">
+                  GPU
+                </span>
+              )}
+            </div>
           </div>
         )}
 
-        <div className="flex flex-1 flex-col p-5 pt-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <h4 className="font-semibold text-fg-1 leading-snug">{p.name}</h4>
-            <span className="rounded border border-white/10 bg-white/[0.05] px-1.5 py-0.5 font-mono text-[11px] text-fg-3">
-              v{p.version}
-            </span>
-            <Badge tone={trust.tone}>{trust.label}</Badge>
-            {p.gpu && (
-              <span className="rounded border border-accent/30 bg-accent/10 px-1.5 py-0.5 text-[11px] font-medium text-accent">
-                GPU
+        <div className="flex flex-1 flex-col p-5">
+          <div className="flex items-start gap-3.5">
+            {p.banner && (
+              <span
+                style={p.color ? { backgroundColor: p.color } : undefined}
+                className={cn(
+                  "-mt-9 relative z-10 flex size-12 shrink-0 items-center justify-center rounded-xl shadow-lg ring-2 ring-black/80 [&_img]:size-7 [&_svg]:size-6",
+                  p.color ? "text-fg-1" : "bg-[#2a2a2a] text-fg-1",
+                )}
+              >
+                <PluginIcon src={p.icon} />
               </span>
             )}
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center justify-between gap-2">
+                <h4 className="truncate font-semibold text-fg-1 text-base leading-snug">{p.name}</h4>
+                <span className="shrink-0 rounded border border-white/10 bg-white/[0.05] px-1.5 py-0.5 font-mono text-[11px] text-fg-3">
+                  v{p.version}
+                </span>
+              </div>
+              <div className="mt-1 flex items-center gap-1.5 text-xs text-fg-3">
+                {p.author && (
+                  avatarUrl ? (
+                    <img
+                      src={avatarUrl}
+                      alt=""
+                      loading="lazy"
+                      className="size-3.5 shrink-0 rounded-full border border-white/10 bg-white/5 object-cover"
+                      onError={(e) => (e.currentTarget.style.display = "none")}
+                    />
+                  ) : (
+                    <span className="flex size-3.5 shrink-0 items-center justify-center rounded-full bg-white/10 text-fg-3">
+                      <User className="size-2" />
+                    </span>
+                  )
+                )}
+                {p.authorUrl ? (
+                  <button
+                    type="button"
+                    onClick={() => void openExternalUrl(p.authorUrl!)}
+                    className="truncate font-medium text-fg-2 hover:text-fg-1 hover:underline"
+                  >
+                    {by}
+                  </button>
+                ) : (
+                  <span className="truncate">{by}</span>
+                )}
+                <span className="hidden opacity-0">{facts}</span>
+              </div>
+            </div>
           </div>
 
           {p.description && (
-            <p className="mt-2 text-sm text-fg-2 line-clamp-2 leading-relaxed">
+            <p className="mt-3 text-sm text-fg-2 line-clamp-2 leading-relaxed">
               {p.description}
             </p>
           )}
-
-          <div className="mt-4 flex flex-wrap items-center gap-3 text-xs text-fg-3">
-            <span className="inline-flex items-center gap-1.5">
-              {p.author && (
-                avatarUrl ? (
-                  <img
-                    src={avatarUrl}
-                    alt=""
-                    loading="lazy"
-                    className="size-4 shrink-0 rounded-full border border-white/10 bg-white/5 object-cover"
-                    onError={(e) => (e.currentTarget.style.display = "none")}
-                  />
-                ) : (
-                  <span className="flex size-4 shrink-0 items-center justify-center rounded-full bg-white/10 text-fg-3">
-                    <User className="size-2.5" />
-                  </span>
-                )
-              )}
-              {p.authorUrl ? (
-                <button
-                  type="button"
-                  onClick={() => void openExternalUrl(p.authorUrl!)}
-                  className="inline-flex items-center gap-1 font-medium text-fg-2 underline decoration-white/20 underline-offset-4 hover:text-fg-1 hover:decoration-white/60"
-                >
-                  {facts}
-                  <ArrowSquareOut className="size-3 opacity-60" />
-                </button>
-              ) : (
-                <span>{facts}</span>
-              )}
-            </span>
-            {p.license && (
-              <>
-                <span className="text-white/20">•</span>
-                <span>{p.license}</span>
-              </>
-            )}
-            <span className="text-white/20">•</span>
-            <button
-              type="button"
-              onClick={() => void copyText(p.id, "plugin ID")}
-              className="group inline-flex items-center gap-1 font-mono text-[11px] text-fg-3 hover:text-fg-1"
-              title="Click to copy plugin ID"
-            >
-              {p.id}
-              <Copy className="size-3 opacity-40 group-hover:opacity-100" />
-            </button>
-          </div>
 
           {why && <span className="mt-2 block text-xs text-danger">{why}</span>}
         </div>
