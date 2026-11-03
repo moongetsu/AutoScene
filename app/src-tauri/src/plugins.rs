@@ -12,7 +12,10 @@
 //! before the plugin (or the setting) went off fails instead; one running
 //! or still waiting then is stopped ([`PluginHost::stop`],
 //! [`PluginHost::allow_changed`]). A loaded folder is never reviewed,
-//! whatever its row says.
+//! whatever its row says. A plugin runs once at a time, and a run that
+//! starts while the plugin is installed, updated or uninstalled waits for
+//! that ([`PluginHost::hold`]); a change is refused while a run of it runs
+//! ([`PluginHost::change`]).
 //!
 //! An export that finished whole queues each export action that active
 //! plugins turned on for after every export ([`queue_after_export`]), off
@@ -35,7 +38,7 @@ use as_plugin::{
     Record, SettingSpec, Source, Store, Ticket, Trigger, Trust, package, runtime,
 };
 use as_project::{Library, Project, ProjectError, ProjectResult};
-use parking_lot::Mutex;
+use parking_lot::{Condvar, Mutex};
 use serde::Serialize;
 use specta::Type;
 use tauri::{AppHandle, Manager};
@@ -48,6 +51,10 @@ use crate::work::job_error;
 /// files go once it has waited longer, at the next package checked.
 pub const TICKET_TTL: Duration = Duration::from_secs(600);
 
+/// How often a run waiting for its turn ([`PluginHost::hold`]) looks
+/// whether it was cancelled.
+const WAIT_TICK: Duration = Duration::from_millis(50);
+
 /// The plugins of this app, and what they are doing.
 pub struct PluginHost {
     pub store: Store,
@@ -59,9 +66,21 @@ pub struct PluginHost {
     /// turned off loses those still waiting too. Taken before the job
     /// runner's lock, never inside it (see [`PluginHost::submit`]).
     runs: Mutex<HashMap<JobId, RunKey>>,
+    /// What runs, and what is being changed ([`PluginHost::hold`],
+    /// [`PluginHost::change`]). Never held while the job runner is called.
+    busy: Mutex<Busy>,
+    /// Told whenever a run or a change of a plugin ends.
+    freed: Condvar,
+}
+
+/// The plugins in use: by a run, or by an install, update or uninstall.
+#[derive(Default)]
+struct Busy {
     /// The plugin each running plugin job runs. Its folder stays as it is
-    /// meanwhile: Windows can't move a running program's folder.
-    running: Mutex<HashMap<JobId, PluginId>>,
+    /// meanwhile: an update or uninstall would throw it away under the run.
+    running: HashMap<JobId, PluginId>,
+    /// The plugins being installed, updated or uninstalled, whose runs wait.
+    changing: HashSet<PluginId>,
 }
 
 /// What a run runs, and on what: two runs alike are the same run, whatever
@@ -195,7 +214,7 @@ pub fn host(state: &AppState) -> AppResult<Arc<PluginHost>> {
 
 impl PluginHost {
     pub fn new(store: Store) -> Self {
-        Self { store, tickets: Mutex::default(), runs: Mutex::default(), running: Mutex::default() }
+        Self { store, tickets: Mutex::default(), runs: Mutex::default(), busy: Mutex::default(), freed: Condvar::new() }
     }
 
     /// Keeps `t` for [`PluginHost::take`] under its id, and drops the
@@ -239,8 +258,27 @@ impl PluginHost {
     }
 
     /// Whether a run of `id` is running.
-    pub fn is_running(&self, id: &PluginId) -> bool {
-        self.running.lock().values().any(|p| p == id)
+    #[cfg(test)]
+    fn is_running(&self, id: &PluginId) -> bool {
+        self.busy.lock().running.values().any(|p| p == id)
+    }
+
+    /// Marks `id` (named `name`) as being installed, updated or uninstalled
+    /// until the guard drops: a run of it that starts meanwhile waits, and
+    /// then finds the plugin as the change left it. Refused while a run of
+    /// it runs, from the folder the change would throw away. Looking and
+    /// marking are one step, so no run starts between them. Another change
+    /// of it goes first.
+    pub fn change(&self, id: &PluginId, name: &str) -> PluginResult<Changing<'_>> {
+        let mut busy = self.busy.lock();
+        while busy.changing.contains(id) {
+            self.freed.wait(&mut busy);
+        }
+        if busy.running.values().any(|p| p == id) {
+            return Err(PluginError::Busy(name.to_owned()));
+        }
+        busy.changing.insert(id.clone());
+        Ok(Changing { host: self, id: id.clone() })
     }
 
     /// Stops the runs of `id`, running or still waiting (it was turned off,
@@ -271,7 +309,7 @@ impl PluginHost {
     /// that ended meanwhile too.
     fn runs(&self) -> Vec<(JobId, PluginId)> {
         let mut runs: Vec<_> = self.runs.lock().iter().map(|(job, key)| (*job, key.plugin.clone())).collect();
-        runs.extend(self.running.lock().iter().map(|(job, id)| (*job, id.clone())));
+        runs.extend(self.busy.lock().running.iter().map(|(job, id)| (*job, id.clone())));
         runs
     }
 
@@ -296,15 +334,37 @@ impl PluginHost {
         Some(job)
     }
 
-    /// Holds `job` in [`PluginHost::running`] as a run of `id` until the
-    /// guard drops.
-    fn hold(&self, job: JobId, id: &PluginId) -> Running<'_> {
-        self.running.lock().insert(job, id.clone());
-        Running { host: self, job }
+    /// Holds the job of `ctx` as the run of `id` until the guard drops, once
+    /// no other run of `id` runs and no change of it is on its way: a
+    /// plugin runs once at a time (a loaded folder that moved to or from the
+    /// GPU runs on the other class), and never from files an update or an
+    /// uninstall is replacing. A job cancelled while it waits ends so.
+    fn hold(&self, ctx: &JobCtx, id: &PluginId) -> Result<Running<'_>, JobError> {
+        let mut said = false;
+        let mut busy = self.busy.lock();
+        loop {
+            let changing = busy.changing.contains(id);
+            if !changing && !busy.running.values().any(|p| p == id) {
+                busy.running.insert(ctx.id, id.clone());
+                return Ok(Running { host: self, job: ctx.id });
+            }
+            if ctx.cancel.is_cancelled() {
+                return Err(JobError::Cancelled);
+            }
+            if !said {
+                // The job runner is told without the lock.
+                drop(busy);
+                ctx.stage(if changing { "Waiting while it is updated" } else { "Waiting for its other run" });
+                said = true;
+                busy = self.busy.lock();
+                continue;
+            }
+            self.freed.wait_for(&mut busy, WAIT_TICK);
+        }
     }
 }
 
-/// A run's place in [`PluginHost::running`].
+/// A run's place in [`Busy::running`].
 struct Running<'a> {
     host: &'a PluginHost,
     job: JobId,
@@ -312,7 +372,21 @@ struct Running<'a> {
 
 impl Drop for Running<'_> {
     fn drop(&mut self) {
-        self.host.running.lock().remove(&self.job);
+        self.host.busy.lock().running.remove(&self.job);
+        self.host.freed.notify_all();
+    }
+}
+
+/// A plugin's place in [`Busy::changing`] (see [`PluginHost::change`]).
+pub struct Changing<'a> {
+    host: &'a PluginHost,
+    id: PluginId,
+}
+
+impl Drop for Changing<'_> {
+    fn drop(&mut self) {
+        self.host.busy.lock().changing.remove(&self.id);
+        self.host.freed.notify_all();
     }
 }
 
@@ -553,7 +627,7 @@ fn job_spec(m: &Manifest, title: &str, project_id: Option<ProjectId>, export_id:
 fn run(app: &AppHandle, host: &PluginHost, ctx: &JobCtx, key: &RunKey, trigger: Trigger, gpu: bool) -> JobResult {
     // Held before it looks whether it may run: a change to the plugin or
     // the setting from here on finds it and stops it.
-    let _running = host.hold(ctx.id, &key.plugin);
+    let _running = host.hold(ctx, &key.plugin)?;
     let state = app.state::<AppState>();
     let p = startable(&host.store, &state.library, key, gpu)?;
     let tools = state.tools().map_err(|e| JobError::Failed(e.message))?;
@@ -730,6 +804,7 @@ fn unreviewed_runs(runs: &[(JobId, PluginId)], reviewed: impl Fn(&PluginId) -> b
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc;
     use std::thread;
     use std::time::Instant;
@@ -986,7 +1061,7 @@ mod tests {
             let (host, tx, id) = (host.clone(), tx.clone(), PluginId::parse(id).unwrap());
             let p = plugin(id.as_str(), Trust::Unreviewed, false);
             jobs.submit(job_spec(p.manifest.as_ref().unwrap(), "Post", None, None), move |ctx| {
-                let _running = host.hold(ctx.id, &id);
+                let _running = host.hold(ctx, &id)?;
                 tx.send(()).unwrap();
                 while !ctx.cancel.is_cancelled() {
                     thread::sleep(Duration::from_millis(5));
@@ -1022,6 +1097,81 @@ mod tests {
             assert!(start.elapsed() < Duration::from_secs(10), "a stopped run stays in running");
             thread::sleep(Duration::from_millis(5));
         }
+        drop((host, lib));
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn a_plugin_runs_once_at_a_time_and_never_while_it_changes() {
+        let tmp = std::env::temp_dir().join(format!("autoscene-plugin-busy-{}", std::process::id()));
+        let (lib, host) = host_in(&tmp);
+        let id = PluginId::parse("dev.a.one").unwrap();
+        // A loaded folder's plugin.json moved it to the GPU while a run of it ran.
+        let jobs = JobRunner::new(&[(Class::Plugin, 1), (Class::Analysis, 1)], |_| {});
+        let (tx, held) = mpsc::channel();
+        let run = |class, done: Arc<AtomicBool>| {
+            let (host, tx, id) = (host.clone(), tx.clone(), id.clone());
+            let spec = JobSpec {
+                class,
+                ..job_spec(plugin(id.as_str(), Trust::Unreviewed, false).manifest.as_ref().unwrap(), "Post", None, None)
+            };
+            jobs.submit(spec, move |ctx| {
+                let _running = host.hold(ctx, &id)?;
+                tx.send(ctx.id).unwrap();
+                while !done.load(Ordering::SeqCst) && !ctx.cancel.is_cancelled() {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Ok(())
+            })
+        };
+        let job = |id: JobId| jobs.jobs().into_iter().find(|j| j.id == id).unwrap();
+        let flag = || Arc::new(AtomicBool::new(false));
+        let release = |done: &Arc<AtomicBool>| done.store(true, Ordering::SeqCst);
+        let wait = Duration::from_millis(300);
+
+        let first_done = flag();
+        let first = run(Class::Plugin, first_done.clone());
+        assert_eq!(held.recv_timeout(Duration::from_secs(10)).unwrap(), first);
+        // No update or uninstall while it runs.
+        let busy = host.change(&id, "One").err().unwrap();
+        assert_eq!(busy.to_string(), "One is running. Wait for it to finish, or cancel it in Activity.");
+        // A second run on the other class waits for the first.
+        let second_done = flag();
+        let second = run(Class::Analysis, second_done.clone());
+        assert!(held.recv_timeout(wait).is_err());
+        assert_eq!(job(second).stage.as_deref(), Some("Waiting for its other run"));
+        release(&first_done);
+        assert_eq!(held.recv_timeout(Duration::from_secs(10)).unwrap(), second);
+        release(&second_done);
+        while host.is_running(&id) {
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        // A run that starts while the plugin changes waits for the change.
+        let changing = host.change(&id, "One").unwrap();
+        let third = run(Class::Plugin, flag());
+        assert!(held.recv_timeout(wait).is_err());
+        assert_eq!(job(third).stage.as_deref(), Some("Waiting while it is updated"));
+        drop(changing);
+        assert_eq!(held.recv_timeout(Duration::from_secs(10)).unwrap(), third);
+        jobs.cancel(third);
+        // Cancelled while it waits, it ends so.
+        while host.is_running(&id) {
+            thread::sleep(Duration::from_millis(5));
+        }
+        let changing = host.change(&id, "One").unwrap();
+        let fourth = run(Class::Analysis, flag());
+        while job(fourth).stage.is_none() {
+            thread::sleep(Duration::from_millis(5));
+        }
+        jobs.cancel(fourth);
+        let start = Instant::now();
+        while job(fourth).state != JobState::Cancelled {
+            assert!(start.elapsed() < Duration::from_secs(10), "a waiting run never stopped");
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!host.is_running(&id));
+        drop(changing);
         drop((host, lib));
         std::fs::remove_dir_all(&tmp).unwrap();
     }

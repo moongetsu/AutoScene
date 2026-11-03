@@ -135,7 +135,9 @@ A plugin may run AutoScene's FFmpeg itself. The run line names it too.
 Plugin runs wait for each other: one runs at a time, whatever plugin it
 belongs to. A plugin with `"gpu": true` waits for the analysis of episodes
 instead, and an analysis waits for it, so the two never share the graphics
-card.
+card. Two runs of one plugin never run at once (Activity says "Waiting for
+its other run"), and a run that starts while its plugin is updated waits
+for the update, then runs the new version.
 
 The engine keeps its models on the graphics card for up to 2 minutes after
 its last analysis. A GPU plugin that starts right after an analysis may

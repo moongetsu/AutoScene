@@ -113,12 +113,16 @@ pub async fn plugin_install(
     let installed = blocking(move || {
         let allow = lib.allows_unreviewed_plugins()?;
         let ticket = host.take(&ticket_id)?;
-        if host.is_running(&ticket.manifest.id) {
-            let busy = PluginError::Busy(ticket.manifest.name.clone());
-            host.keep(ticket);
-            return Err(busy.into());
-        }
+        // Its runs wait from here until the row names the new version.
+        let changing = match host.change(&ticket.manifest.id, &ticket.manifest.name) {
+            Ok(changing) => changing,
+            Err(busy) => {
+                host.keep(ticket);
+                return Err(busy.into());
+            }
+        };
         let p = host.store.commit(ticket, allow, accept_unreviewed)?;
+        drop(changing);
         Ok(info(&p, &host.store, allow))
     })
     .await?;
@@ -154,10 +158,9 @@ pub async fn plugin_uninstall(
     let id = PluginId::parse(&plugin_id)?;
     let (host, jobs) = (host(&state)?, state.jobs.clone());
     blocking(move || {
-        if host.is_running(&id) {
-            let name = host.store.get(&id).ok().and_then(|p| p.manifest.map(|m| m.name));
-            return Err(PluginError::Busy(name.unwrap_or_else(|| id.to_string())).into());
-        }
+        let name = host.store.get(&id).ok().and_then(|p| p.manifest.map(|m| m.name));
+        // A run that starts meanwhile waits, then finds it gone.
+        let _changing = host.change(&id, name.as_deref().unwrap_or(id.as_str()))?;
         host.store.uninstall(&id, delete_data)?;
         host.stop(&jobs, &id);
         Ok(())

@@ -11,8 +11,8 @@
 //!
 //! Only the host starts a line with `---` or `[`: a line break in what a
 //! plugin wrote starts an indented line. One plugin's runs never overlap
-//! (its jobs share one class, which runs one job at a time), so a run's
-//! lines follow its header.
+//! (the host starts one only while no other run of its plugin runs), so a
+//! run's lines follow its header.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
